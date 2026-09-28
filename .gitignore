@@ -17,5 +17,9 @@ venv/
 .ipynb_checkpoints/
 experiments/*_memo.json
 
+# KiCad project-local / cache files (not for version control)
+*.kicad_prl
+fp-info-cache
+
 # OS / editor
 .DS_Store
