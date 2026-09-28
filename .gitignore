@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Virtual env
+.venv/
+venv/
+
+# Environment / secrets
+.env
+.vscode
+
+# Jupyter
+.ipynb_checkpoints/
+experiments/*_memo.json
+
+# OS / editor
+.DS_Store

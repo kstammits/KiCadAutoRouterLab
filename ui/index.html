@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>KiCad AutoRouter — Workflow</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background:#101418; color:#d7e0e9; margin:0; padding:2rem; }
+  h1 { font-size:1.3rem; }
+  .sub { color:#7d8b99; margin-bottom:2rem; }
+  .pipeline { display:flex; flex-direction:column; gap:.75rem; max-width:46rem; }
+  .stage { border:1px solid #2a3540; border-radius:8px; padding:.9rem 1rem; background:#161c22; }
+  .stage h2 { font-size:1rem; margin:0 0 .3rem; display:flex; gap:.6rem; align-items:center; }
+  .num { color:#5b6b7a; }
+  p { margin:0; color:#9fb0c0; font-size:.85rem; }
+  .chip { margin-left:auto; font-size:.7rem; padding:.15rem .5rem; border-radius:999px; border:1px solid #3a4a5a; color:#8fa2b5; text-transform:uppercase; letter-spacing:.05em; }
+  .chip.implemented { color:#7ee0a0; border-color:#2e6b45; }
+  .drop { margin-top:2rem; max-width:46rem; border:1px dashed #3a4a5a; border-radius:8px; padding:1.2rem; text-align:center; color:#7d8b99; font-size:.85rem; }
+  .file { color:#d7e0e9; }
+</style>
+</head>
+<body>
+<h1>KiCad AutoRouter — Workflow</h1>
+<div class="sub">Reads <code>.kicad_pcb</code> files and updates PCB trace placement. Stages run top to bottom.</div>
+
+<div id="pipeline" class="pipeline"></div>
+
+<div class="drop" id="drop">
+  Drop a <code>.kicad_pcb</code> or <code>.kicad_sch</code> file here — parsing is not implemented yet.
+</div>
+
+<script>
+const pipeline = document.getElementById("pipeline");
+
+async function loadStages() {
+  const res = await fetch("/api/stages");
+  const stages = await res.json();
+  pipeline.innerHTML = "";
+  for (const [i, s] of stages.entries()) {
+    const el = document.createElement("div");
+    el.className = "stage";
+    el.innerHTML = `<h2><span class="num">${String(i + 1).padStart(2, "0")}</span>${s.name}<span class="chip ${s.status}">${s.status}</span></h2><p>${s.description}</p>`;
+    pipeline.appendChild(el);
+  }
+}
+
+const drop = document.getElementById("drop");
+drop.addEventListener("dragover", e => { e.preventDefault(); drop.style.borderColor = "#7ee0a0"; });
+drop.addEventListener("dragleave", () => { drop.style.borderColor = ""; });
+drop.addEventListener("drop", e => {
+  e.preventDefault();
+  drop.style.borderColor = "";
+  if (e.dataTransfer.files.length) {
+    const f = e.dataTransfer.files[0];
+    drop.innerHTML = `<span class="file">${f.name}</span> — queued. Ingest/parse stages are not implemented yet.`;
+  }
+});
+
+loadStages();
+</script>
+</body>
+</html>

@@ -1,0 +1,11 @@
+# Core dependencies
+numpy>=1.21.0
+networkx>=2.6.0
+pyyaml>=5.4.1
+
+# Note: KiCad itself (kicad / kicad-cli) is a system tool, not a pip package.
+
+# Development dependencies
+pytest>=7.0.0
+black>=22.0.0
+mypy>=0.950
