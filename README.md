@@ -1,0 +1,45 @@
+# KiCad AutoRouter Lab
+
+Utility that reads KiCad files (`.kicad_pcb`, `.kicad_sch`) and updates PCB trace
+placement. Current phase: a minimal read-modify-write pass — load a board, make a
+slight update to component placement and traces, and resave it. No routing
+algorithm yet.
+
+## Layout
+- `src/kicad_autorouter/` — pure-Python core (`pipeline.py`, `validate.py`) plus the
+  `pcbnew_adapter.py` boundary (the only module that imports `pcbnew`).
+- `scripts/run_autoroute.py` — headless first pass (run under KiCad's bundled Python).
+- `tests/` — pytest suite + fixtures.
+- `ui/` — stdlib workflow UI (`python ui/server.py`).
+- `docs/` — local KiCad 10 docs + project guidance/reference notes.
+
+## Run the first pass
+The board load/modify/save step needs KiCad's bundled Python (it ships `pcbnew`):
+
+```sh
+/Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/3.9/bin/python3 \
+    scripts/run_autoroute.py tests/fixtures/minimal.kicad_pcb -o experiments/out/baby_step.kicad_pcb
+```
+
+Then validate the result (pure Python, runs in `.venv`):
+
+```sh
+.venv/bin/python -m pytest tests/          # existing suite
+# or DRC-check a specific board:
+/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli pcb drc experiments/out/baby_step.kicad_pcb --format json
+```
+
+## References
+Guidance and reference notes live under `docs/`, not in this README. Start at the index:
+
+- [`docs/README.md`](docs/README.md) — index of local KiCad 10 docs + key facts for this project.
+- Local KiCad 10 manuals (exact version match, `kicad-cli` 10.0.7):
+  - [`docs/kicad/pcbnew.md`](docs/kicad/pcbnew.md) — PCB editor: layers, nets, tracks, pads, zones, DRC, file format notes.
+  - [`docs/kicad/eeschema.md`](docs/kicad/eeschema.md) — schematic editor: symbols, nets, ERC, sheet structure.
+  - [`docs/kicad/cli.md`](docs/kicad/cli.md) — `kicad-cli` reference (`pcb drc`, `sch erc`, exports).
+  - [`docs/kicad/kicad.md`](docs/kicad/kicad.md) — project manager + all `.kicad_*` file types.
+
+Planned (not yet written): an autorouting guidance/glossary doc under `docs/`
+covering PCB routing best practices and force-directed placement of unlocked
+components around locked ones. Parsing the full `eeschema`/`pcbnew` manuals into
+that guidance is a whole session on its own.
