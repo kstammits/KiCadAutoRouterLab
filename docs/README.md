@@ -1,4 +1,11 @@
-# KiCad Documentation (local copies)
+# Docs index
+
+- [`autorouting_glossary.md`](autorouting_glossary.md) — project guidance: autorouting
+  terminology aligned to the pipeline stages (`ingest→parse→connectivity→route→drc→writeback`),
+  plus force-directed placement of unlocked components around locked ones. Built from the
+  sources below.
+
+## KiCad Documentation (local copies)
 
 Local markdown copies of the **KiCad 10** user documentation, converted from the HTML
 docs bundled with the installed KiCad app. These match the exact version in use

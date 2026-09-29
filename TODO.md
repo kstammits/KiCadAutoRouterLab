@@ -1,10 +1,9 @@
 # KiCad AutoRouter Lab — TODO / Session State
 
 Goal: utility that reads KiCad files (`.kicad_pcb`, `.kicad_sch`) and updates PCB trace placement.
-Phase: **minimal read-modify-write pass done** (load board → nudge unlocked parts → add demo track → save). Full autorouter logic + guidance docs still pending. System on **KiCad 10** (`kicad-cli` 10.0.7); local docs are KiCad 10.
+Phase: **minimal read-modify-write pass done** (load board → nudge unlocked parts → add demo track → save). Guidance/glossary doc drafted (`docs/autorouting_glossary.md`); full autorouter logic still pending. System on **KiCad 10** (`kicad-cli` 10.0.7); local docs are KiCad 10.
 
 ## Active / Next Moves (in order)
-- [ ] **Gather terminology for guidance docs (in progress).** PCB autorouting challenges + force-directed placement of unlocked components around locked ones. Wikipedia sources now downloaded locally as markdown under `docs/wikipedia/` (`autorouter.md`, `maze_routing.md`, `lee_algorithm.md`, `force_directed_graph_drawing.md`; see `docs/README.md`) + local `docs/kicad/pcbnew.md`. Remaining: draft a glossary/guidance doc under `docs/` linked from the README **References** section, aligned to stages `ingest→parse→connectivity→route→drc→writeback`.
 - [ ] Find an **S-expression grammar reference** for `.kicad_pcb` / `.kicad_sch` (NOT JSON). Candidates: KiCad source parsers (`pcb/`, `eeschema/`), KiKit docs, local manuals in `docs/kicad/`.
 - [ ] **Extend the autorouter beyond the baby step.** Both interfaces, shared core; SWIG `pcbnew` runtime; PCM packaging = build target only (nothing to package yet).
   - Core stays pure Python (no `pcbnew` import) → testable in `.venv`. New: `model.py` (abstract board), `placement.py` (force-directed nudge, locked=fixed), `routing.py` (maze/Lee, later); `pcbnew_adapter.py` already exists (only place importing `pcbnew`).
@@ -14,6 +13,7 @@ Phase: **minimal read-modify-write pass done** (load board → nudge unlocked pa
   - Install dir: `~/Documents/KiCad/10.0/scripting/plugins/<name>/`. PCM scaffold later in `packaging/` (`metadata.json.template` v2 + `build_package.py` stub).
 
 ## Completed
+- [x] **Guidance/glossary doc drafted:** `docs/autorouting_glossary.md` — terminology aligned to stages `ingest→parse→connectivity→route→drc→writeback`, routing task/failure modes, NP-completeness → heuristics, maze/Lee/global-routing + rip-up strategies, DRC via `kicad-cli pcb drc` JSON reports, and force-directed placement (spring attraction along nets, Coulomb repulsion, locked footprints pinned). Linked from top-level README **References** and indexed in `docs/README.md`. Also fixed stale "JSON file format" wording in `pipeline.py` parse-stage description → S-expression.
 - [x] Downloaded Wikipedia research sources as local markdown under `docs/wikipedia/`: `autorouter.md` (actual article: "Routing (electronic design automation)"), `maze_routing.md` (redirects to "Maze runner" — verified this is the EDA maze-routing article, resolving the earlier title doubt), `lee_algorithm.md`, `force_directed_graph_drawing.md`. Fetched via en.wikipedia.org REST API + markdownify (no nav boilerplate). Excluded "Maze-routing algorithm" (general maze solving, not PCB routing). Indexed in `docs/README.md`.
 - [x] Moved trial notebooks + `utilities.py` into `experiments/`; deleted generated artifacts; wrote `.gitignore`, `.env.example`.
 - [x] Fixed `requirements.txt`: removed fake `kicad-cli` pip dep (system tool); kept numpy, networkx, pyyaml, pytest, black, mypy.

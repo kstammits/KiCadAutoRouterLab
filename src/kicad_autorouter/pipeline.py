@@ -25,7 +25,7 @@ STAGES = [
     Stage(
         "parse",
         "Parse",
-        "Extract pads, nets, vias, zones and board outline from the JSON file format.",
+        "Extract pads, nets, vias, zones and board outline from the S-expression file format.",
         "planned",
     ),
     Stage(

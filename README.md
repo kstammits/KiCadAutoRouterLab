@@ -33,13 +33,12 @@ Then validate the result (pure Python, runs in `.venv`):
 Guidance and reference notes live under `docs/`, not in this README. Start at the index:
 
 - [`docs/README.md`](docs/README.md) — index of local KiCad 10 docs + key facts for this project.
+- [`docs/autorouting_glossary.md`](docs/autorouting_glossary.md) — autorouting terminology and guidance, aligned to the pipeline stages (`ingest→parse→connectivity→route→drc→writeback`), incl. force-directed placement of unlocked components around locked ones.
 - Local KiCad 10 manuals (exact version match, `kicad-cli` 10.0.7):
   - [`docs/kicad/pcbnew.md`](docs/kicad/pcbnew.md) — PCB editor: layers, nets, tracks, pads, zones, DRC, file format notes.
   - [`docs/kicad/eeschema.md`](docs/kicad/eeschema.md) — schematic editor: symbols, nets, ERC, sheet structure.
   - [`docs/kicad/cli.md`](docs/kicad/cli.md) — `kicad-cli` reference (`pcb drc`, `sch erc`, exports).
   - [`docs/kicad/kicad.md`](docs/kicad/kicad.md) — project manager + all `.kicad_*` file types.
 
-Planned (not yet written): an autorouting guidance/glossary doc under `docs/`
-covering PCB routing best practices and force-directed placement of unlocked
-components around locked ones. Parsing the full `eeschema`/`pcbnew` manuals into
-that guidance is a whole session on its own.
+Deeper integration of the full `eeschema`/`pcbnew` manuals into the glossary is
+left as future work (a whole session on its own).

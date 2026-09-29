@@ -1,0 +1,123 @@
+# Autorouting Glossary & Guidance
+
+Terminology and design guidance for this project, aligned to the pipeline stages in
+`src/kicad_autorouter/pipeline.py`: `ingest → parse → connectivity → route → drc → writeback`.
+Sources are the local copies under [`wikipedia/`](wikipedia/) (fetched 2026-09-28) and
+[`kicad/`](kicad/) (KiCad 10.0.7, exact version match).
+
+## Stage: ingest — load `.kicad_pcb` / `.kicad_sch`
+
+- **S-expression**: the file format of both `.kicad_pcb` and `.kicad_sch`. Nested
+  parenthesized lists, e.g. `(kicad_pcb (version 20241229) ...)`. Not JSON — any parser
+  must be an S-expression reader. Version tags in KiCad 10: `20241229` (pcb),
+  `20250114` (sch). See [`kicad/kicad.md`](kicad/kicad.md) ("KiCad files and folders").
+- **Load failure**: a file KiCad cannot parse exits non-zero (code 3) with
+  `Failed to load ...` on stderr — distinct from rule violations. Handled in
+  `src/kicad_autorouter/validate.py`.
+
+## Stage: parse — extract board objects
+
+- **Footprint** (`footprint`): a placed component; carries position, rotation, and the
+  native lock flag (`fp.IsLocked()` / `fp.SetLocked(True)`). Locked footprints are fixed
+  anchors; only unlocked ones may move.
+- **Pad**: a connectable copper shape on a footprint (or standalone), assigned to a net.
+  Pads are the terminals the router must connect.
+- **Net**: an electrical connection, named or numbered; all pads of one net must be
+  connected and no pad of different nets may touch.
+- **Track** (`track`): a routed copper segment on one layer between two points, with a
+  width. The unit the router emits during writeback.
+- **Via**: connects tracks across layers at one point.
+- **Zone**: a poured copper area (e.g. ground plane); an obstacle for routing.
+- **Board outline / edge cuts** (`gr_line` on Edge.Cuts): the physical board boundary;
+  routing must stay inside it.
+- **Layer**: copper or technical layer, e.g. `F.Cu`, `B.Cu`. Design rules can differ per
+  layer (widths, spacings).
+
+## Stage: connectivity — net graph
+
+- Build a graph with one node per pad and edges between pads of the same net (networkx).
+  This is the input to routing: each net becomes a set of terminals that must be joined.
+- **Terminal / pin**: synonym for pad in router literature; "pins on cells" are the
+  pre-existing polygons a router is given, along with obstacles and optional preroutes.
+
+## Stage: route — the autorouter core
+
+The routing task (from [`wikipedia/autorouter.md`](wikipedia/autorouter.md)): create
+geometries such that all terminals of each net connect, no different nets connect, and
+all design rules are obeyed. Failure modes:
+
+- **Open**: a terminal left unconnected.
+- **Short**: two terminals of different nets connected by mistake.
+- **DRC violation**: clearance/width/layer rule broken (see stage `drc`).
+
+Key facts that shape the algorithm choice:
+
+- Routing is intractable — even the single-net, single-layer shortest route (Steiner tree)
+  is NP-complete. Real routers are therefore **heuristics** aiming for "good enough", not
+  optimal.
+- **Maze router**: represents routing space as a grid sized to the wiring pitch; blocked
+  cells = components, zones, existing tracks. Find a chain of free cells from A to B
+  ([`wikipedia/maze_routing.md`](wikipedia/maze_routing.md)).
+- **Lee algorithm**: BFS wave expansion over that grid — mark start `0`, repeatedly mark
+  unlabeled neighbors with the next index until the target is reached or no points remain,
+  then backtrace through decreasing marks. Always optimal if a path exists, but slow and
+  memory-hungry ([`wikipedia/lee_algorithm.md`](wikipedia/lee_algorithm.md)). A* search is
+  commonly used in maze/Lee routers to cut the cost.
+- **Global routing**: first pick an approximate course per net on a coarse grid (optionally
+  assigning layers), then do detailed routing cell by cell — limits the size of the hard part.
+- **Rip-up and reroute**: route nets in sequence; if some fail, remove selected routings,
+  reorder, retry until all nets are routed or we give up.
+- **Iterative improvement**: treat shorts/violations as finite costs in an objective
+  function with per-pass weights (early passes penalize wire length, later passes penalize
+  violations heavily), rip-up and reroute each net to minimize it.
+- **Push-and-shove** ("shove-aside"): move already-routed nets out of the way to make room —
+  the interactive-router feature; a useful cleanup idea for our core too.
+- Secondary objectives that conflict with shortest path: crosstalk, via count, metal
+  density, timing.
+
+## Stage: drc — design rule check
+
+- **Design rule matrix**: per-layer minimum track width, clearance between tracks/pads,
+  via sizes, etc. The DRC stage validates the routed board against it.
+- `kicad-cli pcb drc <board> --format json -o report.json` produces a JSON report with
+  top-level `violations[]` and `unconnected_items[]`; `--exit-code-violations` makes the
+  exit code reflect violations, not just load failures (see [`kicad/cli.md`](kicad/cli.md)
+  and `src/kicad_autorouter/validate.py`).
+- Example violation from our baby-step board: `track_dangling | Track has unconnected end`.
+
+## Stage: writeback — emit updated `.kicad_pcb`
+
+- Write new tracks (and moved footprints) back as S-expressions. In the current pass this
+  goes through `pcbnew_adapter.py` (`add_track`, `save_board`) under KiCad's bundled Python;
+  a pure-Python S-expression writer is the planned replacement so the core stays testable in
+  `.venv`.
+- Always re-run DRC after writeback — it is the acceptance check for a pass.
+
+## Force-directed placement of unlocked components
+
+Basis: [`wikipedia/force_directed_graph_drawing.md`](wikipedia/force_directed_graph_drawing.md).
+Treat footprints as nodes and nets as edges; run a physical simulation until equilibrium:
+
+- **Attraction**: spring-like force (Hooke's law) along each net edge pulls connected
+  footprints toward each other — shortens the wires the router must draw.
+- **Repulsion**: Coulomb-like force between all node pairs pushes unconnected footprints
+  apart — keeps clearances and avoids overlap.
+- **Fixed nodes**: locked footprints are pinned (infinite mass); only unlocked ones move.
+  This is exactly our "nudge around the locked parts" step.
+- **Convergence**: iterate until positions stop changing; damping/step-size schedules
+  control stability. Simulated annealing or stress majorization are alternatives if plain
+  simulation stalls in a bad local minimum.
+- Caveats: naive force-directed layouts are O(n³)-ish and can be slow for large boards —
+  fine at our scale (tens of footprints), not for dense IC-style routing.
+
+## Source index
+
+| Local file | Used for |
+| --- | --- |
+| [`wikipedia/autorouter.md`](wikipedia/autorouter.md) | Routing task, failure modes, complexity, router taxonomy, global/detailed + rip-up strategies |
+| [`wikipedia/maze_routing.md`](wikipedia/maze_routing.md) | Grid maze routing model |
+| [`wikipedia/lee_algorithm.md`](wikipedia/lee_algorithm.md) | BFS wave expansion, optimality vs cost |
+| [`wikipedia/force_directed_graph_drawing.md`](wikipedia/force_directed_graph_drawing.md) | Spring/Coulomb placement model for unlocked footprints |
+| [`kicad/kicad.md`](kicad/kicad.md) | `.kicad_*` file types, S-expression formats |
+| [`kicad/pcbnew.md`](kicad/pcbnew.md) | Footprints, pads, nets, tracks, zones, DRC in the PCB editor |
+| [`kicad/cli.md`](kicad/cli.md) | `kicad-cli pcb drc` / `sch erc` JSON reports and exit codes |
