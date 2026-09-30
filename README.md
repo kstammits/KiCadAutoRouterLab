@@ -23,21 +23,12 @@ The board load/modify/save step needs KiCad's bundled Python (it ships `pcbnew`)
     scripts/run_autoroute.py tests/fixtures/minimal.kicad_pcb -o experiments/out/baby_step.kicad_pcb
 ```
 
-Then validate the result (pure Python, runs in `.venv`):
+Then validate the result:
 
 ```sh
 .venv/bin/python -m pytest tests/          # existing suite
 # or DRC-check a specific board:
 /Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli pcb drc experiments/out/baby_step.kicad_pcb --format json
-```
-
-## No-op pair round trip (pure Python)
-
-Reads a `.kicad_pcb` + `.kicad_sch` pair, applies an identity edit, writes new files,
-and checks them (re-parse tree equality + `kicad-cli` DRC/ERC when available):
-
-```sh
-.venv/bin/python scripts/roundtrip_pair.py [board.kicad_pcb] [sch.kicad_sch] [-o OUT_DIR]
 ```
 
 ## References
@@ -51,5 +42,3 @@ Guidance and reference notes live under `docs/`, not in this README. Start at th
   - [`docs/kicad/cli.md`](docs/kicad/cli.md) — `kicad-cli` reference (`pcb drc`, `sch erc`, exports).
   - [`docs/kicad/kicad.md`](docs/kicad/kicad.md) — project manager + all `.kicad_*` file types.
 
-Deeper integration of the full `eeschema`/`pcbnew` manuals into the glossary is
-left as future work (a whole session on its own).

@@ -35,36 +35,9 @@ def load_board(path: str | Path) -> "pcbnew.BOARD":
         raise ValueError(f"pcbnew failed to load board: {path}")
     return board
 
-
 def unlocked_footprints(board) -> list:
     """Return footprints that are not locked (candidates for placement moves)."""
     return [fp for fp in board.GetFootprints() if not fp.IsLocked()]
-
-
-def nudge_unlocked_footprints(
-    board, dx_mm: float = 1.0, dy_mm: float = 0.0
-) -> list[tuple[str, tuple[float, float], tuple[float, float]]]:
-    """Shift every unlocked footprint by (dx_mm, dy_mm). Locked parts stay fixed.
-
-    Returns a list of (reference, old_mm, new_mm) tuples for the parts moved.
-    This is a deterministic placeholder for the future force-directed nudge.
-    """
-    dx = pcbnew.FromMM(dx_mm)
-    dy = pcbnew.FromMM(dy_mm)
-    moved: list[tuple[str, tuple[float, float], tuple[float, float]]] = []
-    for fp in unlocked_footprints(board):
-        old = fp.GetPosition()
-        new = pcbnew.VECTOR2I(old.x + dx, old.y + dy)
-        fp.SetPosition(new)
-        moved.append(
-            (
-                fp.GetReference(),
-                (pcbnew.ToMM(old.x), pcbnew.ToMM(old.y)),
-                (pcbnew.ToMM(new.x), pcbnew.ToMM(new.y)),
-            )
-        )
-    return moved
-
 
 def add_track(
     board,

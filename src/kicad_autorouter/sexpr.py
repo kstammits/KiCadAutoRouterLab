@@ -224,9 +224,7 @@ def to_sexpr(node: SExpr, indent: str = "\t") -> str:
 
     Lists whose arguments are all scalars stay on one line; lists containing
     nested lists break after the leading scalar arguments and indent each
-    remaining argument by one level, mirroring KiCad's own layout. Whitespace
-    is not significant, so a parse→serialize→parse round trip preserves the
-    tree exactly (hex masks like ``0x…`` re-emit as decimal integers).
+    remaining argument by one level. 
     """
 
     def fmt(n: SExpr, depth: int) -> str:
