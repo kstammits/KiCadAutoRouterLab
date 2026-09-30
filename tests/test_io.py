@@ -1,19 +1,19 @@
-"""Tests for the pure-Python pcb+sch pair round trip (io + sexpr serializer).
+"""Tests for the pure-Python pcb+sch pair read/modify/write pass (io + sexpr).
 
+The no-op edit is ``nudge_footprint`` with zero deltas, per io.py's docstring.
 kicad-cli-dependent checks skip cleanly when it is not installed.
 """
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from kicad_autorouter.io import (
-    RoundtripError,
+    find_footprint,
     load_pair,
-    noop_roundtrip,
-    no_op_edit,
+    nudge_footprint,
     save_pair,
-    verify_noop,
 )
 from kicad_autorouter.sexpr import parse, parse_file, to_sexpr
 from kicad_autorouter.validate import (
@@ -82,9 +82,42 @@ def test_load_pair_rejects_wrong_header():
         load_pair(SCH_FIXTURE, SCH_FIXTURE)  # sch file in the pcb slot
 
 
-def test_no_op_edit_is_identity():
-    node = parse("(a 1)")
-    assert no_op_edit(node) is node
+# --- nudge_footprint (the no-op edit) ----------------------------------------
+
+
+def test_zero_nudge_is_identity():
+    tree = parse_file(PCB_FIXTURE)
+    assert nudge_footprint(tree, "MH1", 0.0, 0.0) == tree
+
+
+def test_nudge_moves_only_target_footprint():
+    tree = parse_file(PCB_FIXTURE)
+    moved = nudge_footprint(tree, "MH1", 1.0, 2.0)
+    at = find_footprint(moved, "MH1").find("at")
+    assert (float(at.args[0]), float(at.args[1])) == pytest.approx((59.57, 52.55))
+    orig_mh2 = find_footprint(tree, "MH2").find("at")
+    new_mh2 = find_footprint(moved, "MH2").find("at")
+    assert list(new_mh2.args) == list(orig_mh2.args)
+
+
+def test_nudge_unknown_ref_raises():
+    tree = parse_file(PCB_FIXTURE)
+    with pytest.raises(KeyError):
+        nudge_footprint(tree, "NOPE", 1.0, 0.0)
+
+
+# --- round trip --------------------------------------------------------------
+
+
+def _zero_nudge_roundtrip(out_dir: Path):
+    """Load the fixture pair, apply the zero-delta no-op edit, write new files."""
+    pair = load_pair(PCB_FIXTURE, SCH_FIXTURE)
+    edited = nudge_footprint(pair.pcb, "MH1", 0.0, 0.0)
+    return save_pair(
+        replace(pair, pcb=edited),
+        out_dir / "minimal_no_op.kicad_pcb",
+        out_dir / "minimal_no_op.kicad_sch",
+    )
 
 
 def test_save_pair_writes_both(tmp_path):
@@ -96,21 +129,21 @@ def test_save_pair_writes_both(tmp_path):
     assert parse_file(out_sch) == pair.sch
 
 
-def test_noop_roundtrip_and_verify(tmp_path):
-    out_pcb, out_sch = noop_roundtrip(PCB_FIXTURE, SCH_FIXTURE, tmp_path)
-    assert out_pcb.name == "minimal_no_op.kicad_pcb"
-    assert out_sch.name == "minimal_no_op.kicad_sch"
-    verify_noop(PCB_FIXTURE, SCH_FIXTURE, out_pcb, out_sch)
+def test_zero_nudge_roundtrip_preserves_trees(tmp_path):
+    out_pcb, out_sch = _zero_nudge_roundtrip(tmp_path)
+    pair = load_pair(PCB_FIXTURE, SCH_FIXTURE)
+    assert parse_file(out_pcb) == pair.pcb
+    assert parse_file(out_sch) == pair.sch
 
 
-def test_verify_noop_detects_change(tmp_path):
-    out_pcb, out_sch = noop_roundtrip(PCB_FIXTURE, SCH_FIXTURE, tmp_path)
+def test_roundtrip_detects_change(tmp_path):
+    out_pcb, _ = _zero_nudge_roundtrip(tmp_path)
     text = out_pcb.read_text(encoding="utf-8")
     changed = text.replace("(version 20241229)", "(version 99999999)")
     assert changed != text
     out_pcb.write_text(changed, encoding="utf-8")
-    with pytest.raises(RoundtripError):
-        verify_noop(PCB_FIXTURE, SCH_FIXTURE, out_pcb, out_sch)
+    pair = load_pair(PCB_FIXTURE, SCH_FIXTURE)
+    assert parse_file(out_pcb) != pair.pcb
 
 
 # --- kicad-cli checks --------------------------------------------------------
@@ -125,6 +158,6 @@ def cli() -> str:
 
 
 def test_roundtripped_pair_passes_drc_and_erc(cli, tmp_path):
-    out_pcb, out_sch = noop_roundtrip(PCB_FIXTURE, SCH_FIXTURE, tmp_path)
+    out_pcb, out_sch = _zero_nudge_roundtrip(tmp_path)
     assert validate_pcb(out_pcb, cli=cli).ok
     assert validate_sch(out_sch, cli=cli).ok

@@ -17,6 +17,9 @@
   .chip.implemented { color:#7ee0a0; border-color:#2e6b45; }
   .drop { margin-top:2rem; max-width:46rem; border:1px dashed #3a4a5a; border-radius:8px; padding:1.2rem; text-align:center; color:#7d8b99; font-size:.85rem; }
   .file { color:#d7e0e9; }
+  .board { margin-top:2rem; max-width:46rem; border:1px solid #2a3540; border-radius:8px; background:#0b0e12; overflow:hidden; }
+  .board .bar { display:flex; gap:.6rem; align-items:center; padding:.5rem .9rem; border-bottom:1px solid #2a3540; font-size:.8rem; color:#7d8b99; }
+  .board img { display:block; width:100%; height:auto; max-height:60vh; }
 </style>
 </head>
 <body>
@@ -25,8 +28,13 @@
 
 <div id="pipeline" class="pipeline"></div>
 
+<div class="board" id="board" hidden>
+  <div class="bar"><span id="board-name">no board loaded</span></div>
+  <img id="board-img" alt="">
+</div>
+
 <div class="drop" id="drop">
-  Drop a <code>.kicad_pcb</code> or <code>.kicad_sch</code> file here — parsing is not implemented yet.
+  Drop a <code>.kicad_pcb</code> file here to load it into the viewer.
 </div>
 
 <script>
@@ -44,19 +52,45 @@ async function loadStages() {
   }
 }
 
+async function uploadFile(f) {
+  const res = await fetch(`/api/load?name=${encodeURIComponent(f.name)}`, { method: "POST", body: f });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
 const drop = document.getElementById("drop");
 drop.addEventListener("dragover", e => { e.preventDefault(); drop.style.borderColor = "#7ee0a0"; });
 drop.addEventListener("dragleave", () => { drop.style.borderColor = ""; });
-drop.addEventListener("drop", e => {
+drop.addEventListener("drop", async e => {
   e.preventDefault();
   drop.style.borderColor = "";
-  if (e.dataTransfer.files.length) {
-    const f = e.dataTransfer.files[0];
-    drop.innerHTML = `<span class="file">${f.name}</span> — queued. Ingest/parse stages are not implemented yet.`;
-  }
+  if (e.dataTransfer.files.length) await uploadFile(e.dataTransfer.files[0]);
 });
 
+const boardEl = document.getElementById("board");
+const nameEl = document.getElementById("board-name");
+const imgEl = document.getElementById("board-img");
+let lastVersion = 0;
+
+async function poll() {
+  const res = await fetch("/api/state");
+  const st = await res.json();
+  if (st.loaded) {
+    boardEl.hidden = false;
+    nameEl.textContent = `${st.name} — v${st.version}`;
+    if (st.version !== lastVersion) {
+      lastVersion = st.version;
+      imgEl.src = `/api/board.svg?v=${st.version}`;
+    }
+  } else {
+    boardEl.hidden = true;
+    lastVersion = 0;
+  }
+}
+
 loadStages();
+poll();
+setInterval(poll, 2000);
 </script>
 </body>
 </html>

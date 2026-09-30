@@ -12,7 +12,7 @@ algorithm yet.
 - `scripts/run_autoroute.py` — headless first pass (run under KiCad's bundled Python).
 - `scripts/roundtrip_pair.py` — pure-Python no-op read→edit→write of a pcb+sch pair, with checks.
 - `tests/` — pytest suite + fixtures.
-- `ui/` — stdlib workflow UI (`python ui/server.py`).
+- `ui/` — stdlib workflow UI + board viewer (`python ui/server.py`).
 - `docs/` — local KiCad 10 docs + project guidance/reference notes.
 
 ## Run the first pass
@@ -30,6 +30,15 @@ Then validate the result:
 # or DRC-check a specific board:
 /Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli pcb drc experiments/out/baby_step.kicad_pcb --format json
 ```
+
+## View a board
+The workflow UI renders loaded boards as SVG snapshots (pure Python, no `pcbnew` needed):
+
+```sh
+.venv/bin/python ui/server.py   # http://127.0.0.1:8000
+```
+
+Open the page and drop a `.kicad_pcb` file onto the drop zone — it renders in the board panel (outline, zones, courtyards, tracks, vias, pads, ref text). The UI polls `/api/state` every 2 s and refreshes the snapshot whenever the server's version changes.
 
 ## References
 Guidance and reference notes live under `docs/`, not in this README. Start at the index:
