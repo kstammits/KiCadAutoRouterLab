@@ -26,11 +26,21 @@ def main(argv=None) -> int:
     repo = Path(__file__).resolve().parent.parent
     default_in = repo / "tests" / "fixtures" / "minimal.kicad_pcb"
 
-    p = argparse.ArgumentParser(description="Load, slightly update, and resave a KiCad board.")
-    p.add_argument("input", nargs="?", default=str(default_in), help=".kicad_pcb to load")
-    p.add_argument("-o", "--output", default=None, help="where to save the updated board")
-    p.add_argument("--dx-mm", type=float, default=1.0, help="x nudge for unlocked parts (mm)")
-    p.add_argument("--dy-mm", type=float, default=0.0, help="y nudge for unlocked parts (mm)")
+    p = argparse.ArgumentParser(
+        description="Load, slightly update, and resave a KiCad board."
+    )
+    p.add_argument(
+        "input", nargs="?", default=str(default_in), help=".kicad_pcb to load"
+    )
+    p.add_argument(
+        "-o", "--output", default=None, help="where to save the updated board"
+    )
+    p.add_argument(
+        "--dx-mm", type=float, default=1.0, help="x nudge for unlocked parts (mm)"
+    )
+    p.add_argument(
+        "--dy-mm", type=float, default=0.0, help="y nudge for unlocked parts (mm)"
+    )
     p.add_argument("--no-track", action="store_true", help="skip adding the demo track")
     args = p.parse_args(argv)
 
@@ -59,7 +69,9 @@ def main(argv=None) -> int:
         x0, y0, x1, y1 = 80.0, 95.0, 135.0, 95.0
         w = 0.25
         track = adapter.add_track(board, x0, y0, x1, y1, width_mm=w)
-        print(f"  added track on {track.GetLayerName()}: ({x0},{y0})->({x1},{y1}) mm, w={w}mm")
+        print(
+            f"  added track on {track.GetLayerName()}: ({x0},{y0})->({x1},{y1}) mm, w={w}mm"
+        )
 
     saved = adapter.save_board(board, out_path)
     print(f"saved -> {saved}")

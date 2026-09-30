@@ -6,9 +6,11 @@ slight update to component placement and traces, and resave it. No routing
 algorithm yet.
 
 ## Layout
-- `src/kicad_autorouter/` — pure-Python core (`pipeline.py`, `validate.py`) plus the
-  `pcbnew_adapter.py` boundary (the only module that imports `pcbnew`).
+- `src/kicad_autorouter/` — pure-Python core (`pipeline.py`, `validate.py`,
+  `sexpr.py`, `io.py`) plus the `pcbnew_adapter.py` boundary (the only module that
+  imports `pcbnew`).
 - `scripts/run_autoroute.py` — headless first pass (run under KiCad's bundled Python).
+- `scripts/roundtrip_pair.py` — pure-Python no-op read→edit→write of a pcb+sch pair, with checks.
 - `tests/` — pytest suite + fixtures.
 - `ui/` — stdlib workflow UI (`python ui/server.py`).
 - `docs/` — local KiCad 10 docs + project guidance/reference notes.
@@ -27,6 +29,15 @@ Then validate the result (pure Python, runs in `.venv`):
 .venv/bin/python -m pytest tests/          # existing suite
 # or DRC-check a specific board:
 /Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli pcb drc experiments/out/baby_step.kicad_pcb --format json
+```
+
+## No-op pair round trip (pure Python)
+
+Reads a `.kicad_pcb` + `.kicad_sch` pair, applies an identity edit, writes new files,
+and checks them (re-parse tree equality + `kicad-cli` DRC/ERC when available):
+
+```sh
+.venv/bin/python scripts/roundtrip_pair.py [board.kicad_pcb] [sch.kicad_sch] [-o OUT_DIR]
 ```
 
 ## References
