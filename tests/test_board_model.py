@@ -96,6 +96,43 @@ class TestFootprints:
         )
 
 
+class TestLockState:
+    def test_minimal_locks(self, minimal_tree):
+        # MH4/MH2/MH3 carry a top-level (locked yes) token; MH1 does not
+        by_ref = {fp.ref: fp for fp in footprints(minimal_tree)}
+        assert by_ref["MH4"].locked is True
+        assert by_ref["MH2"].locked is True
+        assert by_ref["MH3"].locked is True
+        assert by_ref["MH1"].locked is False
+
+    def test_dccf_has_no_locked_footprints(self, dccf_tree):
+        assert all(not fp.locked for fp in footprints(dccf_tree))
+
+    def test_aggregate_preserves_lock_state(self, minimal_tree):
+        model = board_model(minimal_tree)
+        assert model.by_ref["MH4"].locked is True
+        assert model.by_ref["MH1"].locked is False
+
+    def test_default_unlocked(self):
+        assert _fp().locked is False
+
+
+class TestUuid:
+    def test_minimal_uuids(self, minimal_tree):
+        by_ref = {fp.ref: fp for fp in footprints(minimal_tree)}
+        assert by_ref["MH4"].uuid == "3f297a53-76ff-4e4a-a0f3-00c7aac0a1fd"
+        assert by_ref["MH1"].uuid == "5c0af984-49c4-40a0-95aa-bb612ff4098b"
+
+    def test_dccf_uuids_all_unique(self, dccf_tree):
+        uuids = [fp.uuid for fp in footprints(dccf_tree)]
+        assert len(uuids) == 97
+        assert all(u for u in uuids)
+        assert len(set(uuids)) == 97
+
+    def test_default_empty_uuid(self):
+        assert _fp().uuid == ""
+
+
 class TestKeepoutZones:
     def test_minimal_zones(self, minimal_tree):
         zones = keepout_zones(minimal_tree)

@@ -1,9 +1,10 @@
 # KiCad AutoRouter Lab — TODO / Session State
 
 Goal: utility that reads KiCad files (`.kicad_pcb`, `.kicad_sch`) and updates PCB trace placement.
-Phase: **minimal read-modify-write pass done** (load board → nudge unlocked parts → add demo track → save) + **pcb+sch no-op round trip done** (pure Python: load pair → identity edit → new files → checks). Guidance/glossary doc drafted (`docs/autorouting_glossary.md`); full autorouter logic still pending. System on **KiCad 10** (`kicad-cli` 10.0.7); local docs are KiCad 10. Board-viewer plan for `ui/` agreed (see Active).
+Phase: **minimal read-modify-write pass done** (load board → nudge unlocked parts → add demo track → save) + **pcb+sch no-op round trip done** (pure Python: load pair → identity edit → new files → checks) + **placement preview infra done** (`ui/` params panel → run → SVG proposal overlay; v0 stub runner, real physics = PLAN item 2). Guidance/glossary doc drafted (`docs/autorouting_glossary.md`); full autorouter logic still pending. System on **KiCad 10** (`kicad-cli` 10.0.7); local docs are KiCad 10. Board-viewer plan for `ui/` agreed (see Active).
 
 ## Active / Next Moves (in order)
+- [ ] **Force-spring placement for hundreds of components** — full plan in [`PLAN.md`](PLAN.md). Done: lock/UUID parsing (item 1), v0 stub runner + UI preview infra, docs updates (item 6). Remaining: vectorized numpy sim (item 2), writeback + DRC (item 3), headless rewire of `run_autoroute.py` (item 4), tests/benchmark (item 5).
 - [ ] **Extend the autorouter beyond the baby step.** Both interfaces, shared core; SWIG `pcbnew` runtime; PCM packaging = build target only (nothing to package yet).
    - Core stays pure Python (no `pcbnew` import) → testable in `.venv`. **Decision 2026-09-29:** parse-stage *semantics* — absolute/rotation-aware pad positions, nets, zones — are sourced from `pcbnew` via the adapter (`LoadBoard()` typed objects), NOT hand-rolled on top of `sexpr.py`; `sexpr.py` stays a portable structural reader / test double. New: `model.py` (abstract board fed by the adapter), `placement.py` (force-directed nudge, locked=fixed), `routing.py` (maze/Lee, later); `pcbnew_adapter.py` already exists (only place importing `pcbnew`).
   - Locked components = native footprint lock `fp.IsLocked()` / `fp.SetLocked(True)`; only unlocked parts move.

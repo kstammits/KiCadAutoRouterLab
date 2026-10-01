@@ -35,6 +35,12 @@ STAGES = [
         "planned",
     ),
     Stage(
+        "place",
+        "Place",
+        "Force-spring placement of unlocked footprints around locked anchors (numpy in .venv).",
+        "planned",
+    ),
+    Stage(
         "route",
         "Route",
         "Compute trace paths between pads on each net (the autorouter core).",

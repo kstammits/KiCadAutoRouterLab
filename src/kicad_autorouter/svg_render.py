@@ -10,9 +10,11 @@ vias, pads, reference text.
 from __future__ import annotations
 
 import html
-from typing import Dict, List, Tuple
+import math
+from typing import Dict, List, Optional, Tuple
 
 from .board_model import BoardModel, Point
+from .placement import PlacementProposal
 
 # Dark-theme palette (matches ui/index.html).
 OUTLINE = "#e8edf2"       # board outline
@@ -21,12 +23,19 @@ REF_TEXT = "#9fb0c0"      # reference designators
 NO_NET = "#8a93a0"        # unconnected copper
 ZONE_FILL = "#4d7ea8"     # regular copper zones
 KEEPOUT_FILL = "#e06c75"  # keepout zones
-HOLE_BG = "#0b0e12"       # via holes (matches the viewer panel background)
+HOLE_BG = "#0b0e12"  # via holes (matches the viewer panel background)
 PAD_STROKE = "#0e1216"
+GHOST_COURTYARD = "#3d4a56"  # original position of moved parts (ghost overlay)
+MOVE_ARROW = "#e0a458"  # old -> new displacement arrows
 
 
 def _fmt(v: float) -> str:
     return f"{v:.3f}"
+
+
+def _shift(offsets, uuid):
+    """Proposed ``(dx_mm, dy_mm)`` offset for a footprint UUID (zero if none)."""
+    return offsets.get(uuid, (0.0, 0.0)) if offsets else (0.0, 0.0)
 
 
 def net_colors(model: BoardModel) -> Dict[str, str]:
@@ -111,13 +120,14 @@ def _zones_svg(model: BoardModel) -> List[str]:
     return out
 
 
-def _courtyards_svg(model: BoardModel) -> List[str]:
+def _courtyards_svg(model: BoardModel, offsets=None) -> List[str]:
     out = [f'<g stroke="{COURTYARD}" stroke-width="0.1" opacity="0.6">']
     for fp in model.footprints:
+        dx, dy = _shift(offsets, fp.uuid)
         for a, b in fp.courtyard:
             out.append(
-                f'<line x1="{_fmt(a.x_mm)}" y1="{_fmt(a.y_mm)}" '
-                f'x2="{_fmt(b.x_mm)}" y2="{_fmt(b.y_mm)}"/>'
+                f'<line x1="{_fmt(a.x_mm + dx)}" y1="{_fmt(a.y_mm + dy)}" '
+                f'x2="{_fmt(b.x_mm + dx)}" y2="{_fmt(b.y_mm + dy)}"/>'
             )
     out.append("</g>")
     return out
@@ -154,13 +164,15 @@ def _vias_svg(model: BoardModel, colors: Dict[str, str]) -> List[str]:
     return out
 
 
-def _pads_svg(model: BoardModel, colors: Dict[str, str]) -> List[str]:
+def _pads_svg(model: BoardModel, colors: Dict[str, str], offsets=None) -> List[str]:
     out = []
     for fp in model.footprints:
         flip = fp.layer.startswith("B")
+        dx, dy = _shift(offsets, fp.uuid)
         for pad in fp.pads:
             color = colors.get(pad.net_name or "", NO_NET)
-            x, y = _fmt(pad.position.x_mm), _fmt(pad.position.y_mm)
+            px, py = pad.position.x_mm + dx, pad.position.y_mm + dy
+            x, y = _fmt(px), _fmt(py)
             w, h = pad.size_mm
             angle = -pad.angle_deg if flip else pad.angle_deg
             rot = f' transform="rotate({_fmt(angle)} {x} {y})"' if angle else ""
@@ -171,30 +183,88 @@ def _pads_svg(model: BoardModel, colors: Dict[str, str]) -> List[str]:
                 )
             else:
                 out.append(
-                    f'<rect x="{_fmt(pad.position.x_mm - w / 2.0)}" '
-                    f'y="{_fmt(pad.position.y_mm - h / 2.0)}" width="{_fmt(w)}" '
-                    f'height="{_fmt(h)}" fill="{color}" '
+                    f'<rect x="{_fmt(px - w / 2.0)}" y="{_fmt(py - h / 2.0)}" '
+                    f'width="{_fmt(w)}" height="{_fmt(h)}" fill="{color}" '
                     f'stroke="{PAD_STROKE}" stroke-width="0.1"{rot}/>'
                 )
     return out
 
 
-def _refs_svg(model: BoardModel) -> List[str]:
+def _refs_svg(model: BoardModel, offsets=None) -> List[str]:
     out = [f'<g fill="{REF_TEXT}" font-family="monospace" font-size="1">']
     for fp in model.footprints:
+        # Unnamed parts (empty ref) fall back to a short UUID so they stay
+        # identifiable in the viewer; nothing is drawn when both are empty.
+        label = fp.ref or (fp.uuid[:8] if fp.uuid else "")
+        if not label:
+            continue
+        dx, dy = _shift(offsets, fp.uuid)
         out.append(
-            f'<text x="{_fmt(fp.x_mm)}" y="{_fmt(fp.y_mm - 0.5)}">'
-            f"{html.escape(fp.ref)}</text>"
+            f'<text x="{_fmt(fp.x_mm + dx)}" y="{_fmt(fp.y_mm + dy - 0.5)}">'
+            f"{html.escape(label)}</text>"
         )
     out.append("</g>")
     return out
 
 
-def render_board_svg(model: BoardModel, title: str = "") -> str:
-    """Build the full SVG document for ``model`` (millimeter user units)."""
+def _arrow_marker() -> str:
+    """SVG marker definition for displacement arrowheads."""
+    return (
+        '<defs><marker id="move-arrow" viewBox="0 0 10 10" refX="8" refY="5" '
+        f'markerWidth="4" markerHeight="4" orient="auto-start-reverse">'
+        f'<path d="M 0 0 L 10 5 L 0 10 z" fill="{MOVE_ARROW}"/>'
+        "</marker></defs>"
+    )
+
+
+def _proposal_overlay(model: BoardModel, proposal: PlacementProposal) -> List[str]:
+    """Ghost courtyards at original positions + old→new arrows for moved parts."""
+    out = [
+        f'<g stroke="{GHOST_COURTYARD}" stroke-width="0.1" '
+        f'stroke-dasharray="0.6 0.4" opacity="0.9">'
+    ]
+    for fp in model.footprints:
+        if fp.uuid not in proposal.deltas:
+            continue
+        for a, b in fp.courtyard:
+            out.append(
+                f'<line x1="{_fmt(a.x_mm)}" y1="{_fmt(a.y_mm)}" '
+                f'x2="{_fmt(b.x_mm)}" y2="{_fmt(b.y_mm)}"/>'
+            )
+    out.append("</g>")
+    arrows = [f'<g stroke="{MOVE_ARROW}" stroke-width="0.2">']
+    for fp in model.footprints:
+        d = proposal.deltas.get(fp.uuid)
+        if not d:
+            continue
+        dx, dy = d
+        arrows.append(
+            f'<line x1="{_fmt(fp.x_mm)}" y1="{_fmt(fp.y_mm)}" '
+            f'x2="{_fmt(fp.x_mm + dx)}" y2="{_fmt(fp.y_mm + dy)}" '
+            f'marker-end="url(#move-arrow)"/>'
+        )
+    arrows.append("</g>")
+    out.extend(arrows)
+    return out
+
+
+def render_board_svg(
+    model: BoardModel, title: str = "", proposal: Optional[PlacementProposal] = None
+) -> str:
+    """Build the full SVG document for ``model`` (millimeter user units).
+
+    When ``proposal`` is given, footprints are drawn at their proposed
+    positions with ghost courtyards and displacement arrows marking where
+    they came from.
+    """
     colors = net_colors(model)
     min_x, min_y, max_x, max_y = _bounds(model)
-    pad = 1.0
+    moved = bool(proposal is not None and proposal.deltas)
+    # Grow the margin by the largest proposed move so nothing clips.
+    extra = (
+        max(math.hypot(dx, dy) for dx, dy in proposal.deltas.values()) if moved else 0.0
+    )
+    pad = 1.0 + extra
     vb = (
         f"{_fmt(min_x - pad)} {_fmt(min_y - pad)} "
         f"{_fmt(max_x - min_x + 2 * pad)} {_fmt(max_y - min_y + 2 * pad)}"
@@ -205,12 +275,17 @@ def render_board_svg(model: BoardModel, title: str = "") -> str:
     ]
     if title:
         parts.append(f"<title>{html.escape(title)}</title>")
+    offsets = proposal.deltas if moved else None
+    if moved:
+        parts.append(_arrow_marker())
     parts.extend(_edge_cuts_svg(model))
     parts.extend(_zones_svg(model))
-    parts.extend(_courtyards_svg(model))
+    parts.extend(_courtyards_svg(model, offsets))
     parts.extend(_tracks_svg(model, colors))
     parts.extend(_vias_svg(model, colors))
-    parts.extend(_pads_svg(model, colors))
-    parts.extend(_refs_svg(model))
+    parts.extend(_pads_svg(model, colors, offsets))
+    parts.extend(_refs_svg(model, offsets))
+    if moved:
+        parts.extend(_proposal_overlay(model, proposal))
     parts.append("</svg>")
     return "\n".join(parts)

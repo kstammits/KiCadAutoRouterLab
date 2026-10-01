@@ -93,7 +93,13 @@ class EdgeCutArc:
 
 @dataclass(frozen=True)
 class Footprint:
-    """A placed footprint with its courtyard outline in board coordinates."""
+    """A placed footprint with its courtyard outline in board coordinates.
+
+    ``locked`` mirrors the native KiCad footprint lock (``fp.IsLocked()``);
+    locked footprints are fixed anchors that placement must not move.
+    ``uuid`` is the footprint's stable identity — refs may be duplicated or
+    missing, but every placed footprint carries its own ``(uuid ...)`` token.
+    """
 
     ref: str
     footprint_id: str
@@ -103,6 +109,8 @@ class Footprint:
     angle_deg: float
     pads: Tuple[Pad, ...] = ()
     courtyard: Tuple[Segment, ...] = ()
+    locked: bool = False
+    uuid: str = ""
 
 
 @dataclass(frozen=True)
@@ -203,6 +211,22 @@ def _layer_of(node: SExpr) -> str:
     return str(lay.args[0]) if lay is not None and lay.args else ""
 
 
+def _is_locked(node: SExpr) -> bool:
+    """Footprint lock flag from a top-level ``(locked ...)`` token.
+
+    KiCad writes the token only for locked footprints, so its presence alone
+    means locked; an explicit argument (e.g. ``yes``/``no``) is honored when
+    present. Property-level ``(unlocked ...)`` blocks are nested and ignored.
+    """
+    locked = node.find("locked")
+    if locked is None:
+        return False
+    for arg in locked.args:
+        if isinstance(arg, str):
+            return arg == "yes" or arg == "true"
+    return True
+
+
 def _pad(
     node: SExpr, x_mm: float, y_mm: float, angle_deg: float, layer: str
 ) -> Pad:
@@ -279,6 +303,12 @@ def footprints(tree: SExpr) -> list[Footprint]:
                 ref = str(prop.args[1])
                 break
         fp_id = str(node.args[0]) if node.args else ""
+        uuid_node = node.find("uuid")
+        uuid = (
+            str(uuid_node.args[0])
+            if uuid_node is not None and uuid_node.args
+            else ""
+        )
         pads = tuple(_pad(p, x, y, angle, layer) for p in node.children("pad"))
         result.append(
             Footprint(
@@ -290,6 +320,8 @@ def footprints(tree: SExpr) -> list[Footprint]:
                 angle_deg=angle,
                 pads=pads,
                 courtyard=_courtyard_segments(node, x, y, angle, layer),
+                locked=_is_locked(node),
+                uuid=uuid,
             )
         )
     return result

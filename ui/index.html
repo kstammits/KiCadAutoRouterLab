@@ -18,8 +18,19 @@
   .drop { margin-top:2rem; max-width:46rem; border:1px dashed #3a4a5a; border-radius:8px; padding:1.2rem; text-align:center; color:#7d8b99; font-size:.85rem; }
   .file { color:#d7e0e9; }
   .board { margin-top:2rem; max-width:46rem; border:1px solid #2a3540; border-radius:8px; background:#0b0e12; overflow:hidden; }
-  .board .bar { display:flex; gap:.6rem; align-items:center; padding:.5rem .9rem; border-bottom:1px solid #2a3540; font-size:.8rem; color:#7d8b99; }
+  .board .bar { display:flex; gap:.6rem; align-items:center; padding:.5rem .9rem; border-bottom:1px solid #2a3540; font-size:.8rem; color:#7d8b99; flex-wrap:wrap; }
   .board img { display:block; width:100%; height:auto; max-height:60vh; }
+  button { background:#1f2833; border:1px solid #3a4a5a; color:#d7e0e9; border-radius:6px; padding:.3rem .7rem; cursor:pointer; font-family:inherit; font-size:.8rem; }
+  button:hover:not(:disabled) { border-color:#7ee0a0; }
+  button:disabled { opacity:.45; cursor:default; }
+  .chk { display:flex; gap:.35rem; align-items:center; font-size:.8rem; color:#9fb0c0; }
+  #diag { margin-left:auto; color:#7d8b99; font-size:.75rem; }
+  .params { display:grid; grid-template-columns:1fr 1fr; gap:.6rem 1rem; padding:.8rem .9rem; }
+  .param { display:flex; flex-direction:column; gap:.25rem; font-size:.78rem; color:#9fb0c0; }
+  .param .row { display:flex; gap:.5rem; align-items:center; }
+  .param input[type=range] { flex:1; min-width:0; }
+  .param input[type=number] { width:5.5rem; background:#161c22; border:1px solid #3a4a5a; color:#d7e0e9; border-radius:4px; padding:.15rem .3rem; font-family:inherit; font-size:.78rem; }
+  .chip.ok { color:#7ee0a0; border-color:#2e6b45; }
 </style>
 </head>
 <body>
@@ -29,12 +40,28 @@
 <div id="pipeline" class="pipeline"></div>
 
 <div class="board" id="board" hidden>
-  <div class="bar"><span id="board-name">no board loaded</span></div>
+  <div class="bar">
+    <span id="board-name">no board loaded</span>
+    <span id="board-sch" class="chip" hidden>pcb only</span>
+    <label class="chk"><input type="checkbox" id="overlay-toggle" checked> show proposal</label>
+  </div>
   <img id="board-img" alt="">
 </div>
 
+<div class="board" id="placement-panel" hidden>
+  <div class="bar">
+    <span class="num">Place</span>
+    <button id="run-btn">Run placement</button>
+    <button id="clear-btn">Clear</button>
+    <button id="apply-btn" disabled title="Lands in the writeback step (PLAN item 3)">Apply</button>
+    <span id="diag"></span>
+  </div>
+  <div class="params" id="params-grid"></div>
+  <div class="bar"><button id="reset-btn">Reset defaults</button></div>
+</div>
+
 <div class="drop" id="drop">
-  Drop a <code>.kicad_pcb</code> file here to load it into the viewer.
+  Drop <code>.kicad_pcb</code> / <code>.kicad_sch</code> files here to load them into the viewer.
 </div>
 
 <script>
@@ -53,7 +80,11 @@ async function loadStages() {
 }
 
 async function uploadFile(f) {
-  const res = await fetch(`/api/load?name=${encodeURIComponent(f.name)}`, { method: "POST", body: f });
+  const kind = f.name.endsWith(".kicad_sch") ? "sch" : "pcb";
+  const res = await fetch(
+    `/api/load?name=${encodeURIComponent(f.name)}&kind=${kind}`,
+    { method: "POST", body: f }
+  );
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
@@ -64,31 +95,124 @@ drop.addEventListener("dragleave", () => { drop.style.borderColor = ""; });
 drop.addEventListener("drop", async e => {
   e.preventDefault();
   drop.style.borderColor = "";
-  if (e.dataTransfer.files.length) await uploadFile(e.dataTransfer.files[0]);
+  for (const f of e.dataTransfer.files) await uploadFile(f);
 });
+
+const PARAM_DEFS = [
+  { key: "repulsion_kr", label: "Repulsion k_r", min: 0, max: 1000, step: 1 },
+  { key: "attraction_ka", label: "Attraction k_a", min: 0, max: 1, step: 0.005 },
+  { key: "ideal_length_mm", label: "Ideal length (mm)", min: 1, max: 200, step: 1 },
+  { key: "max_iterations", label: "Max iterations", min: 1, max: 5000, step: 10 },
+  { key: "convergence_eps_mm", label: "Convergence eps (mm)", min: 0.001, max: 1, step: 0.001 },
+  { key: "demo_jitter_mm", label: "Demo jitter (mm) — preview only", min: 0, max: 20, step: 0.5 },
+];
+
+const paramsGrid = document.getElementById("params-grid");
+for (const def of PARAM_DEFS) {
+  const el = document.createElement("div");
+  el.className = "param";
+  el.innerHTML = `<span>${def.label}</span>
+    <div class="row">
+      <input type="range" data-key="${def.key}" min="${def.min}" max="${def.max}" step="${def.step}">
+      <input type="number" data-key="${def.key}" min="${def.min}" max="${def.max}" step="${def.step}">
+    </div>`;
+  paramsGrid.appendChild(el);
+}
+
+paramsGrid.addEventListener("input", e => {
+  const key = e.target.dataset.key;
+  const range = paramsGrid.querySelector(`input[type=range][data-key=${key}]`);
+  const num = paramsGrid.querySelector(`input[type=number][data-key=${key}]`);
+  if (e.target.type === "range") num.value = range.value;
+  else range.value = num.value;
+});
+
+function readParams() {
+  const out = {};
+  for (const def of PARAM_DEFS) {
+    const num = paramsGrid.querySelector(`input[type=number][data-key=${def.key}]`);
+    out[def.key] = Number(num.value);
+  }
+  return out;
+}
+
+async function loadParams(defaultsOnly = false) {
+  const res = await fetch(`/api/placement/params${defaultsOnly ? "?defaults=1" : ""}`);
+  if (!res.ok) throw new Error(await res.text());
+  const p = await res.json();
+  for (const def of PARAM_DEFS) {
+    if (!(def.key in p)) continue;
+    paramsGrid.querySelector(`input[type=range][data-key=${def.key}]`).value = p[def.key];
+    paramsGrid.querySelector(`input[type=number][data-key=${def.key}]`).value = p[def.key];
+  }
+}
 
 const boardEl = document.getElementById("board");
 const nameEl = document.getElementById("board-name");
 const imgEl = document.getElementById("board-img");
 let lastVersion = 0;
 
+const placementPanel = document.getElementById("placement-panel");
+const schChip = document.getElementById("board-sch");
+const overlayToggle = document.getElementById("overlay-toggle");
+const diagEl = document.getElementById("diag");
+
+function boardSrc(version) {
+  return `/api/board.svg?v=${version}&overlay=${overlayToggle.checked ? 1 : 0}`;
+}
+
 async function poll() {
   const res = await fetch("/api/state");
   const st = await res.json();
   if (st.loaded) {
     boardEl.hidden = false;
+    placementPanel.hidden = false;
     nameEl.textContent = `${st.name} — v${st.version}`;
+    schChip.hidden = st.has_sch;
     if (st.version !== lastVersion) {
       lastVersion = st.version;
-      imgEl.src = `/api/board.svg?v=${st.version}`;
+      imgEl.src = boardSrc(st.version);
     }
   } else {
     boardEl.hidden = true;
+    placementPanel.hidden = true;
     lastVersion = 0;
   }
 }
 
+overlayToggle.addEventListener("change", () => {
+  if (lastVersion) imgEl.src = boardSrc(lastVersion);
+});
+
+document.getElementById("run-btn").addEventListener("click", async () => {
+  try {
+    const saveRes = await fetch("/api/placement/params", { method: "POST", body: JSON.stringify(readParams()) });
+    if (!saveRes.ok) throw new Error(await saveRes.text());
+    const res = await fetch("/api/placement/run", { method: "POST" });
+    if (!res.ok) throw new Error(await res.text());
+    const r = await res.json();
+    diagEl.textContent = `v${r.version} — ${r.moved} moved, max Δ ${r.final_max_disp_mm.toFixed(2)} mm, ${r.elapsed_s.toPrecision(2)} s`;
+  } catch (err) {
+    diagEl.textContent = `run failed: ${err.message}`;
+  }
+});
+
+document.getElementById("clear-btn").addEventListener("click", async () => {
+  await fetch("/api/placement/clear", { method: "POST" });
+  diagEl.textContent = "proposal cleared";
+});
+
+document.getElementById("reset-btn").addEventListener("click", async () => {
+  try {
+    await loadParams(true);
+    diagEl.textContent = "params reset to defaults (persists on next run)";
+  } catch (err) {
+    diagEl.textContent = `reset failed: ${err.message}`;
+  }
+});
+
 loadStages();
+loadParams().catch(() => {});
 poll();
 setInterval(poll, 2000);
 </script>

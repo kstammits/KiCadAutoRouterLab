@@ -19,7 +19,9 @@ Sources are the local copies under [`wikipedia/`](wikipedia/) (fetched 2026-09-2
 
 - **Footprint** (`footprint`): a placed component; carries position, rotation, and the
   native lock flag (`fp.IsLocked()` / `fp.SetLocked(True)`). Locked footprints are fixed
-  anchors; only unlocked ones may move.
+  anchors; only unlocked ones may move. In `.kicad_pcb` files the lock is serialized as a
+  top-level `(locked ...)` token inside each footprint node — verified against the KiCad
+  source mirror (`pcb_io_kicad_sexpr*.cpp`: writer ~line 1474, parser line 6142).
 - **Pad**: a connectable copper shape on a footprint (or standalone), assigned to a net.
   Pads are the terminals the router must connect.
 - **Net**: an electrical connection, named or numbered; all pads of one net must be
@@ -61,7 +63,8 @@ Key facts that shape the algorithm choice:
 - **Lee algorithm**: BFS wave expansion over that grid — mark start `0`, repeatedly mark
   unlabeled neighbors with the next index until the target is reached or no points remain,
   then backtrace through decreasing marks. Always optimal if a path exists, but slow and
-  memory-hungry ([`wikipedia/lee_algorithm.md`](wikipedia/lee_algorithm.md)). A* search is
+  memory-hungry ([`wikipedia/lee_algorithm.md`](wikipedia/lee_algorithm.md)). A* search
+  ([`wikipedia/a_star_search_algorithm.md`](wikipedia/a_star_search_algorithm.md)) is
   commonly used in maze/Lee routers to cut the cost.
 - **Global routing**: first pick an approximate course per net on a coarse grid (optionally
   assigning layers), then do detailed routing cell by cell — limits the size of the hard part.
@@ -105,10 +108,16 @@ Treat footprints as nodes and nets as edges; run a physical simulation until equ
 - **Fixed nodes**: locked footprints are pinned (infinite mass); only unlocked ones move.
   This is exactly our "nudge around the locked parts" step.
 - **Convergence**: iterate until positions stop changing; damping/step-size schedules
-  control stability. Simulated annealing or stress majorization are alternatives if plain
-  simulation stalls in a bad local minimum.
-- Caveats: naive force-directed layouts are O(n³)-ish and can be slow for large boards —
-  fine at our scale (tens of footprints), not for dense IC-style routing.
+  control stability (Fruchterman–Reingold temperature schedule). Simulated annealing or
+  stress majorization are alternatives if plain simulation stalls in a bad local minimum.
+- **Complexity budget (vectorized)**: naive all-pairs repulsion is O(n²) per iteration,
+  O(n³) total — at n=500 that is ≈125k pairs/iteration, tens of seconds in pure Python.
+  Computing it as numpy broadcasting over the dense (n,n) distance matrix costs ≈1–2 ms
+  per iteration → sub-second total for a full run; net-edge attraction stays sparse O(E),
+  vectorized with edge index arrays, and locked footprints are a boolean mask (zero force).
+  Dense n² is therefore plenty at "a few hundred" nodes; Barnes–Hut
+  ([`wikipedia/barnes_hut_simulation.md`](wikipedia/barnes_hut_simulation.md)) only becomes
+  necessary past ~3–5k nodes.
 
 ## Source index
 
@@ -118,6 +127,8 @@ Treat footprints as nodes and nets as edges; run a physical simulation until equ
 | [`wikipedia/maze_routing.md`](wikipedia/maze_routing.md) | Grid maze routing model |
 | [`wikipedia/lee_algorithm.md`](wikipedia/lee_algorithm.md) | BFS wave expansion, optimality vs cost |
 | [`wikipedia/force_directed_graph_drawing.md`](wikipedia/force_directed_graph_drawing.md) | Spring/Coulomb placement model for unlocked footprints |
+| [`wikipedia/barnes_hut_simulation.md`](wikipedia/barnes_hut_simulation.md) | Barnes–Hut O(n log n) approximation of all-pairs repulsion; scaling path past ~3–5k nodes |
+| [`wikipedia/a_star_search_algorithm.md`](wikipedia/a_star_search_algorithm.md) | Heuristic grid search (f = g + h); cost cut for maze/Lee routing |
 | [`kicad/kicad.md`](kicad/kicad.md) | `.kicad_*` file types, S-expression formats |
 | [`kicad/pcbnew.md`](kicad/pcbnew.md) | Footprints, pads, nets, tracks, zones, DRC in the PCB editor |
 | [`kicad/cli.md`](kicad/cli.md) | `kicad-cli pcb drc` / `sch erc` JSON reports and exit codes |

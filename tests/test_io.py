@@ -11,8 +11,10 @@ import pytest
 
 from kicad_autorouter.io import (
     find_footprint,
+    find_footprint_by_uuid,
     load_pair,
     nudge_footprint,
+    nudge_footprint_by_uuid,
     save_pair,
 )
 from kicad_autorouter.sexpr import parse, parse_file, to_sexpr
@@ -26,6 +28,7 @@ from kicad_autorouter.validate import (
 FIXTURES = Path(__file__).parent / "fixtures"
 PCB_FIXTURE = FIXTURES / "minimal.kicad_pcb"
 SCH_FIXTURE = FIXTURES / "minimal.kicad_sch"
+MH1_UUID = "5c0af984-49c4-40a0-95aa-bb612ff4098b"
 
 
 # --- serializer -------------------------------------------------------------
@@ -104,6 +107,37 @@ def test_nudge_unknown_ref_raises():
     tree = parse_file(PCB_FIXTURE)
     with pytest.raises(KeyError):
         nudge_footprint(tree, "NOPE", 1.0, 0.0)
+
+
+# --- UUID-based addressing (duplicate / missing refs) ------------------------
+
+
+def test_find_footprint_by_uuid():
+    tree = parse_file(PCB_FIXTURE)
+    at = find_footprint_by_uuid(tree, MH1_UUID).find("at")
+    assert (float(at.args[0]), float(at.args[1])) == pytest.approx((58.57, 50.55))
+
+
+def test_find_footprint_by_uuid_unknown_raises():
+    tree = parse_file(PCB_FIXTURE)
+    with pytest.raises(KeyError):
+        find_footprint_by_uuid(tree, "nope")
+
+
+def test_nudge_by_uuid_moves_only_target_footprint():
+    tree = parse_file(PCB_FIXTURE)
+    moved = nudge_footprint_by_uuid(tree, MH1_UUID, 1.0, 2.0)
+    at = find_footprint(moved, "MH1").find("at")
+    assert (float(at.args[0]), float(at.args[1])) == pytest.approx((59.57, 52.55))
+    orig_mh4 = find_footprint(tree, "MH4").find("at")
+    new_mh4 = find_footprint(moved, "MH4").find("at")
+    assert list(new_mh4.args) == list(orig_mh4.args)
+
+
+def test_nudge_by_uuid_unknown_raises():
+    tree = parse_file(PCB_FIXTURE)
+    with pytest.raises(KeyError):
+        nudge_footprint_by_uuid(tree, "nope", 1.0, 0.0)
 
 
 # --- round trip --------------------------------------------------------------

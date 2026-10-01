@@ -24,8 +24,9 @@ Other sections available in the same local help folder (not yet copied):
 
 ## Wikipedia research sources (for the guidance doc)
 
-Local markdown copies fetched from the en.wikipedia.org REST API on 2026-09-28,
-to support drafting the autorouting guidance/glossary doc:
+Local markdown copies fetched from the en.wikipedia.org REST API on 2026-09-28
+(Barnes–Hut and A* added 2026-09-30), to support drafting the autorouting
+guidance/glossary doc:
 
 | File | Actual article title | Fetched as | Upstream URL |
 | --- | --- | --- | --- |
@@ -33,6 +34,8 @@ to support drafting the autorouting guidance/glossary doc:
 | `wikipedia/maze_routing.md` | Maze runner — grid-based maze routing method; cites Lee's 1961 paper | `Maze_routing` (redirect to `Maze_runner`) | <https://en.wikipedia.org/wiki/Maze_routing> |
 | `wikipedia/lee_algorithm.md` | Lee algorithm — BFS wave-expansion maze routing; optimal but slow and memory-hungry | `Lee_algorithm` | <https://en.wikipedia.org/wiki/Lee_algorithm> |
 | `wikipedia/force_directed_graph_drawing.md` | Force-directed graph drawing — physical-simulation node placement (basis for force-directed component nudging) | `Force-directed_graph_drawing` | <https://en.wikipedia.org/wiki/Force-directed_graph_drawing> |
+| `wikipedia/barnes_hut_simulation.md` | Barnes–Hut simulation — O(n log n) tree approximation of all-pairs forces; scaling path for repulsion past dense n² (~3–5k nodes) | `Barnes%E2%80%93Hut_simulation` (mobile-html REST API) | <https://en.wikipedia.org/wiki/Barnes%E2%80%93Hut_simulation> |
+| `wikipedia/a_star_search_algorithm.md` | A* search algorithm — heuristic shortest-path search (f = g + h); cost cut for maze/Lee routing | `A*_search_algorithm` (mobile-html REST API) | <https://en.wikipedia.org/wiki/A*_search_algorithm> |
 
 Note: the Wikipedia article "Maze-routing algorithm" is about general maze
 solving (wall follower, Pledge, Trémaux's), not PCB routing — deliberately excluded.
@@ -62,4 +65,18 @@ conv = MarkdownConverter(heading_style="ATX", bullets="-")
 for name in ["pcbnew.html", "kicad.html", "cli.html", "eeschema.html"]:
     (dst / (name.replace(".html", ".md"))).write_text(conv.convert((src / name).read_text()), encoding="utf-8")
 EOF
+```
+
+Wikipedia research sources are fetched from the `mobile-html` REST endpoint and
+converted with markdownify (same settings as above):
+
+```sh
+TMP=$(mktemp -d); pip install --target "$TMP/py" markdownify
+curl -sf "https://en.wikipedia.org/api/rest_v1/page/mobile-html/A*_search_algorithm" -o "$TMP/p.html"
+PYTHONPATH="$TMP/py" python3 -c '
+from markdownify import MarkdownConverter
+import pathlib, sys
+conv = MarkdownConverter(heading_style="ATX", bullets="-")
+pathlib.Path("docs/wikipedia/a_star_search_algorithm.md").write_text(conv.convert(pathlib.Path(sys.argv[1]).read_text()), encoding="utf-8")
+' "$TMP/p.html"
 ```
