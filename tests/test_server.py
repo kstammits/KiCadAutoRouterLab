@@ -1,4 +1,7 @@
-"""End-to-end tests for the workflow UI server endpoints."""
+"""End-to-end tests for the workflow UI server endpoints.
+
+Markers: server, minimal
+"""
 
 import json
 import sys
@@ -32,6 +35,8 @@ def _client():
     return httpd, f"http://127.0.0.1:{httpd.server_address[1]}"
 
 
+@pytest.mark.server
+@pytest.mark.minimal
 def test_board_svg_requires_load():
     httpd, base = _client()
     try:
@@ -42,6 +47,8 @@ def test_board_svg_requires_load():
         httpd.shutdown()
 
 
+@pytest.mark.server
+@pytest.mark.minimal
 def test_load_state_and_svg():
     httpd, base = _client()
     try:
@@ -59,6 +66,7 @@ def test_load_state_and_svg():
         httpd.shutdown()
 
 
+@pytest.mark.server
 def test_load_bad_body_rejected():
     httpd, base = _client()
     try:
@@ -70,6 +78,8 @@ def test_load_bad_body_rejected():
         httpd.shutdown()
 
 
+@pytest.mark.server
+@pytest.mark.params
 def test_params_roundtrip():
     httpd, base = _client()
     try:
@@ -92,6 +102,8 @@ def test_params_roundtrip():
         httpd.shutdown()
 
 
+@pytest.mark.server
+@pytest.mark.params
 def test_params_rejects_bad_values():
     httpd, base = _client()
     try:
@@ -116,6 +128,9 @@ def _load_minimal(base):
         return json.load(r)["version"]
 
 
+@pytest.mark.server
+@pytest.mark.stub
+@pytest.mark.minimal
 def test_run_and_clear_proposal():
     httpd, base = _client()
     try:
@@ -137,6 +152,7 @@ def test_run_and_clear_proposal():
         httpd.shutdown()
 
 
+@pytest.mark.server
 def test_apply_not_implemented():
     httpd, base = _client()
     try:
@@ -148,6 +164,8 @@ def test_apply_not_implemented():
         httpd.shutdown()
 
 
+@pytest.mark.server
+@pytest.mark.minimal
 def test_sch_load_sets_has_sch():
     httpd, base = _client()
     try:
@@ -166,6 +184,7 @@ def test_sch_load_sets_has_sch():
         httpd.shutdown()
 
 
+@pytest.mark.server
 def test_wrong_kind_rejected():
     httpd, base = _client()
     try:
@@ -180,6 +199,8 @@ def test_wrong_kind_rejected():
         httpd.shutdown()
 
 
+@pytest.mark.server
+@pytest.mark.minimal
 def test_run_with_json_body_iterations():
     """Test /api/placement/run accepts JSON body with iterations parameter."""
     httpd, base = _client()
@@ -199,6 +220,8 @@ def test_run_with_json_body_iterations():
         httpd.shutdown()
 
 
+@pytest.mark.server
+@pytest.mark.minimal
 def test_run_with_movable_uuids():
     """Test /api/placement/run accepts movable_uuids to restrict movement."""
     httpd, base = _client()
@@ -224,6 +247,9 @@ def test_run_with_movable_uuids():
         httpd.shutdown()
 
 
+@pytest.mark.server
+@pytest.mark.stub
+@pytest.mark.minimal
 def test_accept_proposal():
     """Test /api/placement/accept applies proposal to model."""
     httpd, base = _client()
@@ -267,6 +293,8 @@ def test_accept_proposal():
         httpd.shutdown()
 
 
+@pytest.mark.server
+@pytest.mark.minimal
 def test_accept_no_proposal_returns_400():
     """Test /api/placement/accept returns 400 when no proposal exists."""
     httpd, base = _client()
@@ -280,6 +308,8 @@ def test_accept_no_proposal_returns_400():
         httpd.shutdown()
 
 
+@pytest.mark.server
+@pytest.mark.minimal
 def test_run_rejects_bad_movable_uuids():
     """Test /api/placement/run rejects non-list movable_uuids."""
     httpd, base = _client()

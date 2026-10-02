@@ -1,4 +1,7 @@
-"""Tests for the headless placement entry point (scripts/run_autoroute.py)."""
+"""Tests for the headless placement entry point (scripts/run_autoroute.py).
+
+Markers: cli, minimal
+"""
 
 import importlib.util
 from pathlib import Path
@@ -30,6 +33,8 @@ def _at_by_uuid(tree):
     return result
 
 
+@pytest.mark.cli
+@pytest.mark.minimal
 def test_identity_default(tmp_path, run_autoroute):
     from kicad_autorouter.sexpr import parse_file
 
@@ -39,6 +44,9 @@ def test_identity_default(tmp_path, run_autoroute):
     assert parse_file(out) == parse_file(MINIMAL_PCB)
 
 
+@pytest.mark.cli
+@pytest.mark.minimal
+@pytest.mark.stub
 def test_jitter_moves_only_unlocked(tmp_path, run_autoroute):
     from kicad_autorouter.placement import _jitter_for
     from kicad_autorouter.sexpr import parse_file
@@ -53,6 +61,7 @@ def test_jitter_moves_only_unlocked(tmp_path, run_autoroute):
     assert at[MH2_UUID] == (58.57, 139.45)  # locked part stays put
 
 
+@pytest.mark.cli
 def test_missing_input_returns_1(tmp_path, run_autoroute):
     missing = tmp_path / "nope.kicad_pcb"
     assert run_autoroute.main([str(missing), "-o", str(tmp_path / "out.kicad_pcb")]) == 1
