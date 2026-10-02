@@ -487,19 +487,11 @@ document.getElementById("pin-btn").addEventListener("click", () => {
 
 document.getElementById("run-btn").addEventListener("click", async () => {
   try {
-    const saveRes = await fetch("/api/placement/params", { method: "POST", body: JSON.stringify(readParams()) });
+const saveRes = await fetch("/api/placement/params", { method: "POST", body: JSON.stringify(readParams()) });
     if (!saveRes.ok) throw new Error(await saveRes.text());
     const iters = parseInt(document.getElementById("step-iters").value, 10);
-    // Build movable_uuids: all unlocked - pinned - (if selection exists, only selected)
-    const movableUuids = Array.from(selectedUuids.size > 0 ? selectedUuids : 
-      new Set([...Array.from(selectedUuids), ...Array.from(pinnedUuids)])); // Wait, this is wrong
-    
-    // Actually: movable = unlocked AND not pinned. If selection exists, only selected move.
-    // But we need to get the list of unlocked footprints from the board model.
-    // For now, just pass selectedUuids as movable_uuids if any, else pass pinned as exclusion via API
-    // The server will handle pinned as exclusion automatically
-    
-    // Better approach: pass movable_uuids as selectedUuids if selection exists
+    // If user has selected specific components, only those move.
+    // Otherwise, server will move all unlocked except pinned.
     const movableUuids = selectedUuids.size > 0 ? Array.from(selectedUuids) : undefined;
     
     const res = await fetch("/api/placement/run", {
