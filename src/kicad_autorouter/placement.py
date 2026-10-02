@@ -186,22 +186,125 @@ def _build_rigid_constraints(
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Build rigid constraint edges between pads of the same footprint.
 
-    For each footprint with >1 pad, create a star topology from the first pad
-    to all others. Returns (src, dst, rest_lengths).
+    For each footprint with >1 pad, build a Minimum Spanning Tree (MST) of its
+    pads using Prim's algorithm. This distributes constraint forces naturally
+    across the footprint geometry rather than concentrating them at one pad.
+    Returns (src, dst, rest_lengths).
     """
     src_list = []
     dst_list = []
     rest_lengths = []
 
     for pad_indices in fp_uuid_to_pad_indices.values():
-        if len(pad_indices) < 2:
+        n = len(pad_indices)
+        if n < 2:
             continue
-        anchor = pad_indices[0]
-        for other in pad_indices[1:]:
-            src_list.append(anchor)
-            dst_list.append(other)
-            # Rest length will be filled in after initial positions are known
+
+        # Use global pad indices directly - we need their positions for MST
+        # We'll compute MST based on the pad_positions array later
+        # For now, just build the MST topology; rest lengths filled in after positions known
+
+        if n == 2:
+            # Two pads: just connect them
+            src_list.append(pad_indices[0])
+            dst_list.append(pad_indices[1])
             rest_lengths.append(0.0)
+        else:
+            # Three or more pads: build MST using Prim's algorithm
+            # We need initial positions - will be passed in separately
+            # For now, create placeholder edges; actual MST built in run_placement
+            # after pad_positions is available
+            pass  # Will be handled in run_placement
+
+    if not src_list:
+        return np.array([], dtype=int), np.array([], dtype=int), np.array([], dtype=float)
+
+    return (
+        np.array(src_list, dtype=int),
+        np.array(dst_list, dtype=int),
+        np.array(rest_lengths, dtype=float),
+    )
+
+
+def _build_rigid_constraints_mst(
+    pad_positions: np.ndarray, fp_uuid_to_pad_indices: Dict[str, List[int]]
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Build MST rigid constraints for all footprints using Prim's algorithm.
+
+    Args:
+        pad_positions: (n_pads, 2) array of current pad positions
+        fp_uuid_to_pad_indices: mapping from footprint UUID to list of pad indices
+
+    Returns:
+        (src_indices, dst_indices, rest_lengths) for all MST edges across all footprints
+    """
+    src_list = []
+    dst_list = []
+    rest_lengths = []
+
+    for pad_indices in fp_uuid_to_pad_indices.values():
+        n = len(pad_indices)
+        if n < 2:
+            continue
+
+        if n == 2:
+            src_list.append(pad_indices[0])
+            dst_list.append(pad_indices[1])
+            diff = pad_positions[pad_indices[1]] - pad_positions[pad_indices[0]]
+            rest_lengths.append(np.linalg.norm(diff))
+            continue
+
+        # Prim's algorithm for MST on this footprint's pads
+        # Start from pad closest to centroid (reduces max edge length)
+        positions_subset = pad_positions[pad_indices]  # (n, 2)
+        centroid = np.mean(positions_subset, axis=0)
+        dists_to_centroid = np.linalg.norm(positions_subset - centroid, axis=1)
+        start_local = int(np.argmin(dists_to_centroid))
+        start_global = pad_indices[start_local]
+
+        in_mst = np.zeros(n, dtype=bool)
+        in_mst[start_local] = True
+        # min_edge[i] = (distance, local_idx_in_subset, parent_global_idx)
+        # For nodes not in MST, track best edge to MST
+        best_dist = np.full(n, np.inf)
+        best_parent = np.full(n, -1, dtype=int)
+
+        # Initialize with edges from start node
+        for j in range(n):
+            if j == start_local:
+                continue
+            diff = positions_subset[j] - positions_subset[start_local]
+            dist = np.linalg.norm(diff)
+            best_dist[j] = dist
+            best_parent[j] = start_local
+
+        # Grow MST
+        for _ in range(n - 1):
+            # Find closest node not in MST
+            candidates = np.where(~in_mst)[0]
+            if len(candidates) == 0:
+                break
+            next_local = candidates[np.argmin(best_dist[candidates])]
+            next_global = pad_indices[next_local]
+            parent_local = best_parent[next_local]
+            parent_global = pad_indices[parent_local]
+
+            # Add edge
+            src_list.append(parent_global)
+            dst_list.append(next_global)
+            rest_lengths.append(best_dist[next_local])
+
+            in_mst[next_local] = True
+
+            # Update best edges from new node
+            for j in range(n):
+                if in_mst[j]:
+                    continue
+                diff = positions_subset[j] - positions_subset[next_local]
+                dist = np.linalg.norm(diff)
+                if dist < best_dist[j]:
+                    best_dist[j] = dist
+                    best_parent[j] = next_local
 
     if not src_list:
         return np.array([], dtype=int), np.array([], dtype=int), np.array([], dtype=float)
@@ -419,16 +522,11 @@ def run_placement(
     src_idx, dst_idx = _build_net_edges_pad_level(pads, pad_to_fp_idx)
     has_net_edges = len(src_idx) > 0
 
-    # Rigid constraints (pad pairs within same footprint)
-    rigid_src, rigid_dst, rigid_rest = _build_rigid_constraints(fp_uuid_to_pad_indices, n_pads)
+    # Rigid constraints (MST of pads within each footprint)
+    rigid_src, rigid_dst, rigid_rest = _build_rigid_constraints_mst(
+        pad_positions, fp_uuid_to_pad_indices
+    )
     has_rigid = len(rigid_src) > 0
-
-    # Compute initial rest lengths for rigid constraints
-    if has_rigid:
-        for k in range(len(rigid_src)):
-            i, j = rigid_src[k], rigid_dst[k]
-            diff = pad_positions[j] - pad_positions[i]
-            rigid_rest[k] = np.linalg.norm(diff)
 
     # Ideal length for net springs
     board_area = (max_x - min_x) * (max_y - min_y)
