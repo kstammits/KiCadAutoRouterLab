@@ -34,6 +34,8 @@ class BoardState:
         self.name = ""
         self.version = 0
         self.proposal = None
+        self.pinned_uuids: set[str] = set()  # User-pinned (pseudo-locked)
+        self.selected_uuids: set[str] = set()  # Currently selected for move
 
     def load(self, data: bytes, name: str, kind: str) -> int:
         tree = parse(data.decode("utf-8"))
@@ -48,6 +50,8 @@ class BoardState:
                 self.name = name
                 self.sch = None  # a new board invalidates any stale sibling
                 self.proposal = None  # a new board invalidates any stale proposal
+                self.pinned_uuids.clear()
+                self.selected_uuids.clear()
             self.version += 1
             return self.version
 
@@ -64,6 +68,60 @@ class BoardState:
     def set_proposal(self, proposal) -> int:
         with self._lock:
             self.proposal = proposal
+            self.version += 1
+            return self.version
+
+    def get_pinned_uuids(self) -> set[str]:
+        with self._lock:
+            return self.pinned_uuids.copy()
+
+    def get_selected_uuids(self) -> set[str]:
+        with self._lock:
+            return self.selected_uuids.copy()
+
+    def set_pinned_uuids(self, uuids: set[str]) -> int:
+        with self._lock:
+            self.pinned_uuids = uuids.copy()
+            self.version += 1
+            return self.version
+
+    def set_selected_uuids(self, uuids: set[str]) -> int:
+        with self._lock:
+            self.selected_uuids = uuids.copy()
+            self.version += 1
+            return self.version
+
+    def toggle_pinned(self, uuid: str) -> int:
+        with self._lock:
+            if uuid in self.pinned_uuids:
+                self.pinned_uuids.remove(uuid)
+            else:
+                self.pinned_uuids.add(uuid)
+            self.version += 1
+            return self.version
+
+    def toggle_selected(self, uuid: str) -> int:
+        with self._lock:
+            if uuid in self.selected_uuids:
+                self.selected_uuids.remove(uuid)
+            else:
+                self.selected_uuids.add(uuid)
+            self.version += 1
+            return self.version
+
+    def clear_selection(self) -> int:
+        with self._lock:
+            self.selected_uuids.clear()
+            self.version += 1
+            return self.version
+
+    def select_all_unlocked(self, model) -> int:
+        """Select all unlocked, non-pinned footprints."""
+        with self._lock:
+            self.selected_uuids = {
+                fp.uuid for fp in model.footprints
+                if fp.uuid and not fp.locked and fp.uuid not in self.pinned_uuids
+            }
             self.version += 1
             return self.version
 
@@ -91,7 +149,7 @@ def save_params(params: PlacementParams) -> None:
 
 def proposal_to_json(proposal) -> dict:
     return {
-        "deltas": {u: [dx, dy] for u, (dx, dy) in proposal.deltas.items()},
+        "deltas": {u: [dx, dy, da] for u, (dx, dy, da) in proposal.deltas.items()},
         "iterations": proposal.iterations,
         "final_max_disp_mm": proposal.final_max_disp_mm,
         "elapsed_s": proposal.elapsed_s,
@@ -132,7 +190,10 @@ class Handler(BaseHTTPRequestHandler):
                 return
             overlay_on = qs.get("overlay", ["1"])[0] != "0"
             proposal = STATE.current_proposal if overlay_on else None
-            svg = render_board_svg(model, title=name, proposal=proposal).encode()
+            pinned = STATE.get_pinned_uuids()
+            selected = STATE.get_selected_uuids()
+            svg = render_board_svg(model, title=name, proposal=proposal,
+                                   pinned_uuids=pinned, selected_uuids=selected).encode()
             self._send(200, svg, "image/svg+xml")
             return
         if parsed.path == "/api/placement/params":
@@ -147,6 +208,14 @@ class Handler(BaseHTTPRequestHandler):
                 return
             body = json.dumps(proposal_to_json(proposal)).encode()
             self._send(200, body, "application/json")
+            return
+        if parsed.path == "/api/placement/pinned":
+            pinned = STATE.get_pinned_uuids()
+            self._send(200, json.dumps({"ok": True, "pinned": list(pinned)}).encode(), "application/json")
+            return
+        if parsed.path == "/api/placement/selected":
+            selected = STATE.get_selected_uuids()
+            self._send(200, json.dumps({"ok": True, "selected": list(selected)}).encode(), "application/json")
             return
         rel_path = parsed.path.lstrip("/")
         rel = Path(rel_path) if rel_path else Path("index.html")
@@ -233,11 +302,22 @@ class Handler(BaseHTTPRequestHandler):
                     max_iterations=iterations,
                     convergence_eps_mm=params.convergence_eps_mm,
                     demo_jitter_mm=params.demo_jitter_mm,
+                    stub=False,
                 )
+
+            # If movable_uuids not provided, compute as all unlocked except pinned
+            if movable_uuids is None:
+                movable_uuids = {
+                    fp.uuid for fp in model.footprints
+                    if fp.uuid and not fp.locked and fp.uuid not in STATE.get_pinned_uuids()
+                }
+            
 
             try:
                 proposal = run_placement(model, params, movable_uuids)
             except Exception as exc:
+                import traceback
+                traceback.print_exc()
                 self._send(500, f"placement failed: {exc}".encode(), "text/plain")
                 return
             version = STATE.set_proposal(proposal)
@@ -276,6 +356,73 @@ class Handler(BaseHTTPRequestHandler):
                 json.dumps({"ok": True, "version": version}).encode(),
                 "application/json",
             )
+            return
+        if parsed.path == "/api/placement/apply":
+            # Writeback (nudge by UUID + save_pair + DRC) lands in PLAN item 3.
+            self._send(
+                501, b"writeback not implemented yet (PLAN item 3)", "text/plain"
+            )
+            return
+        if parsed.path == "/api/placement/pin":
+            model, _, _, _ = STATE.snapshot
+            if model is None:
+                self._send(404, b"no board loaded", "text/plain")
+                return
+            length = int(self.headers.get("Content-Length") or 0)
+            body_data = self.rfile.read(length) if length > 0 else b"{}"
+            try:
+                req = json.loads(body_data.decode("utf-8"))
+            except json.JSONDecodeError:
+                self._send(400, b"invalid JSON", "text/plain")
+                return
+            uuid = req.get("uuid")
+            if not uuid:
+                self._send(400, b"uuid required", "text/plain")
+                return
+            version = STATE.toggle_pinned(uuid)
+            pinned = STATE.get_pinned_uuids()
+            self._send(200, json.dumps({"ok": True, "pinned": list(pinned), "version": version}).encode(), "application/json")
+            return
+        if parsed.path == "/api/placement/select":
+            model, _, _, _ = STATE.snapshot
+            if model is None:
+                self._send(404, b"no board loaded", "text/plain")
+                return
+            length = int(self.headers.get("Content-Length") or 0)
+            body_data = self.rfile.read(length) if length > 0 else b"{}"
+            try:
+                req = json.loads(body_data.decode("utf-8"))
+            except json.JSONDecodeError:
+                self._send(400, b"invalid JSON", "text/plain")
+                return
+            uuid = req.get("uuid")
+            if not uuid:
+                self._send(400, b"uuid required", "text/plain")
+                return
+            version = STATE.toggle_selected(uuid)
+            selected = STATE.get_selected_uuids()
+            self._send(200, json.dumps({"ok": True, "selected": list(selected), "version": version}).encode(), "application/json")
+            return
+        if parsed.path == "/api/placement/select_all":
+            model, _, _, _ = STATE.snapshot
+            if model is None:
+                self._send(404, b"no board loaded", "text/plain")
+                return
+            version = STATE.select_all_unlocked(model)
+            selected = STATE.get_selected_uuids()
+            self._send(200, json.dumps({"ok": True, "selected": list(selected), "version": version}).encode(), "application/json")
+            return
+        if parsed.path == "/api/placement/clear_selection":
+            version = STATE.clear_selection()
+            self._send(200, json.dumps({"ok": True, "version": version}).encode(), "application/json")
+            return
+        if parsed.path == "/api/placement/pinned":
+            pinned = STATE.get_pinned_uuids()
+            self._send(200, json.dumps({"ok": True, "pinned": list(pinned)}).encode(), "application/json")
+            return
+        if parsed.path == "/api/placement/selected":
+            selected = STATE.get_selected_uuids()
+            self._send(200, json.dumps({"ok": True, "selected": list(selected)}).encode(), "application/json")
             return
         if parsed.path == "/api/placement/apply":
             # Writeback (nudge by UUID + save_pair + DRC) lands in PLAN item 3.

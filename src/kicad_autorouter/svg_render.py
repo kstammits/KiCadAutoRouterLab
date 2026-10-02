@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import html
 import math
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from .board_model import BoardModel, Point
 from .placement import PlacementProposal
@@ -27,6 +27,12 @@ HOLE_BG = "#0b0e12"  # via holes (matches the viewer panel background)
 PAD_STROKE = "#0e1216"
 GHOST_COURTYARD = "#3d4a56"  # original position of moved parts (ghost overlay)
 MOVE_ARROW = "#e0a458"  # old -> new displacement arrows
+
+# Footprint state colors
+FP_LOCKED_COLOR = "#e06c75"    # KiCad locked - red
+FP_PINNED_COLOR = "#e0a458"    # User pinned - orange
+FP_SELECTED_COLOR = "#7ee0a0"  # Selected for move - green
+FP_DEFAULT_COLOR = COURTYARD   # Default unlocked - gray-blue
 
 
 def _fmt(v: float) -> str:
@@ -120,16 +126,115 @@ def _zones_svg(model: BoardModel) -> List[str]:
     return out
 
 
-def _courtyards_svg(model: BoardModel, offsets=None) -> List[str]:
-    out = [f'<g stroke="{COURTYARD}" stroke-width="0.1" opacity="0.6">']
-    for fp in model.footprints:
-        dx, dy = _shift(offsets, fp.uuid)
-        for a, b in fp.courtyard:
+def _footprint_courtyard_svg(
+    fp,
+    dx: float,
+    dy: float,
+    is_locked: bool,
+    is_pinned: bool,
+    is_selected: bool,
+) -> str:
+    """Generate courtyard lines for a single footprint with state-based styling."""
+    if is_locked:
+        stroke = FP_LOCKED_COLOR
+        dash = ' stroke-dasharray="2 2"'
+    elif is_pinned:
+        stroke = FP_PINNED_COLOR
+        dash = ' stroke-dasharray="4 2"'
+    elif is_selected:
+        stroke = FP_SELECTED_COLOR
+        dash = ' stroke-width="0.2"'
+    else:
+        stroke = FP_DEFAULT_COLOR
+        dash = ""
+    lines = []
+    for a, b in fp.courtyard:
+        lines.append(
+            f'<line x1="{_fmt(a.x_mm + dx)}" y1="{_fmt(a.y_mm + dy)}" '
+            f'x2="{_fmt(b.x_mm + dx)}" y2="{_fmt(b.y_mm + dy)}" '
+            f'stroke="{stroke}" stroke-width="0.1"{dash} opacity="0.8"/>'
+        )
+    return "\n".join(lines)
+
+
+def _footprint_pads_svg(
+    fp,
+    dx: float,
+    dy: float,
+    colors: Dict[str, str],
+    flip: bool,
+) -> str:
+    """Generate pad elements for a single footprint."""
+    out = []
+    for pad in fp.pads:
+        color = colors.get(pad.net_name or "", NO_NET)
+        px, py = pad.position.x_mm + dx, pad.position.y_mm + dy
+        x, y = _fmt(px), _fmt(py)
+        w, h = pad.size_mm
+        angle = -pad.angle_deg if flip else pad.angle_deg
+        rot = f' transform="rotate({_fmt(angle)} {x} {y})"' if angle else ""
+        if pad.shape == "circle":
             out.append(
-                f'<line x1="{_fmt(a.x_mm + dx)}" y1="{_fmt(a.y_mm + dy)}" '
-                f'x2="{_fmt(b.x_mm + dx)}" y2="{_fmt(b.y_mm + dy)}"/>'
+                f'<circle cx="{x}" cy="{y}" r="{_fmt(w / 2.0)}" '
+                f'fill="{color}" stroke="{PAD_STROKE}" stroke-width="0.1"/>'
             )
-    out.append("</g>")
+        else:
+            out.append(
+                f'<rect x="{_fmt(px - w / 2.0)}" y="{_fmt(py - h / 2.0)}" '
+                f'width="{_fmt(w)}" height="{_fmt(h)}" fill="{color}" '
+                f'stroke="{PAD_STROKE}" stroke-width="0.1"{rot}/>'
+            )
+    return "\n".join(out)
+
+
+def _footprint_ref_svg(fp, dx: float, dy: float) -> str:
+    """Generate reference text for a single footprint."""
+    label = fp.ref or (fp.uuid[:8] if fp.uuid else "")
+    if not label:
+        return ""
+    return (
+        f'<text x="{_fmt(fp.x_mm + dx)}" y="{_fmt(fp.y_mm + dy - 0.5)}" '
+        f'fill="{REF_TEXT}" font-family="monospace" font-size="1">'
+        f"{html.escape(label)}</text>"
+    )
+
+
+def _footprints_svg(
+    model: BoardModel,
+    colors: Dict[str, str],
+    offsets,
+    locked_uuids: Set[str],
+    pinned_uuids: Set[str],
+    selected_uuids: Set[str],
+) -> List[str]:
+    """Generate all footprint elements (courtyards, pads, refs) grouped by footprint."""
+    out = []
+    for fp in model.footprints:
+        is_locked = fp.uuid in locked_uuids
+        is_pinned = fp.uuid in pinned_uuids
+        is_selected = fp.uuid in selected_uuids
+
+        dx, dy = _shift(offsets, fp.uuid)
+        flip = fp.layer.startswith("B")
+
+        # Build footprint group with state classes and data attribute
+        cls_parts = ["footprint"]
+        if is_locked:
+            cls_parts.append("fp-locked")
+        if is_pinned:
+            cls_parts.append("fp-pinned")
+        if is_selected:
+            cls_parts.append("fp-selected")
+        cls = " ".join(cls_parts)
+
+        fp_group = [
+            f'<g class="{cls}" data-fp-uuid="{fp.uuid}">',
+            _footprint_courtyard_svg(fp, dx, dy, is_locked, is_pinned, is_selected),
+            _footprint_pads_svg(fp, dx, dy, colors, flip),
+            _footprint_ref_svg(fp, dx, dy),
+            "</g>",
+        ]
+        out.append("\n".join(fp_group))
     return out
 
 
@@ -161,49 +266,6 @@ def _vias_svg(model: BoardModel, colors: Dict[str, str]) -> List[str]:
             out.append(
                 f'<circle cx="{x}" cy="{y}" r="{_fmt(hr)}" fill="{HOLE_BG}"/>'
             )
-    return out
-
-
-def _pads_svg(model: BoardModel, colors: Dict[str, str], offsets=None) -> List[str]:
-    out = []
-    for fp in model.footprints:
-        flip = fp.layer.startswith("B")
-        dx, dy = _shift(offsets, fp.uuid)
-        for pad in fp.pads:
-            color = colors.get(pad.net_name or "", NO_NET)
-            px, py = pad.position.x_mm + dx, pad.position.y_mm + dy
-            x, y = _fmt(px), _fmt(py)
-            w, h = pad.size_mm
-            angle = -pad.angle_deg if flip else pad.angle_deg
-            rot = f' transform="rotate({_fmt(angle)} {x} {y})"' if angle else ""
-            if pad.shape == "circle":
-                out.append(
-                    f'<circle cx="{x}" cy="{y}" r="{_fmt(w / 2.0)}" '
-                    f'fill="{color}" stroke="{PAD_STROKE}" stroke-width="0.1"/>'
-                )
-            else:
-                out.append(
-                    f'<rect x="{_fmt(px - w / 2.0)}" y="{_fmt(py - h / 2.0)}" '
-                    f'width="{_fmt(w)}" height="{_fmt(h)}" fill="{color}" '
-                    f'stroke="{PAD_STROKE}" stroke-width="0.1"{rot}/>'
-                )
-    return out
-
-
-def _refs_svg(model: BoardModel, offsets=None) -> List[str]:
-    out = [f'<g fill="{REF_TEXT}" font-family="monospace" font-size="1">']
-    for fp in model.footprints:
-        # Unnamed parts (empty ref) fall back to a short UUID so they stay
-        # identifiable in the viewer; nothing is drawn when both are empty.
-        label = fp.ref or (fp.uuid[:8] if fp.uuid else "")
-        if not label:
-            continue
-        dx, dy = _shift(offsets, fp.uuid)
-        out.append(
-            f'<text x="{_fmt(fp.x_mm + dx)}" y="{_fmt(fp.y_mm + dy - 0.5)}">'
-            f"{html.escape(label)}</text>"
-        )
-    out.append("</g>")
     return out
 
 
@@ -249,13 +311,24 @@ def _proposal_overlay(model: BoardModel, proposal: PlacementProposal) -> List[st
 
 
 def render_board_svg(
-    model: BoardModel, title: str = "", proposal: Optional[PlacementProposal] = None
+    model: BoardModel,
+    title: str = "",
+    proposal: Optional[PlacementProposal] = None,
+    pinned_uuids: Optional[Set[str]] = None,
+    selected_uuids: Optional[Set[str]] = None,
 ) -> str:
     """Build the full SVG document for ``model`` (millimeter user units).
 
     When ``proposal`` is given, footprints are drawn at their proposed
     positions with ghost courtyards and displacement arrows marking where
     they came from.
+
+    Args:
+        model: Board model to render.
+        title: Optional title for the SVG.
+        proposal: Optional placement proposal for overlay.
+        pinned_uuids: Set of footprint UUIDs pinned by user (excluded from movement).
+        selected_uuids: Set of footprint UUIDs currently selected (for move).
     """
     colors = net_colors(model)
     min_x, min_y, max_x, max_y = _bounds(model)
@@ -278,13 +351,16 @@ def render_board_svg(
     offsets = proposal.deltas if moved else None
     if moved:
         parts.append(_arrow_marker())
+
+    locked_uuids = {fp.uuid for fp in model.footprints if fp.locked and fp.uuid}
+    pinned = pinned_uuids or set()
+    selected = selected_uuids or set()
+
     parts.extend(_edge_cuts_svg(model))
     parts.extend(_zones_svg(model))
-    parts.extend(_courtyards_svg(model, offsets))
+    parts.extend(_footprints_svg(model, colors, offsets, locked_uuids, pinned, selected))
     parts.extend(_tracks_svg(model, colors))
     parts.extend(_vias_svg(model, colors))
-    parts.extend(_pads_svg(model, colors, offsets))
-    parts.extend(_refs_svg(model, offsets))
     if moved:
         parts.extend(_proposal_overlay(model, proposal))
     parts.append("</svg>")

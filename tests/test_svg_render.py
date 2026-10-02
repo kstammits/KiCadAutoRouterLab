@@ -96,12 +96,19 @@ def test_overlay_draws_ghost_and_arrow():
         f'<line x1="{a.x_mm:.3f}" y1="{a.y_mm:.3f}" '
         f'x2="{b.x_mm:.3f}" y2="{b.y_mm:.3f}"/>'
     )
-    shifted = (
-        f'<line x1="{(a.x_mm + dx):.3f}" y1="{(a.y_mm + dy):.3f}" '
-        f'x2="{(b.x_mm + dx):.3f}" y2="{(b.y_mm + dy):.3f}"/>'
-    )
-    assert ghost in s  # original position kept as dashed ghost
-    assert shifted in s  # courtyard drawn at proposed position
+    # Ghost courtyard at original position (dashed, gray)
+    assert ghost in s
+    # Shifted courtyard at proposed position - now rendered inside footprint group
+    # with state-based styling. Check that the shifted coordinates appear in a line.
+    shifted_x1 = f'{(a.x_mm + dx):.3f}'
+    shifted_y1 = f'{(a.y_mm + dy):.3f}'
+    shifted_x2 = f'{(b.x_mm + dx):.3f}'
+    shifted_y2 = f'{(b.y_mm + dy):.3f}'
+    # The shifted courtyard is now rendered inside the footprint group with styling
+    assert f'x1="{shifted_x1}"' in s
+    assert f'y1="{shifted_y1}"' in s
+    assert f'x2="{shifted_x2}"' in s
+    assert f'y2="{shifted_y2}"' in s
 
 
 def test_viewbox_grows_with_max_move():

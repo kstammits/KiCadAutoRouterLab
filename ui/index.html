@@ -34,6 +34,17 @@
   .param input[type=range] { flex:1; min-width:0; }
   .param input[type=number] { width:5.5rem; background:#161c22; border:1px solid #3a4a5a; color:#d7e0e9; border-radius:4px; padding:.15rem .3rem; font-family:inherit; font-size:.78rem; }
   .chip.ok { color:#7ee0a0; border-color:#2e6b45; }
+  /* Footprint states */
+  .footprint.fp-locked line { stroke: #e06c75; stroke-dasharray: 2 2; }
+  .footprint.fp-pinned line { stroke: #e0a458; stroke-dasharray: 4 2; }
+  .footprint.fp-selected line { stroke: #7ee0a0; stroke-width: 0.2; }
+  .footprint.fp-locked text { fill: #e06c75; }
+  .footprint.fp-pinned text { fill: #e0a458; }
+  .footprint.fp-selected text { fill: #7ee0a0; }
+  /* Selection toolbar */
+  .sel-toolbar { display:flex; gap:.5rem; align-items:center; padding:.4rem .9rem; border-top:1px solid #2a3540; font-size:.75rem; color:#9fb0c0; flex-wrap:wrap; }
+  .sel-toolbar button { padding:.2rem .5rem; font-size:.7rem; }
+  .sel-count { margin-left:auto; font-variant-numeric:tabular-nums; }
 </style>
 </head>
 <body>
@@ -55,6 +66,12 @@
     <label class="chk"><input type="checkbox" id="overlay-toggle" checked> show proposal</label>
     <span class="zoom-info" id="zoom-info">100%</span>
     <button id="fit-btn" title="Fit board to view">Fit</button>
+  </div>
+  <div class="sel-toolbar" id="sel-toolbar" hidden>
+    <button id="select-all-btn" title="Select all unlocked">Select All</button>
+    <button id="clear-sel-btn" title="Clear selection">Clear</button>
+    <button id="pin-btn" title="Pin selected (prevent movement)">Pin</button>
+    <span class="sel-count" id="sel-count">0 selected, 0 pinned</span>
   </div>
   <div class="board-viewport" id="board-viewport">
     <!-- SVG injected here -->
@@ -241,6 +258,7 @@ async function poll() {
     if (st.version !== lastVersion) {
       lastVersion = st.version;
       await fetchAndInjectSVG(st.version);
+      await loadSelectionState();
     }
   } else {
     boardEl.hidden = true;
@@ -252,7 +270,10 @@ async function poll() {
 }
 
 overlayToggle.addEventListener("change", () => {
-  if (lastVersion) fetchAndInjectSVG(lastVersion);
+  if (lastVersion) {
+    fetchAndInjectSVG(lastVersion);
+    loadSelectionState();
+  }
 });
 
 // Zoom / Pan handlers
@@ -305,15 +326,179 @@ window.addEventListener("mouseup", () => {
 
 fitBtn.addEventListener("click", fitToView);
 
+// --- Selection state ---
+let selectedUuids = new Set();
+let pinnedUuids = new Set();
+
+function updateSelectionUI() {
+  const selToolbar = document.getElementById("sel-toolbar");
+  const selCount = document.getElementById("sel-count");
+  const pinBtn = document.getElementById("pin-btn");
+  
+  if (selectedUuids.size > 0 || pinnedUuids.size > 0) {
+    selToolbar.hidden = false;
+  } else {
+    selToolbar.hidden = true;
+  }
+  selCount.textContent = `${selectedUuids.size} selected, ${pinnedUuids.size} pinned`;
+  pinBtn.textContent = selectedUuids.size > 0 ? "Pin" : "Unpin";
+  pinBtn.disabled = selectedUuids.size === 0;
+}
+
+async function fetchPinned() {
+  try {
+    const res = await fetch("/api/placement/pinned");
+    const data = await res.json();
+    pinnedUuids = new Set(data.pinned || []);
+    updateSelectionUI();
+  } catch (err) {
+    console.error("Failed to fetch pinned:", err);
+  }
+}
+
+async function fetchSelected() {
+  try {
+    const res = await fetch("/api/placement/selected");
+    const data = await res.json();
+    selectedUuids = new Set(data.selected || []);
+    updateSelectionUI();
+  } catch (err) {
+    console.error("Failed to fetch selected:", err);
+  }
+}
+
+function updateFootprintVisuals() {
+  const svg = viewport.querySelector("svg");
+  if (!svg) return;
+  svg.querySelectorAll(".footprint").forEach(el => {
+    const uuid = el.dataset.fpUuid;
+    if (!uuid) return;
+    el.classList.toggle("fp-selected", selectedUuids.has(uuid));
+    el.classList.toggle("fp-pinned", pinnedUuids.has(uuid));
+  });
+}
+
+async function togglePin(uuid) {
+  try {
+    const res = await fetch("/api/placement/pin", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ uuid })
+    });
+    const data = await res.json();
+    pinnedUuids = new Set(data.pinned || []);
+    // If pinned, remove from selected
+    selectedUuids.delete(uuid);
+    updateFootprintVisuals();
+    updateSelectionUI();
+  } catch (err) {
+    console.error("Pin failed:", err);
+  }
+}
+
+async function toggleSelect(uuid) {
+  if (pinnedUuids.has(uuid)) return; // Can't select pinned
+  if (selectedUuids.has(uuid)) {
+    selectedUuids.delete(uuid);
+  } else {
+    selectedUuids.add(uuid);
+  }
+  try {
+    await fetch("/api/placement/select", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ uuid })
+    });
+    updateFootprintVisuals();
+    updateSelectionUI();
+  } catch (err) {
+    console.error("Select failed:", err);
+  }
+}
+
+async function selectAllUnlocked() {
+  try {
+    const res = await fetch("/api/placement/select_all", { method: "POST" });
+    const data = await res.json();
+    selectedUuids = new Set(data.selected || []);
+    updateFootprintVisuals();
+    updateSelectionUI();
+  } catch (err) {
+    console.error("Select all failed:", err);
+  }
+}
+
+async function clearSelection() {
+  selectedUuids.clear();
+  try {
+    await fetch("/api/placement/clear_selection", { method: "POST" });
+    updateFootprintVisuals();
+    updateSelectionUI();
+  } catch (err) {
+    console.error("Clear selection failed:", err);
+  }
+}
+
+// Click handler on SVG for footprint selection
+viewport.addEventListener("click", e => {
+  if (isPanning) return; // Don't select while panning
+  const fpEl = e.target.closest(".footprint");
+  if (!fpEl) return;
+  const uuid = fpEl.dataset.fpUuid;
+  if (!uuid) return;
+  
+  if (e.shiftKey) {
+    toggleSelect(uuid);
+  } else if (e.altKey) {
+    togglePin(uuid);
+  } else {
+    // Single select: clear others, select this
+    if (!pinnedUuids.has(uuid)) {
+      selectedUuids.clear();
+      selectedUuids.add(uuid);
+      updateFootprintVisuals();
+      updateSelectionUI();
+    }
+  }
+});
+
+// Load pinned on board load
+async function loadSelectionState() {
+  await fetchPinned();
+  await fetchSelected();
+  updateFootprintVisuals();
+  updateSelectionUI();
+}
+
+// Toolbar buttons
+document.getElementById("select-all-btn").addEventListener("click", selectAllUnlocked);
+document.getElementById("clear-sel-btn").addEventListener("click", clearSelection);
+document.getElementById("pin-btn").addEventListener("click", () => {
+  // Pin all currently selected
+  selectedUuids.forEach(uuid => togglePin(uuid));
+});
+
 document.getElementById("run-btn").addEventListener("click", async () => {
   try {
     const saveRes = await fetch("/api/placement/params", { method: "POST", body: JSON.stringify(readParams()) });
     if (!saveRes.ok) throw new Error(await saveRes.text());
     const iters = parseInt(document.getElementById("step-iters").value, 10);
+    // Build movable_uuids: all unlocked - pinned - (if selection exists, only selected)
+    const movableUuids = Array.from(selectedUuids.size > 0 ? selectedUuids : 
+      new Set([...Array.from(selectedUuids), ...Array.from(pinnedUuids)])); // Wait, this is wrong
+    
+    // Actually: movable = unlocked AND not pinned. If selection exists, only selected move.
+    // But we need to get the list of unlocked footprints from the board model.
+    // For now, just pass selectedUuids as movable_uuids if any, else pass pinned as exclusion via API
+    // The server will handle pinned as exclusion automatically
+    
+    // Better approach: pass movable_uuids as selectedUuids if selection exists
+    const movableUuids = selectedUuids.size > 0 ? Array.from(selectedUuids) : undefined;
+    
     const res = await fetch("/api/placement/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ iterations: iters })
+      body: JSON.stringify({ iterations: iters, movable_uuids: movableUuids })
     });
     if (!res.ok) throw new Error(await res.text());
     const r = await res.json();
