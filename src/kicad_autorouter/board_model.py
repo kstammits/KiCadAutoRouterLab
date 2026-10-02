@@ -515,6 +515,57 @@ def netlist(tree: SExpr) -> Dict[str, Tuple[NetConnection, ...]]:
     return {name: tuple(sorted(conns)) for name, conns in sorted(nets.items())}
 
 
+def apply_deltas(
+    model: BoardModel, deltas: Dict[str, Tuple[float, float, float]]
+) -> BoardModel:
+    """Return a new BoardModel with footprint positions updated by deltas.
+
+    Deltas are keyed by footprint UUID as (dx_mm, dy_mm, dangle_deg).
+    Only unlocked footprints are moved; locked footprints stay in place
+    regardless of delta. Footprints without a delta entry are unchanged.
+    """
+    if not deltas:
+        return model
+
+    updated_footprints = []
+    for fp in model.footprints:
+        if fp.locked or not fp.uuid or fp.uuid not in deltas:
+            updated_footprints.append(fp)
+            continue
+        dx, dy, da = deltas[fp.uuid]
+        updated_footprints.append(
+            Footprint(
+                ref=fp.ref,
+                footprint_id=fp.footprint_id,
+                layer=fp.layer,
+                x_mm=fp.x_mm + dx,
+                y_mm=fp.y_mm + dy,
+                angle_deg=fp.angle_deg + da,
+                pads=fp.pads,
+                courtyard=fp.courtyard,
+                locked=fp.locked,
+                uuid=fp.uuid,
+            )
+        )
+
+    by_ref: Dict[str, Footprint] = {}
+    for fp in updated_footprints:
+        if fp.ref and fp.ref not in by_ref:
+            by_ref[fp.ref] = fp
+
+    return BoardModel(
+        footprints=tuple(updated_footprints),
+        keepout_zones=model.keepout_zones,
+        nets=model.nets,
+        by_ref=by_ref,
+        tracks=model.tracks,
+        vias=model.vias,
+        zones=model.zones,
+        edge_cuts=model.edge_cuts,
+        edge_arcs=model.edge_arcs,
+    )
+
+
 def board_model(tree: SExpr) -> BoardModel:
     """Build the aggregate :class:`BoardModel` from a parsed board tree."""
     fps = footprints(tree)

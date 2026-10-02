@@ -15,11 +15,17 @@ from kicad_autorouter.sexpr import parse_file
 
 FIXTURES = Path(__file__).parent / "fixtures"
 MINIMAL_PCB = FIXTURES / "minimal.kicad_pcb"
+DCCF_PCB = FIXTURES / "DCCF.sved.kicad_pcb"
 
 
 @pytest.fixture(scope="module")
 def minimal_model():
     return board_model(parse_file(MINIMAL_PCB))
+
+
+@pytest.fixture(scope="module")
+def dccf_model():
+    return board_model(parse_file(DCCF_PCB))
 
 
 class TestParams:
@@ -85,11 +91,12 @@ class TestStubRunner:
         assert prop.params == p.to_dict()
 
     def test_jitter_moves_only_unlocked_parts(self, minimal_model):
-        p = PlacementParams(demo_jitter_mm=5.0)
+        p = PlacementParams(demo_jitter_mm=5.0, stub=False)
         prop = run_placement(minimal_model, p)
         # only MH1 is unlocked in the minimal fixture
         assert set(prop.deltas) == {self.MH1_UUID}
-        dx, dy = prop.deltas[self.MH1_UUID]
+        dx, dy, da = prop.deltas[self.MH1_UUID]
+        assert da == 0.0
         assert 0.0 < math.hypot(dx, dy) <= 5.0 + 1e-9
         assert prop.final_max_disp_mm == pytest.approx(math.hypot(dx, dy))
 
@@ -102,3 +109,64 @@ class TestStubRunner:
     def test_locked_mask_from_fixture(self, minimal_model):
         locked = [fp.locked for fp in minimal_model.footprints]
         assert locked == [True, False, True, True]
+
+
+class TestPhysicsRunner:
+    """Tests for the vectorized numpy force-spring simulation (stub=False)."""
+
+    def test_physics_moves_unlocked(self, dccf_model):
+        p = PlacementParams(stub=False, max_iterations=10)
+        prop = run_placement(dccf_model, p)
+        # Should move some footprints
+        assert prop.deltas
+        # Check delta format is 3-tuple
+        for uuid, (dx, dy, da) in prop.deltas.items():
+            assert isinstance(dx, float)
+            assert isinstance(dy, float)
+            assert isinstance(da, float)
+        assert prop.iterations > 0
+        assert prop.final_max_disp_mm > 0.0
+
+    def test_physics_respects_locked(self, dccf_model):
+        p = PlacementParams(stub=False, max_iterations=10)
+        prop = run_placement(dccf_model, p)
+        # Locked footprints should not appear in deltas
+        for uuid in prop.deltas:
+            fp = next(fp for fp in dccf_model.footprints if fp.uuid == uuid)
+            assert not fp.locked
+
+    def test_selective_movable_uuids(self, dccf_model):
+        p = PlacementParams(stub=False, max_iterations=10)
+        # Pick a movable footprint UUID
+        movable_fp = next(fp for fp in dccf_model.footprints if not fp.locked and fp.uuid)
+        prop = run_placement(dccf_model, p, movable_uuids={movable_fp.uuid})
+        assert prop.deltas
+        assert set(prop.deltas) == {movable_fp.uuid}
+
+    def test_selective_movable_uuids_empty(self, dccf_model):
+        p = PlacementParams(stub=False, max_iterations=10)
+        # Empty set = nothing can move
+        prop = run_placement(dccf_model, p, movable_uuids=set())
+        assert prop.deltas == {}
+
+    def test_selective_movable_uuids_excludes_locked(self, dccf_model):
+        p = PlacementParams(stub=False, max_iterations=10)
+        # Try to move a locked footprint - should be ignored
+        locked_fps = [fp for fp in dccf_model.footprints if fp.locked]
+        if not locked_fps:
+            pytest.skip("No locked footprints in DCCF fixture")
+        locked_fp = locked_fps[0]
+        prop = run_placement(dccf_model, p, movable_uuids={locked_fp.uuid})
+        assert prop.deltas == {}
+
+    def test_convergence_stops_early(self, dccf_model):
+        # With very loose convergence, should stop before max_iterations
+        p = PlacementParams(stub=False, max_iterations=1000, convergence_eps_mm=100.0)
+        prop = run_placement(dccf_model, p)
+        assert prop.iterations < 1000
+
+    def test_iterations_param_override(self, dccf_model):
+        p = PlacementParams(stub=False, max_iterations=1000)
+        prop = run_placement(dccf_model, p)
+        # Should run up to max_iterations unless converged
+        assert prop.iterations <= 1000

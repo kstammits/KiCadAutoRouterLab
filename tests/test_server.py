@@ -178,3 +178,121 @@ def test_wrong_kind_rejected():
         assert ei.value.code == 400
     finally:
         httpd.shutdown()
+
+
+def test_run_with_json_body_iterations():
+    """Test /api/placement/run accepts JSON body with iterations parameter."""
+    httpd, base = _client()
+    try:
+        _load_minimal(base)
+        req = urllib.request.Request(
+            f"{base}/api/placement/run",
+            data=json.dumps({"iterations": 10}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req) as r:
+            run = json.load(r)
+        assert run["ok"] is True
+        assert run["iterations"] <= 10
+    finally:
+        httpd.shutdown()
+
+
+def test_run_with_movable_uuids():
+    """Test /api/placement/run accepts movable_uuids to restrict movement."""
+    httpd, base = _client()
+    try:
+        _load_minimal(base)
+        # Get the UUID of the unlocked footprint (MH1)
+        # First run a proposal to see what UUIDs are available
+        req = urllib.request.Request(f"{base}/api/placement/run", method="POST")
+        with urllib.request.urlopen(req) as r:
+            run = json.load(r)
+        # In stub mode, no deltas, but we can test the endpoint accepts the param
+        req = urllib.request.Request(
+            f"{base}/api/placement/run",
+            data=json.dumps({"movable_uuids": ["fake-uuid"]}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req) as r:
+            run = json.load(r)
+        assert run["ok"] is True
+        assert run["moved"] == 0
+    finally:
+        httpd.shutdown()
+
+
+def test_accept_proposal():
+    """Test /api/placement/accept applies proposal to model."""
+    httpd, base = _client()
+    try:
+        _load_minimal(base)
+        # First run a proposal with demo jitter (works on any fixture)
+        req = urllib.request.Request(
+            f"{base}/api/placement/params",
+            data=json.dumps({"stub": False, "demo_jitter_mm": 5.0}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req) as r:
+            json.load(r)
+        req = urllib.request.Request(
+            f"{base}/api/placement/run",
+            method="POST",
+        )
+        with urllib.request.urlopen(req) as r:
+            run = json.load(r)
+        assert run["moved"] > 0
+        version_before = run["version"]
+
+        # Now accept the proposal
+        req = urllib.request.Request(f"{base}/api/placement/accept", method="POST")
+        with urllib.request.urlopen(req) as r:
+            accept = json.load(r)
+        assert accept["ok"] is True
+        assert accept["version"] > version_before
+
+        # Proposal should be cleared
+        with pytest.raises(urllib.error.HTTPError) as ei:
+            urllib.request.urlopen(f"{base}/api/placement/proposal")
+        assert ei.value.code == 404
+
+        # Board state should be updated (version increased)
+        with urllib.request.urlopen(f"{base}/api/state") as r:
+            st = json.load(r)
+        assert st["version"] == accept["version"]
+    finally:
+        httpd.shutdown()
+
+
+def test_accept_no_proposal_returns_400():
+    """Test /api/placement/accept returns 400 when no proposal exists."""
+    httpd, base = _client()
+    try:
+        _load_minimal(base)
+        req = urllib.request.Request(f"{base}/api/placement/accept", method="POST")
+        with pytest.raises(urllib.error.HTTPError) as ei:
+            urllib.request.urlopen(req)
+        assert ei.value.code == 400
+    finally:
+        httpd.shutdown()
+
+
+def test_run_rejects_bad_movable_uuids():
+    """Test /api/placement/run rejects non-list movable_uuids."""
+    httpd, base = _client()
+    try:
+        _load_minimal(base)
+        req = urllib.request.Request(
+            f"{base}/api/placement/run",
+            data=json.dumps({"movable_uuids": "not-a-list"}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as ei:
+            urllib.request.urlopen(req)
+        assert ei.value.code == 400
+    finally:
+        httpd.shutdown()

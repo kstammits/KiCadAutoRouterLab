@@ -11,7 +11,7 @@ UI_DIR = Path(__file__).resolve().parent
 REPO_ROOT = UI_DIR.parent.resolve()
 sys.path.insert(0, str(UI_DIR.parent / "src"))
 
-from kicad_autorouter.board_model import board_model  # noqa: E402
+from kicad_autorouter.board_model import apply_deltas, board_model  # noqa: E402
 from kicad_autorouter.pipeline import stages  # noqa: E402
 from kicad_autorouter.placement import (  # noqa: E402
     PlacementParams,
@@ -46,6 +46,7 @@ class BoardState:
             else:
                 self.model = board_model(tree)
                 self.name = name
+                self.sch = None  # a new board invalidates any stale sibling
                 self.proposal = None  # a new board invalidates any stale proposal
             self.version += 1
             return self.version
@@ -202,8 +203,40 @@ class Handler(BaseHTTPRequestHandler):
             if model is None:
                 self._send(404, b"no board loaded", "text/plain")
                 return
+            # Read JSON body for optional parameters
+            length = int(self.headers.get("Content-Length") or 0)
+            body_data = self.rfile.read(length) if length > 0 else b"{}"
             try:
-                proposal = run_placement(model, load_params())
+                req = json.loads(body_data.decode("utf-8"))
+            except json.JSONDecodeError:
+                self._send(400, b"invalid JSON", "text/plain")
+                return
+
+            iterations = req.get("iterations")
+            movable_uuids = req.get("movable_uuids")
+            if isinstance(movable_uuids, list):
+                movable_uuids = set(movable_uuids)
+            elif movable_uuids is not None:
+                self._send(400, b"movable_uuids must be a list", "text/plain")
+                return
+
+            params = load_params()
+            if iterations is not None:
+                if not isinstance(iterations, int) or iterations < 1:
+                    self._send(400, b"iterations must be a positive integer", "text/plain")
+                    return
+                # Create params with overridden max_iterations
+                params = PlacementParams(
+                    repulsion_kr=params.repulsion_kr,
+                    attraction_ka=params.attraction_ka,
+                    ideal_length_mm=params.ideal_length_mm,
+                    max_iterations=iterations,
+                    convergence_eps_mm=params.convergence_eps_mm,
+                    demo_jitter_mm=params.demo_jitter_mm,
+                )
+
+            try:
+                proposal = run_placement(model, params, movable_uuids)
             except Exception as exc:
                 self._send(500, f"placement failed: {exc}".encode(), "text/plain")
                 return
@@ -217,6 +250,24 @@ class Handler(BaseHTTPRequestHandler):
                 "version": version,
             }
             self._send(200, json.dumps(payload).encode(), "application/json")
+            return
+        if parsed.path == "/api/placement/accept":
+            with STATE._lock:
+                if STATE.proposal is None:
+                    self._send(400, b"no proposal to accept", "text/plain")
+                    return
+                if STATE.model is None:
+                    self._send(400, b"no board loaded", "text/plain")
+                    return
+                STATE.model = apply_deltas(STATE.model, STATE.proposal.deltas)
+                STATE.proposal = None
+                STATE.version += 1
+                version = STATE.version
+            self._send(
+                200,
+                json.dumps({"ok": True, "version": version}).encode(),
+                "application/json",
+            )
             return
         if parsed.path == "/api/placement/clear":
             version = STATE.set_proposal(None)
