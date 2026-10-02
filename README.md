@@ -1,25 +1,36 @@
 # KiCad AutoRouter Lab
 
 Utility that reads KiCad files (`.kicad_pcb`, `.kicad_sch`) and updates PCB trace
-placement. Current phase: a headless force-spring **placement** pass (v0 stub
-physics) plus a no-op pcb+sch round trip. No routing algorithm yet.
+placement. Current phase: **per-pad force-spring placement with organic rotation**
+plus iterative UI for component selection and step-by-step refinement. No routing
+algorithm yet.
 
 ## Layout
-- `src/kicad_autorouter/` — pure-Python core (`pipeline.py`, `validate.py`,
-  `sexpr.py`, `io.py`) plus the `pcbnew_adapter.py` boundary (the only module that
-  imports `pcbnew`).
-- `scripts/run_autoroute.py` — headless placement pass (.venv): parse → force-spring proposal → per-UUID writeback → optional DRC.
-- `scripts/roundtrip_pair.py` — pure-Python no-op read→edit→write of a pcb+sch pair, with checks.
+
+- `src/kicad_autorouter/` — pure-Python core (`placement.py`, `board_model.py`,
+  `svg_render.py`, `validate.py`, `sexpr.py`, `io.py`) plus the `pcbnew_adapter.py`
+  boundary (the only module that imports `pcbnew`).
+- `scripts/run_autoroute.py` — headless placement pass (.venv): parse → per-pad
+  force-spring proposal → per-UUID writeback → optional DRC.
+- `scripts/roundtrip_pair.py` — pure-Python no-op read→edit→write of a pcb+sch
+  pair, with checks.
 - `tests/` — pytest suite + fixtures.
 - `ui/` — stdlib workflow UI + board viewer (`python ui/server.py`).
 - `docs/` — local KiCad 10 docs + project guidance/reference notes.
 
 ## Run the placement pass
-The headless entry point runs under the project `.venv` (pure Python, no `pcbnew` needed):
+
+The headless entry point runs under the project `.venv` (pure Python, no `pcbnew`
+needed):
 
 ```sh
+# Iterative physics mode (per-pad MST force-spring, step-by-step)
 .venv/bin/python scripts/run_autoroute.py tests/fixtures/minimal.kicad_pcb \
-    -o experiments/out/placed_minimal.kicad_pcb --validate
+    -o experiments/out/placed_minimal.kicad_pcb --no-stub --step-iterations 50 --max-total-iterations 500 --validate
+
+# Demo jitter mode (works without nets)
+.venv/bin/python scripts/run_autoroute.py tests/fixtures/minimal.kicad_pcb \
+    -o experiments/out/jitter_minimal.kicad_pcb --demo-jitter-mm 5.0
 ```
 
 Then validate the result:
@@ -30,16 +41,56 @@ Then validate the result:
 /Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli pcb drc experiments/out/placed_minimal.kicad_pcb --format json
 ```
 
-## View a board
-The workflow UI renders loaded boards as SVG snapshots (pure Python, no `pcbnew` needed):
+## Workflow UI
+
+The UI renders loaded boards as SVG snapshots (pure Python, no `pcbnew` needed)
+with interactive zoom/pan and component selection for iterative placement:
 
 ```sh
 .venv/bin/python ui/server.py   # http://127.0.0.1:8000
 ```
 
-Open the page and drop a `.kicad_pcb` file onto the drop zone — it renders in the board panel (outline, zones, courtyards, tracks, vias, pads, ref text). The UI polls `/api/state` every 2 s and refreshes the snapshot whenever the server's version changes.
+### UI workflow
+
+1. **Load** — drop a `.kicad_pcb` file (or use "Load…" button)
+2. **Adjust parameters** — repulsion/attraction, ideal length, etc.
+3. **Select components** — click a footprint to select it; Shift+click for multi-select; Alt+click to pin (prevent movement)
+4. **Step placement** — runs N iterations; ghost courtyards + arrows show proposed moves
+5. **Accept proposal** — commits changes to the board model
+6. **Repeat** — continue stepping until satisfied
+
+### Component states (visual)
+
+| State | Color | Pattern | Movable? |
+|-------|-------|---------|----------|
+| KiCad-locked | Red | dashed | Never |
+| User-pinned | Orange | dashed | No (excluded) |
+| Selected | Green | solid | Yes |
+| Default unlocked | Gray-blue | solid | Yes (if no selection) |
+
+### Keyboard shortcuts
+
+- `A` / "Select All" button — select all unlocked, unpinned footprints
+- `Escape` / "Clear" button — clear selection
+- "Pin" button — pin all currently selected footprints
+- Mouse wheel — zoom; drag — pan; "Fit" button — reset view
+
+## Headless iterative mode
+
+The CLI supports the same iterative flow:
+
+```sh
+.venv/bin/python scripts/run_autoroute.py board.kicad_pcb -o out.kicad_pcb \
+  --no-stub --step-iterations 50 --max-total-iterations 500 --validate
+```
+
+- `--step-iterations` — iterations per step (default 50)
+- `--max-total-iterations` — total budget across all steps (default 1000)
+- `--no-stub` / `--stub` — enable/disable physics (default: stub=True, identity deltas)
+- `--demo-jitter-mm` — deterministic per-UUID jitter for testing without nets
 
 ## References
+
 Guidance and reference notes live under `docs/`, not in this README. Start at the index:
 
 - [`docs/README.md`](docs/README.md) — index of local KiCad 10 docs + key facts for this project.
@@ -49,4 +100,3 @@ Guidance and reference notes live under `docs/`, not in this README. Start at th
   - [`docs/kicad/eeschema.md`](docs/kicad/eeschema.md) — schematic editor: symbols, nets, ERC, sheet structure.
   - [`docs/kicad/cli.md`](docs/kicad/cli.md) — `kicad-cli` reference (`pcb drc`, `sch erc`, exports).
   - [`docs/kicad/kicad.md`](docs/kicad/kicad.md) — project manager + all `.kicad_*` file types.
-
