@@ -93,6 +93,7 @@
 
 <div class="drop" id="drop">
   Drop <code>.kicad_pcb</code> / <code>.kicad_sch</code> files here to load them into the viewer.
+  <p style="margin-top:.5rem;font-size:.75rem;color:#5b6b7a;">Or click <button id="load-btn-drop" style="background:none;border:1px solid #3a4a5a;padding:.15rem .5rem;border-radius:4px;cursor:pointer;">Load…</button></p>
 </div>
 
 <script>
@@ -136,8 +137,14 @@ drop.addEventListener("drop", async e => {
   await uploadFiles(e.dataTransfer.files);
 });
 
+// Prevent browser from opening dropped files globally (use capture to intercept early)
+document.addEventListener("dragover", e => e.preventDefault(), { capture: true });
+document.addEventListener("drop", e => e.preventDefault(), { capture: true });
+
 const loadInput = document.getElementById("load-input");
-document.getElementById("load-btn").addEventListener("click", () => loadInput.click());
+document.querySelectorAll("#load-btn, #load-btn-drop").forEach(btn => {
+  btn.addEventListener("click", () => loadInput.click());
+});
 loadInput.addEventListener("change", async () => {
   await uploadFiles(loadInput.files);
   loadInput.value = "";
