@@ -86,14 +86,14 @@ Key facts that shape the algorithm choice:
   top-level `violations[]` and `unconnected_items[]`; `--exit-code-violations` makes the
   exit code reflect violations, not just load failures (see [`kicad/cli.md`](kicad/cli.md)
   and `src/kicad_autorouter/validate.py`).
-- Example violation from our baby-step board: `track_dangling | Track has unconnected end`.
+- Example violation (from the old demo-track pass): `track_dangling | Track has unconnected end`.
 
 ## Stage: writeback — emit updated `.kicad_pcb`
 
 - Write new tracks (and moved footprints) back as S-expressions. In the current pass this
-  goes through `pcbnew_adapter.py` (`add_track`, `save_board`) under KiCad's bundled Python;
-  a pure-Python S-expression writer is the planned replacement so the core stays testable in
-  `.venv`.
+  is pure Python in `.venv`: per-footprint deltas are applied by UUID via
+  `io.nudge_footprint_by_uuid` and serialized with `sexpr.to_sexpr`;
+  `pcbnew_adapter.py` is reserved for future routing-accurate semantics.
 - Always re-run DRC after writeback — it is the acceptance check for a pass.
 
 ## Force-directed placement of unlocked components

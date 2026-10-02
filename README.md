@@ -1,26 +1,25 @@
 # KiCad AutoRouter Lab
 
 Utility that reads KiCad files (`.kicad_pcb`, `.kicad_sch`) and updates PCB trace
-placement. Current phase: a minimal read-modify-write pass — load a board, make a
-slight update to component placement and traces, and resave it. No routing
-algorithm yet.
+placement. Current phase: a headless force-spring **placement** pass (v0 stub
+physics) plus a no-op pcb+sch round trip. No routing algorithm yet.
 
 ## Layout
 - `src/kicad_autorouter/` — pure-Python core (`pipeline.py`, `validate.py`,
   `sexpr.py`, `io.py`) plus the `pcbnew_adapter.py` boundary (the only module that
   imports `pcbnew`).
-- `scripts/run_autoroute.py` — headless first pass (run under KiCad's bundled Python).
+- `scripts/run_autoroute.py` — headless placement pass (.venv): parse → force-spring proposal → per-UUID writeback → optional DRC.
 - `scripts/roundtrip_pair.py` — pure-Python no-op read→edit→write of a pcb+sch pair, with checks.
 - `tests/` — pytest suite + fixtures.
 - `ui/` — stdlib workflow UI + board viewer (`python ui/server.py`).
 - `docs/` — local KiCad 10 docs + project guidance/reference notes.
 
-## Run the first pass
-The board load/modify/save step needs KiCad's bundled Python (it ships `pcbnew`):
+## Run the placement pass
+The headless entry point runs under the project `.venv` (pure Python, no `pcbnew` needed):
 
 ```sh
-/Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/3.9/bin/python3 \
-    scripts/run_autoroute.py tests/fixtures/minimal.kicad_pcb -o experiments/out/baby_step.kicad_pcb
+.venv/bin/python scripts/run_autoroute.py tests/fixtures/minimal.kicad_pcb \
+    -o experiments/out/placed_minimal.kicad_pcb --validate
 ```
 
 Then validate the result:
@@ -28,7 +27,7 @@ Then validate the result:
 ```sh
 .venv/bin/python -m pytest tests/          # existing suite
 # or DRC-check a specific board:
-/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli pcb drc experiments/out/baby_step.kicad_pcb --format json
+/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli pcb drc experiments/out/placed_minimal.kicad_pcb --format json
 ```
 
 ## View a board

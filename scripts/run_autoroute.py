@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Headless first pass: load a .kicad_pcb, nudge unlocked parts + add one track, save.
+"""Headless placement pass: parse .kicad_pcb -> force-spring proposal -> UUID writeback -> save.
 
-Run under KiCad's bundled Python (the only place with the `pcbnew` bindings):
+Runs under the project .venv (pure Python; no `pcbnew` needed):
 
-    /Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/3.9/bin/python3 \
-        scripts/run_autoroute.py [input.kicad_pcb] [-o output.kicad_pcb]
+    .venv/bin/python scripts/run_autoroute.py [input.kicad_pcb] [-o output.kicad_pcb]
 
-This is a baby step: it proves we can import a board, make a slight update to
-component placement and traces, and resave it. No routing algorithm yet.
+Locked footprints never move; deltas are applied per footprint UUID via
+``io.nudge_footprint_by_uuid``. With --validate the saved board is DRC-checked
+via kicad-cli: a load failure means the writeback broke the file (exit 1);
+design-rule violations are reported but do not fail the run.
 """
 
 from __future__ import annotations
@@ -16,65 +17,94 @@ import argparse
 import sys
 from pathlib import Path
 
-# Make the src/ package importable when run as a plain script.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from kicad_autorouter import pcbnew_adapter as adapter  # noqa: E402
+from kicad_autorouter.board_model import board_model  # noqa: E402
+from kicad_autorouter.io import nudge_footprint_by_uuid  # noqa: E402
+from kicad_autorouter.placement import PlacementParams, run_placement  # noqa: E402
+from kicad_autorouter.sexpr import parse_file, to_sexpr  # noqa: E402
+from kicad_autorouter.validate import KicadCliNotFound, validate_pcb  # noqa: E402
+
+PARAM_FIELDS = (
+    "repulsion_kr",
+    "attraction_ka",
+    "ideal_length_mm",
+    "max_iterations",
+    "convergence_eps_mm",
+    "demo_jitter_mm",
+)
 
 
 def main(argv=None) -> int:
     repo = Path(__file__).resolve().parent.parent
-    default_in = repo / "tests" / "fixtures" / "minimal.kicad_pcb"
-
-    p = argparse.ArgumentParser(
-        description="Load, slightly update, and resave a KiCad board."
-    )
+    p = argparse.ArgumentParser(description="Force-spring placement pass for a .kicad_pcb.")
     p.add_argument(
-        "input", nargs="?", default=str(default_in), help=".kicad_pcb to load"
+        "input", nargs="?", default=str(repo / "tests" / "fixtures" / "minimal.kicad_pcb")
     )
-    p.add_argument(
-        "-o", "--output", default=None, help="where to save the updated board"
-    )
-    p.add_argument(
-        "--dx-mm", type=float, default=1.0, help="x nudge for unlocked parts (mm)"
-    )
-    p.add_argument(
-        "--dy-mm", type=float, default=0.0, help="y nudge for unlocked parts (mm)"
-    )
-    p.add_argument("--no-track", action="store_true", help="skip adding the demo track")
+    p.add_argument("-o", "--output", help="where to save the placed board")
+    for name in PARAM_FIELDS:
+        p.add_argument(
+            f"--{name.replace('_', '-')}",
+            type=int if name == "max_iterations" else float,
+            dest=name,
+            default=None,
+        )
+    p.add_argument("--validate", action="store_true", help="DRC-check the saved board")
     args = p.parse_args(argv)
 
     in_path = Path(args.input)
     out_path = (
         Path(args.output)
         if args.output
-        else in_path.with_name(in_path.stem + "_updated.kicad_pcb")
+        else in_path.with_name(in_path.stem + "_placed.kicad_pcb")
     )
 
-    board = adapter.load_board(in_path)
-    print(f"loaded {in_path}: {len(list(board.GetFootprints()))} footprints")
-
-    moved = adapter.nudge_unlocked_footprints(board, dx_mm=args.dx_mm, dy_mm=args.dy_mm)
-    if moved:
-        for ref, old, new in moved:
-            print(
-                f"  nudged {ref}: ({old[0]:.2f},{old[1]:.2f}) -> "
-                f"({new[0]:.2f},{new[1]:.2f}) mm"
-            )
-    else:
-        print("  no unlocked footprints to nudge")
-
-    if not args.no_track:
-        # A short demo segment in the open middle of the board (clears keepout zones).
-        x0, y0, x1, y1 = 80.0, 95.0, 135.0, 95.0
-        w = 0.25
-        track = adapter.add_track(board, x0, y0, x1, y1, width_mm=w)
-        print(
-            f"  added track on {track.GetLayerName()}: ({x0},{y0})->({x1},{y1}) mm, w={w}mm"
+    try:
+        tree = parse_file(in_path)
+        if tree.head != "kicad_pcb":
+            raise ValueError(f"expected (kicad_pcb ...) in {in_path}, got head {tree.head!r}")
+        model = board_model(tree)
+        params = PlacementParams.from_dict(
+            {n: getattr(args, n) for n in PARAM_FIELDS if getattr(args, n) is not None}
         )
 
-    saved = adapter.save_board(board, out_path)
-    print(f"saved -> {saved}")
+        proposal = run_placement(model, params)
+        placed = tree
+        for uuid_, (dx, dy) in proposal.deltas.items():
+            placed = nudge_footprint_by_uuid(placed, uuid_, dx, dy)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(to_sexpr(placed) + "\n", encoding="utf-8")
+
+        by_uuid = {fp.uuid: fp for fp in model.footprints if fp.uuid}
+        locked = sum(fp.locked for fp in model.footprints)
+        print(f"loaded {in_path}: {len(model.footprints)} footprints ({locked} locked)")
+        print(
+            f"placement: moved={len(proposal.deltas)} iterations={proposal.iterations} "
+            f"max_disp={proposal.final_max_disp_mm:.3f}mm elapsed={proposal.elapsed_s:.2f}s"
+        )
+        for uuid_, (dx, dy) in proposal.deltas.items():
+            fp = by_uuid[uuid_]
+            label = fp.ref or uuid_[:8]
+            print(
+                f"  {label}: ({fp.x_mm:.2f},{fp.y_mm:.2f}) -> "
+                f"({fp.x_mm + dx:.2f},{fp.y_mm + dy:.2f}) mm"
+            )
+
+        if args.validate:
+            try:
+                report = validate_pcb(out_path)
+            except KicadCliNotFound as exc:
+                print(f"warning: {exc}; skipping DRC", file=sys.stderr)
+                return 0
+            if not report.loaded:
+                print(f"DRC: failed to load {out_path}: {report.error}", file=sys.stderr)
+                return 1
+            print(f"DRC: loaded OK, {len(report.violations)} violation(s)")
+    except (OSError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"saved -> {out_path}")
     return 0
 
 

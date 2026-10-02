@@ -5,7 +5,8 @@ Pure Python (no pcbnew) — runs in the project .venv:
 
     .venv/bin/python scripts/roundtrip_pair.py [board.kicad_pcb] [sch.kicad_sch] [-o OUT_DIR]
 
-Checks performed on the written files:
+The no-op edit is a zero-delta nudge of the first footprint, exercising
+read→modify→write without moving anything. Checks on the written files:
   1. they re-parse to trees structurally equal to the originals;
   2. when kicad-cli is available, DRC (pcb) / ERC (sch) load cleanly with no violations.
 """
@@ -14,16 +15,16 @@ from __future__ import annotations
 
 import argparse
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 # Make the src/ package importable when run as a plain script.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from kicad_autorouter.io import (  # noqa: E402
-    RoundtripError,
     load_pair,
-    noop_roundtrip,
-    verify_noop,
+    nudge_footprint_by_uuid,
+    save_pair,
 )
 from kicad_autorouter.sexpr import SExpr  # noqa: E402
 from kicad_autorouter.validate import (  # noqa: E402
@@ -37,6 +38,15 @@ from kicad_autorouter.validate import (  # noqa: E402
 def _version(tree: SExpr) -> str:
     node = tree.find("version")
     return str(node.args[0]) if node is not None and node.args else "?"
+
+
+def _noop_edit(pcb: SExpr) -> SExpr:
+    """Zero-delta nudge of the first footprint (identity edit)."""
+    for fp in pcb.children("footprint"):
+        u = fp.find("uuid")
+        if u is not None and u.args:
+            return nudge_footprint_by_uuid(pcb, str(u.args[0]), 0.0, 0.0)
+    return pcb
 
 
 def main(argv=None) -> int:
@@ -59,21 +69,26 @@ def main(argv=None) -> int:
     pcb_path, sch_path = Path(args.pcb), Path(args.sch)
     pair = load_pair(pcb_path, sch_path)
     n_fp = len(list(pair.pcb.children("footprint")))
-    print(
-        f"loaded {pcb_path.name}: kicad_pcb v{_version(pair.pcb)}, "
-        f"{n_fp} footprints"
-    )
+    print(f"loaded {pcb_path.name}: kicad_pcb v{_version(pair.pcb)}, {n_fp} footprints")
     print(f"loaded {sch_path.name}: kicad_sch v{_version(pair.sch)}")
 
-    out_pcb, out_sch = noop_roundtrip(pcb_path, sch_path, Path(args.out_dir))
+    out_dir = Path(args.out_dir)
+    edited = replace(pair, pcb=_noop_edit(pair.pcb))
+    out_pcb, out_sch = save_pair(
+        edited,
+        out_dir / (pcb_path.stem + "_no_op.kicad_pcb"),
+        out_dir / (sch_path.stem + "_no_op.kicad_sch"),
+    )
     print(f"no-op edit: wrote {out_pcb}")
     print(f"             wrote {out_sch}")
 
     ok = True
     try:
-        verify_noop(pcb_path, sch_path, out_pcb, out_sch)
+        new = load_pair(out_pcb, out_sch)  # also re-checks the written headers
+        if new.pcb != pair.pcb or new.sch != pair.sch:
+            raise AssertionError("trees differ")
         print("check 1/2 re-parse equality: OK")
-    except RoundtripError as exc:
+    except (AssertionError, ValueError) as exc:
         ok = False
         print(f"check 1/2 re-parse equality: FAIL ({exc})")
 
