@@ -45,21 +45,25 @@ def assert_point(p: Point, x: float, y: float):
 class TestTransformLocal:
     def test_identity_top_layer(self):
         fp = _fp(x=10.0, y=20.0)
+        # local (1, 2) angle=0 -> board (10+1, 20+2) = (11, 22)
         assert_point(transform_local(fp, 1.0, 2.0), 11.0, 22.0)
 
     def test_rotation_90_ccw(self):
         fp = _fp(angle_deg=90.0)
-        assert_point(transform_local(fp, 1.0, 0.0), 0.0, 1.0)
-        assert_point(transform_local(fp, 0.0, -3.0), 3.0, 0.0)
+        # local (1, 0) rotate -90 in Y-down -> (0, -1) in board Y-up
+        assert_point(transform_local(fp, 1.0, 0.0), 0.0, -1.0)
+        # local (0, -3) rotate -90 -> (-3, 0)
+        assert_point(transform_local(fp, 0.0, -3.0), -3.0, 0.0)
 
     def test_bottom_layer_mirror(self):
         fp = _fp(layer="B.Cu")
+        # local (1, 2) -> B.Cu mirror X -> (-1, 2) -> board (-1, 2)
         assert_point(transform_local(fp, 1.0, 2.0), -1.0, 2.0)
 
     def test_bottom_layer_mirror_then_rotate(self):
-        # mirror (1,0) -> (-1,0), then rotate +90 CCW: (-1,0) -> (0,-1)
+        # mirror (1,0) -> (-1,0), then rotate -90 in Y-down: (-1,0) -> (0,1)
         fp = _fp(angle_deg=90.0, layer="B.Cu")
-        assert_point(transform_local(fp, 1.0, 0.0), 0.0, -1.0)
+        assert_point(transform_local(fp, 1.0, 0.0), 0.0, 1.0)
 
 
 def _sw6(dccf_tree):
@@ -80,18 +84,23 @@ class TestFootprints:
         )
 
     def test_pads_in_board_coordinates(self, dccf_tree):
-        # pad "1" local (-3, 0) rotated +90 about (267.5, 206.5) -> (267.5, 203.5)
+        # pad "1" local (-3, 0) rotated -90 about (267.5, 206.5)
+        # x=-3, y=0, rad=-90: bx = 267.5 + (-3)*0 - 0*(-1) = 267.5
+        # by = 206.5 + (-3)*(-1) + 0*0 = 209.5
         sw6 = _sw6(dccf_tree)
         pad1 = next(p for p in sw6.pads if p.number == "1")
-        assert_point(pad1.position, 267.5, 203.5)
+        assert_point(pad1.position, 267.5, 209.5)
 
     def test_courtyard_in_board_coordinates(self, dccf_tree):
-        # local (6.2, -2.9) rotated +90 -> board (270.4, 212.7)
+        # local (6.2, -2.9) rotate -90 in Y-down:
+        # x=6.2, y=-2.9, rad=-90, cos=0, sin=-1
+        # bx = 267.5 + 6.2*0 - (-2.9)*(-1) = 267.5 - 2.9 = 264.6
+        # by = 206.5 + 6.2*(-1) + (-2.9)*0 = 206.5 - 6.2 = 200.3
         sw6 = _sw6(dccf_tree)
         assert len(sw6.courtyard) >= 4
         endpoints = [p for seg in sw6.courtyard for p in seg]
         assert any(
-            p.x_mm == pytest.approx(270.4) and p.y_mm == pytest.approx(212.7)
+            p.x_mm == pytest.approx(264.6) and p.y_mm == pytest.approx(200.3)
             for p in endpoints
         )
 

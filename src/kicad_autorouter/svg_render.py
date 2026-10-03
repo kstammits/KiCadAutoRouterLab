@@ -41,7 +41,9 @@ def _fmt(v: float) -> str:
 
 def _shift(offsets, uuid):
     """Proposed ``(dx_mm, dy_mm)`` offset for a footprint UUID (zero if none)."""
-    return offsets.get(uuid, (0.0, 0.0)) if offsets else (0.0, 0.0)
+    val = offsets.get(uuid, (0.0, 0.0)) if offsets else (0.0, 0.0)
+    # Handle both (dx, dy) and (dx, dy, dangle) tuples
+    return val[0], val[1]
 
 
 def net_colors(model: BoardModel) -> Dict[str, str]:
@@ -187,13 +189,34 @@ def _footprint_pads_svg(
     return "\n".join(out)
 
 
+def _courtyard_centroid(fp) -> tuple[float, float]:
+    """Compute the centroid of a footprint's courtyard. Returns (x, y) in board coords.
+    
+    Falls back to footprint origin (fp.x_mm, fp.y_mm) if no courtyard exists.
+    """
+    if not fp.courtyard:
+        return fp.x_mm, fp.y_mm
+    
+    # Collect all unique vertices from courtyard segments
+    vertices = []
+    for a, b in fp.courtyard:
+        vertices.append((a.x_mm, a.y_mm))
+        vertices.append((b.x_mm, b.y_mm))
+    
+    # Compute centroid
+    xs = [v[0] for v in vertices]
+    ys = [v[1] for v in vertices]
+    return sum(xs) / len(xs), sum(ys) / len(ys)
+
+
 def _footprint_ref_svg(fp, dx: float, dy: float) -> str:
-    """Generate reference text for a single footprint."""
+    """Generate reference text for a single footprint at courtyard centroid."""
     label = fp.ref or (fp.uuid[:8] if fp.uuid else "")
     if not label:
         return ""
+    cx, cy = _courtyard_centroid(fp)
     return (
-        f'<text x="{_fmt(fp.x_mm + dx)}" y="{_fmt(fp.y_mm + dy - 0.5)}" '
+        f'<text x="{_fmt(cx + dx)}" y="{_fmt(cy + dy - 0.5)}" '
         f'fill="{REF_TEXT}" font-family="monospace" font-size="1">'
         f"{html.escape(label)}</text>"
     )
@@ -299,7 +322,7 @@ def _proposal_overlay(model: BoardModel, proposal: PlacementProposal) -> List[st
         d = proposal.deltas.get(fp.uuid)
         if not d:
             continue
-        dx, dy = d
+        dx, dy = d[0], d[1]
         arrows.append(
             f'<line x1="{_fmt(fp.x_mm)}" y1="{_fmt(fp.y_mm)}" '
             f'x2="{_fmt(fp.x_mm + dx)}" y2="{_fmt(fp.y_mm + dy)}" '
@@ -323,6 +346,9 @@ def render_board_svg(
     positions with ghost courtyards and displacement arrows marking where
     they came from.
 
+    Board coordinates (Y-up) are used directly as SVG coordinates (Y-down),
+    matching pcbnew's display orientation (Y+ down on screen).
+
     Args:
         model: Board model to render.
         title: Optional title for the SVG.
@@ -331,16 +357,19 @@ def render_board_svg(
         selected_uuids: Set of footprint UUIDs currently selected (for move).
     """
     colors = net_colors(model)
-    min_x, min_y, max_x, max_y = _bounds(model)
+    min_x, min_y, width, height = _bounds(model)
     moved = bool(proposal is not None and proposal.deltas)
     # Grow the margin by the largest proposed move so nothing clips.
-    extra = (
-        max(math.hypot(dx, dy) for dx, dy in proposal.deltas.values()) if moved else 0.0
-    )
+    extra = 0.0
+    if moved:
+        for delta in proposal.deltas.values():
+            dx = delta[0]
+            dy = delta[1]
+            extra = max(extra, math.hypot(dx, dy))
     pad = 1.0 + extra
     vb = (
         f"{_fmt(min_x - pad)} {_fmt(min_y - pad)} "
-        f"{_fmt(max_x - min_x + 2 * pad)} {_fmt(max_y - min_y + 2 * pad)}"
+        f"{_fmt(width + 2 * pad)} {_fmt(height + 2 * pad)}"
     )
     parts: List[str] = [
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="{vb}" '

@@ -85,12 +85,16 @@ def test_overlay_draws_ghost_and_arrow():
     )
     s = render_board_svg(m, proposal=prop)
     assert 'id="move-arrow"' in s
+
+    # Renderer now uses board coordinates directly (Y-up = SVG Y-down)
+    # No Y-flip applied
     arrow = (
         f'<line x1="{fp.x_mm:.3f}" y1="{fp.y_mm:.3f}" '
         f'x2="{(fp.x_mm + dx):.3f}" y2="{(fp.y_mm + dy):.3f}" '
         'marker-end="url(#move-arrow)"/>'
     )
     assert arrow in s
+
     a, b = fp.courtyard[0]
     ghost = (
         f'<line x1="{a.x_mm:.3f}" y1="{a.y_mm:.3f}" '
@@ -98,6 +102,7 @@ def test_overlay_draws_ghost_and_arrow():
     )
     # Ghost courtyard at original position (dashed, gray)
     assert ghost in s
+
     # Shifted courtyard at proposed position - now rendered inside footprint group
     # with state-based styling. Check that the shifted coordinates appear in a line.
     shifted_x1 = f'{(a.x_mm + dx):.3f}'

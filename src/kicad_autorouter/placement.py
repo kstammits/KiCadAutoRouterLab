@@ -35,6 +35,8 @@ class PlacementParams:
     convergence_eps_mm: float = 0.01
     # Rigid constraint stiffness (very high to keep footprint pads together)
     rigid_stiffness: float = 1e6
+    # Courtyard collision repulsion force constant
+    courtyard_repulsion_kc: float = 500.0
     # Preview-only knob for the v0 stub: deterministic per-UUID jitter so the
     # proposal overlay is visibly testable before real physics exists.
     demo_jitter_mm: float = 0.0
@@ -64,6 +66,7 @@ def _validate(params: PlacementParams) -> None:
         "convergence_eps_mm",
         "demo_jitter_mm",
         "rigid_stiffness",
+        "courtyard_repulsion_kc",
     )
     for name in numeric:
         value = getattr(params, name)
@@ -75,6 +78,7 @@ def _validate(params: PlacementParams) -> None:
         "ideal_length_mm",
         "convergence_eps_mm",
         "rigid_stiffness",
+        "courtyard_repulsion_kc",
     ):
         if getattr(params, name) <= 0:
             raise ValueError(f"{name} must be > 0")
@@ -317,6 +321,76 @@ def _build_rigid_constraints_mst(
     )
 
 
+def _compute_courtyard_radii(model: BoardModel) -> Dict[str, Tuple[float, float, float]]:
+    """Return {uuid: (centroid_x, centroid_y, radius)} for all footprints with courtyards."""
+    result = {}
+    for fp in model.footprints:
+        if not fp.uuid or not fp.courtyard:
+            continue
+        # Collect all courtyard vertices
+        vertices = []
+        for a, b in fp.courtyard:
+            vertices.append((a.x_mm, a.y_mm))
+            vertices.append((b.x_mm, b.y_mm))
+        verts = np.array(vertices)
+        centroid = np.mean(verts, axis=0)
+        radius = float(np.max(np.linalg.norm(verts - centroid, axis=1)))
+        result[fp.uuid] = (float(centroid[0]), float(centroid[1]), radius)
+    return result
+
+
+def _compute_courtyard_forces(
+    fp_uuids: List[str],
+    fp_centroids: np.ndarray,  # (m, 2)
+    fp_radii: np.ndarray,      # (m,)
+    fp_movable: np.ndarray,    # (m,) bool
+    pad_positions: np.ndarray, # (n, 2) current pad positions
+    pad_to_fp_local: List[int],  # pad index -> local index in fp_uuids
+    kc: float
+) -> np.ndarray:
+    """Compute courtyard repulsion force on each pad. Returns (n, 2) force array."""
+    m = len(fp_uuids)
+    n_pads = pad_positions.shape[0]
+    forces = np.zeros((m, 2))
+
+    # Vectorized all-pairs for m footprints (m ~ 10-50, m^2 is fine)
+    for i in range(m):
+        for j in range(i + 1, m):
+            dx = fp_centroids[i, 0] - fp_centroids[j, 0]
+            dy = fp_centroids[i, 1] - fp_centroids[j, 1]
+            dist = math.hypot(dx, dy)
+            if dist < 1e-6:
+                continue
+            min_dist = fp_radii[i] + fp_radii[j]
+            if dist < min_dist:
+                # Overlap: strong repulsion
+                overlap = min_dist - dist
+                force_mag = kc * (overlap / min_dist) ** 2 / max(dist, 1e-6)
+            elif dist < min_dist * 1.5:
+                # Close approach: gentle repulsion
+                margin = min_dist * 1.5 - dist
+                force_mag = kc * 0.1 * (margin / min_dist) / max(dist, 1e-6)
+            else:
+                continue
+
+            fx = force_mag * dx / dist
+            fy = force_mag * dy / dist
+            forces[i, 0] += fx
+            forces[i, 1] += fy
+            forces[j, 0] -= fx
+            forces[j, 1] -= fy
+
+    # Zero force on locked footprints
+    forces[~fp_movable] = 0.0
+
+    # Broadcast to pads
+    pad_forces = np.zeros((n_pads, 2), dtype=np.float64)
+    for pad_idx, fp_local_idx in enumerate(pad_to_fp_local):
+        pad_forces[pad_idx] = forces[fp_local_idx]
+
+    return pad_forces
+
+
 def _compute_footprint_pose_from_pads(
     fp: Footprint,
     pad_positions: np.ndarray,
@@ -529,10 +603,13 @@ def run_placement(
     )
     has_rigid = len(rigid_src) > 0
 
-    # Ideal length for net springs
-    board_area = (max_x - min_x) * (max_y - min_y)
-    n_movable_pads = int(pad_movable.sum())
-    ideal_len = math.sqrt(max(board_area, 1.0) / max(n_movable_pads, 1))
+    # Ideal length for net springs: use param if set > 0, else auto-compute
+    if params.ideal_length_mm > 0:
+        ideal_len = params.ideal_length_mm
+    else:
+        board_area = (max_x - min_x) * (max_y - min_y)
+        n_movable_pads = int(pad_movable.sum())
+        ideal_len = math.sqrt(max(board_area, 1.0) / max(n_movable_pads, 1))
 
     # Temperature schedule (Fruchterman–Reingold)
     temp = max(max_x - min_x, max_y - min_y) / 10.0
@@ -540,6 +617,25 @@ def run_placement(
 
     positions = pad_positions.copy()
     prev_positions = pad_positions.copy()
+
+    # Courtyard collision avoidance setup
+    courtyard_radii = _compute_courtyard_radii(model)
+    fp_uuids = [fp.uuid for fp in model.footprints if fp.uuid and fp.courtyard]
+    if fp_uuids:
+        fp_centroids = np.array([courtyard_radii[uid][:2] for uid in fp_uuids], dtype=np.float64)
+        fp_radii = np.array([courtyard_radii[uid][2] for uid in fp_uuids], dtype=np.float64)
+        fp_movable = np.array([fp_movable.get(uid, False) for uid in fp_uuids], dtype=bool)
+        # Map pad index -> local index in fp_uuids list
+        pad_to_fp_local = []
+        for i in range(n_pads):
+            fp_uuid = model.footprints[pad_to_fp_idx[i]].uuid
+            if fp_uuid in courtyard_radii:
+                pad_to_fp_local.append(fp_uuids.index(fp_uuid))
+            else:
+                pad_to_fp_local.append(-1)
+    else:
+        fp_centroids = fp_radii = fp_movable = None
+        pad_to_fp_local = None
 
     for iteration in range(params.max_iterations):
         # Repulsion: all-pairs Coulomb k_r / d^2 (with softening epsilon)
@@ -582,6 +678,14 @@ def run_placement(
 
         # Total force
         force = repulsion + attraction + rigid_force
+
+        # Courtyard repulsion
+        if fp_uuids and fp_centroids is not None:
+            courtyard_force = _compute_courtyard_forces(
+                fp_uuids, fp_centroids, fp_radii, fp_movable,
+                positions, pad_to_fp_local, params.courtyard_repulsion_kc
+            )
+            force += courtyard_force
 
         # Replace any NaN forces with zero
         force = np.nan_to_num(force, nan=0.0, posinf=0.0, neginf=0.0)

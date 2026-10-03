@@ -12,6 +12,7 @@ REPO_ROOT = UI_DIR.parent.resolve()
 sys.path.insert(0, str(UI_DIR.parent / "src"))
 
 from kicad_autorouter.board_model import apply_deltas, board_model  # noqa: E402
+from kicad_autorouter.io import nudge_footprint_by_uuid  # noqa: E402
 from kicad_autorouter.pipeline import stages  # noqa: E402
 from kicad_autorouter.placement import (  # noqa: E402
     PlacementParams,
@@ -25,17 +26,21 @@ PARAMS_PATH = REPO_ROOT / "placement.json"
 
 
 class BoardState:
-    """In-memory snapshot of the currently loaded board pair + proposal."""
+    """In-memory snapshot of the currently loaded board pair + proposal + undo stack."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self.model = None
         self.sch = None
+        self.pcb_tree = None  # Original S-expression tree for writeback
+        self.original_pcb_tree = None  # Original tree for reset
         self.name = ""
         self.version = 0
         self.proposal = None
         self.pinned_uuids: set[str] = set()  # User-pinned (pseudo-locked)
         self.selected_uuids: set[str] = set()  # Currently selected for move
+        self.undo_stack: list[tuple] = []  # Stack of (model, pcb_tree) for undo
+        self.max_undo_depth = 20
 
     def load(self, data: bytes, name: str, kind: str) -> int:
         tree = parse(data.decode("utf-8"))
@@ -47,11 +52,14 @@ class BoardState:
                 self.sch = tree
             else:
                 self.model = board_model(tree)
+                self.pcb_tree = tree
+                self.original_pcb_tree = tree
                 self.name = name
                 self.sch = None  # a new board invalidates any stale sibling
                 self.proposal = None  # a new board invalidates any stale proposal
                 self.pinned_uuids.clear()
                 self.selected_uuids.clear()
+                self.undo_stack.clear()
             self.version += 1
             return self.version
 
@@ -124,6 +132,59 @@ class BoardState:
             }
             self.version += 1
             return self.version
+
+    def push_undo(self) -> None:
+        """Push current state to undo stack (called before mutating)."""
+        with self._lock:
+            if self.model is not None and self.pcb_tree is not None:
+                self.undo_stack.append((self.model, self.pcb_tree))
+                if len(self.undo_stack) > self.max_undo_depth:
+                    self.undo_stack.pop(0)
+
+    def undo(self) -> int:
+        """Revert to previous state from undo stack."""
+        with self._lock:
+            if not self.undo_stack:
+                return self.version
+            self.model, self.pcb_tree = self.undo_stack.pop()
+            self.proposal = None
+            self.selected_uuids.clear()
+            self.version += 1
+            return self.version
+
+    def reset_to_original(self) -> int:
+        """Reset to the originally loaded board."""
+        with self._lock:
+            if self.original_pcb_tree is not None:
+                self.model = board_model(self.original_pcb_tree)
+                self.pcb_tree = self.original_pcb_tree
+                self.proposal = None
+                self.selected_uuids.clear()
+                self.undo_stack.clear()
+                self.version += 1
+            return self.version
+
+    def accept_proposal(self) -> int:
+        """Apply current proposal to both model and PCB tree, push to undo stack."""
+        with self._lock:
+            if self.proposal is None or self.model is None or self.pcb_tree is None:
+                raise ValueError("no proposal to accept")
+            # Push current state to undo before applying
+            self.push_undo()
+            # Apply to BoardModel (for physics/rendering)
+            self.model = apply_deltas(self.model, self.proposal.deltas)
+            # Apply to S-expression tree (for writeback/download)
+            for uuid, (dx, dy, da) in self.proposal.deltas.items():
+                if dx != 0.0 or dy != 0.0 or da != 0.0:
+                    self.pcb_tree = nudge_footprint_by_uuid(self.pcb_tree, uuid, dx, dy)
+            self.proposal = None
+            self.version += 1
+            return self.version
+
+    def get_pcb_tree(self):
+        """Get the current PCB S-expression tree for download."""
+        with self._lock:
+            return self.pcb_tree
 
 
 STATE = BoardState()
@@ -217,6 +278,21 @@ class Handler(BaseHTTPRequestHandler):
             selected = STATE.get_selected_uuids()
             self._send(200, json.dumps({"ok": True, "selected": list(selected)}).encode(), "application/json")
             return
+        if parsed.path == "/api/board/download":
+            tree = STATE.get_pcb_tree()
+            if tree is None:
+                self._send(404, b"no board loaded", "text/plain")
+                return
+            from kicad_autorouter.sexpr import to_sexpr
+            filename = STATE.name.replace(".kicad_pcb", "-modified.kicad_pcb")
+            content = to_sexpr(tree) + "\n"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+            self.send_header("Content-Length", str(len(content.encode())))
+            self.end_headers()
+            self.wfile.write(content.encode())
+            return
         rel_path = parsed.path.lstrip("/")
         rel = Path(rel_path) if rel_path else Path("index.html")
         full = (UI_DIR / rel).resolve()
@@ -294,15 +370,19 @@ class Handler(BaseHTTPRequestHandler):
                 if not isinstance(iterations, int) or iterations < 1:
                     self._send(400, b"iterations must be a positive integer", "text/plain")
                     return
-                # Create params with overridden max_iterations
+                # Create params with overridden max_iterations, preserve other settings
+                # Use request body for stub if provided, else fall back to saved params
+                req_stub = req.get("stub", params.stub)
                 params = PlacementParams(
                     repulsion_kr=params.repulsion_kr,
                     attraction_ka=params.attraction_ka,
                     ideal_length_mm=params.ideal_length_mm,
                     max_iterations=iterations,
                     convergence_eps_mm=params.convergence_eps_mm,
+                    rigid_stiffness=params.rigid_stiffness,
+                    courtyard_repulsion_kc=params.courtyard_repulsion_kc,
                     demo_jitter_mm=params.demo_jitter_mm,
-                    stub=False,
+                    stub=req_stub,
                 )
 
             # If movable_uuids not provided, compute as all unlocked except pinned
@@ -332,17 +412,11 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps(payload).encode(), "application/json")
             return
         if parsed.path == "/api/placement/accept":
-            with STATE._lock:
-                if STATE.proposal is None:
-                    self._send(400, b"no proposal to accept", "text/plain")
-                    return
-                if STATE.model is None:
-                    self._send(400, b"no board loaded", "text/plain")
-                    return
-                STATE.model = apply_deltas(STATE.model, STATE.proposal.deltas)
-                STATE.proposal = None
-                STATE.version += 1
-                version = STATE.version
+            try:
+                version = STATE.accept_proposal()
+            except ValueError as exc:
+                self._send(400, f"{exc}".encode(), "text/plain")
+                return
             self._send(
                 200,
                 json.dumps({"ok": True, "version": version}).encode(),
@@ -351,6 +425,22 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/placement/clear":
             version = STATE.set_proposal(None)
+            self._send(
+                200,
+                json.dumps({"ok": True, "version": version}).encode(),
+                "application/json",
+            )
+            return
+        if parsed.path == "/api/placement/undo":
+            version = STATE.undo()
+            self._send(
+                200,
+                json.dumps({"ok": True, "version": version}).encode(),
+                "application/json",
+            )
+            return
+        if parsed.path == "/api/board/reset":
+            version = STATE.reset_to_original()
             self._send(
                 200,
                 json.dumps({"ok": True, "version": version}).encode(),

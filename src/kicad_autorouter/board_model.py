@@ -168,12 +168,15 @@ def _to_board(
 ) -> Point:
     """Map a footprint-local point to board coordinates.
 
-    B.Cu footprints are mirrored across the local X axis before rotation,
-    matching ``pcbnew::TRANSFORM`` for back-side items.
+    Footprint local coordinates have Y pointing DOWN (KiCad editor convention);
+    board coordinates have Y pointing UP. The PCB file stores footprint orientation
+    as CCW angle in board (Y-up) coordinates. A CCW rotation in Y-up equals a
+    CW (negative) rotation in Y-down local coords. Apply B.Cu mirror on X,
+    then rotate by -angle_deg.
     """
     x = -local_x_mm if layer == "B.Cu" else local_x_mm
     y = local_y_mm
-    rad = math.radians(angle_deg)
+    rad = math.radians(-angle_deg)
     cos_a, sin_a = math.cos(rad), math.sin(rad)
     return Point(x_mm + x * cos_a - y * sin_a, y_mm + x * sin_a + y * cos_a)
 
@@ -279,6 +282,25 @@ def _courtyard_segments(
         ]
         for a, b in zip(pts, pts[1:] + pts[:1]):
             segments.append((a, b))
+    for circle in fp_node.children("fp_circle"):
+        lay = circle.find("layer")
+        if lay is None or not lay.args or str(lay.args[0]) not in ("F.CrtYd", "B.CrtYd"):
+            continue
+        center = circle.find("center")
+        end = circle.find("end")
+        if center is None or end is None:
+            continue
+        cx, cy = float(center.args[0]), float(center.args[1])
+        ex, ey = float(end.args[0]), float(end.args[1])
+        # Convert circle to line segments (approximate with 16 segments)
+        import math
+        radius = math.hypot(ex - cx, ey - cy)
+        for i in range(16):
+            a1 = 2 * math.pi * i / 16
+            a2 = 2 * math.pi * (i + 1) / 16
+            p1 = to_board(cx + radius * math.cos(a1), cy + radius * math.sin(a1))
+            p2 = to_board(cx + radius * math.cos(a2), cy + radius * math.sin(a2))
+            segments.append((p1, p2))
     return tuple(segments)
 
 

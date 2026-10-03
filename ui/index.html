@@ -45,6 +45,13 @@
   .sel-toolbar { display:flex; gap:.5rem; align-items:center; padding:.4rem .9rem; border-top:1px solid #2a3540; font-size:.75rem; color:#9fb0c0; flex-wrap:wrap; }
   .sel-toolbar button { padding:.2rem .5rem; font-size:.7rem; }
   .sel-count { margin-left:auto; font-variant-numeric:tabular-nums; }
+
+  /* Parameter description table */
+  .param-desc-table { width:100%; border-collapse:collapse; font-size:.75rem; color:#9fb0c0; margin-top:.5rem; }
+  .param-desc-table th, .param-desc-table td { padding:.3rem .5rem; border:1px solid #2a3540; text-align:left; }
+  .param-desc-table th { background:#161c22; color:#d7e0e9; font-weight:600; }
+  .param-desc-table code { background:#0b0e12; padding:.1rem .3rem; border-radius:3px; font-size:.7rem; }
+  .param-desc-table tr:nth-child(even) td { background:#161c22; }
 </style>
 </head>
 <body>
@@ -66,6 +73,9 @@
     <label class="chk"><input type="checkbox" id="overlay-toggle" checked> show proposal</label>
     <span class="zoom-info" id="zoom-info">100%</span>
     <button id="fit-btn" title="Fit board to view">Fit</button>
+    <button id="download-btn" title="Download modified PCB" hidden>Download PCB</button>
+    <button id="undo-btn" title="Undo last accept" disabled>Undo</button>
+    <button id="reset-btn" title="Reset to original board" hidden>Reset</button>
   </div>
   <div class="sel-toolbar" id="sel-toolbar" hidden>
     <button id="select-all-btn" title="Select all unlocked">Select All</button>
@@ -82,13 +92,14 @@
   <div class="bar">
     <span class="num">Place</span>
     <label class="chk" style="margin-left:.5rem;"><input type="number" id="step-iters" value="50" min="1" max="5000" step="10" style="width:5rem;"> iterations/step</label>
+    <label class="chk" style="margin-left:.5rem;"><input type="checkbox" id="physics-mode" checked> Physics mode</label>
     <button id="run-btn">Step placement</button>
     <button id="accept-btn" disabled>Accept proposal</button>
     <button id="clear-btn">Clear proposal</button>
     <span id="diag"></span>
   </div>
   <div class="params" id="params-grid"></div>
-  <div class="bar"><button id="reset-btn">Reset defaults</button></div>
+  <div class="bar"><button id="reset-params-btn">Reset params</button></div>
 </div>
 
 <div class="drop" id="drop">
@@ -153,23 +164,43 @@ loadInput.addEventListener("change", async () => {
 const PARAM_DEFS = [
   { key: "repulsion_kr", label: "Repulsion k_r", min: 0, max: 1000, step: 1 },
   { key: "attraction_ka", label: "Attraction k_a", min: 0, max: 1, step: 0.005 },
-  { key: "ideal_length_mm", label: "Ideal length (mm)", min: 1, max: 200, step: 1 },
+  { key: "ideal_length_mm", label: "Ideal length (mm)", min: 0, max: 200, step: 1 },
   { key: "max_iterations", label: "Max iterations", min: 1, max: 5000, step: 10 },
   { key: "convergence_eps_mm", label: "Convergence eps (mm)", min: 0.001, max: 1, step: 0.001 },
-  { key: "demo_jitter_mm", label: "Demo jitter (mm) — preview only", min: 0, max: 20, step: 0.5 },
+  { key: "rigid_stiffness", label: "Rigid stiffness", min: 1000, max: 1e8, step: 1000 },
+  { key: "courtyard_repulsion_kc", label: "Courtyard repulsion k_c", min: 0, max: 5000, step: 10 },
 ];
+
+const PARAM_DESC = {
+  repulsion_kr: "Coulomb repulsion between ALL pads (k_r / d²). Higher = stronger push-apart.",
+  attraction_ka: "Hooke's spring attraction between net-connected pads. F = k_a × (d - L₀).",
+  ideal_length_mm: "Target distance for net springs (L₀). 0 = auto-compute from board density.",
+  max_iterations: "Hard limit on simulation steps.",
+  convergence_eps_mm: "Stop when max pad displacement < this per iteration.",
+  rigid_stiffness: "Internal spring stiffness keeping footprint pads rigid. Very high = rigid body.",
+  courtyard_repulsion_kc: "Footprint-level repulsion when courtyards overlap/approach.",
+};
 
 const paramsGrid = document.getElementById("params-grid");
 for (const def of PARAM_DEFS) {
   const el = document.createElement("div");
   el.className = "param";
-  el.innerHTML = `<span>${def.label}</span>
+  const desc = PARAM_DESC[def.key] || "";
+  el.innerHTML = `<span title="${desc}">${def.label}</span>
     <div class="row">
       <input type="range" data-key="${def.key}" min="${def.min}" max="${def.max}" step="${def.step}">
       <input type="number" data-key="${def.key}" min="${def.min}" max="${def.max}" step="${def.step}">
     </div>`;
   paramsGrid.appendChild(el);
 }
+
+// Parameter description table
+const descTable = document.createElement("table");
+descTable.className = "param-desc-table";
+descTable.innerHTML = "<thead><tr><th>Parameter</th><th>Description</th></tr></thead><tbody>" +
+  PARAM_DEFS.map(d => `<tr><td><code>${d.key}</code></td><td>${PARAM_DESC[d.key]}</td></tr>`).join("") +
+  "</tbody>";
+document.getElementById("params-grid").parentElement.insertBefore(descTable, document.getElementById("params-grid").nextSibling);
 
 paramsGrid.addEventListener("input", e => {
   const key = e.target.dataset.key;
@@ -262,6 +293,8 @@ async function poll() {
     document.getElementById("placement-panel").hidden = false;
     nameEl.textContent = `${st.name} — v${st.version}`;
     schChip.hidden = st.has_sch;
+    document.getElementById("download-btn").hidden = false;
+    document.getElementById("reset-btn").hidden = false;
     if (st.version !== lastVersion) {
       lastVersion = st.version;
       await fetchAndInjectSVG(st.version);
@@ -270,6 +303,9 @@ async function poll() {
   } else {
     boardEl.hidden = true;
     document.getElementById("placement-panel").hidden = true;
+    document.getElementById("download-btn").hidden = true;
+    document.getElementById("reset-btn").hidden = true;
+    document.getElementById("undo-btn").disabled = true;
     lastVersion = 0;
     viewport.innerHTML = "";
     viewBox = null;
@@ -497,7 +533,11 @@ const saveRes = await fetch("/api/placement/params", { method: "POST", body: JSO
     const res = await fetch("/api/placement/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ iterations: iters, movable_uuids: movableUuids })
+      body: JSON.stringify({ 
+        iterations: iters, 
+        movable_uuids: movableUuids,
+        stub: !document.getElementById("physics-mode").checked
+      })
     });
     if (!res.ok) throw new Error(await res.text());
     const r = await res.json();
@@ -517,6 +557,7 @@ document.getElementById("accept-btn").addEventListener("click", async () => {
     diagEl.textContent = `proposal accepted — board updated to v${r.version}. Click "Step placement" to continue.`;
     document.getElementById("accept-btn").disabled = true;
     document.getElementById("run-btn").textContent = "Step placement";
+    document.getElementById("undo-btn").disabled = false;
   } catch (err) {
     diagEl.textContent = `accept failed: ${err.message}`;
   }
@@ -529,7 +570,52 @@ document.getElementById("clear-btn").addEventListener("click", async () => {
   document.getElementById("run-btn").textContent = "Step placement";
 });
 
+document.getElementById("undo-btn").addEventListener("click", async () => {
+  try {
+    const res = await fetch("/api/placement/undo", { method: "POST" });
+    if (!res.ok) throw new Error(await res.text());
+    const r = await res.json();
+    diagEl.textContent = `undone — board reverted to v${r.version}`;
+    document.getElementById("accept-btn").disabled = true;
+    document.getElementById("run-btn").textContent = "Step placement";
+  } catch (err) {
+    diagEl.textContent = `undo failed: ${err.message}`;
+  }
+});
+
+document.getElementById("download-btn").addEventListener("click", async () => {
+  try {
+    const res = await fetch("/api/board/download");
+    if (!res.ok) throw new Error(await res.text());
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = res.headers.get("Content-Disposition")?.split('filename="')[1]?.split('"')[0] || "board-modified.kicad_pcb";
+    a.click();
+    URL.revokeObjectURL(url);
+    diagEl.textContent = "PCB downloaded";
+  } catch (err) {
+    diagEl.textContent = `download failed: ${err.message}`;
+  }
+});
+
 document.getElementById("reset-btn").addEventListener("click", async () => {
+  try {
+    const res = await fetch("/api/board/reset", { method: "POST" });
+    if (!res.ok) throw new Error(await res.text());
+    const r = await res.json();
+    diagEl.textContent = `board reset to original (v${r.version})`;
+    document.getElementById("accept-btn").disabled = true;
+    document.getElementById("run-btn").textContent = "Step placement";
+    document.getElementById("undo-btn").disabled = true;
+  } catch (err) {
+    diagEl.textContent = `reset failed: ${err.message}`;
+  }
+});
+
+// The original reset-btn handler for params (renamed to avoid conflict)
+document.getElementById("reset-params-btn").addEventListener("click", async () => {
   try {
     await loadParams(true);
     diagEl.textContent = "params reset to defaults (persists on next run)";
