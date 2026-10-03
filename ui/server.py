@@ -3,6 +3,7 @@
 import json
 import sys
 import threading
+from typing import Dict, Tuple
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -37,6 +38,7 @@ class BoardState:
         self.name = ""
         self.version = 0
         self.proposal = None
+        self.forces: Dict[str, Tuple[float, float]] = {}  # Cached forces for display
         self.pinned_uuids: set[str] = set()  # User-pinned (pseudo-locked)
         self.selected_uuids: set[str] = set()  # Currently selected for move
         self.undo_stack: list[tuple] = []  # Stack of (model, pcb_tree) for undo
@@ -57,6 +59,7 @@ class BoardState:
                 self.name = name
                 self.sch = None  # a new board invalidates any stale sibling
                 self.proposal = None  # a new board invalidates any stale proposal
+                self.forces.clear()  # clear cached forces
                 self.pinned_uuids.clear()
                 self.selected_uuids.clear()
                 self.undo_stack.clear()
@@ -86,6 +89,16 @@ class BoardState:
     def get_selected_uuids(self) -> set[str]:
         with self._lock:
             return self.selected_uuids.copy()
+
+    def get_forces(self) -> Dict[str, Tuple[float, float]]:
+        with self._lock:
+            return self.forces.copy()
+
+    def set_forces(self, forces: Dict[str, Tuple[float, float]]) -> int:
+        with self._lock:
+            self.forces = forces.copy()
+            self.version += 1
+            return self.version
 
     def set_pinned_uuids(self, uuids: set[str]) -> int:
         with self._lock:
@@ -176,7 +189,7 @@ class BoardState:
             # Apply to S-expression tree (for writeback/download)
             for uuid, (dx, dy, da) in self.proposal.deltas.items():
                 if dx != 0.0 or dy != 0.0 or da != 0.0:
-                    self.pcb_tree = nudge_footprint_by_uuid(self.pcb_tree, uuid, dx, dy)
+                    self.pcb_tree = nudge_footprint_by_uuid(self.pcb_tree, uuid, dx, dy, da)
             self.proposal = None
             self.version += 1
             return self.version
@@ -250,11 +263,39 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(404, b"no board loaded", "text/plain")
                 return
             overlay_on = qs.get("overlay", ["1"])[0] != "0"
+            forces_on = qs.get("forces", ["0"])[0] != "0"
             proposal = STATE.current_proposal if overlay_on else None
             pinned = STATE.get_pinned_uuids()
             selected = STATE.get_selected_uuids()
+            
+            # Create a minimal proposal for forces display if needed
+            if forces_on and proposal is None:
+                from kicad_autorouter.placement import PlacementProposal
+                proposal = PlacementProposal(
+                    deltas={},
+                    iterations=0,
+                    final_max_disp_mm=0.0,
+                    elapsed_s=0.0,
+                    params={},
+                    forces=STATE.get_forces(),
+                )
+            elif forces_on and proposal is not None:
+                # Merge stored forces into existing proposal
+                stored_forces = STATE.get_forces()
+                if stored_forces:
+                    merged_forces = {**proposal.forces, **stored_forces}
+                    proposal = PlacementProposal(
+                        deltas=proposal.deltas,
+                        iterations=proposal.iterations,
+                        final_max_disp_mm=proposal.final_max_disp_mm,
+                        elapsed_s=proposal.elapsed_s,
+                        params=proposal.params,
+                        forces=merged_forces,
+                    )
+            
             svg = render_board_svg(model, title=name, proposal=proposal,
-                                   pinned_uuids=pinned, selected_uuids=selected).encode()
+                                   pinned_uuids=pinned, selected_uuids=selected,
+                                   show_forces=forces_on).encode()
             self._send(200, svg, "image/svg+xml")
             return
         if parsed.path == "/api/placement/params":
@@ -400,6 +441,7 @@ class Handler(BaseHTTPRequestHandler):
                 traceback.print_exc()
                 self._send(500, f"placement failed: {exc}".encode(), "text/plain")
                 return
+            STATE.set_forces(proposal.forces)
             version = STATE.set_proposal(proposal)
             payload = {
                 "ok": True,
@@ -408,6 +450,65 @@ class Handler(BaseHTTPRequestHandler):
                 "final_max_disp_mm": proposal.final_max_disp_mm,
                 "elapsed_s": proposal.elapsed_s,
                 "version": version,
+            }
+            self._send(200, json.dumps(payload).encode(), "application/json")
+            return
+        if parsed.path == "/api/placement/forces":
+            model, _, _, _ = STATE.snapshot
+            if model is None:
+                self._send(404, b"no board loaded", "text/plain")
+                return
+            # Read JSON body for optional parameters
+            length = int(self.headers.get("Content-Length") or 0)
+            body_data = self.rfile.read(length) if length > 0 else b"{}"
+            try:
+                req = json.loads(body_data.decode("utf-8"))
+            except json.JSONDecodeError:
+                self._send(400, b"invalid JSON", "text/plain")
+                return
+
+            movable_uuids = req.get("movable_uuids")
+            if isinstance(movable_uuids, list):
+                movable_uuids = set(movable_uuids)
+            elif movable_uuids is not None:
+                self._send(400, b"movable_uuids must be a list", "text/plain")
+                return
+
+            # Use parameters from request if provided, else load from file
+            base_params = load_params()
+            params = PlacementParams(
+                repulsion_kr=req.get("repulsion_kr", base_params.repulsion_kr),
+                attraction_ka=req.get("attraction_ka", base_params.attraction_ka),
+                ideal_length_mm=req.get("ideal_length_mm", base_params.ideal_length_mm),
+                max_iterations=0,
+                convergence_eps_mm=req.get("convergence_eps_mm", base_params.convergence_eps_mm),
+                rigid_stiffness=req.get("rigid_stiffness", base_params.rigid_stiffness),
+                courtyard_repulsion_kc=req.get("courtyard_repulsion_kc", base_params.courtyard_repulsion_kc),
+                demo_jitter_mm=req.get("demo_jitter_mm", base_params.demo_jitter_mm),
+                stub=False,  # Force physics mode for force computation
+            )
+
+            # If movable_uuids not provided, compute as all unlocked except pinned
+            if movable_uuids is None:
+                movable_uuids = {
+                    fp.uuid for fp in model.footprints
+                    if fp.uuid and not fp.locked and fp.uuid not in STATE.get_pinned_uuids()
+                }
+
+            try:
+                proposal = run_placement(model, params, movable_uuids)
+            except Exception as exc:
+                import traceback
+                traceback.print_exc()
+                self._send(500, f"placement failed: {exc}".encode(), "text/plain")
+                return
+
+            # Store forces in BoardState for SVG rendering
+            STATE.set_forces(proposal.forces)
+
+            payload = {
+                "ok": True,
+                "forces": {u: [fx, fy] for u, (fx, fy) in proposal.forces.items()},
             }
             self._send(200, json.dumps(payload).encode(), "application/json")
             return

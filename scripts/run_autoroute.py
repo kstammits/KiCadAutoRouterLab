@@ -132,8 +132,8 @@ def main(argv=None) -> int:
 
             # Apply deltas to sexpr tree for output
             for uuid_, delta in proposal.deltas.items():
-                dx, dy = delta[0], delta[1]
-                tree = nudge_footprint_by_uuid(tree, uuid_, dx, dy)
+                dx, dy, da = delta[0], delta[1], delta[2]
+                tree = nudge_footprint_by_uuid(tree, uuid_, dx, dy, da)
 
             total_moved += len(proposal.deltas)
             print(

@@ -80,40 +80,44 @@ def find_footprint_by_uuid(tree: SExpr, uuid: str) -> SExpr:
     raise KeyError(f"no footprint with uuid {uuid!r}")
 
 
-def _shift_at(tree: SExpr, fp: SExpr, dx_mm: float, dy_mm: float) -> SExpr:
-    """Return ``tree`` with footprint node ``fp``'s ``(at ...)`` position shifted."""
+def _shift_at(tree: SExpr, fp: SExpr, dx_mm: float = 0.0, dy_mm: float = 0.0, da_deg: float = 0.0) -> SExpr:
+    """Return ``tree`` with footprint node ``fp``'s ``(at ...)`` position and angle shifted."""
     at = fp.find("at")
     if at is None or len(at.args) < 2:
         raise ValueError("footprint has no (at x y ...) position")
     args = list(at.args)
     args[0] = _shift_mm(args[0], dx_mm)
     args[1] = _shift_mm(args[1], dy_mm)
+    if len(args) >= 3:
+        args[2] = _shift_mm(args[2], da_deg)
+    elif da_deg != 0.0:
+        args.append(da_deg)
     new_at = SExpr("at", tuple(args))
     new_fp = replace(fp, args=tuple(new_at if a is at else a for a in fp.args))
     return replace(tree, args=tuple(new_fp if a is fp else a for a in tree.args))
 
 
 def nudge_footprint(
-    tree: SExpr, ref: str, dx_mm: float = 0.0, dy_mm: float = 0.0
+    tree: SExpr, ref: str, dx_mm: float = 0.0, dy_mm: float = 0.0, da_deg: float = 0.0
 ) -> SExpr:
-    """Return the board tree with footprint `ref` shifted by (dx_mm, dy_mm).
+    """Return the board tree with footprint `ref` shifted by (dx_mm, dy_mm, da_deg).
 
     Only the footprint's `(at ...)` position is rewritten; pads, nets, ERC
     linkage and every other node pass through untouched. A zero delta is the
     no-op edit used to exercise read/modify/write without moving anything.
     """
-    return _shift_at(tree, find_footprint(tree, ref), dx_mm, dy_mm)
+    return _shift_at(tree, find_footprint(tree, ref), dx_mm, dy_mm, da_deg)
 
 
 def nudge_footprint_by_uuid(
-    tree: SExpr, uuid: str, dx_mm: float = 0.0, dy_mm: float = 0.0
+    tree: SExpr, uuid: str, dx_mm: float = 0.0, dy_mm: float = 0.0, da_deg: float = 0.0
 ) -> SExpr:
-    """Return the board tree with the footprint carrying `uuid` shifted by (dx_mm, dy_mm).
+    """Return the board tree with the footprint carrying `uuid` shifted by (dx_mm, dy_mm, da_deg).
 
     Same guarantees as :func:`nudge_footprint`, addressed by UUID instead of
     reference so duplicate or missing refs remain addressable at writeback time.
     """
-    return _shift_at(tree, find_footprint_by_uuid(tree, uuid), dx_mm, dy_mm)
+    return _shift_at(tree, find_footprint_by_uuid(tree, uuid), dx_mm, dy_mm, da_deg)
 
 
 def save_pair(

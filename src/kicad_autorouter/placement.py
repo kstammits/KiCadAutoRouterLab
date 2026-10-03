@@ -16,7 +16,7 @@ import hashlib
 import math
 import sys
 import time
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from typing import Dict, List, Optional, Set, Tuple
 
 import numpy as np
@@ -99,6 +99,7 @@ class PlacementProposal:
     """Result of a placement run: per-footprint deltas keyed by UUID + diagnostics.
 
     Deltas are (dx_mm, dy_mm, dangle_deg) for each movable footprint.
+    Forces are (Fx, Fy) in arbitrary units for each movable footprint.
     """
 
     deltas: Dict[str, Tuple[float, float, float]]
@@ -106,6 +107,7 @@ class PlacementProposal:
     final_max_disp_mm: float
     elapsed_s: float
     params: dict
+    forces: Dict[str, Tuple[float, float]] = field(default_factory=dict)
 
 
 def _jitter_for(uuid: str, max_mm: float) -> Tuple[float, float]:
@@ -348,22 +350,41 @@ def _compute_courtyard_forces(
     pad_to_fp_local: List[int],  # pad index -> local index in fp_uuids
     kc: float
 ) -> np.ndarray:
-    """Compute courtyard repulsion force on each pad. Returns (n, 2) force array."""
+    """Compute courtyard repulsion force on each pad with torque.
+
+    Force on each pad is computed based on its individual distance to the
+    other footprint's courtyard centroid, creating torque on the footprint.
+    Returns (n_pads, 2) force array.
+    """
     m = len(fp_uuids)
     n_pads = pad_positions.shape[0]
-    forces = np.zeros((m, 2))
+    pad_forces = np.zeros((n_pads, 2), dtype=np.float64)
 
-    # Vectorized all-pairs for m footprints (m ~ 10-50, m^2 is fine)
-    for i in range(m):
-        for j in range(i + 1, m):
-            dx = fp_centroids[i, 0] - fp_centroids[j, 0]
-            dy = fp_centroids[i, 1] - fp_centroids[j, 1]
+    # For each pad, compute force from all other footprints
+    for pad_idx in range(n_pads):
+        fp_i_local = pad_to_fp_local[pad_idx]
+        if fp_i_local < 0 or not fp_movable[fp_i_local]:
+            continue
+        
+        pad_pos = pad_positions[pad_idx]
+        
+        # Force from each other footprint
+        for fp_j_local in range(m):
+            if fp_j_local == fp_i_local:
+                continue
+            if not fp_movable[fp_j_local]:
+                continue
+                
+            # Vector from pad to other footprint centroid
+            dx = pad_pos[0] - fp_centroids[fp_j_local, 0]
+            dy = pad_pos[1] - fp_centroids[fp_j_local, 1]
             dist = math.hypot(dx, dy)
             if dist < 1e-6:
                 continue
-            min_dist = fp_radii[i] + fp_radii[j]
+            
+            min_dist = fp_radii[fp_i_local] + fp_radii[fp_j_local]
             if dist < min_dist:
-                # Overlap: strong repulsion
+                # Overlap: strong repulsion, scaled by 1/dist for falloff
                 overlap = min_dist - dist
                 force_mag = kc * (overlap / min_dist) ** 2 / max(dist, 1e-6)
             elif dist < min_dist * 1.5:
@@ -375,18 +396,8 @@ def _compute_courtyard_forces(
 
             fx = force_mag * dx / dist
             fy = force_mag * dy / dist
-            forces[i, 0] += fx
-            forces[i, 1] += fy
-            forces[j, 0] -= fx
-            forces[j, 1] -= fy
-
-    # Zero force on locked footprints
-    forces[~fp_movable] = 0.0
-
-    # Broadcast to pads
-    pad_forces = np.zeros((n_pads, 2), dtype=np.float64)
-    for pad_idx, fp_local_idx in enumerate(pad_to_fp_local):
-        pad_forces[pad_idx] = forces[fp_local_idx]
+            pad_forces[pad_idx, 0] += fx
+            pad_forces[pad_idx, 1] += fy
 
     return pad_forces
 
@@ -531,6 +542,7 @@ def run_placement(
             final_max_disp_mm=0.0,
             elapsed_s=time.perf_counter() - start,
             params=params.to_dict(),
+            forces={},
         )
 
     # Backward compatibility: demo jitter (works even with no nets)
@@ -550,6 +562,7 @@ def run_placement(
             final_max_disp_mm=max_disp,
             elapsed_s=time.perf_counter() - start,
             params=params.to_dict(),
+            forces={},
         )
 
     # Physics mode requires pads with nets
@@ -560,6 +573,7 @@ def run_placement(
             final_max_disp_mm=0.0,
             elapsed_s=time.perf_counter() - start,
             params=params.to_dict(),
+            forces={},
         )
 
     # Build initial pad positions array
@@ -637,6 +651,82 @@ def run_placement(
         fp_centroids = fp_radii = fp_movable = None
         pad_to_fp_local = None
 
+    def _compute_total_force(
+        positions, n_pads, pad_movable,
+        params, has_net_edges, src_idx, dst_idx, ideal_len,
+        has_rigid, rigid_src, rigid_dst, rigid_rest,
+        fp_uuids, fp_centroids, fp_radii, fp_movable_arr,
+        pad_to_fp_local, pad_positions_arr
+    ):
+        """Compute total force on each pad at given positions."""
+        # Repulsion: all-pairs Coulomb k_r / d^2 (with softening epsilon)
+        diff = positions[:, None, :] - positions[None, :, :]  # (n, n, 2)
+        dist_sq = np.sum(diff * diff, axis=2)
+        eps = 1e-6
+        np.fill_diagonal(dist_sq, eps)
+        dist_sq = np.maximum(dist_sq, eps)
+        dist = np.sqrt(dist_sq)
+        force_mag = params.repulsion_kr / dist_sq
+        np.fill_diagonal(force_mag, 0.0)
+        force_vec = diff * (force_mag[:, :, None] / dist[:, :, None])
+        repulsion = np.sum(force_vec, axis=1)  # (n, 2)
+
+        # Attraction: Hooke's law along net edges
+        attraction = np.zeros((n_pads, 2), dtype=np.float64)
+        if has_net_edges:
+            diff_edge = positions[dst_idx] - positions[src_idx]
+            dist_edge = np.linalg.norm(diff_edge, axis=1, keepdims=True)
+            dist_edge = np.maximum(dist_edge, 1e-6)
+            unit = diff_edge / dist_edge
+            force_mag_edge = params.attraction_ka * (dist_edge - ideal_len)
+            force_vec_edge = unit * force_mag_edge
+            np.add.at(attraction, src_idx, -force_vec_edge)
+            np.add.at(attraction, dst_idx, force_vec_edge)
+
+        # Rigid constraints: stiff springs to maintain footprint shape (damped)
+        rigid_force = np.zeros((n_pads, 2), dtype=np.float64)
+        if has_rigid:
+            diff_rigid = positions[rigid_dst] - positions[rigid_src]
+            dist_rigid = np.linalg.norm(diff_rigid, axis=1, keepdims=True)
+            dist_rigid = np.maximum(dist_rigid, 1e-6)
+            unit_rigid = diff_rigid / dist_rigid
+            force_mag_rigid = params.rigid_stiffness * 0.1 * (dist_rigid - rigid_rest[:, None])
+            force_vec_rigid = unit_rigid * force_mag_rigid
+            np.add.at(rigid_force, rigid_src, -force_vec_rigid)
+            np.add.at(rigid_force, rigid_dst, force_vec_rigid)
+
+        # Total force
+        force = repulsion + attraction + rigid_force
+
+        # Courtyard repulsion
+        if fp_uuids and fp_centroids is not None:
+            courtyard_force = _compute_courtyard_forces(
+                fp_uuids, fp_centroids, fp_radii, fp_movable_arr,
+                positions, pad_to_fp_local, params.courtyard_repulsion_kc
+            )
+            force += courtyard_force
+
+        # Replace any NaN forces with zero
+        force = np.nan_to_num(force, nan=0.0, posinf=0.0, neginf=0.0)
+
+        # Zero force on non-movable pads
+        force[~pad_movable] = 0.0
+
+        return force
+
+    # For 0 iterations, compute initial forces at starting positions
+    if params.max_iterations == 0:
+        force = _compute_total_force(
+            positions, n_pads, pad_movable,
+            params, has_net_edges, src_idx, dst_idx, ideal_len,
+            has_rigid, rigid_src, rigid_dst, rigid_rest,
+            fp_uuids, fp_centroids, fp_radii, fp_movable,
+            pad_to_fp_local, pad_positions
+        )
+    else:
+        force = np.zeros((n_pads, 2), dtype=np.float64)
+
+    iteration = -1
     for iteration in range(params.max_iterations):
         # Repulsion: all-pairs Coulomb k_r / d^2 (with softening epsilon)
         diff = positions[:, None, :] - positions[None, :, :]  # (n, n, 2)
@@ -677,21 +767,13 @@ def run_placement(
             np.add.at(rigid_force, rigid_dst, force_vec_rigid)
 
         # Total force
-        force = repulsion + attraction + rigid_force
-
-        # Courtyard repulsion
-        if fp_uuids and fp_centroids is not None:
-            courtyard_force = _compute_courtyard_forces(
-                fp_uuids, fp_centroids, fp_radii, fp_movable,
-                positions, pad_to_fp_local, params.courtyard_repulsion_kc
-            )
-            force += courtyard_force
-
-        # Replace any NaN forces with zero
-        force = np.nan_to_num(force, nan=0.0, posinf=0.0, neginf=0.0)
-
-        # Zero force on non-movable pads
-        force[~pad_movable] = 0.0
+        force = _compute_total_force(
+            positions, n_pads, pad_movable,
+            params, has_net_edges, src_idx, dst_idx, ideal_len,
+            has_rigid, rigid_src, rigid_dst, rigid_rest,
+            fp_uuids, fp_centroids, fp_radii, fp_movable,
+            pad_to_fp_local, pad_positions
+        )
 
         # Displacement = force * temp (capped by temp)
         disp = force * temp
@@ -744,10 +826,25 @@ def run_placement(
             deltas[fp.uuid] = (dx, dy, da)
             final_max_disp = max(final_max_disp, math.hypot(dx, dy))
 
+    # Compute footprint-level forces (sum of pad forces)
+    footprint_forces = {}
+    for fp in model.footprints:
+        if not fp.uuid or fp.locked:
+            continue
+        if movable_uuids is not None and fp.uuid not in movable_uuids:
+            continue
+        if fp.uuid not in fp_uuid_to_pad_indices:
+            continue
+        pad_indices = fp_uuid_to_pad_indices[fp.uuid]
+        if pad_indices:
+            fp_force = force[pad_indices].sum(axis=0)
+            footprint_forces[fp.uuid] = (float(fp_force[0]), float(fp_force[1]))
+
     return PlacementProposal(
         deltas=deltas,
         iterations=iteration + 1,
         final_max_disp_mm=final_max_disp,
         elapsed_s=time.perf_counter() - start,
         params=params.to_dict(),
+        forces=footprint_forces,
     )

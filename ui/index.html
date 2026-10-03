@@ -93,6 +93,8 @@
     <span class="num">Place</span>
     <label class="chk" style="margin-left:.5rem;"><input type="number" id="step-iters" value="50" min="1" max="5000" step="10" style="width:5rem;"> iterations/step</label>
     <label class="chk" style="margin-left:.5rem;"><input type="checkbox" id="physics-mode" checked> Physics mode</label>
+    <label class="chk" style="margin-left:.5rem;"><input type="checkbox" id="forces-toggle"> Show forces</label>
+    <button id="refresh-forces-btn" title="Recompute forces with current parameters">↻</button>
     <button id="run-btn">Step placement</button>
     <button id="accept-btn" disabled>Accept proposal</button>
     <button id="clear-btn">Clear proposal</button>
@@ -208,6 +210,10 @@ paramsGrid.addEventListener("input", e => {
   const num = paramsGrid.querySelector(`input[type=number][data-key=${key}]`);
   if (e.target.type === "range") num.value = range.value;
   else range.value = num.value;
+  // Auto-refresh forces if currently shown
+  if (forcesToggle.checked && lastVersion) {
+    refreshForces();
+  }
 });
 
 function readParams() {
@@ -236,6 +242,7 @@ const viewport = document.getElementById("board-viewport");
 const zoomInfo = document.getElementById("zoom-info");
 const schChip = document.getElementById("board-sch");
 const overlayToggle = document.getElementById("overlay-toggle");
+const forcesToggle = document.getElementById("forces-toggle");
 const fitBtn = document.getElementById("fit-btn");
 const diagEl = document.getElementById("diag");
 
@@ -245,7 +252,9 @@ let isPanning = false;
 let panStart = null;
 
 function boardSrc(version) {
-  return `/api/board.svg?v=${version}&overlay=${overlayToggle.checked ? 1 : 0}`;
+  const overlayOn = overlayToggle?.checked ?? false;
+  const forcesOn = forcesToggle?.checked ?? false;
+  return `/api/board.svg?v=${version}&overlay=${overlayOn ? 1 : 0}&forces=${forcesOn ? 1 : 0}`;
 }
 
 function updateZoomInfo() {
@@ -266,9 +275,13 @@ function fitToView() {
   const svg = viewport.querySelector("svg");
   if (!svg) return;
   // Read the original viewBox from the SVG
-  const vb = svg.getAttribute("viewBox").split(" ").map(Number);
-  viewBox = [...vb];
-  applyViewBox();
+  const vbAttr = svg.getAttribute("viewBox");
+  if (!vbAttr) return;
+  const vb = vbAttr.split(" ").map(Number);
+  if (vb.length === 4) {
+    viewBox = [...vb];
+    applyViewBox();
+  }
 }
 
 async function fetchAndInjectSVG(version) {
@@ -279,8 +292,13 @@ async function fetchAndInjectSVG(version) {
   // Capture initial viewBox for zoom reference
   const svg = viewport.querySelector("svg");
   if (svg) {
-    const vb = svg.getAttribute("viewBox").split(" ").map(Number);
-    viewBox = [...vb];
+    const vbAttr = svg.getAttribute("viewBox");
+    if (vbAttr) {
+      const vb = vbAttr.split(" ").map(Number);
+      if (vb.length === 4) {
+        viewBox = [...vb];
+      }
+    }
   }
   applyViewBox();
 }
@@ -314,6 +332,33 @@ async function poll() {
 
 overlayToggle.addEventListener("change", () => {
   if (lastVersion) {
+    fetchAndInjectSVG(lastVersion);
+    loadSelectionState();
+  }
+});
+
+async function refreshForces() {
+  if (!lastVersion) return;
+  try {
+    const res = await fetch("/api/placement/forces", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(readParams())
+    });
+    if (!res.ok) throw new Error(await res.text());
+  } catch (err) {
+    console.error("Failed to fetch forces:", err);
+    forcesToggle.checked = false;
+  }
+  fetchAndInjectSVG(lastVersion);
+  loadSelectionState();
+}
+
+forcesToggle.addEventListener("change", async () => {
+  if (!lastVersion) return;
+  if (forcesToggle.checked) {
+    await refreshForces();
+  } else {
     fetchAndInjectSVG(lastVersion);
     loadSelectionState();
   }
@@ -520,6 +565,8 @@ document.getElementById("pin-btn").addEventListener("click", () => {
   // Pin all currently selected
   selectedUuids.forEach(uuid => togglePin(uuid));
 });
+
+document.getElementById("refresh-forces-btn").addEventListener("click", refreshForces);
 
 document.getElementById("run-btn").addEventListener("click", async () => {
   try {

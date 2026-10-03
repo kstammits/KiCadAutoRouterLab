@@ -537,6 +537,33 @@ def netlist(tree: SExpr) -> Dict[str, Tuple[NetConnection, ...]]:
     return {name: tuple(sorted(conns)) for name, conns in sorted(nets.items())}
 
 
+def _to_local(
+    board_x_mm: float,
+    board_y_mm: float,
+    x_mm: float,
+    y_mm: float,
+    angle_deg: float,
+    layer: str,
+) -> Point:
+    """Map a board-space point to footprint-local coordinates.
+    
+    Inverse of _to_board().
+    """
+    rad = math.radians(angle_deg)
+    cos_a, sin_a = math.cos(rad), math.sin(rad)
+    bx = board_x_mm - x_mm
+    by = board_y_mm - y_mm
+    if layer == "B.Cu":
+        # B.Cu was mirrored across X before rotation
+        lx = bx * cos_a + by * sin_a
+        ly = -bx * sin_a + by * cos_a
+        lx = -lx
+    else:
+        lx = bx * cos_a + by * sin_a
+        ly = -bx * sin_a + by * cos_a
+    return Point(lx, ly)
+
+
 def apply_deltas(
     model: BoardModel, deltas: Dict[str, Tuple[float, float, float]]
 ) -> BoardModel:
@@ -555,16 +582,88 @@ def apply_deltas(
             updated_footprints.append(fp)
             continue
         dx, dy, da = deltas[fp.uuid]
+        new_x = fp.x_mm + dx
+        new_y = fp.y_mm + dy
+        new_angle = fp.angle_deg + da
+
+        # Recompute pad positions from new footprint pose
+        new_pads = tuple(
+            Pad(
+                number=pad.number,
+                net_name=pad.net_name,
+                position=transform_local(
+                    Footprint(
+                        ref=fp.ref,
+                        footprint_id=fp.footprint_id,
+                        layer=fp.layer,
+                        x_mm=new_x,
+                        y_mm=new_y,
+                        angle_deg=new_angle,
+                        pads=(),
+                        courtyard=(),
+                        locked=fp.locked,
+                        uuid=fp.uuid,
+                    ),
+                    # Convert board pad position to local coordinates using old pose
+                    _to_local(pad.position.x_mm, pad.position.y_mm, fp.x_mm, fp.y_mm, fp.angle_deg, fp.layer).x_mm,
+                    _to_local(pad.position.x_mm, pad.position.y_mm, fp.x_mm, fp.y_mm, fp.angle_deg, fp.layer).y_mm,
+                ),
+                size_mm=pad.size_mm,
+                shape=pad.shape,
+                angle_deg=pad.angle_deg,
+            )
+            for pad in fp.pads
+        )
+
+        # Recompute courtyard from new footprint pose
+        new_courtyard = tuple(
+            (
+                transform_local(
+                    Footprint(
+                        ref=fp.ref,
+                        footprint_id=fp.footprint_id,
+                        layer=fp.layer,
+                        x_mm=new_x,
+                        y_mm=new_y,
+                        angle_deg=new_angle,
+                        pads=(),
+                        courtyard=(),
+                        locked=fp.locked,
+                        uuid=fp.uuid,
+                    ),
+                    _to_local(a.x_mm, a.y_mm, fp.x_mm, fp.y_mm, fp.angle_deg, fp.layer).x_mm,
+                    _to_local(a.x_mm, a.y_mm, fp.x_mm, fp.y_mm, fp.angle_deg, fp.layer).y_mm,
+                ),
+                transform_local(
+                    Footprint(
+                        ref=fp.ref,
+                        footprint_id=fp.footprint_id,
+                        layer=fp.layer,
+                        x_mm=new_x,
+                        y_mm=new_y,
+                        angle_deg=new_angle,
+                        pads=(),
+                        courtyard=(),
+                        locked=fp.locked,
+                        uuid=fp.uuid,
+                    ),
+                    _to_local(b.x_mm, b.y_mm, fp.x_mm, fp.y_mm, fp.angle_deg, fp.layer).x_mm,
+                    _to_local(b.x_mm, b.y_mm, fp.x_mm, fp.y_mm, fp.angle_deg, fp.layer).y_mm,
+                ),
+            )
+            for a, b in fp.courtyard
+        )
+
         updated_footprints.append(
             Footprint(
                 ref=fp.ref,
                 footprint_id=fp.footprint_id,
                 layer=fp.layer,
-                x_mm=fp.x_mm + dx,
-                y_mm=fp.y_mm + dy,
-                angle_deg=fp.angle_deg + da,
-                pads=fp.pads,
-                courtyard=fp.courtyard,
+                x_mm=new_x,
+                y_mm=new_y,
+                angle_deg=new_angle,
+                pads=new_pads,
+                courtyard=new_courtyard,
                 locked=fp.locked,
                 uuid=fp.uuid,
             )

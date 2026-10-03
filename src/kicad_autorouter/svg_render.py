@@ -302,6 +302,38 @@ def _arrow_marker() -> str:
     )
 
 
+def _forces_overlay(model: BoardModel, proposal: PlacementProposal, 
+                    scale: float = 0.1, max_len: float = 5.0) -> List[str]:
+    """Draw force vectors at footprint centroids.
+    
+    scale: mm per force unit (tune visually)
+    max_len: cap arrow length in mm
+    """
+    if not proposal.forces:
+        return []
+    out = [f'<g stroke="{MOVE_ARROW}" stroke-width="0.15" fill="{MOVE_ARROW}" opacity="0.8">']
+    for fp in model.footprints:
+        f = proposal.forces.get(fp.uuid)
+        if not f:
+            continue
+        fx, fy = f
+        mag = math.hypot(fx, fy)
+        if mag < 1e-6:
+            continue
+        # Scale and cap
+        length = min(mag * scale, max_len)
+        ux, uy = fx / mag, fy / mag
+        cx, cy = _courtyard_centroid(fp)
+        # Arrow from centroid in force direction
+        out.append(
+            f'<line x1="{_fmt(cx)}" y1="{_fmt(cy)}" '
+            f'x2="{_fmt(cx + ux * length)}" y2="{_fmt(cy + uy * length)}" '
+            f'marker-end="url(#move-arrow)"/>'
+        )
+    out.append("</g>")
+    return out
+
+
 def _proposal_overlay(model: BoardModel, proposal: PlacementProposal) -> List[str]:
     """Ghost courtyards at original positions + old→new arrows for moved parts."""
     out = [
@@ -339,6 +371,7 @@ def render_board_svg(
     proposal: Optional[PlacementProposal] = None,
     pinned_uuids: Optional[Set[str]] = None,
     selected_uuids: Optional[Set[str]] = None,
+    show_forces: bool = False,
 ) -> str:
     """Build the full SVG document for ``model`` (millimeter user units).
 
@@ -355,6 +388,7 @@ def render_board_svg(
         proposal: Optional placement proposal for overlay.
         pinned_uuids: Set of footprint UUIDs pinned by user (excluded from movement).
         selected_uuids: Set of footprint UUIDs currently selected (for move).
+        show_forces: If True, draw force vectors on footprints.
     """
     colors = net_colors(model)
     min_x, min_y, width, height = _bounds(model)
@@ -378,7 +412,7 @@ def render_board_svg(
     if title:
         parts.append(f"<title>{html.escape(title)}</title>")
     offsets = proposal.deltas if moved else None
-    if moved:
+    if moved or (proposal is not None and show_forces):
         parts.append(_arrow_marker())
 
     locked_uuids = {fp.uuid for fp in model.footprints if fp.locked and fp.uuid}
@@ -392,5 +426,7 @@ def render_board_svg(
     parts.extend(_vias_svg(model, colors))
     if moved:
         parts.extend(_proposal_overlay(model, proposal))
+    if proposal is not None and show_forces:
+        parts.extend(_forces_overlay(model, proposal))
     parts.append("</svg>")
     return "\n".join(parts)
