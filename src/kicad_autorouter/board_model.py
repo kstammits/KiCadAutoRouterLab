@@ -16,10 +16,11 @@ matching ``pcbnew::TRANSFORM`` for back-side footprints.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
-from typing import Dict, Optional, Tuple
+import uuid as uuid_module
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Tuple
 
-from .sexpr import SExpr
+from .sexpr import SExpr, get_generator_version
 
 
 @dataclass(frozen=True)
@@ -140,6 +141,15 @@ class NetConnection:
 
 
 @dataclass(frozen=True)
+class BoardRegion:
+    """A single board outline region with its boundary polygon and bounding box."""
+
+    uuid: str
+    polygon: Tuple[Point, ...]  # Closed polygon vertices (CCW)
+    bbox: Tuple[float, float, float, float]  # (min_x, max_x, min_y, max_y)
+
+
+@dataclass(frozen=True)
 class BoardModel:
     """Aggregate board-space view used by the autorouter core.
 
@@ -156,6 +166,10 @@ class BoardModel:
     zones: Tuple[Zone, ...] = ()
     edge_cuts: Tuple[Segment, ...] = ()
     edge_arcs: Tuple[EdgeCutArc, ...] = ()
+    board_regions: Tuple[BoardRegion, ...] = ()
+    footprint_region: Dict[str, int] = field(default_factory=dict)  # uuid -> region_idx
+    version: str = ""  # KiCad generator_version (e.g., "10.0", "9.0", "11.0")
+    version_warning: Optional[str] = None  # Warning for v11+ boards
 
 
 def _to_board(
@@ -522,6 +536,208 @@ def edge_arcs(tree: SExpr) -> Tuple[EdgeCutArc, ...]:
     return tuple(arcs)
 
 
+def _point_key(p: Point) -> Tuple[float, float]:
+    """Rounded point key for graph adjacency (1e-6 mm tolerance)."""
+    return (round(p.x_mm, 6), round(p.y_mm, 6))
+
+
+def _approximate_arc_as_segments(arc: EdgeCutArc, num_segments: int = 8) -> List[Segment]:
+    """Approximate an EdgeCutArc as line segments using quadratic Bezier.
+
+    Uses the arc's start, mid, end as control points for a quadratic Bezier curve.
+    """
+    import math
+    start = arc.start
+    mid = arc.mid
+    end = arc.end
+
+    segments = []
+    prev = start
+    for i in range(1, num_segments + 1):
+        t = i / num_segments
+        # Quadratic Bezier: B(t) = (1-t)²*P0 + 2(1-t)t*P1 + t²*P2
+        u = 1 - t
+        x = u * u * start.x_mm + 2 * u * t * mid.x_mm + t * t * end.x_mm
+        y = u * u * start.y_mm + 2 * u * t * mid.y_mm + t * t * end.y_mm
+        curr = Point(x, y)
+        segments.append((prev, curr))
+        prev = curr
+    return segments
+
+
+def _build_edge_graph(segments: List[Segment]) -> Dict[Tuple[float, float], List[Tuple[float, float]]]:
+    """Build adjacency graph from segments (endpoints within 1e-6 mm connect)."""
+    graph: Dict[Tuple[float, float], List[Tuple[float, float]]] = {}
+    for a, b in segments:
+        ka, kb = _point_key(a), _point_key(b)
+        if ka not in graph:
+            graph[ka] = []
+        if kb not in graph:
+            graph[kb] = []
+        if kb not in graph[ka]:
+            graph[ka].append(kb)
+        if ka not in graph[kb]:
+            graph[kb].append(ka)
+    return graph
+
+
+def _find_polygons_from_graph(
+    graph: Dict[Tuple[float, float], List[Tuple[float, float]]]
+) -> List[List[Point]]:
+    """Find closed polygons (cycles) from an edge graph using DFS."""
+    polygons = []
+    visited_edges = set()
+
+    def dfs(current: Tuple[float, float], start: Tuple[float, float], path: List[Tuple[float, float]]) -> None:
+        if len(path) > 2 and current == start:
+            # Found a cycle - convert to Points
+            poly = [Point(x, y) for x, y in path[:-1]]  # exclude duplicate start
+            if len(poly) >= 3:
+                polygons.append(poly)
+            return
+
+        for neighbor in graph.get(current, []):
+            edge = tuple(sorted((current, neighbor)))
+            if edge in visited_edges:
+                continue
+            visited_edges.add(edge)
+            dfs(neighbor, start, path + [neighbor])
+
+    for node in graph:
+        if any(tuple(sorted((node, n))) not in visited_edges for n in graph[node]):
+            dfs(node, node, [node])
+
+    return polygons
+
+
+def _polygon_area(poly: List[Point]) -> float:
+    """Compute signed area of polygon (positive = CCW)."""
+    area = 0.0
+    n = len(poly)
+    for i in range(n):
+        j = (i + 1) % n
+        area += poly[i].x_mm * poly[j].y_mm - poly[j].x_mm * poly[i].y_mm
+    return area / 2.0
+
+
+def _ensure_ccw(poly: List[Point]) -> List[Point]:
+    """Ensure polygon vertices are in CCW order."""
+    if _polygon_area(poly) < 0:
+        return list(reversed(poly))
+    return poly
+
+
+def _extract_board_polygons(
+    edge_cuts: Tuple[Segment, ...],
+    edge_arcs: Tuple[EdgeCutArc, ...],
+    min_area_mm2: float = 10.0,
+) -> List[List[Point]]:
+    """Extract closed board outline polygons from Edge.Cuts segments and arcs.
+
+    Returns list of polygons (each = list of Points in CCW order), one per
+    disconnected board outline. Filters out holes (polygons contained within others).
+    """
+    # Collect all segments (edge_cuts + arc approximations)
+    all_segments: List[Segment] = list(edge_cuts)
+    for arc in edge_arcs:
+        all_segments.extend(_approximate_arc_as_segments(arc, num_segments=16))
+
+    # Build graph and find cycles
+    graph = _build_edge_graph(all_segments)
+    raw_polygons = _find_polygons_from_graph(graph)
+
+    # Filter and orient polygons
+    candidates = []
+    for poly in raw_polygons:
+        area = abs(_polygon_area(poly))
+        if area >= min_area_mm2:
+            candidates.append(_ensure_ccw(poly))
+
+    # Filter out holes: a polygon that is contained within another is a hole
+    # Keep only polygons that are NOT contained within any other polygon
+    outer_polygons = []
+    for i, poly_i in enumerate(candidates):
+        is_hole = False
+        for j, poly_j in enumerate(candidates):
+            if i == j:
+                continue
+            # Check if poly_i is contained in poly_j
+            # Test a vertex of poly_i against poly_j
+            test_point = poly_i[0]
+            if _point_in_polygon(test_point, poly_j):
+                is_hole = True
+                break
+        if not is_hole:
+            outer_polygons.append(poly_i)
+
+    return outer_polygons
+
+
+def _point_in_polygon(point: Point, polygon: List[Point]) -> bool:
+    """Ray casting point-in-polygon test. Returns True if point is inside polygon."""
+    x, y = point.x_mm, point.y_mm
+    inside = False
+    n = len(polygon)
+    for i in range(n):
+        j = (i + 1) % n
+        xi, yi = polygon[i].x_mm, polygon[i].y_mm
+        xj, yj = polygon[j].x_mm, polygon[j].y_mm
+        # Check if edge crosses horizontal ray to the right of point
+        if ((yi > y) != (yj > y)) and (x < (xj - xi) * (y - yi) / (yj - yi) + xi):
+            inside = not inside
+    return inside
+
+
+def _polygon_bbox(polygon: List[Point]) -> Tuple[float, float, float, float]:
+    """Compute bounding box of polygon: (min_x, max_x, min_y, max_y)."""
+    xs = [p.x_mm for p in polygon]
+    ys = [p.y_mm for p in polygon]
+    return (min(xs), max(xs), min(ys), max(ys))
+
+
+def _footprint_centroid(fp) -> Point:
+    """Compute centroid of footprint's courtyard or pad bounding box."""
+    if fp.courtyard:
+        # Collect all courtyard vertices
+        vertices = []
+        for a, b in fp.courtyard:
+            vertices.append((a.x_mm, a.y_mm))
+            vertices.append((b.x_mm, b.y_mm))
+        if vertices:
+            xs = [v[0] for v in vertices]
+            ys = [v[1] for v in vertices]
+            return Point(sum(xs) / len(xs), sum(ys) / len(ys))
+    # Fallback: pad bounding box centroid
+    if fp.pads:
+        xs = [p.position.x_mm for p in fp.pads]
+        ys = [p.position.y_mm for p in fp.pads]
+        return Point(sum(xs) / len(xs), sum(ys) / len(ys))
+    return Point(fp.x_mm, fp.y_mm)
+
+
+def _assign_board_regions(
+    footprints: Tuple,
+    board_polygons: List[List[Point]],
+) -> Dict[str, int]:
+    """Assign each footprint to a board region via point-in-polygon test.
+
+    Returns {fp.uuid: region_idx} for footprints with UUID.
+    Footprints not in any region get -1.
+    """
+    assignment: Dict[str, int] = {}
+    for fp in footprints:
+        if not fp.uuid:
+            continue
+        centroid = _footprint_centroid(fp)
+        region_idx = -1
+        for idx, poly in enumerate(board_polygons):
+            if _point_in_polygon(centroid, poly):
+                region_idx = idx
+                break
+        assignment[fp.uuid] = region_idx
+    return assignment
+
+
 def netlist(tree: SExpr) -> Dict[str, Tuple[NetConnection, ...]]:
     """Map net name -> its pad connections, from pad-level ``(net ...)`` refs.
 
@@ -687,6 +903,94 @@ def apply_deltas(
     )
 
 
+def commit_placement(
+    model: BoardModel,
+    deltas: Dict[str, Tuple[float, float, float]],
+    protected_nets: Optional[Set[str]] = None,
+) -> BoardModel:
+    """Apply deltas AND rip up tracks/vias on nets of moved footprints.
+
+    Args:
+        model: Board model
+        deltas: {uuid: (dx, dy, dangle)} footprint movements
+        protected_nets: Net names to never rip up (e.g., power rails)
+
+    Returns:
+        New BoardModel with moved footprints and pruned tracks/vias
+    """
+    if not deltas:
+        return model
+
+    # Collect affected nets from moved footprints' pads
+    affected_nets: Set[str] = set()
+    for fp in model.footprints:
+        if fp.uuid in deltas and not fp.locked:
+            dx, dy, da = deltas[fp.uuid]
+            if dx != 0.0 or dy != 0.0 or da != 0.0:
+                for pad in fp.pads:
+                    if pad.net_name:
+                        affected_nets.add(pad.net_name)
+
+    if not affected_nets:
+        return apply_deltas(model, deltas)
+
+    protected = protected_nets or set()
+
+    # Filter tracks and vias: keep if net not affected OR net is protected
+    def keep_copper(net_name: Optional[str]) -> bool:
+        if net_name is None:
+            return True
+        if net_name in protected:
+            return True
+        return net_name not in affected_nets
+
+    kept_tracks = tuple(t for t in model.tracks if keep_copper(t.net_name))
+    kept_vias = tuple(v for v in model.vias if keep_copper(v.net_name))
+
+    # Apply footprint movement
+    moved_model = apply_deltas(model, deltas)
+
+    # Return model with pruned copper
+    return BoardModel(
+        footprints=moved_model.footprints,
+        keepout_zones=moved_model.keepout_zones,
+        nets=moved_model.nets,
+        by_ref=moved_model.by_ref,
+        tracks=kept_tracks,
+        vias=kept_vias,
+        zones=moved_model.zones,
+        edge_cuts=moved_model.edge_cuts,
+        edge_arcs=moved_model.edge_arcs,
+        board_regions=moved_model.board_regions,
+        footprint_region=moved_model.footprint_region,
+    )
+
+
+def _parse_version(version_str: Optional[str]) -> tuple[str, Optional[str]]:
+    """Parse generator_version string and return (version, warning).
+    
+    Version logic:
+    - v8.x, v9.x: OK, no warning
+    - v10.x: OK, no warning (current target)
+    - v11.x+: Warning - compatibility not verified
+    - Unknown/missing: Empty version, no warning
+    """
+    if not version_str:
+        return "", None
+    
+    try:
+        major = int(version_str.split(".")[0])
+    except (ValueError, IndexError):
+        return version_str, None
+    
+    if major >= 11:
+        return version_str, (
+            f"KiCad {major}+ format detected (generator_version={version_str}); "
+            "compatibility not verified. Loading may produce unexpected results."
+        )
+    return version_str, None
+
+
 def board_model(tree: SExpr) -> BoardModel:
     """Build the aggregate :class:`BoardModel` from a parsed board tree."""
     fps = footprints(tree)
@@ -694,6 +998,29 @@ def board_model(tree: SExpr) -> BoardModel:
     for fp in fps:  # first occurrence wins, matching io.find_footprint
         if fp.ref and fp.ref not in by_ref:
             by_ref[fp.ref] = fp
+
+    # Extract board outline polygons from Edge.Cuts
+    edge_cuts_list = edge_cuts(tree)
+    edge_arcs_list = edge_arcs(tree)
+    board_polygons = _extract_board_polygons(edge_cuts_list, edge_arcs_list)
+
+    # Create BoardRegion objects
+    board_regions = tuple(
+        BoardRegion(
+            uuid=uuid_module.uuid4().hex,
+            polygon=tuple(poly),
+            bbox=_polygon_bbox(poly),
+        )
+        for poly in board_polygons
+    )
+
+    # Assign footprints to regions
+    footprint_region = _assign_board_regions(fps, board_polygons)
+
+    # Parse version and warning
+    gen_version = get_generator_version(tree)
+    version, version_warning = _parse_version(gen_version)
+
     return BoardModel(
         footprints=tuple(fps),
         keepout_zones=tuple(keepout_zones(tree)),
@@ -702,6 +1029,10 @@ def board_model(tree: SExpr) -> BoardModel:
         tracks=tuple(tracks(tree)),
         vias=tuple(vias(tree)),
         zones=tuple(zones(tree)),
-        edge_cuts=edge_cuts(tree),
-        edge_arcs=edge_arcs(tree),
+        edge_cuts=edge_cuts_list,
+        edge_arcs=edge_arcs_list,
+        board_regions=board_regions,
+        footprint_region=footprint_region,
+        version=version,
+        version_warning=version_warning,
     )

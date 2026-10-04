@@ -3,7 +3,7 @@
 import json
 import sys
 import threading
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Set, Optional
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -12,13 +12,15 @@ UI_DIR = Path(__file__).resolve().parent
 REPO_ROOT = UI_DIR.parent.resolve()
 sys.path.insert(0, str(UI_DIR.parent / "src"))
 
-from kicad_autorouter.board_model import apply_deltas, board_model  # noqa: E402
-from kicad_autorouter.io import nudge_footprint_by_uuid  # noqa: E402
+from kicad_autorouter.board_model import apply_deltas, board_model, commit_placement  # noqa: E402
+from kicad_autorouter.io import nudge_footprint_by_uuid, rip_up_nets  # noqa: E402
 from kicad_autorouter.pipeline import stages  # noqa: E402
 from kicad_autorouter.placement import (  # noqa: E402
     PlacementParams,
+    PlacementProposal,
     run_placement,
 )
+from kicad_autorouter.routing.power import identify_power_nets  # noqa: E402
 from kicad_autorouter.sexpr import parse  # noqa: E402
 from kicad_autorouter.svg_render import render_board_svg  # noqa: E402
 
@@ -41,8 +43,11 @@ class BoardState:
         self.forces: Dict[str, Tuple[float, float]] = {}  # Cached forces for display
         self.pinned_uuids: set[str] = set()  # User-pinned (pseudo-locked)
         self.selected_uuids: set[str] = set()  # Currently selected for move
+        self.drc_violations: list[dict] = []  # Cached DRC violations for overlay
         self.undo_stack: list[tuple] = []  # Stack of (model, pcb_tree) for undo
         self.max_undo_depth = 20
+        self.board_version: str = ""  # KiCad generator_version (e.g., "10.0")
+        self.version_warning: Optional[str] = None  # Warning for v11+ boards
 
     def load(self, data: bytes, name: str, kind: str) -> int:
         tree = parse(data.decode("utf-8"))
@@ -52,6 +57,8 @@ class BoardState:
         with self._lock:
             if kind == "sch":
                 self.sch = tree
+                self.board_version = ""
+                self.version_warning = None
             else:
                 self.model = board_model(tree)
                 self.pcb_tree = tree
@@ -63,13 +70,23 @@ class BoardState:
                 self.pinned_uuids.clear()
                 self.selected_uuids.clear()
                 self.undo_stack.clear()
+                # Capture board version and warning
+                self.board_version = self.model.version if self.model else ""
+                self.version_warning = self.model.version_warning if self.model else None
             self.version += 1
             return self.version
 
     @property
     def snapshot(self):
         with self._lock:
-            return self.model, self.sch is not None, self.name, self.version
+            return (
+                self.model,
+                self.sch is not None,
+                self.name,
+                self.version,
+                self.board_version,
+                self.version_warning,
+            )
 
     @property
     def current_proposal(self):
@@ -97,6 +114,16 @@ class BoardState:
     def set_forces(self, forces: Dict[str, Tuple[float, float]]) -> int:
         with self._lock:
             self.forces = forces.copy()
+            self.version += 1
+            return self.version
+
+    def get_drc_violations(self) -> list[dict]:
+        with self._lock:
+            return self.drc_violations.copy()
+
+    def set_drc_violations(self, violations: list[dict]) -> int:
+        with self._lock:
+            self.drc_violations = violations.copy()
             self.version += 1
             return self.version
 
@@ -174,8 +201,23 @@ class BoardState:
                 self.proposal = None
                 self.selected_uuids.clear()
                 self.undo_stack.clear()
+                # Restore board version and warning from original
+                self.board_version = self.model.version if self.model else ""
+                self.version_warning = self.model.version_warning if self.model else None
                 self.version += 1
             return self.version
+
+    def _get_affected_nets(self, moved_uuids: Set[str]) -> Set[str]:
+        """Collect net names from pads of moved footprints."""
+        affected = set()
+        if self.model is None:
+            return affected
+        for fp in self.model.footprints:
+            if fp.uuid in moved_uuids:
+                for pad in fp.pads:
+                    if pad.net_name:
+                        affected.add(pad.net_name)
+        return affected
 
     def accept_proposal(self) -> int:
         """Apply current proposal to both model and PCB tree, push to undo stack."""
@@ -184,9 +226,18 @@ class BoardState:
                 raise ValueError("no proposal to accept")
             # Push current state to undo before applying
             self.push_undo()
-            # Apply to BoardModel (for physics/rendering)
-            self.model = apply_deltas(self.model, self.proposal.deltas)
-            # Apply to S-expression tree (for writeback/download)
+            # Identify affected nets from moved footprints
+            moved_uuids = {
+                u for u, d in self.proposal.deltas.items()
+                if d != (0.0, 0.0, 0.0) and d != (0.0, 0.0)
+            }
+            # Auto-detect power nets to protect
+            power_nets, ground_nets = identify_power_nets(self.model)
+            protected_nets = power_nets | ground_nets | {"GND", "GND_PWR", "VCC", "VDD", "VSS", "GROUND"}
+            # Apply to BoardModel: move footprints + rip up tracks/vias on affected nets
+            self.model = commit_placement(self.model, self.proposal.deltas, protected_nets)
+            # Apply to S-expression tree: move footprints + rip up tracks/vias
+            self.pcb_tree = rip_up_nets(self.pcb_tree, self._get_affected_nets(moved_uuids), protected_nets)
             for uuid, (dx, dy, da) in self.proposal.deltas.items():
                 if dx != 0.0 or dy != 0.0 or da != 0.0:
                     self.pcb_tree = nudge_footprint_by_uuid(self.pcb_tree, uuid, dx, dy, da)
@@ -222,11 +273,14 @@ def save_params(params: PlacementParams) -> None:
 
 
 def proposal_to_json(proposal) -> dict:
+    def r5(x):
+        return round(x, 5) if isinstance(x, float) else x
+
     return {
-        "deltas": {u: [dx, dy, da] for u, (dx, dy, da) in proposal.deltas.items()},
+        "deltas": {u: [r5(dx), r5(dy), r5(da)] for u, (dx, dy, da) in proposal.deltas.items()},
         "iterations": proposal.iterations,
-        "final_max_disp_mm": proposal.final_max_disp_mm,
-        "elapsed_s": proposal.elapsed_s,
+        "final_max_disp_mm": r5(proposal.final_max_disp_mm),
+        "elapsed_s": r5(proposal.elapsed_s),
         "params": proposal.params,
     }
 
@@ -246,24 +300,27 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         qs = parse_qs(parsed.query)
         if parsed.path == "/api/state":
-            model, has_sch, name, version = STATE.snapshot
+            model, has_sch, name, version, board_version, version_warning = STATE.snapshot
             body = json.dumps(
                 {
                     "loaded": model is not None,
                     "name": name,
                     "version": version,
                     "has_sch": has_sch,
+                    "board_version": board_version,
+                    "warning": version_warning,
                 }
             )
             self._send(200, body.encode(), "application/json")
             return
         if parsed.path == "/api/board.svg":
-            model, _, name, _ = STATE.snapshot
+            model, _, name, _, _, _ = STATE.snapshot
             if model is None:
                 self._send(404, b"no board loaded", "text/plain")
                 return
             overlay_on = qs.get("overlay", ["1"])[0] != "0"
             forces_on = qs.get("forces", ["0"])[0] != "0"
+            drc_on = qs.get("drc", ["0"])[0] != "0"
             proposal = STATE.current_proposal if overlay_on else None
             pinned = STATE.get_pinned_uuids()
             selected = STATE.get_selected_uuids()
@@ -293,9 +350,12 @@ class Handler(BaseHTTPRequestHandler):
                         forces=merged_forces,
                     )
             
+            drc_violations = STATE.get_drc_violations() if drc_on else None
+            
             svg = render_board_svg(model, title=name, proposal=proposal,
                                    pinned_uuids=pinned, selected_uuids=selected,
-                                   show_forces=forces_on).encode()
+                                   show_forces=forces_on,
+                                   drc_violations=drc_violations).encode()
             self._send(200, svg, "image/svg+xml")
             return
         if parsed.path == "/api/placement/params":
@@ -334,6 +394,46 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(content.encode())
             return
+        if parsed.path == "/api/footprints":
+            model, _, _, _, _, _ = STATE.snapshot
+            if model is None:
+                self._send(404, b"no board loaded", "text/plain")
+                return
+            pinned = STATE.get_pinned_uuids()
+            selected = STATE.get_selected_uuids()
+            locked = {fp.uuid for fp in model.footprints if fp.locked and fp.uuid}
+            footprints_data = []
+            for fp in model.footprints:
+                if not fp.uuid:
+                    continue
+                # Collect unique net names for this footprint
+                nets = sorted({pad.net_name for pad in fp.pads if pad.net_name})
+                # Courtyard bbox
+                minx = miny = float('inf')
+                maxx = maxy = float('-inf')
+                for a, b in fp.courtyard:
+                    minx = min(minx, a.x_mm, b.x_mm)
+                    miny = min(miny, a.y_mm, b.y_mm)
+                    maxx = max(maxx, a.x_mm, b.x_mm)
+                    maxy = max(maxy, a.y_mm, b.y_mm)
+                if minx == float('inf'):
+                    minx = miny = maxx = maxy = 0.0
+                footprints_data.append({
+                    "uuid": fp.uuid,
+                    "ref": fp.ref,
+                    "footprint_id": fp.footprint_id,
+                    "layer": fp.layer,
+                    "x_mm": fp.x_mm,
+                    "y_mm": fp.y_mm,
+                    "angle_deg": fp.angle_deg,
+                    "locked": fp.locked,
+                    "pinned": fp.uuid in pinned,
+                    "selected": fp.uuid in selected,
+                    "nets": nets,
+                    "bbox": [minx, miny, maxx, maxy],
+                })
+            self._send(200, json.dumps({"ok": True, "footprints": footprints_data}).encode(), "application/json")
+            return
         rel_path = parsed.path.lstrip("/")
         rel = Path(rel_path) if rel_path else Path("index.html")
         full = (UI_DIR / rel).resolve()
@@ -370,7 +470,14 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self._send(400, f"parse error: {exc}".encode(), "text/plain")
                 return
-            payload = {"ok": True, "name": name, "kind": kind, "version": version}
+            payload = {
+                "ok": True,
+                "name": name,
+                "kind": kind,
+                "version": version,
+                "board_version": STATE.board_version,
+                "warning": STATE.version_warning,
+            }
             self._send(200, json.dumps(payload).encode(), "application/json")
             return
         if parsed.path == "/api/placement/params":
@@ -385,7 +492,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps(params.to_dict()).encode(), "application/json")
             return
         if parsed.path == "/api/placement/run":
-            model, _, _, _ = STATE.snapshot
+            model, _, _, _, _, _ = STATE.snapshot
             if model is None:
                 self._send(404, b"no board loaded", "text/plain")
                 return
@@ -454,7 +561,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps(payload).encode(), "application/json")
             return
         if parsed.path == "/api/placement/forces":
-            model, _, _, _ = STATE.snapshot
+            model, _, _, _, _, _ = STATE.snapshot
             if model is None:
                 self._send(404, b"no board loaded", "text/plain")
                 return
@@ -555,7 +662,7 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
         if parsed.path == "/api/placement/pin":
-            model, _, _, _ = STATE.snapshot
+            model, _, _, _, _, _ = STATE.snapshot
             if model is None:
                 self._send(404, b"no board loaded", "text/plain")
                 return
@@ -575,7 +682,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps({"ok": True, "pinned": list(pinned), "version": version}).encode(), "application/json")
             return
         if parsed.path == "/api/placement/select":
-            model, _, _, _ = STATE.snapshot
+            model, _, _, _, _, _ = STATE.snapshot
             if model is None:
                 self._send(404, b"no board loaded", "text/plain")
                 return
@@ -595,7 +702,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps({"ok": True, "selected": list(selected), "version": version}).encode(), "application/json")
             return
         if parsed.path == "/api/placement/select_all":
-            model, _, _, _ = STATE.snapshot
+            model, _, _, _, _, _ = STATE.snapshot
             if model is None:
                 self._send(404, b"no board loaded", "text/plain")
                 return
