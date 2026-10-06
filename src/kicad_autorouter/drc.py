@@ -130,6 +130,7 @@ def run_drc_on_tree(
     prefix: str = "drc_",
     cli: Optional[str] = None,
     keep_report: bool = True,
+    report_path: Optional[Path] = None,
 ) -> DRCResult:
     """Run DRC on a PCB S-expression tree.
 
@@ -139,6 +140,8 @@ def run_drc_on_tree(
         prefix: Prefix for generated temp file name
         cli: Optional path to kicad-cli
         keep_report: If True, keep the JSON report file for inspection
+        report_path: Optional fixed path for the JSON report (overwritten each run);
+            otherwise a uuid-named file is created in tmp/
 
     Returns:
         DRCResult with violations, unconnected items, and paths
@@ -155,7 +158,11 @@ def run_drc_on_tree(
             pcb_path=pcb_path,
         )
 
-    report_path = TMP_DIR / f"drc_report_{uuid.uuid4().hex[:8]}.json"
+    if report_path is None:
+        report_path = TMP_DIR / f"drc_report_{uuid.uuid4().hex[:8]}.json"
+    else:
+        report_path = Path(report_path)
+        report_path.parent.mkdir(parents=True, exist_ok=True)
 
     import subprocess
     cmd = [kicad_cli, "pcb", "drc", str(pcb_path), "--format", "json", "-o", str(report_path)]

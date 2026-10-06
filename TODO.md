@@ -1,24 +1,28 @@
 # KiCad AutoRouter - TODO
 
-## ⚠️ Session State Notes (2026-10-05, verified)
+## ⚠️ Session State Notes (2026-10-06, verified)
 
 **Working tree batch** (not yet committed; branch is 2 commits ahead of origin):
 per-region placement rewrite + shapely courtyard collision (`placement.py`), routing infra R1–R4/R7, new `src/kicad_autorouter/drc.py`, track rip-up (`io.rip_up_nets`, `board_model.commit_placement`) + `tests/test_track_ripup.py`, UI overhaul phases 1–4, pyproject.toml editable install, shapely in requirements.txt, start_server.sh browser-open.
 
-**Test status:** 149 passed, 3 skipped — all green.
+**Test status:** 150 passed, 3 skipped — all green.
 (Fixed 2026-10-05: `accept_proposal` unpacked `identify_power_nets` as 2 values and used list `|` union; now unpacks 3 and converts to sets. `ui/server.py` import is fine — `UI_DIR`/`REPO_ROOT` are defined at module level.)
 
 ### Half-wired features (UI controls exist, backend missing)
 1. **DRC overlay:** UI has DRC toggle + `STATE.drc_violations`, but NO endpoint ever calls `set_drc_violations()` — no `/api/drc` handler exists. Overlay can never show anything. Backend should use existing `drc.run_drc_on_tree()`.
 2. **Layer toggles (F.Cu/B.Cu):** server reads `fcu`/`bcu` query params (~lines 322–323) but never passes them to `render_board_svg`, which has no such parameters. Toggles do nothing.
 
-### Courtyard collision (multi-board R3): implemented, unverified
-- Shapely-based polygon collision IS in `placement.py:661-718` (`_footprint_courtyard_polygon` at :400), but PLAN.md/TODO still mark it open and the test at `tests/test_placement.py:~309` is a stub ("future: shapely-based").
-- **Bug:** courtyard polygons are computed once from *initial* pad positions and never move with pads during simulation → stale geometry.
-- **Perf:** O(pads × footprints) Python loop with per-iteration shapely calls inside `_compute_total_force` — breaks the vectorized budget; also `fp_uuids.index(fp_uuid)` is an O(n) scan in hot loops (lines ~596, ~733).
+### Courtyard collision (multi-board R3): ✅ COMPLETED 2026-10-06
+- Shapely-based polygon collision implemented in `placement.py` (`_footprint_courtyard_polygon` at :400, collision in `_compute_total_force` at :654)
+- **Fixed bugs:**
+  - Stale geometry: polygons now rebuilt each iteration from current pad positions
+  - O(n) lookup: added `fp_uuid_to_local_idx` dict replacing `fp_uuids.index()`
+  - Per-footprint force distribution (not per-pad pair) creates natural torque
+- `courtyard_repulsion_kc` updated to 2000.0 in both `placement.json` and `PlacementParams` default
+- Tests: `test_courtyard_polygon_collision` + `test_courtyard_forces_are_zero_when_disabled` pass
 
 ### Housekeeping
-- Docs stale: PLAN.md/TODO.md still show courtyard-shapely R3 as open; TODO has colliding "R3" numbering between the multi-board section and the routing section (multi-board R3 = courtyard collision, routing R3 = multi-net sequential — both called "R3").
+- R3 numbering collision resolved: multi-board R3 = courtyard collision ✅, routing R3 = multi-net sequential (different sections)
 
 ## Completed ✅
 
@@ -94,15 +98,15 @@ per-region placement rewrite + shapely courtyard collision (`placement.py`), rou
 
 ## In Progress / Next Session 📋
 
-### Routing Completion (R3, R4, R6, R8)
-- [ ] **R3. `placement.py`: Polygon courtyard collision (shapely).**
+### Routing Completion (R4, R6, R8)
+- [x] **R3. `placement.py`: Polygon courtyard collision (shapely).** ✅ COMPLETED 2026-10-06
   - `_footprint_courtyard_polygon(fp)`: build shapely Polygon from courtyard segments (arcs approximated), or pad bbox fallback
   - Overlap detection: `poly_i.intersects(poly_j)` → penetration vector from intersection centroid
   - Force: always-on 1/d² falloff; overlap → penetration_area * penetration_vector / (dist + eps); near-miss → margin / d²
   - Apply per-pad (creates natural torque); all footprints participate (pad bbox for no-courtyard)
-  - Replace current `_compute_courtyard_forces` entirely
+  - Replaced stale `_compute_courtyard_forces` with polygon-based implementation
 
-- [ ] **R4. Parameter updates & dependency.**
+- [x] **R4. Parameter updates & dependency.** ✅ COMPLETED 2026-10-06
   - `placement.json`: `courtyard_repulsion_kc` 500 → 2000
   - `requirements.txt`: add `shapely>=2.0.0`
 

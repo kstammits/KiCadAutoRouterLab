@@ -68,14 +68,14 @@ Environment:
   - Skip regions with no movable footprints
   - Merge deltas/forces across regions
 
-- [ ] **R3. `placement.py`: Polygon courtyard collision (shapely).**
+- [x] **R3. `placement.py`: Polygon courtyard collision (shapely).** ✅ COMPLETED 2026-10-06
   - `_footprint_courtyard_polygon(fp)`: build shapely Polygon from courtyard segments (arcs approximated), or pad bbox fallback
   - Overlap detection: `poly_i.intersects(poly_j)` → penetration vector from intersection centroid
   - Force: always-on 1/d² falloff; overlap → penetration_area * penetration_vector / (dist + eps); near-miss → margin / d²
   - Apply per-pad (creates natural torque); all footprints participate (pad bbox for no-courtyard)
-  - Replace current `_compute_courtyard_forces` entirely
+  - Replaced stale `_compute_courtyard_forces` with polygon-based implementation
 
-- [ ] **R4. Parameter updates & dependency.**
+- [x] **R4. Parameter updates & dependency.** ✅ COMPLETED 2026-10-06
   - `placement.json`: `courtyard_repulsion_kc` 500 → 2000
   - `requirements.txt`: add `shapely>=2.0.0`
 
@@ -84,7 +84,8 @@ Environment:
   - `test_extract_board_polygons_tube111`: tube111 → 2 regions
   - `test_assign_regions`: footprints assigned correctly (some unassigned due to complex polygon)
   - `test_per_region_simulation`: DCCF parts don't collapse to middle
-  - `test_courtyard_polygon_collision`: overlapping polygons generate repulsion
+  - `test_courtyard_polygon_collision`: overlapping polygons generate repulsion ✅ 2026-10-06
+  - `test_courtyard_forces_are_zero_when_disabled`: collision forces vanish when kc=0 ✅ 2026-10-06
   - `test_no_cross_region_forces`: repulsion/attraction don't cross regions
   - `test_empty_region_skipped`: region with no movable parts skipped
 

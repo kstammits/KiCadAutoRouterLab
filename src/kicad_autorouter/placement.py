@@ -40,7 +40,7 @@ class PlacementParams:
     # Rigid constraint stiffness (very high to keep footprint pads together)
     rigid_stiffness: float = 1e6
     # Courtyard collision repulsion force constant
-    courtyard_repulsion_kc: float = 500.0
+    courtyard_repulsion_kc: float = 2000.0
     # Boundary repulsion force constant (pushes footprints away from region edges)
     boundary_repulsion_kb: float = 100000.0
     # Preview-only knob for the v0 stub: deterministic per-UUID jitter so the
@@ -397,10 +397,15 @@ def _board_bbox(model: BoardModel) -> Tuple[float, float, float, float]:
     return min_x, max_x, min_y, max_y
 
 
-def _footprint_courtyard_polygon(fp: Footprint) -> Polygon:
+def _footprint_courtyard_polygon(fp: Footprint, pad_positions: Optional[np.ndarray] = None, pad_indices: Optional[List[int]] = None) -> Polygon:
     """Build a shapely Polygon from footprint's courtyard segments.
 
     If no courtyard, fall back to pad bounding box.
+    
+    Args:
+        fp: The footprint
+        pad_positions: Optional (n_pads, 2) array of current pad positions for this region
+        pad_indices: Optional list of local pad indices for this footprint
     """
     if fp.courtyard:
         # Collect all vertices from courtyard segments
@@ -416,25 +421,31 @@ def _footprint_courtyard_polygon(fp: Footprint) -> Polygon:
             except Exception:
                 pass
     # Fallback: pad bounding box
-    if fp.pads:
+    if pad_positions is not None and pad_indices:
+        xs = pad_positions[pad_indices, 0]
+        ys = pad_positions[pad_indices, 1]
+        min_x, max_x = float(xs.min()), float(xs.max())
+        min_y, max_y = float(ys.min()), float(ys.max())
+    elif fp.pads:
         xs = [p.position.x_mm for p in fp.pads]
         ys = [p.position.y_mm for p in fp.pads]
         min_x, max_x = min(xs), max(xs)
         min_y, max_y = min(ys), max(ys)
-        # Add small margin
-        margin = 0.1
+    else:
+        # Last resort: point at footprint position
         return Polygon([
-            (min_x - margin, min_y - margin),
-            (max_x + margin, min_y - margin),
-            (max_x + margin, max_y + margin),
-            (min_x - margin, max_y + margin),
+            (fp.x_mm - 0.5, fp.y_mm - 0.5),
+            (fp.x_mm + 0.5, fp.y_mm - 0.5),
+            (fp.x_mm + 0.5, fp.y_mm + 0.5),
+            (fp.x_mm - 0.5, fp.y_mm + 0.5),
         ])
-    # Last resort: point at footprint position
+    # Add small margin
+    margin = 0.1
     return Polygon([
-        (fp.x_mm - 0.5, fp.y_mm - 0.5),
-        (fp.x_mm + 0.5, fp.y_mm - 0.5),
-        (fp.x_mm + 0.5, fp.y_mm + 0.5),
-        (fp.x_mm - 0.5, fp.y_mm + 0.5),
+        (min_x - margin, min_y - margin),
+        (max_x + margin, min_y - margin),
+        (max_x + margin, max_y + margin),
+        (min_x - margin, max_y + margin),
     ])
 
 
@@ -560,47 +571,29 @@ def _run_region_simulation(
 
     iteration = 0
 
-    # Precompute courtyard polygons for all footprints in this region
-    courtyard_polys = {}
-    fp_centroids = []
-    fp_radii = []
+    # Build list of footprints in this region with courtyards
     fp_uuids = []
     fp_movable_list = []
-    pad_to_fp_local = []
+    fp_pad_indices = {}  # uuid -> list of local pad indices in region
+    pad_to_fp_local = []  # pad_idx -> local fp index in fp_uuids
 
     for fp in model.footprints:
         if not fp.uuid or model.footprint_region.get(fp.uuid) != region_idx:
             continue
-        poly = _footprint_courtyard_polygon(fp)
-        courtyard_polys[fp.uuid] = poly
-        centroid = poly.centroid
-        fp_centroids.append([centroid.x, centroid.y])
-        # Use max extent from centroid as margin for boundary checks
-        max_extent = 0.5
-        if poly.area > 0:
-            for x, y in poly.exterior.coords:
-                d = math.hypot(x - centroid.x, y - centroid.y)
-                if d > max_extent:
-                    max_extent = d
-        fp_radii.append(max_extent)
+        local_idx = len(fp_uuids)
         fp_uuids.append(fp.uuid)
         fp_movable_list.append(fp.uuid in fp_movable and fp_movable.get(fp.uuid, False))
+        if fp.uuid in region_fp_uuid_to_pad_indices:
+            fp_pad_indices[fp.uuid] = region_fp_uuid_to_pad_indices[fp.uuid]
 
-    if fp_uuids:
-        fp_centroids_arr = np.array(fp_centroids, dtype=np.float64)
-        fp_radii_arr = np.array(fp_radii, dtype=np.float64)
-        fp_movable_arr = np.array(fp_movable_list, dtype=bool)
-        for i in range(len(region_pads)):
-            fp_uuid = model.footprints[region_pad_to_fp_idx[i]].uuid
-            if fp_uuid in courtyard_polys:
-                pad_to_fp_local.append(fp_uuids.index(fp_uuid))
-            else:
-                pad_to_fp_local.append(-1)
-    else:
-        fp_centroids_arr = np.array([], dtype=np.float64).reshape(0, 2)
-        fp_radii_arr = np.array([], dtype=np.float64)
-        fp_movable_arr = np.array([], dtype=bool)
-        pad_to_fp_local = [-1] * len(region_pads)
+    # O(1) lookup: uuid -> local index in fp_uuids
+    fp_uuid_to_local_idx = {uuid: i for i, uuid in enumerate(fp_uuids)}
+
+    for i in range(len(region_pads)):
+        fp_uuid = model.footprints[region_pad_to_fp_idx[i]].uuid
+        pad_to_fp_local.append(fp_uuid_to_local_idx.get(fp_uuid, -1))
+
+    fp_movable_arr = np.array(fp_movable_list, dtype=bool)
 
     positions = pad_positions.copy()
     prev_positions = pad_positions.copy()
@@ -658,25 +651,56 @@ def _run_region_simulation(
 
         force = repulsion + attraction + rigid_force
 
-        # Polygon-based courtyard collision
+        # Polygon-based courtyard collision (rebuild polygons from current positions)
         if fp_uuids:
             n_pads_local = pos.shape[0]
             poly_force = np.zeros((n_pads_local, 2), dtype=np.float64)
-            for pad_idx in range(n_pads_local):
-                fp_i_local = pad_to_fp_local[pad_idx]
-                if fp_i_local < 0 or not fp_movable_arr[fp_i_local]:
-                    continue
 
-                pad_pos = pos[pad_idx]
-                fp_i_uuid = fp_uuids[fp_i_local]
+            # Build courtyard polygons at current positions
+            courtyard_polys = {}
+            fp_centroids = []
+            fp_radii = []
+            for fp_uuid in fp_uuids:
+                local_idx = fp_uuid_to_local_idx[fp_uuid]
+                pad_indices = fp_pad_indices.get(fp_uuid, [])
+                if pad_indices:
+                    poly = _footprint_courtyard_polygon(
+                        next(fp for fp in model.footprints if fp.uuid == fp_uuid),
+                        pad_positions=pos,
+                        pad_indices=pad_indices,
+                    )
+                else:
+                    # Fallback: find the footprint and use its original position
+                    fp = next(fp for fp in model.footprints if fp.uuid == fp_uuid)
+                    poly = _footprint_courtyard_polygon(fp)
+                courtyard_polys[fp_uuid] = poly
+                centroid = poly.centroid
+                fp_centroids.append([centroid.x, centroid.y])
+                max_extent = 0.5
+                if poly.area > 0:
+                    for x, y in poly.exterior.coords:
+                        d = math.hypot(x - centroid.x, y - centroid.y)
+                        if d > max_extent:
+                            max_extent = d
+                fp_radii.append(max_extent)
+
+            fp_centroids_arr = np.array(fp_centroids, dtype=np.float64)
+            fp_radii_arr = np.array(fp_radii, dtype=np.float64)
+
+            # Compute collision forces per footprint pair, then distribute to pads
+            n_fp = len(fp_uuids)
+            fp_forces = np.zeros((n_fp, 2), dtype=np.float64)
+
+            for i in range(n_fp):
+                if not fp_movable_arr[i]:
+                    continue
+                fp_i_uuid = fp_uuids[i]
                 poly_i = courtyard_polys[fp_i_uuid]
 
-                for fp_j_local, fp_j_uuid in enumerate(fp_uuids):
-                    if fp_j_local == fp_i_local:
+                for j in range(i + 1, n_fp):
+                    if not fp_movable_arr[j]:
                         continue
-                    if not fp_movable_arr[fp_j_local]:
-                        continue
-
+                    fp_j_uuid = fp_uuids[j]
                     poly_j = courtyard_polys[fp_j_uuid]
 
                     # Check overlap
@@ -694,110 +718,120 @@ def _run_region_simulation(
                                 force_mag = params.courtyard_repulsion_kc * intersection.area / (dist + 1e-6)
                                 fx = force_mag * dx / dist
                                 fy = force_mag * dy / dist
-                                poly_force[pad_idx, 0] += fx
-                                poly_force[pad_idx, 1] += fy
+                                fp_forces[i, 0] += fx
+                                fp_forces[i, 1] += fy
+                                fp_forces[j, 0] -= fx
+                                fp_forces[j, 1] -= fy
                     else:
                         # Near miss: distance-based falloff
                         dist = poly_i.distance(poly_j)
-                        if dist < 1.5 * (fp_radii_arr[fp_i_local] + fp_radii_arr[fp_j_local]):
+                        if dist < 1.5 * (fp_radii_arr[i] + fp_radii_arr[j]):
                             # Gentle repulsion
-                            min_dist = fp_radii_arr[fp_i_local] + fp_radii_arr[fp_j_local]
+                            min_dist = fp_radii_arr[i] + fp_radii_arr[j]
                             margin = min_dist * 1.5 - dist
                             if margin > 0:
                                 # Direction from j centroid to i centroid
-                                dx = fp_centroids_arr[fp_i_local, 0] - fp_centroids_arr[fp_j_local, 0]
-                                dy = fp_centroids_arr[fp_i_local, 1] - fp_centroids_arr[fp_j_local, 1]
+                                dx = fp_centroids_arr[i, 0] - fp_centroids_arr[j, 0]
+                                dy = fp_centroids_arr[i, 1] - fp_centroids_arr[j, 1]
                                 dist = math.hypot(dx, dy)
                                 if dist > 1e-6:
                                     force_mag = params.courtyard_repulsion_kc * 0.1 * margin / (dist * dist + 1e-6)
                                     fx = force_mag * dx / dist
                                     fy = force_mag * dy / dist
-                                    poly_force[pad_idx, 0] += fx
-                                    poly_force[pad_idx, 1] += fy
+                                    fp_forces[i, 0] += fx
+                                    fp_forces[i, 1] += fy
+                                    fp_forces[j, 0] -= fx
+                                    fp_forces[j, 1] -= fy
+
+            # Distribute footprint forces to pads
+            for pad_idx in range(n_pads_local):
+                fp_i_local = pad_to_fp_local[pad_idx]
+                if fp_i_local >= 0 and fp_movable_arr[fp_i_local]:
+                    poly_force[pad_idx, 0] = fp_forces[fp_i_local, 0]
+                    poly_force[pad_idx, 1] = fp_forces[fp_i_local, 1]
 
             force += poly_force
 
             # Boundary repulsion: push footprints away from region edges
-            if fp_uuids:
-                n_pads_local = pos.shape[0]
-                boundary_force = np.zeros((n_pads_local, 2), dtype=np.float64)
-                boundary_k = params.boundary_repulsion_kb
-                
-                # Compute current footprint bounds from pad positions, expanded by courtyard radius
-                fp_bounds = {}
-                for fp_uuid, pad_indices in region_fp_to_pad_indices.items():
-                    if pad_indices:
-                        fp_pad_pos = pos[pad_indices]
-                        # Get courtyard radius for this footprint
-                        if fp_uuid in fp_uuids:
-                            fp_local_idx = fp_uuids.index(fp_uuid)
-                            radius = float(fp_radii_arr[fp_local_idx])
-                        else:
-                            radius = 1.0  # fallback
-                        fp_bounds[fp_uuid] = (
-                            float(fp_pad_pos[:, 0].min()) - radius,
-                            float(fp_pad_pos[:, 1].min()) - radius,
-                            float(fp_pad_pos[:, 0].max()) + radius,
-                            float(fp_pad_pos[:, 1].max()) + radius,
-                        )
-                
-                for pad_idx in range(n_pads_local):
-                    fp_i_local = pad_to_fp_local[pad_idx]
-                    if fp_i_local < 0 or not fp_movable_arr[fp_i_local]:
-                        continue
+            n_pads_local = pos.shape[0]
+            boundary_force = np.zeros((n_pads_local, 2), dtype=np.float64)
+            boundary_k = params.boundary_repulsion_kb
 
-                    fp_i_uuid = fp_uuids[fp_i_local]
-                    
-                    # Get current footprint bounds from pad positions
-                    if fp_i_uuid not in fp_bounds:
-                        continue
-                    minx, miny, maxx, maxy = fp_bounds[fp_i_uuid]
-                    
-                    # Distance to region boundaries
-                    # Left edge
-                    dist_left = minx - min_x
-                    if dist_left < 0:
-                        # Already outside - strong push back
-                        force_mag = boundary_k * abs(dist_left) / (abs(dist_left) + 1e-6)
-                        boundary_force[pad_idx, 0] += force_mag
-                    elif dist_left < 5.0:
-                        # Close to edge - strong repulsion
-                        force_mag = boundary_k * 1.5 * (5.0 - dist_left) / (dist_left + 1e-6)
-                        boundary_force[pad_idx, 0] += force_mag
-                    
-                    # Right edge
-                    dist_right = max_x - maxx
-                    if dist_right < 0:
-                        force_mag = boundary_k * abs(dist_right) / (abs(dist_right) + 1e-6)
-                        boundary_force[pad_idx, 0] -= force_mag
-                    elif dist_right < 5.0:
-                        force_mag = boundary_k * 1.5 * (5.0 - dist_right) / (dist_right + 1e-6)
-                        boundary_force[pad_idx, 0] -= force_mag
-                    
-                    # Bottom edge
-                    dist_bottom = miny - min_y
-                    if dist_bottom < 0:
-                        force_mag = boundary_k * abs(dist_bottom) / (abs(dist_bottom) + 1e-6)
-                        boundary_force[pad_idx, 1] += force_mag
-                    elif dist_bottom < 5.0:
-                        force_mag = boundary_k * 1.5 * (5.0 - dist_bottom) / (dist_bottom + 1e-6)
-                        boundary_force[pad_idx, 1] += force_mag
-                    
-                    # Top edge
-                    dist_top = max_y - maxy
-                    if dist_top < 0:
-                        force_mag = boundary_k * abs(dist_top) / (abs(dist_top) + 1e-6)
-                        boundary_force[pad_idx, 1] -= force_mag
-                    elif dist_top < 5.0:
-                        force_mag = boundary_k * 1.5 * (5.0 - dist_top) / (dist_top + 1e-6)
-                        boundary_force[pad_idx, 1] -= force_mag
+            # Compute current footprint bounds from pad positions, expanded by courtyard radius
+            fp_bounds = {}
+            for fp_uuid, pad_indices in fp_pad_indices.items():
+                if pad_indices:
+                    fp_pad_pos = pos[pad_indices]
+                    # Get courtyard radius for this footprint
+                    fp_local_idx = fp_uuid_to_local_idx.get(fp_uuid)
+                    if fp_local_idx is not None:
+                        radius = float(fp_radii_arr[fp_local_idx])
+                    else:
+                        radius = 1.0  # fallback
+                    fp_bounds[fp_uuid] = (
+                        float(fp_pad_pos[:, 0].min()) - radius,
+                        float(fp_pad_pos[:, 1].min()) - radius,
+                        float(fp_pad_pos[:, 0].max()) + radius,
+                        float(fp_pad_pos[:, 1].max()) + radius,
+                    )
 
-                force += boundary_force
+            for pad_idx in range(n_pads_local):
+                fp_i_local = pad_to_fp_local[pad_idx]
+                if fp_i_local < 0 or not fp_movable_arr[fp_i_local]:
+                    continue
 
-            # Replace NaN
-            force = np.nan_to_num(force, nan=0.0, posinf=0.0, neginf=0.0)
-            force[~pad_movable] = 0.0
-            return force
+                fp_i_uuid = fp_uuids[fp_i_local]
+
+                # Get current footprint bounds from pad positions
+                if fp_i_uuid not in fp_bounds:
+                    continue
+                minx, miny, maxx, maxy = fp_bounds[fp_i_uuid]
+
+                # Distance to region boundaries
+                # Left edge
+                dist_left = minx - min_x
+                if dist_left < 0:
+                    # Already outside - strong push back
+                    force_mag = boundary_k * abs(dist_left) / (abs(dist_left) + 1e-6)
+                    boundary_force[pad_idx, 0] += force_mag
+                elif dist_left < 5.0:
+                    # Close to edge - strong repulsion
+                    force_mag = boundary_k * 1.5 * (5.0 - dist_left) / (dist_left + 1e-6)
+                    boundary_force[pad_idx, 0] += force_mag
+
+                # Right edge
+                dist_right = max_x - maxx
+                if dist_right < 0:
+                    force_mag = boundary_k * abs(dist_right) / (abs(dist_right) + 1e-6)
+                    boundary_force[pad_idx, 0] -= force_mag
+                elif dist_right < 5.0:
+                    force_mag = boundary_k * 1.5 * (5.0 - dist_right) / (dist_right + 1e-6)
+                    boundary_force[pad_idx, 0] -= force_mag
+
+                # Bottom edge
+                dist_bottom = miny - min_y
+                if dist_bottom < 0:
+                    force_mag = boundary_k * abs(dist_bottom) / (abs(dist_bottom) + 1e-6)
+                    boundary_force[pad_idx, 1] += force_mag
+                elif dist_bottom < 5.0:
+                    force_mag = boundary_k * 1.5 * (5.0 - dist_bottom) / (dist_bottom + 1e-6)
+                    boundary_force[pad_idx, 1] += force_mag
+
+                # Top edge
+                dist_top = max_y - maxy
+                if dist_top < 0:
+                    force_mag = boundary_k * abs(dist_top) / (abs(dist_top) + 1e-6)
+                    boundary_force[pad_idx, 1] -= force_mag
+                elif dist_top < 5.0:
+                    force_mag = boundary_k * 1.5 * (5.0 - dist_top) / (dist_top + 1e-6)
+                    boundary_force[pad_idx, 1] -= force_mag
+
+            force += boundary_force
+
+        # Replace NaN
+        force = np.nan_to_num(force, nan=0.0, posinf=0.0, neginf=0.0)
+        force[~pad_movable] = 0.0
+        return force
     for iteration in range(params.max_iterations):
         force = _compute_total_force(
             positions, len(region_pads), pad_movable,

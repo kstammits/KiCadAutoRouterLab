@@ -13,6 +13,7 @@ REPO_ROOT = UI_DIR.parent.resolve()
 sys.path.insert(0, str(UI_DIR.parent / "src"))
 
 from kicad_autorouter.board_model import apply_deltas, board_model, commit_placement
+from kicad_autorouter.drc import TMP_DIR, run_drc_on_tree
 from kicad_autorouter.io import nudge_footprint_by_uuid, rip_up_nets
 from kicad_autorouter.pipeline import stages
 from kicad_autorouter.placement import (
@@ -45,6 +46,10 @@ class BoardState:
         self.pinned_uuids: set[str] = set()  # User-pinned (pseudo-locked)
         self.selected_uuids: set[str] = set()  # Currently selected for move
         self.drc_violations: list[dict] = []  # Cached DRC violations for overlay
+        self.drc_for_version: Optional[int] = None  # Board version the cached result was computed against
+        self.drc_unconnected: int = 0  # Unconnected item count from last DRC run
+        self.drc_running: bool = False  # A kicad-cli DRC subprocess is in flight
+        self.drc_error: Optional[str] = None  # Error message from last DRC run, if any
         self.undo_stack: list[tuple] = []  # Stack of (model, pcb_tree) for undo
         self.max_undo_depth = 20
         self.board_version: str = ""  # KiCad generator_version (e.g., "10.0")
@@ -71,6 +76,11 @@ class BoardState:
                 self.pinned_uuids.clear()
                 self.selected_uuids.clear()
                 self.undo_stack.clear()
+                # A new board invalidates any cached DRC result
+                self.drc_violations.clear()
+                self.drc_for_version = None
+                self.drc_unconnected = 0
+                self.drc_error = None
                 # Capture board version and warning
                 self.board_version = self.model.version if self.model else ""
                 self.version_warning = self.model.version_warning if self.model else None
@@ -127,6 +137,46 @@ class BoardState:
             self.drc_violations = violations.copy()
             self.version += 1
             return self.version
+
+    def snapshot_pcb(self):
+        """Return (pcb_tree, version) under a single lock acquisition."""
+        with self._lock:
+            return self.pcb_tree, self.version
+
+    def get_drc_status(self) -> dict:
+        """Lightweight DRC cache state for the UI status bar."""
+        with self._lock:
+            return {
+                "running": self.drc_running,
+                "for_version": self.drc_for_version,
+                "current_version": self.version,
+                "stale": self.drc_for_version != self.version,
+                "error": self.drc_error,
+                "violations": len(self.drc_violations),
+                "unconnected": self.drc_unconnected,
+            }
+
+    def set_drc_running(self, running: bool) -> None:
+        with self._lock:
+            self.drc_running = running
+
+    def store_drc_result(
+        self,
+        violations: list[dict],
+        for_version: int,
+        unconnected: int = 0,
+        error: Optional[str] = None,
+    ) -> None:
+        """Store DRC results stamped with the board version they describe.
+
+        Does not bump ``self.version`` — DRC output is derived state and must
+        not invalidate itself on arrival.
+        """
+        with self._lock:
+            self.drc_violations = list(violations)
+            self.drc_for_version = for_version
+            self.drc_unconnected = unconnected
+            self.drc_error = error
 
     def set_pinned_uuids(self, uuids: set[str]) -> int:
         with self._lock:
@@ -254,6 +304,44 @@ class BoardState:
 
 STATE = BoardState()
 
+# Single-flight DRC: at most one kicad-cli subprocess at a time. Concurrent
+# callers block on this lock, then serve the fresh cache instead of re-running.
+_drc_lock = threading.Lock()
+DRC_PCB_PATH = TMP_DIR / "drc_current.kicad_pcb"
+DRC_REPORT_PATH = TMP_DIR / "drc_report_current.json"
+
+
+def _run_drc_now(tree, for_version: int) -> dict:
+    """Run kicad-cli DRC on ``tree`` and store the result stamped with ``for_version``."""
+    STATE.set_drc_running(True)
+    try:
+        result = run_drc_on_tree(tree, out_path=DRC_PCB_PATH, report_path=DRC_REPORT_PATH)
+    finally:
+        STATE.set_drc_running(False)
+    filtered = result.filter_violations()
+    by_type: Dict[str, int] = {}
+    for v in filtered:
+        t = v.get("type", "unknown")
+        by_type[t] = by_type.get(t, 0) + 1
+    STATE.store_drc_result(
+        filtered,
+        for_version=for_version,
+        unconnected=result.unconnected_count,
+        error=result.error,
+    )
+    current_version = STATE.snapshot[3]
+    return {
+        "ok": True,
+        "cached": False,
+        "for_version": for_version,
+        "current_version": current_version,
+        "stale": for_version != current_version,
+        "violations": len(filtered),
+        "unconnected": result.unconnected_count,
+        "by_type": by_type,
+        "error": result.error,
+    }
+
 
 def load_params() -> PlacementParams:
     """Effective params: defaults overlaid with placement.json when present."""
@@ -314,6 +402,9 @@ class Handler(BaseHTTPRequestHandler):
             )
             self._send(200, body.encode(), "application/json")
             return
+        if parsed.path == "/api/drc/status":
+            self._send(200, json.dumps(STATE.get_drc_status()).encode(), "application/json")
+            return
         if parsed.path == "/api/board.svg":
             model, _, name, _, _, _ = STATE.snapshot
             if model is None:
@@ -353,12 +444,21 @@ class Handler(BaseHTTPRequestHandler):
                         forces=merged_forces,
                     )
             
-            drc_violations = STATE.get_drc_violations() if drc_on else None
-            
+            # DRC overlay: draw cached violations; dim them when the cache is
+            # for an older board version or a fresh run is in flight.
+            drc_violations = None
+            drc_stale = False
+            if drc_on:
+                status = STATE.get_drc_status()
+                if status["for_version"] is not None:
+                    drc_violations = STATE.get_drc_violations()
+                    drc_stale = status["stale"] or status["running"]
+
             svg = render_board_svg(model, title=name, proposal=proposal,
                                    pinned_uuids=pinned, selected_uuids=selected,
                                    show_forces=forces_on,
-                                   drc_violations=drc_violations).encode()
+                                   drc_violations=drc_violations,
+                                   drc_stale=drc_stale).encode()
             self._send(200, svg, "image/svg+xml")
             return
         if parsed.path == "/api/placement/params":
@@ -481,6 +581,41 @@ class Handler(BaseHTTPRequestHandler):
                 "board_version": STATE.board_version,
                 "warning": STATE.version_warning,
             }
+            self._send(200, json.dumps(payload).encode(), "application/json")
+            return
+        if parsed.path == "/api/drc":
+            # Explicit DRC run. Single-flight: concurrent callers block on the
+            # lock and then serve the fresh cache instead of spawning another
+            # kicad-cli process. A previous error never counts as fresh — an
+            # explicit click always retries.
+            with _drc_lock:
+                tree, current_version = STATE.snapshot_pcb()
+                if tree is None:
+                    self._send(404, b"no board loaded", "text/plain")
+                    return
+                status = STATE.get_drc_status()
+                if (
+                    not status["running"]
+                    and status["for_version"] == current_version
+                    and status["error"] is None
+                ):
+                    by_type: Dict[str, int] = {}
+                    for v in STATE.get_drc_violations():
+                        t = v.get("type", "unknown")
+                        by_type[t] = by_type.get(t, 0) + 1
+                    payload = {
+                        "ok": True,
+                        "cached": True,
+                        "for_version": current_version,
+                        "current_version": current_version,
+                        "stale": False,
+                        "violations": status["violations"],
+                        "unconnected": status["unconnected"],
+                        "by_type": by_type,
+                        "error": None,
+                    }
+                else:
+                    payload = _run_drc_now(tree, current_version)
             self._send(200, json.dumps(payload).encode(), "application/json")
             return
         if parsed.path == "/api/placement/params":

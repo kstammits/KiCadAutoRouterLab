@@ -376,13 +376,18 @@ def _forces_overlay(model: BoardModel, proposal: PlacementProposal,
     return out
 
 
-def _drc_violations_overlay(violations: List[dict], ignored_types: Optional[Set[str]] = None) -> List[str]:
+def _drc_violations_overlay(
+    violations: List[dict],
+    ignored_types: Optional[Set[str]] = None,
+    stale: bool = False,
+) -> List[str]:
     """Draw DRC violations as colored circles at their positions.
-    
+
     Args:
         violations: List of violation dicts from DRC report
         ignored_types: Set of violation types to ignore (default: silkscreen/library issues)
-    
+        stale: If True, the result is for an older board version; draw dimmed.
+
     Returns:
         List of SVG strings for the violation markers
     """
@@ -405,7 +410,8 @@ def _drc_violations_overlay(violations: List[dict], ignored_types: Optional[Set[
     if not filtered:
         return []
     
-    out = ['<g id="drc-violations">']
+    group_attrs = ' opacity="0.4"' if stale else ""
+    out = [f'<g id="drc-violations"{group_attrs}>']
     for v in filtered:
         vtype = v.get("type", "unknown")
         severity = v.get("severity", "warning")
@@ -478,6 +484,7 @@ def render_board_svg(
     show_forces: bool = False,
     drc_violations: Optional[List[dict]] = None,
     drc_ignored_types: Optional[Set[str]] = None,
+    drc_stale: bool = False,
 ) -> str:
     """Build the full SVG document for ``model`` (millimeter user units).
 
@@ -497,6 +504,7 @@ def render_board_svg(
         show_forces: If True, draw force vectors on footprints.
         drc_violations: Optional list of DRC violation dicts for overlay.
         drc_ignored_types: Optional set of violation types to ignore in overlay.
+        drc_stale: If True, the violations are from an older board version; draw dimmed.
     """
     colors = net_colors(model)
     min_x, min_y, width, height = _bounds(model)
@@ -537,6 +545,6 @@ def render_board_svg(
     if proposal is not None and show_forces:
         parts.extend(_forces_overlay(model, proposal))
     if drc_violations:
-        parts.extend(_drc_violations_overlay(drc_violations, drc_ignored_types))
+        parts.extend(_drc_violations_overlay(drc_violations, drc_ignored_types, stale=drc_stale))
     parts.append("</svg>")
     return "\n".join(parts)
