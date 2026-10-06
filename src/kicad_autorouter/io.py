@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Union
+from typing import Optional, Set, Union
 
 from .sexpr import SExpr, parse_file, to_sexpr
 
@@ -78,6 +78,52 @@ def find_footprint_by_uuid(tree: SExpr, uuid: str) -> SExpr:
         if u is not None and u.args and str(u.args[0]) == uuid:
             return fp
     raise KeyError(f"no footprint with uuid {uuid!r}")
+
+
+def _net_name_of(node: Optional[SExpr]) -> Optional[str]:
+    """Extract net name from a (net <name>) node."""
+    if node is None or not node.args:
+        return None
+    value = node.args[0]
+    name = str(value) if isinstance(value, str) else None
+    return name or None
+
+
+def rip_up_nets(
+    tree: SExpr,
+    affected_nets: Set[str],
+    protected_nets: Optional[Set[str]] = None,
+) -> SExpr:
+    """Return the board tree with (segment) and (via) nodes removed for affected nets.
+
+    Tracks/vias on protected nets are preserved.
+
+    Args:
+        tree: PCB S-expression tree
+        affected_nets: Net names whose tracks/vias should be removed
+        protected_nets: Net names to never rip up (e.g., power rails)
+
+    Returns:
+        New SExpr tree with affected tracks/vias filtered out
+    """
+    if not affected_nets:
+        return tree
+
+    protected = protected_nets or set()
+
+    def should_keep(node: SExpr) -> bool:
+        if node.head not in ("segment", "via"):
+            return True
+        net_node = node.find("net")
+        net_name = _net_name_of(net_node)
+        if net_name is None:
+            return True  # Keep tracks without net assignment
+        if net_name in protected:
+            return True
+        return net_name not in affected_nets
+
+    new_children = [c for c in tree.args if should_keep(c)]
+    return replace(tree, args=tuple(new_children))
 
 
 def _shift_at(tree: SExpr, fp: SExpr, dx_mm: float = 0.0, dy_mm: float = 0.0, da_deg: float = 0.0) -> SExpr:

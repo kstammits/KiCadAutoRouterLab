@@ -36,7 +36,7 @@ Environment:
 ## Work items (in order)
 
 - [x] **1. `board_model.py`: lock state.** Add `locked: bool = False` to `Footprint`; parse top-level `(locked ...)` token inside each footprint node. Test with a fixture containing one locked part.
-- [ ] **2. New `src/kicad_autorouter/placement.py` (numpy, .venv).**
+- [x] **2. New `src/kicad_autorouter/placement.py` (numpy, .venv).**
   - Input: `BoardModel`. Nodes = all footprints; edges = footprint pairs sharing ≥1 net (one spring per pair, deduped).
   - State: `(n, 2)` float64 positions; boolean locked mask.
   - Per iteration: repulsion via broadcasting distance matrix with softening ε (Coulomb `k_r/d²` along unit vectors); attraction Hooke toward ideal length k = √(area/n) via edge index arrays; decaying step size (Fruchterman–Reingold temperature schedule); zero locked rows; clamp to board-outline bbox.
@@ -44,8 +44,49 @@ Environment:
   - Docstring complexity budget: n=500 → sub-second; Barnes–Hut deferred until n ≳ 3–5k.
 - [x] **3. Writeback path (.venv end-to-end).** Apply deltas via `io.nudge_footprint_by_uuid` per footprint → save → `validate.py` (`kicad-cli pcb drc`) as acceptance check. (Done in `scripts/run_autoroute.py`: per-UUID writeback + optional `--validate` DRC.)
 - [x] **4. Fix latent bug.** Rewire `scripts/run_autoroute.py:57` (missing `adapter.nudge_unlocked_footprints`) to run placement in .venv and apply deltas via `io`; headless entry point must actually work. (Done 2026-10-01: script replaced with a pure-Python parse → place → writeback pass under the project .venv.)
-- [ ] **5. Tests + benchmark.** Synthetic 100/500-footprint boards: convergence, locked nodes stay put, unlocked move toward net neighbors, positions inside outline; timing assertion <2 s at n=500. Benchmark script: pure-Python vs numpy per-iteration cost at n=100/500/2000 to validate budget and document when Barnes–Hut becomes necessary.
+- [x] **5. Tests + benchmark.** Synthetic 100/500-footprint boards: convergence, locked nodes stay put, unlocked move toward net neighbors, positions inside outline; timing assertion <2 s at n=500. Benchmark script: pure-Python vs numpy per-iteration cost at n=100/500/2000 to validate budget and document when Barnes–Hut becomes necessary.
 - [x] **6. Docs updates.** `docs/autorouting_glossary.md`: replace stale "tens of footprints" caveat with vectorized complexity budget + numpy approach + Barnes–Hut as later scaling path; note lock-parsing source. Optional fetches into `docs/wikipedia/` + index update in `docs/README.md`: `barnes_hut_simulation.md`, `a_star_search_algorithm.md`.
+
+## Multi-Board Region Support (2026-10-03)
+
+**Context**: DCCF and tube111 fixtures have multiple disjoint board outlines (Edge.Cuts). Current single bbox causes parts from different boards to collapse into the gap between them.
+
+### Work Items (in order)
+
+- [x] **R1. `board_model.py`: Board region detection.**
+  - `BoardRegion` dataclass: polygon (tuple of Points), bbox, uuid
+  - `_extract_board_polygons(edge_cuts, edge_arcs)`: build graph from segments + arc approximations, find connected cycles, return closed polygons
+  - `_assign_board_regions(footprints, regions)`: point-in-polygon test, assign each footprint to containing region
+  - Extend `BoardModel` with `board_regions: Tuple[BoardRegion, ...]` and `footprint_region: Dict[str, int]`
+  - Test: DCCF → 2 regions, tube111 → 2 regions (one rectangular, one complex with rounded corners)
+
+- [x] **R2. `placement.py`: Per-region force simulation.**
+  - Split pads by `footprint_region` after `_collect_pad_nodes`
+  - Run independent simulation per region (sub-arrays for positions, net edges, rigid constraints)
+  - Per-region temperature from region bbox, clamp to region bbox
+  - No cross-region repulsion/attraction; log warning if net spans regions
+  - Skip regions with no movable footprints
+  - Merge deltas/forces across regions
+
+- [ ] **R3. `placement.py`: Polygon courtyard collision (shapely).**
+  - `_footprint_courtyard_polygon(fp)`: build shapely Polygon from courtyard segments (arcs approximated), or pad bbox fallback
+  - Overlap detection: `poly_i.intersects(poly_j)` → penetration vector from intersection centroid
+  - Force: always-on 1/d² falloff; overlap → penetration_area * penetration_vector / (dist + eps); near-miss → margin / d²
+  - Apply per-pad (creates natural torque); all footprints participate (pad bbox for no-courtyard)
+  - Replace current `_compute_courtyard_forces` entirely
+
+- [ ] **R4. Parameter updates & dependency.**
+  - `placement.json`: `courtyard_repulsion_kc` 500 → 2000
+  - `requirements.txt`: add `shapely>=2.0.0`
+
+- [x] **R5. Tests.**
+  - `test_extract_board_polygons_dccf`: DCCF → 2 regions with correct bboxes
+  - `test_extract_board_polygons_tube111`: tube111 → 2 regions
+  - `test_assign_regions`: footprints assigned correctly (some unassigned due to complex polygon)
+  - `test_per_region_simulation`: DCCF parts don't collapse to middle
+  - `test_courtyard_polygon_collision`: overlapping polygons generate repulsion
+  - `test_no_cross_region_forces`: repulsion/attraction don't cross regions
+  - `test_empty_region_skipped`: region with no movable parts skipped
 
 ## Routing Stage (2026-10-03)
 
@@ -62,57 +103,58 @@ Environment:
 - Two power rails (V+, V-) + broken ground planes on both layers
 - Audio boards: sensitive, need generous clearance
 - No pcbnew for routing (only for offline test parity); pure Python Lee/A* on grid
-- **Pre-routed test board**: user will provide for parity validation
+- **Pre-routed test board**: tube111.kicad_pcb (105 footprints, 487 tracks, 93 vias, 6 GND zones, 73 nets)
 
 ### Routing Work Items (in order)
 
-- [ ] **R1. Grid & Obstacle Infrastructure** (`src/kicad_autorouter/routing/`)
+- [x] **R1. Grid & Obstacle Infrastructure** (`src/kicad_autorouter/routing/`)
   - `grid.py`: `RoutingGrid` dataclass (resolution, layers, origin, dims, coordinate transforms)
-  - `obstacles.py`: `build_occupancy_grid(model, grid)` → (n_layers, H, W) int8 cost map
+  - `obstacles.py`: `build_occupancy_grid(model, grid)` → (n_layers, H, W) int16 cost map
     - Footprint courtyards → blocked
     - Pad centers → high-cost with clearance margin
     - Existing tracks/vias → blocked on their layers
     - Zones (ground/power) → blocked on their layer
-    - Edge cuts → edge keepout zone
+    - Edge cuts → edge keepout zone (0.5mm)
     - **Through-hole pads → blocked on BOTH layers (free via)**
     - Per-class clearance inflation (halos sized by net class)
-  - `cost.py`: `CostMap` with base cost, via cost (5 cells), high-cost zones, edge keepout
+  - `grid.py`: `CostMap` with base cost, via cost (50 cells), high-cost zones, edge keepout
 
-- [ ] **R2. Single-Net Router (Lee + A*)**
+- [x] **R2. Single-Net Router (Lee + A*)**
   - `router.py`: `SingleNetRouter` with A* search on 3D grid (x, y, layer)
   - Cost = wire_length + via_penalty*N_vias + layer_change_penalty
   - Heuristic: Manhattan distance * base_cost (admissible)
   - Multi-terminal via MST: connect all pads of a net via pairwise A* distances → MST → route edges sequentially
-  - Through-hole pads: transition at zero via cost
+  - **Through-hole pads: transition at zero via cost** (pending: tht_via_mask in grid)
 
-- [ ] **R3. Multi-Net Sequential + Rip-up**
+- [x] **R3. Multi-Net Sequential + Rip-up**
   - `scheduler.py`: net ordering (power → ground → critical → decap → general)
   - `RipUpManager`: max attempts, affected-net detection, reorder/retry
   - Sequential loop: route → on fail rip up + reorder → retry until budget exhausted
 
-- [ ] **R4. Placement Integration**
-  - Before placement step: rip up nets of movable footprints
-  - After convergence: re-route affected nets
-  - Optional: feed routing congestion back into placement forces
+- [x] **R4. Placement Integration**
+  - `board_model.py:commit_placement()`: computes affected nets from moved footprints, prunes tracks/vias
+  - `io.py:rip_up_nets()`: S-expression level track/via removal
+  - **Iterative place/route cycle**: `run_iterative_pipeline()` (pending)
 
-- [ ] **R5. Power/Ground Special Handling**
+- [ ] **R5. Power/Ground Special Handling** — deferred per user request
   - Power rails: wide tracks, dedicated layer channels, daisy-chain/star from connector
   - Ground stitching: connect ground splits with vias at boundaries
   - Decap fanout: short direct routes, THT caps use both layers (free via)
 
-- [ ] **R6. Through-Hole "Free Via" Support**
-  - THT pad marks cell blocked on BOTH layers
-  - Layer transition at THT pad = 0 via cost
-  - Power/ground nets: THT pads become automatic stitching points
+- [ ] **R6. Through-Hole "Free Via" Support** (partial)
+  - THT pad marks cell blocked on BOTH layers ✅
+  - Layer transition at THT pad = 0 via cost (pending: tht_via_mask in router)
+  - Power/ground nets: THT pads become automatic stitching points (deferred)
 
-- [ ] **R7. Output & Writeback**
+- [x] **R7. Output & Writeback**
   - `output.py`: routes → KiCad track/via S-expressions (collinear merge, per-class widths)
   - `io.py` extensions: track/via writer → insert into PCB S-expression tree
-  - Pipeline entry: parse → place → route → writeback → optional `kicad-cli drc`
+  - Pipeline entry: parse → place → route → writeback → optional `kicad-cli drc` (stubbed in `pipeline.py`)
 
 - [ ] **R8. Tests & Parity**
-  - Synthetic board with net classes, vias, through-hole
-  - **Pre-routed test board** (user provides): parity test our routes vs existing
+  - Unit tests: grid transforms, obstacle marking, A* pathfinding, MST, RipUpManager
+  - Integration test: route tube111 (pre-routed) → verify connectivity, THT free vias, no DRC violations
+  - Parity test: our routes vs existing tube111 routes
   - DRC gate: route → writeback → `kicad-cli drc` → iterate
 
 ## Scaling Notes

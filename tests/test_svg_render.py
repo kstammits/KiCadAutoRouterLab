@@ -38,7 +38,8 @@ def test_renders_valid_document():
 def test_minimal_draws_zones_and_outline():
     m = board_model(parse_file(FIXTURES / "minimal.kicad_pcb"))
     s = render_board_svg(m)
-    assert s.count("<polygon") == 2  # keepout zones
+    # 2 keepout zones, each with F.Cu and B.Cu layers -> 4 polygons
+    assert s.count("<polygon") == 4  
     assert "<line" in s              # edge cuts
 
 
@@ -104,16 +105,9 @@ def test_overlay_draws_ghost_and_arrow():
     assert ghost in s
 
     # Shifted courtyard at proposed position - now rendered inside footprint group
-    # with state-based styling. Check that the shifted coordinates appear in a line.
-    shifted_x1 = f'{(a.x_mm + dx):.3f}'
-    shifted_y1 = f'{(a.y_mm + dy):.3f}'
-    shifted_x2 = f'{(b.x_mm + dx):.3f}'
-    shifted_y2 = f'{(b.y_mm + dy):.3f}'
-    # The shifted courtyard is now rendered inside the footprint group with styling
-    assert f'x1="{shifted_x1}"' in s
-    assert f'y1="{shifted_y1}"' in s
-    assert f'x2="{shifted_x2}"' in s
-    assert f'y2="{shifted_y2}"' in s
+    # with state-based styling. Check that the transform is applied to the group.
+    assert f'translate({dx:.3f} {dy:.3f})' in s
+    assert f'rotate(0.000' in s  # no rotation in this test
 
 
 def test_viewbox_grows_with_max_move():

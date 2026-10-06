@@ -12,17 +12,17 @@ UI_DIR = Path(__file__).resolve().parent
 REPO_ROOT = UI_DIR.parent.resolve()
 sys.path.insert(0, str(UI_DIR.parent / "src"))
 
-from kicad_autorouter.board_model import apply_deltas, board_model, commit_placement  # noqa: E402
-from kicad_autorouter.io import nudge_footprint_by_uuid, rip_up_nets  # noqa: E402
-from kicad_autorouter.pipeline import stages  # noqa: E402
-from kicad_autorouter.placement import (  # noqa: E402
+from kicad_autorouter.board_model import apply_deltas, board_model, commit_placement
+from kicad_autorouter.io import nudge_footprint_by_uuid, rip_up_nets
+from kicad_autorouter.pipeline import stages
+from kicad_autorouter.placement import (
     PlacementParams,
     PlacementProposal,
     run_placement,
 )
-from kicad_autorouter.routing.power import identify_power_nets  # noqa: E402
-from kicad_autorouter.sexpr import parse  # noqa: E402
-from kicad_autorouter.svg_render import render_board_svg  # noqa: E402
+from kicad_autorouter.routing.power import identify_power_nets
+from kicad_autorouter.sexpr import parse
+from kicad_autorouter.svg_render import render_board_svg
 
 # User-tuned placement parameters persist here (gitignored).
 PARAMS_PATH = REPO_ROOT / "placement.json"
@@ -32,7 +32,8 @@ class BoardState:
     """In-memory snapshot of the currently loaded board pair + proposal + undo stack."""
 
     def __init__(self) -> None:
-        self._lock = threading.Lock()
+        # RLock: accept_proposal holds the lock while calling push_undo, which re-acquires it.
+        self._lock = threading.RLock()
         self.model = None
         self.sch = None
         self.pcb_tree = None  # Original S-expression tree for writeback
@@ -232,8 +233,8 @@ class BoardState:
                 if d != (0.0, 0.0, 0.0) and d != (0.0, 0.0)
             }
             # Auto-detect power nets to protect
-            power_nets, ground_nets = identify_power_nets(self.model)
-            protected_nets = power_nets | ground_nets | {"GND", "GND_PWR", "VCC", "VDD", "VSS", "GROUND"}
+            power_nets, ground_nets, _ = identify_power_nets(self.model)
+            protected_nets = set(power_nets) | set(ground_nets) | {"GND", "GND_PWR", "VCC", "VDD", "VSS", "GROUND"}
             # Apply to BoardModel: move footprints + rip up tracks/vias on affected nets
             self.model = commit_placement(self.model, self.proposal.deltas, protected_nets)
             # Apply to S-expression tree: move footprints + rip up tracks/vias
@@ -321,6 +322,8 @@ class Handler(BaseHTTPRequestHandler):
             overlay_on = qs.get("overlay", ["1"])[0] != "0"
             forces_on = qs.get("forces", ["0"])[0] != "0"
             drc_on = qs.get("drc", ["0"])[0] != "0"
+            fcu_on = qs.get("fcu", ["1"])[0] != "0"
+            bcu_on = qs.get("bcu", ["1"])[0] != "0"
             proposal = STATE.current_proposal if overlay_on else None
             pinned = STATE.get_pinned_uuids()
             selected = STATE.get_selected_uuids()

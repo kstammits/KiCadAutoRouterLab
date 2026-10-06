@@ -5,107 +5,255 @@
 <title>KiCad AutoRouter — Workflow</title>
 <style>
   :root { color-scheme: dark; }
-  body { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background:#101418; color:#d7e0e9; margin:0; padding:2rem; }
-  h1 { font-size:1.3rem; }
-  .sub { color:#7d8b99; margin-bottom:2rem; }
-  .pipeline { display:flex; flex-direction:column; gap:.75rem; max-width:46rem; }
-  .stage { border:1px solid #2a3540; border-radius:8px; padding:.9rem 1rem; background:#161c22; }
-  .stage h2 { font-size:1rem; margin:0 0 .3rem; display:flex; gap:.6rem; align-items:center; }
-  .num { color:#5b6b7a; }
-  p { margin:0; color:#9fb0c0; font-size:.85rem; }
-  .chip { margin-left:auto; font-size:.7rem; padding:.15rem .5rem; border-radius:999px; border:1px solid #3a4a5a; color:#8fa2b5; text-transform:uppercase; letter-spacing:.05em; }
+  body { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background:#101418; color:#d7e0e9; margin:0; padding:0; height:100vh; display:flex; flex-direction:column; }
+  h1 { font-size:1.1rem; margin:0; padding:.5rem 1rem; background:#161c22; border-bottom:1px solid #2a3540; }
+  .sub { color:#7d8b99; margin:0; padding:.25rem 1rem .5rem; font-size:.8rem; }
+  
+  /* Main layout */
+  .app-layout { display:flex; flex:1; overflow:hidden; }
+  
+  /* Left sidebar - footprint list */
+  .sidebar { width:380px; min-width:320px; max-width:500px; background:#161c22; border-right:1px solid #2a3540; display:flex; flex-direction:column; overflow:hidden; }
+  .sidebar-header { padding:.5rem .75rem; border-bottom:1px solid #2a3540; display:flex; gap:.5rem; align-items:center; font-size:.75rem; color:#9fb0c0; }
+  .sidebar-title { font-weight:600; color:#d7e0e9; font-size:.8rem; }
+  .sidebar-search { flex:1; background:#101418; border:1px solid #3a4a5a; color:#d7e0e9; border-radius:4px; padding:.2rem .5rem; font-family:inherit; font-size:.75rem; }
+  .sidebar-search:focus { outline:none; border-color:#7ee0a0; }
+  .sidebar-filters { padding:.5rem .75rem; border-bottom:1px solid #2a3540; display:flex; flex-direction:column; gap:.35rem; font-size:.7rem; color:#9fb0c0; }
+  .filter-row { display:flex; gap:.4rem; align-items:center; flex-wrap:wrap; }
+  .filter-label { min-width:55px; opacity:.7; }
+  .filter-input { flex:1; min-width:80px; background:#101418; border:1px solid #3a4a5a; color:#d7e0e9; border-radius:3px; padding:.15rem .4rem; font-family:inherit; font-size:.7rem; }
+  .filter-input:focus { outline:none; border-color:#7ee0a0; }
+  .filter-select { background:#101418; border:1px solid #3a4a5a; color:#d7e0e9; border-radius:3px; padding:.15rem .4rem; font-family:inherit; font-size:.7rem; }
+  .filter-chk { display:flex; gap:.25rem; align-items:center; font-size:.7rem; }
+  
+  .sidebar-content { flex:1; overflow:auto; }
+  .fp-table { width:100%; border-collapse:collapse; font-size:.7rem; }
+  .fp-table th { position:sticky; top:0; background:#161c22; color:#7d8b99; font-weight:600; text-align:left; padding:.3rem .5rem; border-bottom:1px solid #2a3540; z-index:1; white-space:nowrap; }
+  .fp-table td { padding:.25rem .5rem; border-bottom:1px solid #1a2028; vertical-align:middle; }
+  .fp-table tr:hover td { background:#1a222a; }
+  .fp-table tr.fp-selected-row td { background:#1a2e1a; }
+  .fp-table tr.fp-locked-row td { opacity:.6; }
+  .fp-table tr.fp-pinned-row td { opacity:.8; }
+  .fp-col-select { width:28px; text-align:center; }
+  .fp-col-ref { font-family:monospace; font-weight:500; color:#d7e0e9; max-width:90px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .fp-col-footprint { color:#9fb0c0; max-width:130px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .fp-col-layer { text-transform:uppercase; font-size:.65rem; padding:.05rem .3rem; border-radius:3px; display:inline-block; }
+  .fp-col-layer.F { background:#3d4a56; color:#9fb0c0; }
+  .fp-col-layer.B { background:#4a3d3d; color:#e0a458; }
+  .fp-col-nets { color:#7d8b99; max-width:120px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:.65rem; }
+  .fp-col-state { text-align:center; }
+  .state-badge { font-size:.55rem; padding:.05rem .35rem; border-radius:999px; text-transform:uppercase; letter-spacing:.03em; }
+  .state-locked { background:#3d1a1a; color:#e06c75; border:1px solid #5a2a2a; }
+  .state-pinned { background:#3d2a1a; color:#e0a458; border:1px solid #5a4a2a; }
+  .state-selected { background:#1a3d1a; color:#7ee0a0; border:1px solid #2a5a2a; }
+  .state-movable { background:#1a2a1a; color:#5aaa5a; border:1px solid #2a4a2a; }
+  .state-fixed { background:#2a2a2a; color:#5b6b7a; border:1px solid #3a3a3a; }
+  
+  .sidebar-footer { padding:.5rem .75rem; border-top:1px solid #2a3540; display:flex; gap:.4rem; flex-wrap:wrap; }
+  .sidebar-footer button { flex:1; min-width:0; padding:.3rem .5rem; font-size:.65rem; }
+  
+  /* Resizer */
+  .resizer { width:4px; background:#2a3540; cursor:col-resize; flex-shrink:0; }
+  .resizer:hover, .resizer.dragging { background:#7ee0a0; }
+  
+  /* Main content area */
+  .main-content { flex:1; display:flex; flex-direction:column; overflow:hidden; min-width:0; }
+  .top-bar { background:#161c22; border-bottom:1px solid #2a3540; padding:.5rem .75rem; display:flex; gap:.6rem; align-items:center; flex-wrap:wrap; font-size:.8rem; color:#7d8b99; }
+  .top-bar h1 { background:none; border:none; padding:0; font-size:.95rem; color:#d7e0e9; margin:0; }
+  
+  .pipeline { display:flex; flex-direction:column; gap:.5rem; padding:.5rem; max-height:120px; overflow:auto; }
+  .pipeline.collapsed { max-height: 0; padding: 0; overflow: hidden; }
+  .pipeline-toggle { font-size:.6rem; padding:.1rem .4rem; margin-bottom:.25rem; }
+  .stage { border:1px solid #2a3540; border-radius:6px; padding:.6rem .8rem; background:#161c22; }
+  .stage h2 { font-size:.8rem; margin:0 0 .2rem; display:flex; gap:.4rem; align-items:center; }
+  .num { color:#5b6b7a; font-size:.7rem; }
+  p { margin:0; color:#9fb0c0; font-size:.75rem; }
+  .chip { margin-left:auto; font-size:.6rem; padding:.1rem .4rem; border-radius:999px; border:1px solid #3a4a5a; color:#8fa2b5; text-transform:uppercase; letter-spacing:.05em; }
   .chip.implemented { color:#7ee0a0; border-color:#2e6b45; }
-  .drop { margin-top:2rem; max-width:46rem; border:1px dashed #3a4a5a; border-radius:8px; padding:1.2rem; text-align:center; color:#7d8b99; font-size:.85rem; }
-  .file { color:#d7e0e9; }
-  .board { margin-top:2rem; max-width:46rem; border:1px solid #2a3540; border-radius:8px; background:#0b0e12; overflow:hidden; }
-  .board .bar { display:flex; gap:.6rem; align-items:center; padding:.5rem .9rem; border-bottom:1px solid #2a3540; font-size:.8rem; color:#7d8b99; flex-wrap:wrap; }
-  .board-viewport { position:relative; width:100%; height:60vh; background:#0b0e12; overflow:hidden; }
+  
+  .board { border:1px solid #2a3540; border-radius:8px; background:#0b0e12; overflow:hidden; flex:1; display:flex; flex-direction:column; min-height:0; }
+  .board .bar { display:flex; gap:.5rem; align-items:center; padding:.4rem .7rem; border-bottom:1px solid #2a3540; font-size:.7rem; color:#7d8b99; flex-wrap:wrap; }
+  .board-viewport { position:relative; flex:1; background:#0b0e12; overflow:hidden; min-height:0; }
   .board-viewport svg { display:block; width:100%; height:100%; }
   .board-viewport.panning { cursor:grabbing; }
-  .zoom-info { font-size:.7rem; color:#7d8b99; font-variant-numeric:tabular-nums; }
-  button { background:#1f2833; border:1px solid #3a4a5a; color:#d7e0e9; border-radius:6px; padding:.3rem .7rem; cursor:pointer; font-family:inherit; font-size:.8rem; }
+  .board-viewport.selecting { cursor:crosshair; }
+  .zoom-info { font-size:.65rem; color:#7d8b99; font-variant-numeric:tabular-nums; }
+  button { background:#1f2833; border:1px solid #3a4a5a; color:#d7e0e9; border-radius:5px; padding:.25rem .6rem; cursor:pointer; font-family:inherit; font-size:.7rem; }
   button:hover:not(:disabled) { border-color:#7ee0a0; }
   button:disabled { opacity:.45; cursor:default; }
-  .chk { display:flex; gap:.35rem; align-items:center; font-size:.8rem; color:#9fb0c0; }
-  #diag { margin-left:auto; color:#7d8b99; font-size:.75rem; }
-  .params { display:grid; grid-template-columns:1fr 1fr; gap:.6rem 1rem; padding:.8rem .9rem; }
-  .param { display:flex; flex-direction:column; gap:.25rem; font-size:.78rem; color:#9fb0c0; }
-  .param .row { display:flex; gap:.5rem; align-items:center; }
+  button.primary { background:#1a3a1a; border-color:#2e6b45; color:#7ee0a0; }
+  button.primary:hover:not(:disabled) { background:#225522; }
+  .chk { display:flex; gap:.3rem; align-items:center; font-size:.7rem; color:#9fb0c0; }
+  #diag { margin-left:auto; color:#7d8b99; font-size:.65rem; min-width:200px; }
+  
+  .params { display:grid; grid-template-columns:1fr 1fr; gap:.4rem .8rem; padding:.6rem .7rem; font-size:.7rem; }
+  .param { display:flex; flex-direction:column; gap:.2rem; color:#9fb0c0; }
+  .param .row { display:flex; gap:.4rem; align-items:center; }
   .param input[type=range] { flex:1; min-width:0; }
-  .param input[type=number] { width:5.5rem; background:#161c22; border:1px solid #3a4a5a; color:#d7e0e9; border-radius:4px; padding:.15rem .3rem; font-family:inherit; font-size:.78rem; }
-  .chip.ok { color:#7ee0a0; border-color:#2e6b45; }
-  /* Footprint states */
+  .param input[type=number] { width:5rem; background:#161c22; border:1px solid #3a4a5a; color:#d7e0e9; border-radius:3px; padding:.1rem .25rem; font-family:inherit; font-size:.7rem; }
+  
+  /* Selection toolbar */
+  .sel-toolbar { display:flex; gap:.4rem; align-items:center; padding:.35rem .7rem; border-top:1px solid #2a3540; font-size:.65rem; color:#9fb0c0; flex-wrap:wrap; background:#161c22; }
+  .sel-toolbar button { padding:.15rem .45rem; font-size:.6rem; }
+  .sel-count { margin-left:auto; font-variant-numeric:tabular-nums; }
+  
+  /* Net legend */
+  .net-legend { display:flex; gap:.4rem; flex-wrap:wrap; padding:.35rem .7rem; border-top:1px solid #2a3540; font-size:.6rem; color:#9fb0c0; background:#161c22; align-items:center; }
+  .net-legend-item { display:flex; align-items:center; gap:.2rem; padding:.1rem .4rem; border-radius:3px; cursor:pointer; border:1px solid transparent; }
+  .net-legend-item:hover { background:#1a222a; border-color:#3a4a5a; }
+  .net-legend-swatch { width:10px; height:10px; border-radius:2px; flex-shrink:0; }
+  .net-legend-name { max-width:100px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .net-legend-count { color:#5b6b7a; font-variant-numeric:tabular-nums; }
+  
+  /* Parameter description table */
+  .param-desc-table { width:100%; border-collapse:collapse; font-size:.65rem; color:#9fb0c0; margin-top:.4rem; }
+  .param-desc-table th, .param-desc-table td { padding:.25rem .4rem; border:1px solid #2a3540; text-align:left; }
+  .param-desc-table th { background:#161c22; color:#d7e0e9; font-weight:600; }
+  .param-desc-table code { background:#0b0e12; padding:.05rem .25rem; border-radius:3px; font-size:.6rem; }
+  .param-desc-table tr:nth-child(even) td { background:#161c22; }
+  
+  /* Footprint states in SVG */
   .footprint.fp-locked line { stroke: #e06c75; stroke-dasharray: 2 2; }
   .footprint.fp-pinned line { stroke: #e0a458; stroke-dasharray: 4 2; }
   .footprint.fp-selected line { stroke: #7ee0a0; stroke-width: 0.2; }
+  .footprint.fp-movable line { stroke: #4a8a4a; stroke-width: 0.15; opacity: 0.6; }
   .footprint.fp-locked text { fill: #e06c75; }
   .footprint.fp-pinned text { fill: #e0a458; }
   .footprint.fp-selected text { fill: #7ee0a0; }
-  /* Selection toolbar */
-  .sel-toolbar { display:flex; gap:.5rem; align-items:center; padding:.4rem .9rem; border-top:1px solid #2a3540; font-size:.75rem; color:#9fb0c0; flex-wrap:wrap; }
-  .sel-toolbar button { padding:.2rem .5rem; font-size:.7rem; }
-  .sel-count { margin-left:auto; font-variant-numeric:tabular-nums; }
-
-  /* Parameter description table */
-  .param-desc-table { width:100%; border-collapse:collapse; font-size:.75rem; color:#9fb0c0; margin-top:.5rem; }
-  .param-desc-table th, .param-desc-table td { padding:.3rem .5rem; border:1px solid #2a3540; text-align:left; }
-  .param-desc-table th { background:#161c22; color:#d7e0e9; font-weight:600; }
-  .param-desc-table code { background:#0b0e12; padding:.1rem .3rem; border-radius:3px; font-size:.7rem; }
-  .param-desc-table tr:nth-child(even) td { background:#161c22; }
+  .footprint.fp-movable text { fill: #4a8a4a; }
+  
+  /* Marquee selection rectangle */
+  .marquee { position:absolute; pointer-events:none; border:1px dashed #7ee0a0; background:rgba(126,224,160,0.1); z-index:10; }
+  
+  .drop { margin:1rem; border:1px dashed #3a4a5a; border-radius:8px; padding:2rem; text-align:center; color:#7d8b99; font-size:.8rem; }
+  .file { color:#d7e0e9; }
 </style>
 </head>
 <body>
-<h1>KiCad AutoRouter — Workflow</h1>
-<div class="sub">Reads <code>.kicad_pcb</code> files and updates PCB trace placement. Stages run top to bottom.</div>
+<header>
+  <h1>KiCad AutoRouter — Workflow</h1>
+  <div class="sub">Reads <code>.kicad_pcb</code> files. Select footprints in the list or on the board, then step placement.</div>
+</header>
 
-<div id="help" class="sub" style="color:#9fb0c0; font-size:.8rem; margin-bottom:1rem;">
-  <strong>How it works:</strong> 1) Drop or load a <code>.kicad_pcb</code> file. 2) Adjust parameters if needed. 3) Click <strong>Step placement</strong> to run a few iterations — moved parts show in the overlay. 4) Click <strong>Accept proposal</strong> to commit changes to the board. 5) Repeat steps 3–4 until satisfied. Locked parts (in KiCad) never move.
+<div class="app-layout">
+  <!-- Left Sidebar: Footprint List -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <span class="sidebar-title">Footprints</span>
+      <input type="search" class="sidebar-search" id="fp-search" placeholder="Filter by ref, footprint, net..." aria-label="Filter footprints">
+    </div>
+    <div class="sidebar-filters">
+      <div class="filter-row">
+        <span class="filter-label">Ref:</span>
+        <input type="text" class="filter-input" id="filter-ref" placeholder="R*, C1, U*" aria-label="Filter by reference pattern">
+        <span class="filter-label">Net:</span>
+        <input type="text" class="filter-input" id="filter-net" placeholder="GND, VCC, NET_*" aria-label="Filter by net name">
+      </div>
+      <div class="filter-row">
+        <span class="filter-label">Layer:</span>
+        <select class="filter-select" id="filter-layer" aria-label="Filter by layer">
+          <option value="">All</option>
+          <option value="F">Front (F.Cu)</option>
+          <option value="B">Back (B.Cu)</option>
+        </select>
+        <span class="filter-label">State:</span>
+        <select class="filter-select" id="filter-state" aria-label="Filter by state">
+          <option value="">All</option>
+          <option value="movable">Movable</option>
+          <option value="locked">Locked (KiCad)</option>
+          <option value="pinned">Pinned (User)</option>
+          <option value="selected">Selected</option>
+        </select>
+      </div>
+      <div class="filter-row">
+        <label class="filter-chk"><input type="checkbox" id="filter-hide-locked" checked> Hide locked</label>
+        <label class="filter-chk"><input type="checkbox" id="filter-hide-fixed"> Hide fixed (locked+pinned)</label>
+      </div>
+    </div>
+    <div class="sidebar-content">
+      <table class="fp-table" id="fp-table">
+        <thead>
+          <tr>
+            <th class="fp-col-select"><input type="checkbox" id="fp-select-all" title="Select all visible"></th>
+            <th class="fp-col-ref">Ref</th>
+            <th class="fp-col-footprint">Footprint</th>
+            <th class="fp-col-layer">Layer</th>
+            <th class="fp-col-nets">Nets</th>
+            <th class="fp-col-state">State</th>
+          </tr>
+        </thead>
+        <tbody id="fp-tbody"></tbody>
+      </table>
+    </div>
+    <div class="sidebar-footer">
+      <button id="sidebar-select-visible" title="Select all visible (filtered)">Select Visible</button>
+      <button id="sidebar-clear-sel" title="Clear selection">Clear</button>
+      <button id="sidebar-pin-sel" title="Pin selected">Pin</button>
+      <button id="sidebar-unpin-sel" title="Unpin selected">Unpin</button>
+    </div>
+  </aside>
+  <div class="resizer" id="resizer" aria-label="Resize sidebar"></div>
+  
+  <!-- Main Content -->
+  <main class="main-content">
+    <div class="top-bar">
+      <input type="file" id="load-input" accept=".kicad_pcb,.kicad_sch" multiple hidden>
+      <button id="load-btn">Load PCB…</button>
+      <span id="board-name" style="flex:1; text-align:center;">no board loaded</span>
+      <span id="board-sch" class="chip" hidden>pcb only</span>
+      <label class="chk"><input type="checkbox" id="overlay-toggle" checked> proposal</label>
+      <label class="chk"><input type="checkbox" id="forces-toggle"> forces</label>
+      <label class="chk"><input type="checkbox" id="drc-toggle"> DRC</label>
+      <label class="chk"><input type="checkbox" id="layer-fcu" checked> F.Cu</label>
+      <label class="chk"><input type="checkbox" id="layer-bcu" checked> B.Cu</label>
+      <span class="zoom-info" id="zoom-info">100%</span>
+      <button id="fit-btn" title="Fit board to view">Fit</button>
+      <button id="download-btn" title="Download modified PCB" hidden>Download</button>
+      <button id="undo-btn" title="Undo last accept" disabled>Undo</button>
+      <button id="reset-btn" title="Reset to original board" hidden>Reset</button>
+      <button id="pipeline-toggle-btn" class="pipeline-toggle" title="Toggle pipeline">Pipeline ▼</button>
+    </div>
+    
+    <div class="pipeline" id="pipeline"></div>
+    
+    <div class="board" id="board" hidden>
+      <div class="board-viewport" id="board-viewport">
+        <!-- SVG injected here -->
+      </div>
+      <div class="sel-toolbar" id="sel-toolbar" hidden>
+        <button id="select-all-btn" title="Select all unlocked">Select All Unlocked</button>
+        <button id="clear-sel-btn" title="Clear selection">Clear</button>
+        <button id="pin-btn" title="Pin selected (prevent movement)">Pin</button>
+        <button id="unpin-btn" title="Unpin selected">Unpin</button>
+        <span class="sel-count" id="sel-count">0 selected, 0 pinned</span>
+      </div>
+      <div class="net-legend" id="net-legend" hidden>
+        <span style="margin-right:.5rem; opacity:.6;">Nets:</span>
+        <div id="net-legend-items"></div>
+      </div>
+    </div>
+    
+    <div class="board" id="placement-panel" hidden>
+      <div class="bar">
+        <span class="num">Place</span>
+        <label class="chk" style="margin-left:.5rem;"><input type="number" id="step-iters" value="50" min="1" max="5000" step="10" style="width:5rem;"> iters</label>
+        <label class="chk" style="margin-left:.5rem;"><input type="checkbox" id="physics-mode" checked> Physics</label>
+        <button id="step-selected-btn" class="primary" title="Run placement on selected footprints only">Step Selected</button>
+        <button id="step-all-btn" title="Run placement on all movable footprints">Step All Movable</button>
+        <button id="preview-btn" title="Quick preview of where selected would move">Preview</button>
+        <button id="refresh-forces-btn" title="Recompute forces with current parameters">↻ Forces</button>
+        <button id="accept-btn" disabled>Accept</button>
+        <button id="clear-btn">Clear</button>
+        <span id="diag"></span>
+      </div>
+      <div class="params" id="params-grid"></div>
+      <div class="bar"><button id="reset-params-btn">Reset params</button></div>
+    </div>
+  </main>
 </div>
 
-<div id="pipeline" class="pipeline"></div>
-
-<div class="board" id="board" hidden>
-  <div class="bar">
-    <span id="board-name">no board loaded</span>
-    <span id="board-sch" class="chip" hidden>pcb only</span>
-    <input type="file" id="load-input" accept=".kicad_pcb,.kicad_sch" multiple hidden>
-    <button id="load-btn">Load…</button>
-    <label class="chk"><input type="checkbox" id="overlay-toggle" checked> show proposal</label>
-    <span class="zoom-info" id="zoom-info">100%</span>
-    <button id="fit-btn" title="Fit board to view">Fit</button>
-    <button id="download-btn" title="Download modified PCB" hidden>Download PCB</button>
-    <button id="undo-btn" title="Undo last accept" disabled>Undo</button>
-    <button id="reset-btn" title="Reset to original board" hidden>Reset</button>
-  </div>
-  <div class="sel-toolbar" id="sel-toolbar" hidden>
-    <button id="select-all-btn" title="Select all unlocked">Select All</button>
-    <button id="clear-sel-btn" title="Clear selection">Clear</button>
-    <button id="pin-btn" title="Pin selected (prevent movement)">Pin</button>
-    <span class="sel-count" id="sel-count">0 selected, 0 pinned</span>
-  </div>
-  <div class="board-viewport" id="board-viewport">
-    <!-- SVG injected here -->
-  </div>
-</div>
-
-<div class="board" id="placement-panel" hidden>
-  <div class="bar">
-    <span class="num">Place</span>
-    <label class="chk" style="margin-left:.5rem;"><input type="number" id="step-iters" value="50" min="1" max="5000" step="10" style="width:5rem;"> iterations/step</label>
-    <label class="chk" style="margin-left:.5rem;"><input type="checkbox" id="physics-mode" checked> Physics mode</label>
-    <label class="chk" style="margin-left:.5rem;"><input type="checkbox" id="forces-toggle"> Show forces</label>
-    <button id="refresh-forces-btn" title="Recompute forces with current parameters">↻</button>
-    <button id="run-btn">Step placement</button>
-    <button id="accept-btn" disabled>Accept proposal</button>
-    <button id="clear-btn">Clear proposal</button>
-    <span id="diag"></span>
-  </div>
-  <div class="params" id="params-grid"></div>
-  <div class="bar"><button id="reset-params-btn">Reset params</button></div>
-</div>
-
-<div class="drop" id="drop">
-  Drop <code>.kicad_pcb</code> / <code>.kicad_sch</code> files here to load them into the viewer.
+<div class="drop" id="drop" hidden>
+  Drop <code>.kicad_pcb</code> / <code>.kicad_sch</code> files here to load them.
   <p style="margin-top:.5rem;font-size:.75rem;color:#5b6b7a;">Or click <button id="load-btn-drop" style="background:none;border:1px solid #3a4a5a;padding:.15rem .5rem;border-radius:4px;cursor:pointer;">Load…</button></p>
 </div>
 
@@ -123,6 +271,15 @@ async function loadStages() {
     pipeline.appendChild(el);
   }
 }
+
+// Pipeline collapse/expand
+const pipelineToggleBtn = document.getElementById("pipeline-toggle-btn");
+let pipelineCollapsed = false;
+pipelineToggleBtn.addEventListener("click", () => {
+  pipelineCollapsed = !pipelineCollapsed;
+  pipeline.classList.toggle("collapsed", pipelineCollapsed);
+  pipelineToggleBtn.textContent = pipelineCollapsed ? "Pipeline ▶" : "Pipeline ▼";
+});
 
 async function uploadFile(f) {
   const kind = f.name.endsWith(".kicad_sch") ? "sch" : "pcb";
@@ -164,23 +321,28 @@ loadInput.addEventListener("change", async () => {
 });
 
 const PARAM_DEFS = [
-  { key: "repulsion_kr", label: "Repulsion k_r", min: 0, max: 1000, step: 1 },
-  { key: "attraction_ka", label: "Attraction k_a", min: 0, max: 1, step: 0.005 },
+  { key: "repulsion_kr", label: "Repulsion k_r", min: 1, max: 10000, step: 1, log: true },
+  { key: "attraction_ka", label: "Attraction k_a", min: 0.001, max: 1, step: 0.005, log: true },
   { key: "ideal_length_mm", label: "Ideal length (mm)", min: 0, max: 200, step: 1 },
-  { key: "max_iterations", label: "Max iterations", min: 1, max: 5000, step: 10 },
-  { key: "convergence_eps_mm", label: "Convergence eps (mm)", min: 0.001, max: 1, step: 0.001 },
-  { key: "rigid_stiffness", label: "Rigid stiffness", min: 1000, max: 1e8, step: 1000 },
-  { key: "courtyard_repulsion_kc", label: "Courtyard repulsion k_c", min: 0, max: 5000, step: 10 },
+  { key: "max_iterations", label: "Max iterations", min: 1, max: 20000, step: 10 },
+  { key: "convergence_eps_mm", label: "Convergence eps (mm)", min: 0.0001, max: 1, step: 0.001, log: true },
+  { key: "rigid_stiffness", label: "Rigid stiffness", min: 1000, max: 1e9, step: 1, log: true },
+  { key: "courtyard_repulsion_kc", label: "Courtyard repulsion k_c", min: 0, max: 20000, step: 10 },
+  { key: "boundary_repulsion_kb", label: "Boundary repulsion k_b", min: 100, max: 1e6, step: 1, log: true },
+  { key: "demo_jitter_mm", label: "Demo jitter (mm)", min: 0, max: 5, step: 0.1 },
 ];
 
 const PARAM_DESC = {
-  repulsion_kr: "Coulomb repulsion between ALL pads (k_r / d²). Higher = stronger push-apart.",
-  attraction_ka: "Hooke's spring attraction between net-connected pads. F = k_a × (d - L₀).",
+  repulsion_kr: "Coulomb repulsion between ALL pads (k_r / d²). Higher = stronger push-apart. Log scale.",
+  attraction_ka: "Hooke's spring attraction between net-connected pads. F = k_a × (d - L₀). Log scale.",
   ideal_length_mm: "Target distance for net springs (L₀). 0 = auto-compute from board density.",
   max_iterations: "Hard limit on simulation steps.",
-  convergence_eps_mm: "Stop when max pad displacement < this per iteration.",
-  rigid_stiffness: "Internal spring stiffness keeping footprint pads rigid. Very high = rigid body.",
+  convergence_eps_mm: "Stop when max pad displacement < this per iteration. Log scale.",
+  rigid_stiffness: "Internal spring stiffness keeping footprint pads rigid. Very high = rigid body. Log scale (1e3–1e9).",
   courtyard_repulsion_kc: "Footprint-level repulsion when courtyards overlap/approach.",
+  boundary_repulsion_kb: "Repulsion from board region edges. Higher = stronger push away from boundaries. Log scale (100–1e6).",
+  demo_jitter_mm: "Random jitter for stub/preview mode. 0 = deterministic.",
+  stub: "Use stub mode (no physics). Preview only.",
 };
 
 const paramsGrid = document.getElementById("params-grid");
@@ -188,13 +350,48 @@ for (const def of PARAM_DEFS) {
   const el = document.createElement("div");
   el.className = "param";
   const desc = PARAM_DESC[def.key] || "";
-  el.innerHTML = `<span title="${desc}">${def.label}</span>
-    <div class="row">
-      <input type="range" data-key="${def.key}" min="${def.min}" max="${def.max}" step="${def.step}">
-      <input type="number" data-key="${def.key}" min="${def.min}" max="${def.max}" step="${def.step}">
-    </div>`;
+  const isLog = def.log === true;
+  
+  if (def.key === "stub") {
+    // Boolean parameter - checkbox
+    el.innerHTML = `<span title="${desc}">${def.label}</span>
+      <div class="row">
+        <label class="chk" style="margin:0;">
+          <input type="checkbox" data-key="${def.key}"> Enabled
+        </label>
+      </div>`;
+  } else if (isLog) {
+    // Log-scale parameter
+    const logMin = Math.log10(def.min);
+    const logMax = Math.log10(def.max);
+    el.innerHTML = `<span title="${desc}">${def.label}</span>
+      <div class="row">
+        <input type="range" data-key="${def.key}" data-log="true" min="${logMin}" max="${logMax}" step="0.01">
+        <input type="number" data-key="${def.key}" min="${def.min}" max="${def.max}" step="${def.step}">
+      </div>`;
+  } else {
+    // Linear parameter
+    el.innerHTML = `<span title="${desc}">${def.label}</span>
+      <div class="row">
+        <input type="range" data-key="${def.key}" min="${def.min}" max="${def.max}" step="${def.step}">
+        <input type="number" data-key="${def.key}" min="${def.min}" max="${def.max}" step="${def.step}">
+      </div>`;
+  }
   paramsGrid.appendChild(el);
 }
+
+// Add stub checkbox after params grid
+const stubParam = { key: "stub", label: "Stub mode (no physics)", log: false };
+const stubEl = document.createElement("div");
+stubEl.className = "param";
+const stubDesc = PARAM_DESC["stub"] || "";
+stubEl.innerHTML = `<span title="${stubDesc}">${stubParam.label}</span>
+  <div class="row">
+    <label class="chk" style="margin:0;">
+      <input type="checkbox" data-key="stub"> Enabled
+    </label>
+  </div>`;
+paramsGrid.appendChild(stubEl);
 
 // Parameter description table
 const descTable = document.createElement("table");
@@ -204,12 +401,40 @@ descTable.innerHTML = "<thead><tr><th>Parameter</th><th>Description</th></tr></t
   "</tbody>";
 document.getElementById("params-grid").parentElement.insertBefore(descTable, document.getElementById("params-grid").nextSibling);
 
+function logToValue(logVal, def) {
+  return Math.pow(10, logVal);
+}
+
+function valueToLog(val, def) {
+  return Math.log10(val);
+}
+
 paramsGrid.addEventListener("input", e => {
   const key = e.target.dataset.key;
+  const def = PARAM_DEFS.find(d => d.key === key);
+  const isLog = def?.log === true;
   const range = paramsGrid.querySelector(`input[type=range][data-key=${key}]`);
   const num = paramsGrid.querySelector(`input[type=number][data-key=${key}]`);
-  if (e.target.type === "range") num.value = range.value;
-  else range.value = num.value;
+  const checkbox = paramsGrid.querySelector(`input[type=checkbox][data-key=${key}]`);
+  
+  if (checkbox) {
+    // Boolean parameter
+    return; // checkbox handled separately in readParams
+  }
+  
+  if (e.target.type === "range") {
+    if (isLog) {
+      num.value = logToValue(Number(range.value), def).toFixed(def.step >= 1 ? 0 : 4);
+    } else {
+      num.value = range.value;
+    }
+  } else if (e.target.type === "number") {
+    if (isLog) {
+      range.value = valueToLog(Number(num.value), def).toFixed(2);
+    } else {
+      range.value = num.value;
+    }
+  }
   // Auto-refresh forces if currently shown
   if (forcesToggle.checked && lastVersion) {
     refreshForces();
@@ -220,8 +445,11 @@ function readParams() {
   const out = {};
   for (const def of PARAM_DEFS) {
     const num = paramsGrid.querySelector(`input[type=number][data-key=${def.key}]`);
-    out[def.key] = Number(num.value);
+    if (num) out[def.key] = Number(num.value);
   }
+  // Stub checkbox
+  const stubCb = paramsGrid.querySelector(`input[type=checkbox][data-key=stub]`);
+  if (stubCb) out["stub"] = stubCb.checked;
   return out;
 }
 
@@ -231,9 +459,18 @@ async function loadParams(defaultsOnly = false) {
   const p = await res.json();
   for (const def of PARAM_DEFS) {
     if (!(def.key in p)) continue;
-    paramsGrid.querySelector(`input[type=range][data-key=${def.key}]`).value = p[def.key];
-    paramsGrid.querySelector(`input[type=number][data-key=${def.key}]`).value = p[def.key];
+    const range = paramsGrid.querySelector(`input[type=range][data-key=${def.key}]`);
+    const num = paramsGrid.querySelector(`input[type=number][data-key=${def.key}]`);
+    if (range && def.log) {
+      range.value = valueToLog(p[def.key], def).toFixed(2);
+    } else if (range) {
+      range.value = p[def.key];
+    }
+    if (num) num.value = p[def.key];
   }
+  // Stub checkbox
+  const stubCb = paramsGrid.querySelector(`input[type=checkbox][data-key=stub]`);
+  if (stubCb && "stub" in p) stubCb.checked = p.stub;
 }
 
 const boardEl = document.getElementById("board");
@@ -243,6 +480,9 @@ const zoomInfo = document.getElementById("zoom-info");
 const schChip = document.getElementById("board-sch");
 const overlayToggle = document.getElementById("overlay-toggle");
 const forcesToggle = document.getElementById("forces-toggle");
+const drcToggle = document.getElementById("drc-toggle");
+const layerFcuToggle = document.getElementById("layer-fcu");
+const layerBcuToggle = document.getElementById("layer-bcu");
 const fitBtn = document.getElementById("fit-btn");
 const diagEl = document.getElementById("diag");
 
@@ -254,7 +494,8 @@ let panStart = null;
 function boardSrc(version) {
   const overlayOn = overlayToggle?.checked ?? false;
   const forcesOn = forcesToggle?.checked ?? false;
-  return `/api/board.svg?v=${version}&overlay=${overlayOn ? 1 : 0}&forces=${forcesOn ? 1 : 0}`;
+  const drcOn = drcToggle?.checked ?? false;
+  return `/api/board.svg?v=${version}&overlay=${overlayOn ? 1 : 0}&forces=${forcesOn ? 1 : 0}&drc=${drcOn ? 1 : 0}`;
 }
 
 function updateZoomInfo() {
@@ -289,9 +530,9 @@ async function fetchAndInjectSVG(version) {
   if (!res.ok) return;
   const svgText = await res.text();
   viewport.innerHTML = svgText;
-  // Capture initial viewBox for zoom reference
+  // Capture initial viewBox for zoom reference ONLY on first load
   const svg = viewport.querySelector("svg");
-  if (svg) {
+  if (svg && viewBox === null) {
     const vbAttr = svg.getAttribute("viewBox");
     if (vbAttr) {
       const vb = vbAttr.split(" ").map(Number);
@@ -364,6 +605,26 @@ forcesToggle.addEventListener("change", async () => {
   }
 });
 
+layerFcuToggle.addEventListener("change", () => {
+  const svg = viewport.querySelector("svg");
+  if (svg) {
+    const layer = svg.querySelector("#layer-F.Cu-tracks");
+    if (layer) layer.style.display = layerFcuToggle.checked ? "" : "none";
+    const layerZones = svg.querySelector("#layer-F.Cu-zones");
+    if (layerZones) layerZones.style.display = layerFcuToggle.checked ? "" : "none";
+  }
+});
+
+layerBcuToggle.addEventListener("change", () => {
+  const svg = viewport.querySelector("svg");
+  if (svg) {
+    const layer = svg.querySelector("#layer-B.Cu-tracks");
+    if (layer) layer.style.display = layerBcuToggle.checked ? "" : "none";
+    const layerZones = svg.querySelector("#layer-B.Cu-zones");
+    if (layerZones) layerZones.style.display = layerBcuToggle.checked ? "" : "none";
+  }
+});
+
 // Zoom / Pan handlers
 viewport.addEventListener("wheel", e => {
   e.preventDefault();
@@ -389,14 +650,48 @@ viewport.addEventListener("wheel", e => {
   applyViewBox();
 }, { passive: false });
 
+let isMarqueeSelecting = false;
+let marqueeStart = null;
+let marqueeEl = null;
+
 viewport.addEventListener("mousedown", e => {
   if (e.button !== 0) return; // left click only
+  
+  // Check if clicking on empty space (for marquee) or on a footprint
+  const fpEl = e.target.closest(".footprint");
+  const isEmptySpace = !fpEl;
+  
+  // Start marquee selection on Shift+drag on empty space, or just drag on empty space
+  if (isEmptySpace && (e.shiftKey || !fpEl)) {
+    isMarqueeSelecting = true;
+    marqueeStart = { x: e.clientX, y: e.clientY };
+    marqueeEl = document.createElement("div");
+    marqueeEl.className = "marquee";
+    viewport.appendChild(marqueeEl);
+    viewport.classList.add("selecting");
+    e.preventDefault();
+    return;
+  }
+  
+  // Otherwise start panning
   isPanning = true;
   panStart = { x: e.clientX, y: e.clientY, vb: [...viewBox] };
   viewport.classList.add("panning");
 });
 
 window.addEventListener("mousemove", e => {
+  if (isMarqueeSelecting && marqueeEl && marqueeStart) {
+    const left = Math.min(marqueeStart.x, e.clientX);
+    const top = Math.min(marqueeStart.y, e.clientY);
+    const width = Math.abs(e.clientX - marqueeStart.x);
+    const height = Math.abs(e.clientY - marqueeStart.y);
+    marqueeEl.style.left = left + "px";
+    marqueeEl.style.top = top + "px";
+    marqueeEl.style.width = width + "px";
+    marqueeEl.style.height = height + "px";
+    return;
+  }
+  
   if (!isPanning || !viewBox) return;
   const dx = (e.clientX - panStart.x) / viewport.clientWidth * viewBox[2];
   const dy = (e.clientY - panStart.y) / viewport.clientHeight * viewBox[3];
@@ -405,7 +700,74 @@ window.addEventListener("mousemove", e => {
   applyViewBox();
 });
 
-window.addEventListener("mouseup", () => {
+window.addEventListener("mouseup", e => {
+  if (isMarqueeSelecting) {
+    // Process marquee selection
+    if (marqueeEl) {
+      const rect = marqueeEl.getBoundingClientRect();
+      const viewportRect = viewport.getBoundingClientRect();
+      
+      // Convert to SVG coordinates
+      const svg = viewport.querySelector("svg");
+      if (svg && viewBox) {
+        const svgRect = svg.getBoundingClientRect();
+        
+        // Marquee bounds in SVG coordinates
+        const marqueeLeft = viewBox[0] + ((rect.left - svgRect.left) / svgRect.width) * viewBox[2];
+        const marqueeRight = viewBox[0] + ((rect.right - svgRect.left) / svgRect.width) * viewBox[2];
+        const marqueeTop = viewBox[1] + ((rect.top - svgRect.top) / svgRect.height) * viewBox[3];
+        const marqueeBottom = viewBox[1] + ((rect.bottom - svgRect.top) / svgRect.height) * viewBox[3];
+        
+        const minX = Math.min(marqueeLeft, marqueeRight);
+        const maxX = Math.max(marqueeLeft, marqueeRight);
+        const minY = Math.min(marqueeTop, marqueeBottom);
+        const maxY = Math.max(marqueeTop, marqueeBottom);
+        
+        // Find footprints whose centroids are within the marquee
+        svg.querySelectorAll(".footprint").forEach(fpEl => {
+          const uuid = fpEl.dataset.fpUuid;
+          if (!uuid) return;
+          
+          // Get footprint centroid from the group transform or compute from courtyard
+          const fp = allFootprints.find(f => f.uuid === uuid);
+          if (fp) {
+            const cx = fp.x_mm;
+            const cy = fp.y_mm;
+            if (cx >= minX && cx <= maxX && cy >= minY && cy <= maxY) {
+              if (!fp.locked && !fp.pinned) {
+                if (e.shiftKey) {
+                  selectedUuids.add(uuid);
+                } else {
+                  selectedUuids.add(uuid);
+                }
+              }
+            }
+          }
+        });
+        
+        // Update server
+        selectedUuids.forEach(uuid => {
+          fetch("/api/placement/select", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ uuid })
+          });
+        });
+        
+        updateFootprintVisuals();
+        updateSelectionUI();
+        renderFootprintTable();
+      }
+    }
+    
+    marqueeEl.remove();
+    marqueeEl = null;
+    marqueeStart = null;
+    isMarqueeSelecting = false;
+    viewport.classList.remove("selecting");
+    return;
+  }
+  
   if (isPanning) {
     isPanning = false;
     viewport.classList.remove("panning");
@@ -550,10 +912,235 @@ viewport.addEventListener("click", e => {
   }
 });
 
+// Load footprints list from server
+let allFootprints = []; // Cache of all footprints from server
+
+async function fetchFootprints() {
+  if (!lastVersion) return;
+  try {
+    const res = await fetch("/api/footprints");
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    allFootprints = data.footprints || [];
+    renderFootprintTable();
+  } catch (err) {
+    console.error("Failed to fetch footprints:", err);
+  }
+}
+
+function getFilterValues() {
+  return {
+    search: document.getElementById("fp-search").value.toLowerCase(),
+    ref: document.getElementById("filter-ref").value.toLowerCase(),
+    net: document.getElementById("filter-net").value.toLowerCase(),
+    layer: document.getElementById("filter-layer").value,
+    state: document.getElementById("filter-state").value,
+    hideLocked: document.getElementById("filter-hide-locked").checked,
+    hideFixed: document.getElementById("filter-hide-fixed").checked,
+  };
+}
+
+function matchesFilter(fp, filters) {
+  if (filters.hideLocked && fp.locked) return false;
+  if (filters.hideFixed && (fp.locked || fp.pinned)) return false;
+  if (filters.layer && fp.layer !== filters.layer) return false;
+  if (filters.state) {
+    if (filters.state === "movable" && (fp.locked || fp.pinned)) return false;
+    if (filters.state === "locked" && !fp.locked) return false;
+    if (filters.state === "pinned" && !fp.pinned) return false;
+    if (filters.state === "selected" && !fp.selected) return false;
+  }
+  if (filters.ref) {
+    const pattern = filters.ref.replace(/\*/g, ".*");
+    const re = new RegExp(`^${pattern}$`, "i");
+    if (!re.test(fp.ref)) return false;
+  }
+  if (filters.net) {
+    const pattern = filters.net.replace(/\*/g, ".*");
+    const re = new RegExp(`^${pattern}$`, "i");
+    if (!fp.nets.some(n => re.test(n))) return false;
+  }
+  if (filters.search) {
+    const s = filters.search;
+    const inRef = fp.ref.toLowerCase().includes(s);
+    const inFootprint = fp.footprint_id.toLowerCase().includes(s);
+    const inNets = fp.nets.some(n => n.toLowerCase().includes(s));
+    if (!inRef && !inFootprint && !inNets) return false;
+  }
+  return true;
+}
+
+function getFilteredFootprints() {
+  const filters = getFilterValues();
+  return allFootprints.filter(fp => matchesFilter(fp, filters));
+}
+
+function getStateBadge(fp) {
+  if (fp.locked) return '<span class="state-badge state-locked">Locked</span>';
+  if (fp.pinned) return '<span class="state-badge state-pinned">Pinned</span>';
+  if (fp.selected) return '<span class="state-badge state-selected">Selected</span>';
+  return '<span class="state-badge state-movable">Movable</span>';
+}
+
+function renderFootprintTable() {
+  const tbody = document.getElementById("fp-tbody");
+  const filtered = getFilteredFootprints();
+  tbody.innerHTML = filtered.map(fp => {
+    const netsStr = fp.nets.slice(0, 3).join(", ") + (fp.nets.length > 3 ? ` +${fp.nets.length - 3}` : "");
+    const layerClass = fp.layer === "B" ? "B" : "F";
+    return `
+      <tr class="${fp.selected ? 'fp-selected-row' : ''} ${fp.locked ? 'fp-locked-row' : ''} ${fp.pinned ? 'fp-pinned-row' : ''}" data-uuid="${fp.uuid}">
+        <td class="fp-col-select"><input type="checkbox" ${fp.selected ? 'checked' : ''} ${fp.locked || fp.pinned ? 'disabled' : ''} data-uuid="${fp.uuid}"></td>
+        <td class="fp-col-ref" title="${fp.ref}">${fp.ref}</td>
+        <td class="fp-col-footprint" title="${fp.footprint_id}">${fp.footprint_id}</td>
+        <td class="fp-col-layer"><span class="fp-col-layer ${layerClass}">${fp.layer}</span></td>
+        <td class="fp-col-nets" title="${fp.nets.join(", ")}">${netsStr}</td>
+        <td class="fp-col-state">${getStateBadge(fp)}</td>
+      </tr>
+    `;
+  }).join("");
+  
+  // Add click handlers for checkboxes
+  tbody.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+    cb.addEventListener("change", e => {
+      const uuid = e.target.dataset.uuid;
+      if (e.target.checked) {
+        selectedUuids.add(uuid);
+      } else {
+        selectedUuids.delete(uuid);
+      }
+      // Update server
+      fetch("/api/placement/select", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ uuid })
+      });
+      updateFootprintVisuals();
+      updateSelectionUI();
+      renderFootprintTable(); // Re-render to update row highlighting
+    });
+  });
+  
+  // Add click handlers for rows (click row to select)
+  tbody.querySelectorAll("tr").forEach(tr => {
+    tr.addEventListener("click", e => {
+      if (e.target.type === "checkbox") return; // Handled by checkbox
+      const uuid = tr.dataset.uuid;
+      if (!uuid) return;
+      const fp = allFootprints.find(f => f.uuid === uuid);
+      if (!fp || fp.locked || fp.pinned) return;
+      
+      if (e.shiftKey) {
+        // Range select not implemented yet - just toggle
+        toggleSelect(uuid).then(() => renderFootprintTable());
+      } else if (e.ctrlKey || e.metaKey) {
+        toggleSelect(uuid).then(() => renderFootprintTable());
+      } else {
+        selectedUuids.clear();
+        selectedUuids.add(uuid);
+        fetch("/api/placement/select", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ uuid })
+        });
+        updateFootprintVisuals();
+        updateSelectionUI();
+        renderFootprintTable();
+      }
+    });
+  });
+  
+  // Update select all checkbox
+  const selectAllCb = document.getElementById("fp-select-all");
+  if (selectAllCb) {
+    selectAllCb.checked = filtered.length > 0 && filtered.every(fp => fp.selected);
+    selectAllCb.indeterminate = filtered.some(fp => fp.selected) && !filtered.every(fp => fp.selected);
+  }
+  
+  // Update net legend
+  renderNetLegend();
+}
+
+function renderNetLegend() {
+  const legendItems = document.getElementById("net-legend-items");
+  const legendBar = document.getElementById("net-legend");
+  if (!legendItems || !legendBar) return;
+  
+  // Aggregate nets from all footprints
+  const netCounts = {};
+  allFootprints.forEach(fp => {
+    fp.nets.forEach(net => {
+      if (net) netCounts[net] = (netCounts[net] || 0) + 1;
+    });
+  });
+  
+  // Sort by count descending, then alphabetically
+  const sortedNets = Object.entries(netCounts)
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, 20); // Limit to top 20 nets
+  
+  // Generate deterministic colors (same as svg_render.py)
+  function netColor(net, idx) {
+    const hue = (idx * 137.508) % 360;
+    return `hsl(${hue}, 75%, 62%)`;
+  }
+  
+  if (sortedNets.length > 0) {
+    legendBar.hidden = false;
+    legendItems.innerHTML = sortedNets.map(([net, count], idx) => {
+      const color = netColor(net, idx);
+      return `
+        <div class="net-legend-item" data-net="${net}" title="${net}: ${count} parts" style="--net-color: ${color};">
+          <span class="net-legend-swatch" style="background: ${color};"></span>
+          <span class="net-legend-name">${net}</span>
+          <span class="net-legend-count">${count}</span>
+        </div>
+      `;
+    }).join("");
+    
+    // Add click handlers for net selection
+    legendItems.querySelectorAll(".net-legend-item").forEach(item => {
+      item.addEventListener("click", () => {
+        const net = item.dataset.net;
+        selectByNet(net);
+      });
+    });
+  } else {
+    legendBar.hidden = true;
+  }
+}
+
+async function selectByNet(net) {
+  // Find all footprints that have this net
+  const uuidsToSelect = allFootprints
+    .filter(fp => fp.nets.includes(net) && !fp.locked && !fp.pinned)
+    .map(fp => fp.uuid);
+  
+  if (uuidsToSelect.length === 0) return;
+  
+  // Clear current selection and select these
+  selectedUuids.clear();
+  uuidsToSelect.forEach(uuid => selectedUuids.add(uuid));
+  
+  // Update server for each
+  for (const uuid of uuidsToSelect) {
+    await fetch("/api/placement/select", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ uuid })
+    });
+  }
+  
+  updateFootprintVisuals();
+  updateSelectionUI();
+  renderFootprintTable();
+}
+
 // Load pinned on board load
 async function loadSelectionState() {
   await fetchPinned();
   await fetchSelected();
+  await fetchFootprints();
   updateFootprintVisuals();
   updateSelectionUI();
 }
@@ -566,34 +1153,129 @@ document.getElementById("pin-btn").addEventListener("click", () => {
   selectedUuids.forEach(uuid => togglePin(uuid));
 });
 
+// Sidebar filter event listeners
+["fp-search", "filter-ref", "filter-net", "filter-layer", "filter-state", "filter-hide-locked", "filter-hide-fixed"].forEach(id => {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener("input", renderFootprintTable);
+});
+
+// Sidebar buttons
+document.getElementById("sidebar-select-visible").addEventListener("click", () => {
+  const filtered = getFilteredFootprints();
+  filtered.forEach(fp => {
+    if (!fp.locked && !fp.pinned) {
+      selectedUuids.add(fp.uuid);
+    }
+  });
+  // Update server for each
+  filtered.forEach(fp => {
+    if (!fp.locked && !fp.pinned) {
+      fetch("/api/placement/select", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ uuid: fp.uuid })
+      });
+    }
+  });
+  updateFootprintVisuals();
+  updateSelectionUI();
+  renderFootprintTable();
+});
+
+document.getElementById("sidebar-clear-sel").addEventListener("click", clearSelection);
+
+document.getElementById("sidebar-pin-sel").addEventListener("click", () => {
+  selectedUuids.forEach(uuid => togglePin(uuid));
+});
+
+document.getElementById("sidebar-unpin-sel").addEventListener("click", () => {
+  // Unpin all currently pinned that are also selected (or all pinned if none selected)
+  const toUnpin = selectedUuids.size > 0 
+    ? Array.from(selectedUuids).filter(u => pinnedUuids.has(u))
+    : Array.from(pinnedUuids);
+  toUnpin.forEach(uuid => togglePin(uuid));
+});
+
+// Select all checkbox in table header
+document.getElementById("fp-select-all").addEventListener("change", e => {
+  const filtered = getFilteredFootprints();
+  if (e.target.checked) {
+    filtered.forEach(fp => {
+      if (!fp.locked && !fp.pinned) {
+        selectedUuids.add(fp.uuid);
+      }
+    });
+  } else {
+    filtered.forEach(fp => selectedUuids.delete(fp.uuid));
+  }
+  // Update server
+  filtered.forEach(fp => {
+    if (!fp.locked && !fp.pinned) {
+      fetch("/api/placement/select", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ uuid: fp.uuid, selected: e.target.checked })
+      });
+    }
+  });
+  updateFootprintVisuals();
+  updateSelectionUI();
+  renderFootprintTable();
+});
+
 document.getElementById("refresh-forces-btn").addEventListener("click", refreshForces);
 
-document.getElementById("run-btn").addEventListener("click", async () => {
+// Common function to run placement
+async function runPlacement(movableUuids, iterations, isPreview = false) {
   try {
-const saveRes = await fetch("/api/placement/params", { method: "POST", body: JSON.stringify(readParams()) });
+    const saveRes = await fetch("/api/placement/params", { method: "POST", body: JSON.stringify(readParams()) });
     if (!saveRes.ok) throw new Error(await saveRes.text());
-    const iters = parseInt(document.getElementById("step-iters").value, 10);
-    // If user has selected specific components, only those move.
-    // Otherwise, server will move all unlocked except pinned.
-    const movableUuids = selectedUuids.size > 0 ? Array.from(selectedUuids) : undefined;
     
     const res = await fetch("/api/placement/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ 
-        iterations: iters, 
+        iterations: isPreview ? 0 : iterations,  // Preview uses 0 iterations
         movable_uuids: movableUuids,
-        stub: !document.getElementById("physics-mode").checked
+        stub: isPreview || !document.getElementById("physics-mode").checked
       })
     });
     if (!res.ok) throw new Error(await res.text());
     const r = await res.json();
     diagEl.textContent = `v${r.version} — ${r.moved} moved, max Δ ${r.final_max_disp_mm.toFixed(2)} mm, ${r.elapsed_s.toPrecision(2)} s`;
     document.getElementById("accept-btn").disabled = false;
-    document.getElementById("run-btn").textContent = "Step again";
+    if (!isPreview) {
+      document.getElementById("step-selected-btn").textContent = "Step Selected Again";
+      document.getElementById("step-all-btn").textContent = "Step All Again";
+    }
   } catch (err) {
     diagEl.textContent = `run failed: ${err.message}`;
   }
+}
+
+// Step Selected: only moves currently selected footprints
+document.getElementById("step-selected-btn").addEventListener("click", async () => {
+  const iters = parseInt(document.getElementById("step-iters").value, 10);
+  const movableUuids = selectedUuids.size > 0 ? Array.from(selectedUuids) : undefined;
+  await runPlacement(movableUuids, iters, false);
+});
+
+// Step All Movable: moves all unlocked, not pinned footprints
+document.getElementById("step-all-btn").addEventListener("click", async () => {
+  const iters = parseInt(document.getElementById("step-iters").value, 10);
+  const modelRes = await fetch("/api/state");
+  const st = await modelRes.json();
+  if (!st.loaded) return;
+  
+  // We need to get all movable footprints from the server
+  // For now, pass undefined to let server compute all movable (unlocked, not pinned)
+  await runPlacement(undefined, iters, false);
+});
+
+// Preview: quick ghost positions without physics (stub mode, 1 iteration)
+document.getElementById("preview-btn").addEventListener("click", async () => {
+  const movableUuids = selectedUuids.size > 0 ? Array.from(selectedUuids) : undefined;
+  await runPlacement(movableUuids, 1, true);
 });
 
 document.getElementById("accept-btn").addEventListener("click", async () => {
@@ -601,9 +1283,10 @@ document.getElementById("accept-btn").addEventListener("click", async () => {
     const res = await fetch("/api/placement/accept", { method: "POST" });
     if (!res.ok) throw new Error(await res.text());
     const r = await res.json();
-    diagEl.textContent = `proposal accepted — board updated to v${r.version}. Click "Step placement" to continue.`;
+    diagEl.textContent = `proposal accepted — board updated to v${r.version}. Click "Step Selected" or "Step All Movable" to continue.`;
     document.getElementById("accept-btn").disabled = true;
-    document.getElementById("run-btn").textContent = "Step placement";
+    document.getElementById("step-selected-btn").textContent = "Step Selected";
+    document.getElementById("step-all-btn").textContent = "Step All Movable";
     document.getElementById("undo-btn").disabled = false;
   } catch (err) {
     diagEl.textContent = `accept failed: ${err.message}`;
@@ -614,7 +1297,8 @@ document.getElementById("clear-btn").addEventListener("click", async () => {
   await fetch("/api/placement/clear", { method: "POST" });
   diagEl.textContent = "proposal cleared";
   document.getElementById("accept-btn").disabled = true;
-  document.getElementById("run-btn").textContent = "Step placement";
+  document.getElementById("step-selected-btn").textContent = "Step Selected";
+  document.getElementById("step-all-btn").textContent = "Step All Movable";
 });
 
 document.getElementById("undo-btn").addEventListener("click", async () => {
@@ -624,7 +1308,8 @@ document.getElementById("undo-btn").addEventListener("click", async () => {
     const r = await res.json();
     diagEl.textContent = `undone — board reverted to v${r.version}`;
     document.getElementById("accept-btn").disabled = true;
-    document.getElementById("run-btn").textContent = "Step placement";
+    document.getElementById("step-selected-btn").textContent = "Step Selected";
+    document.getElementById("step-all-btn").textContent = "Step All Movable";
   } catch (err) {
     diagEl.textContent = `undo failed: ${err.message}`;
   }
@@ -668,6 +1353,73 @@ document.getElementById("reset-params-btn").addEventListener("click", async () =
     diagEl.textContent = "params reset to defaults (persists on next run)";
   } catch (err) {
     diagEl.textContent = `reset failed: ${err.message}`;
+  }
+});
+
+// Resizable sidebar splitter
+const sidebar = document.getElementById("sidebar");
+const resizer = document.getElementById("resizer");
+const mainContent = document.querySelector(".main-content");
+
+let startX, startWidth;
+
+function initResizer() {
+  // Restore from localStorage
+  const savedWidth = localStorage.getItem("sidebar-width");
+  if (savedWidth) {
+    sidebar.style.width = savedWidth + "px";
+  }
+
+  resizer.addEventListener("mousedown", e => {
+    e.preventDefault();
+    startX = e.clientX;
+    startWidth = parseInt(getComputedStyle(sidebar).width, 10);
+    resizer.classList.add("dragging");
+    document.addEventListener("mousemove", doDrag);
+    document.addEventListener("mouseup", stopDrag);
+  });
+}
+
+function doDrag(e) {
+  const width = startWidth + (e.clientX - startX);
+  const clamped = Math.max(320, Math.min(500, width));
+  sidebar.style.width = clamped + "px";
+}
+
+function stopDrag() {
+  resizer.classList.remove("dragging");
+  document.removeEventListener("mousemove", doDrag);
+  document.removeEventListener("mouseup", stopDrag);
+  localStorage.setItem("sidebar-width", sidebar.style.width);
+}
+
+initResizer();
+
+// Keyboard shortcuts
+document.addEventListener("keydown", e => {
+  // Don't trigger shortcuts when typing in inputs
+  if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT" || e.target.tagName === "TEXTAREA") return;
+  
+  if (e.key === "Escape") {
+    clearSelection();
+  } else if (e.key === "a" || e.key === "A") {
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault();
+      selectAllUnlocked();
+    }
+  } else if (e.key === "p" || e.key === "P") {
+    // Pin selected
+    if (selectedUuids.size > 0) {
+      selectedUuids.forEach(uuid => togglePin(uuid));
+    }
+  } else if (e.key === "u" || e.key === "U") {
+    // Unpin selected
+    const toUnpin = Array.from(selectedUuids).filter(u => pinnedUuids.has(u));
+    toUnpin.forEach(uuid => togglePin(uuid));
+  } else if (e.key === " ") {
+    // Space - step selected
+    e.preventDefault();
+    document.getElementById("step-selected-btn").click();
   }
 });
 

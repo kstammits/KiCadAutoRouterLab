@@ -194,7 +194,7 @@ def apply_routes_to_tree(
     tree,
     tracks: List[Track],
     vias: List[Via],
-) -> str:
+):
     """Insert tracks and vias into a PCB S-expression tree."""
     from ..sexpr import SExpr, to_sexpr
     
@@ -221,4 +221,30 @@ def apply_routes_to_tree(
         ))
         tree.args = tree.args + (via,)
     
-    return to_sexpr(tree) + "\n"
+    return tree
+
+
+def tracks_vias_to_sexpr(
+    tracks: List[Track],
+    vias: List[Via],
+) -> str:
+    """Generate S-expression string for tracks and vias."""
+    lines = []
+    
+    for t in tracks:
+        lines.append(
+            f'(segment (start {t.start[0]:.3f} {t.start[1]:.3f}) '
+            f'(end {t.end[0]:.3f} {t.end[1]:.3f}) '
+            f'(width {t.width_mm:.3f}) (layer {t.layer}) '
+            f'(net {t.net_name}))'
+        )
+    
+    for v in vias:
+        layers_expr = " ".join(v.layers)
+        lines.append(
+            f'(via (at {v.position[0]:.3f} {v.position[1]:.3f}) '
+            f'(size {v.size_mm:.3f}) (drill {v.drill_mm:.3f}) '
+            f'(layers {layers_expr}) (net {v.net_name}))'
+        )
+    
+    return "\n".join(lines)

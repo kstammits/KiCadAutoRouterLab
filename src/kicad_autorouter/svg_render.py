@@ -28,6 +28,10 @@ PAD_STROKE = "#0e1216"
 GHOST_COURTYARD = "#3d4a56"  # original position of moved parts (ghost overlay)
 MOVE_ARROW = "#e0a458"  # old -> new displacement arrows
 
+# DRC violation colors
+DRC_ERROR_COLOR = "#e74c3c"     # red for errors
+DRC_WARNING_COLOR = "#f39c12"   # orange for warnings
+
 # Footprint state colors
 FP_LOCKED_COLOR = "#e06c75"    # KiCad locked - red
 FP_PINNED_COLOR = "#e0a458"    # User pinned - orange
@@ -114,55 +118,62 @@ def _edge_cuts_svg(model: BoardModel) -> List[str]:
 def _zones_svg(model: BoardModel) -> List[str]:
     keepout_uuids = {z.uuid for z in model.keepout_zones}
     out: List[str] = []
-    for zone in model.zones:
-        if len(zone.polygon) < 3:
+    for layer in ("F.Cu", "B.Cu"):
+        layer_zones = [z for z in model.zones if layer in z.layers]
+        if not layer_zones:
             continue
-        is_keepout = zone.uuid in keepout_uuids
-        fill = KEEPOUT_FILL if is_keepout else ZONE_FILL
-        dash = ' stroke-dasharray="1.5 1"' if is_keepout else ""
-        pts = " ".join(f"{_fmt(p.x_mm)} {_fmt(p.y_mm)}" for p in zone.polygon)
-        out.append(
-            f'<polygon points="{pts}" fill="{fill}" fill-opacity="0.18" '
-            f'stroke="{fill}" stroke-width="0.2"{dash}/>'
-        )
+        opacity = "0.18" if layer == "F.Cu" else "0.12"
+        out.append(f'<g id="layer-{layer}-zones">')
+        for zone in layer_zones:
+            if len(zone.polygon) < 3:
+                continue
+            is_keepout = zone.uuid in keepout_uuids
+            fill = KEEPOUT_FILL if is_keepout else ZONE_FILL
+            dash = ' stroke-dasharray="1.5 1"' if is_keepout else ""
+            pts = " ".join(f"{_fmt(p.x_mm)} {_fmt(p.y_mm)}" for p in zone.polygon)
+            out.append(
+                f'<polygon points="{pts}" fill="{fill}" fill-opacity="{opacity}" '
+                f'stroke="{fill}" stroke-width="0.2"{dash}/>'
+            )
+        out.append("</g>")
     return out
 
 
 def _footprint_courtyard_svg(
     fp,
-    dx: float,
-    dy: float,
     is_locked: bool,
     is_pinned: bool,
     is_selected: bool,
+    is_movable: bool,
 ) -> str:
     """Generate courtyard lines for a single footprint with state-based styling."""
     if is_locked:
         stroke = FP_LOCKED_COLOR
-        dash = ' stroke-dasharray="2 2"'
+        extras = ' stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"'
     elif is_pinned:
         stroke = FP_PINNED_COLOR
-        dash = ' stroke-dasharray="4 2"'
+        extras = ' stroke-width="0.1" stroke-dasharray="4 2" opacity="0.8"'
     elif is_selected:
         stroke = FP_SELECTED_COLOR
-        dash = ' stroke-width="0.2"'
+        extras = ' stroke-width="0.2" opacity="0.8"'
+    elif is_movable:
+        stroke = FP_SELECTED_COLOR
+        extras = ' stroke-width="0.15" opacity="0.6"'
     else:
         stroke = FP_DEFAULT_COLOR
-        dash = ""
+        extras = ' stroke-width="0.1" opacity="0.8"'
     lines = []
     for a, b in fp.courtyard:
         lines.append(
-            f'<line x1="{_fmt(a.x_mm + dx)}" y1="{_fmt(a.y_mm + dy)}" '
-            f'x2="{_fmt(b.x_mm + dx)}" y2="{_fmt(b.y_mm + dy)}" '
-            f'stroke="{stroke}" stroke-width="0.1"{dash} opacity="0.8"/>'
+            f'<line x1="{_fmt(a.x_mm)}" y1="{_fmt(a.y_mm)}" '
+            f'x2="{_fmt(b.x_mm)}" y2="{_fmt(b.y_mm)}" '
+            f'stroke="{stroke}"{extras}/>'
         )
     return "\n".join(lines)
 
 
 def _footprint_pads_svg(
     fp,
-    dx: float,
-    dy: float,
     colors: Dict[str, str],
     flip: bool,
 ) -> str:
@@ -170,7 +181,7 @@ def _footprint_pads_svg(
     out = []
     for pad in fp.pads:
         color = colors.get(pad.net_name or "", NO_NET)
-        px, py = pad.position.x_mm + dx, pad.position.y_mm + dy
+        px, py = pad.position.x_mm, pad.position.y_mm
         x, y = _fmt(px), _fmt(py)
         w, h = pad.size_mm
         angle = -pad.angle_deg if flip else pad.angle_deg
@@ -209,14 +220,25 @@ def _courtyard_centroid(fp) -> tuple[float, float]:
     return sum(xs) / len(xs), sum(ys) / len(ys)
 
 
-def _footprint_ref_svg(fp, dx: float, dy: float) -> str:
+def _shift_with_angle(offsets, uuid):
+    """Proposed ``(dx_mm, dy_mm, dangle_deg)`` offset for a footprint UUID (zero if none)."""
+    val = offsets.get(uuid, (0.0, 0.0, 0.0)) if offsets else (0.0, 0.0, 0.0)
+    # Handle both (dx, dy) and (dx, dy, dangle) tuples
+    dx = val[0] if len(val) > 0 else 0.0
+    dy = val[1] if len(val) > 1 else 0.0
+    da = val[2] if len(val) > 2 else 0.0
+    return dx, dy, da
+
+
+def _footprint_ref_svg(fp, dx: float, dy: float, da: float = 0.0) -> str:
     """Generate reference text for a single footprint at courtyard centroid."""
     label = fp.ref or (fp.uuid[:8] if fp.uuid else "")
     if not label:
         return ""
     cx, cy = _courtyard_centroid(fp)
+    # Text is positioned at centroid; group transform handles translation/rotation
     return (
-        f'<text x="{_fmt(cx + dx)}" y="{_fmt(cy + dy - 0.5)}" '
+        f'<text x="{_fmt(cx)}" y="{_fmt(cy - 0.5)}" '
         f'fill="{REF_TEXT}" font-family="monospace" font-size="1">'
         f"{html.escape(label)}</text>"
     )
@@ -236,8 +258,9 @@ def _footprints_svg(
         is_locked = fp.uuid in locked_uuids
         is_pinned = fp.uuid in pinned_uuids
         is_selected = fp.uuid in selected_uuids
+        is_movable = fp.uuid and not fp.locked and fp.uuid not in pinned_uuids
 
-        dx, dy = _shift(offsets, fp.uuid)
+        dx, dy, da = _shift_with_angle(offsets, fp.uuid)
         flip = fp.layer.startswith("B")
 
         # Build footprint group with state classes and data attribute
@@ -248,13 +271,23 @@ def _footprints_svg(
             cls_parts.append("fp-pinned")
         if is_selected:
             cls_parts.append("fp-selected")
+        if is_movable and not is_selected:
+            cls_parts.append("fp-movable")
         cls = " ".join(cls_parts)
 
+        # Compute centroid for rotation pivot
+        cx, cy = _courtyard_centroid(fp)
+        # Transform: translate to new position, then rotate around centroid
+        if dx != 0.0 or dy != 0.0 or da != 0.0:
+            transform = f' transform="translate({_fmt(dx)} {_fmt(dy)}) rotate({_fmt(da)} {_fmt(cx)} {_fmt(cy)})"'
+        else:
+            transform = ""
+
         fp_group = [
-            f'<g class="{cls}" data-fp-uuid="{fp.uuid}">',
-            _footprint_courtyard_svg(fp, dx, dy, is_locked, is_pinned, is_selected),
-            _footprint_pads_svg(fp, dx, dy, colors, flip),
-            _footprint_ref_svg(fp, dx, dy),
+            f'<g class="{cls}" data-fp-uuid="{fp.uuid}"{transform}>',
+            _footprint_courtyard_svg(fp, is_locked, is_pinned, is_selected, is_movable),
+            _footprint_pads_svg(fp, colors, flip),
+            _footprint_ref_svg(fp, dx, dy, da),
             "</g>",
         ]
         out.append("\n".join(fp_group))
@@ -262,20 +295,28 @@ def _footprints_svg(
 
 
 def _tracks_svg(model: BoardModel, colors: Dict[str, str]) -> List[str]:
-    out = [f'<g fill="none" stroke-linecap="round">']
-    for t in model.tracks:
-        color = colors.get(t.net_name or "", NO_NET)
-        out.append(
-            f'<line x1="{_fmt(t.start.x_mm)}" y1="{_fmt(t.start.y_mm)}" '
-            f'x2="{_fmt(t.end.x_mm)}" y2="{_fmt(t.end.y_mm)}" '
-            f'stroke="{color}" stroke-width="{_fmt(t.width_mm)}"/>'
-        )
-    out.append("</g>")
+    out = []
+    for layer in ("F.Cu", "B.Cu"):
+        layer_tracks = [t for t in model.tracks if t.layer == layer]
+        if not layer_tracks:
+            continue
+        is_fcu = layer == "F.Cu"
+        dash = "" if is_fcu else ' stroke-dasharray="3 2"'
+        opacity = "1.0" if is_fcu else "0.7"
+        out.append(f'<g id="layer-{layer}-tracks" fill="none" stroke-linecap="round" opacity="{opacity}">')
+        for t in layer_tracks:
+            color = colors.get(t.net_name or "", NO_NET)
+            out.append(
+                f'<line x1="{_fmt(t.start.x_mm)}" y1="{_fmt(t.start.y_mm)}" '
+                f'x2="{_fmt(t.end.x_mm)}" y2="{_fmt(t.end.y_mm)}" '
+                f'stroke="{color}" stroke-width="{_fmt(t.width_mm)}"{dash}/>'
+            )
+        out.append("</g>")
     return out
 
 
 def _vias_svg(model: BoardModel, colors: Dict[str, str]) -> List[str]:
-    out = []
+    out = ['<g id="layer-vias">']
     for v in model.vias:
         color = colors.get(v.net_name or "", NO_NET)
         r = v.size_mm / 2.0
@@ -289,6 +330,7 @@ def _vias_svg(model: BoardModel, colors: Dict[str, str]) -> List[str]:
             out.append(
                 f'<circle cx="{x}" cy="{y}" r="{_fmt(hr)}" fill="{HOLE_BG}"/>'
             )
+    out.append("</g>")
     return out
 
 
@@ -334,6 +376,68 @@ def _forces_overlay(model: BoardModel, proposal: PlacementProposal,
     return out
 
 
+def _drc_violations_overlay(violations: List[dict], ignored_types: Optional[Set[str]] = None) -> List[str]:
+    """Draw DRC violations as colored circles at their positions.
+    
+    Args:
+        violations: List of violation dicts from DRC report
+        ignored_types: Set of violation types to ignore (default: silkscreen/library issues)
+    
+    Returns:
+        List of SVG strings for the violation markers
+    """
+    if ignored_types is None:
+        ignored_types = {
+            "silk_over_copper",
+            "silk_overlap",
+            "silk_edge_clearance",
+            "lib_footprint_issues",
+            "lib_footprint_mismatch",
+            "footprint_filters_mismatch",
+            "footprint_type_mismatch",
+            "missing_courtyard",
+            "track_not_centered_on_via",
+            "tuning_profile_track_geometries",
+        }
+    
+    # Filter violations
+    filtered = [v for v in violations if v.get("type") not in ignored_types]
+    if not filtered:
+        return []
+    
+    out = ['<g id="drc-violations">']
+    for v in filtered:
+        vtype = v.get("type", "unknown")
+        severity = v.get("severity", "warning")
+        description = v.get("description", "")
+        
+        # Color by severity
+        color = DRC_ERROR_COLOR if severity == "error" else DRC_WARNING_COLOR
+        # Size by severity
+        radius = 1.2 if severity == "error" else 0.8
+        
+        for item in v.get("items", []):
+            pos = item.get("pos")
+            if not pos:
+                continue
+            x = pos.get("x")
+            y = pos.get("y")
+            if x is None or y is None:
+                continue
+            
+            item_desc = item.get("description", "")
+            title = html.escape(f"{vtype}: {description} | {item_desc}")
+            
+            out.append(
+                f'<circle cx="{_fmt(x)}" cy="{_fmt(y)}" r="{_fmt(radius)}" '
+                f'fill="{color}" opacity="0.7" stroke="{color}" stroke-width="0.1">'
+                f'<title>{title}</title>'
+                f'</circle>'
+            )
+    out.append("</g>")
+    return out
+
+
 def _proposal_overlay(model: BoardModel, proposal: PlacementProposal) -> List[str]:
     """Ghost courtyards at original positions + old→new arrows for moved parts."""
     out = [
@@ -372,6 +476,8 @@ def render_board_svg(
     pinned_uuids: Optional[Set[str]] = None,
     selected_uuids: Optional[Set[str]] = None,
     show_forces: bool = False,
+    drc_violations: Optional[List[dict]] = None,
+    drc_ignored_types: Optional[Set[str]] = None,
 ) -> str:
     """Build the full SVG document for ``model`` (millimeter user units).
 
@@ -389,6 +495,8 @@ def render_board_svg(
         pinned_uuids: Set of footprint UUIDs pinned by user (excluded from movement).
         selected_uuids: Set of footprint UUIDs currently selected (for move).
         show_forces: If True, draw force vectors on footprints.
+        drc_violations: Optional list of DRC violation dicts for overlay.
+        drc_ignored_types: Optional set of violation types to ignore in overlay.
     """
     colors = net_colors(model)
     min_x, min_y, width, height = _bounds(model)
@@ -428,5 +536,7 @@ def render_board_svg(
         parts.extend(_proposal_overlay(model, proposal))
     if proposal is not None and show_forces:
         parts.extend(_forces_overlay(model, proposal))
+    if drc_violations:
+        parts.extend(_drc_violations_overlay(drc_violations, drc_ignored_types))
     parts.append("</svg>")
     return "\n".join(parts)

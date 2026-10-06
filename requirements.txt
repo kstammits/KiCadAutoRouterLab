@@ -2,6 +2,7 @@
 numpy>=1.21.0
 networkx>=2.6.0
 pyyaml>=5.4.1
+shapely>=2.0.0
 
 # Note: KiCad itself (kicad / kicad-cli) is a system tool, not a pip package.
 

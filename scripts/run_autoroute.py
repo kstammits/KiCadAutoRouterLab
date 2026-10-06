@@ -50,10 +50,10 @@ def main(argv=None) -> int:
     for name in PARAM_FIELDS:
         if name == "stub":
             g = p.add_mutually_exclusive_group()
-            g.add_argument("--stub", dest="stub", action="store_true", default=None,
-                           help="use stub mode (identity deltas, default)")
+            g.add_argument("--stub", dest="stub", action="store_true", default=False,
+                           help="use stub mode (identity deltas, no physics)")
             g.add_argument("--no-stub", dest="stub", action="store_false",
-                           help="run vectorized numpy force-spring simulation")
+                           help="run vectorized numpy force-spring simulation (default)")
         else:
             p.add_argument(
                 f"--{name.replace('_', '-')}",

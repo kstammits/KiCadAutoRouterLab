@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kicad-autorouter"
+version = "0.1.2"
+description = "KiCad autorouter: reads .kicad_pcb files and updates PCB trace placement"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.21.0",
+    "networkx>=2.6.0",
+    "pyyaml>=5.4.1",
+    "shapely>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "black>=22.0.0",
+    "mypy>=0.950",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = [
+    "unit: Pure unit tests - no fixtures, no I/O",
+    "params: PlacementParams validation/serialization",
+    "stub: Demo jitter mode (works without nets)",
+    "physics: MST force-spring simulation (requires nets)",
+    "cli: CLI entry point tests",
+    "server: HTTP API endpoint tests",
+    "regression: Bug fix verification",
+    "minimal: Uses minimal.kicad_pcb fixture (4 footprints, no nets)",
+    "dccf: Uses DCCF.sved.kicad_pcb fixture (97 footprints, 59 nets)",
+]

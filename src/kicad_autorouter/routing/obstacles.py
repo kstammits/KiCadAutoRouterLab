@@ -68,7 +68,7 @@ def build_occupancy_grid(
         _mark_zone(cost_grid, grid, zone)
 
     # 6. Edge cuts -> edge keepout zone (using actual Edge.Cuts lines)
-    _mark_edge_keepout(cost_grid, grid, model, keepout_mm=1.0)
+    _mark_edge_keepout(cost_grid, grid, model, keepout_mm=0.5)
 
     return cost_grid
 
@@ -140,7 +140,7 @@ def _mark_zone(cost_grid: np.ndarray, grid, zone):
         _fill_polygon(cost_grid[layer_idx], points, BLOCKED)
 
 
-def _mark_edge_keepout(cost_grid: np.ndarray, grid, model, keepout_mm: float = 1.0):
+def _mark_edge_keepout(cost_grid: np.ndarray, grid, model, keepout_mm: float = 0.5):
     """Mark edge keepout zone around board boundary using actual Edge.Cuts lines."""
     keepout_cells = int(np.ceil(keepout_mm / grid.resolution_mm))
     H, W = cost_grid.shape[1], cost_grid.shape[2]

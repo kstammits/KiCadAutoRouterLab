@@ -142,7 +142,7 @@
 	(footprint "sna:SPDT_Tayda-A5111"
 		(layer "F.Cu")
 		(uuid "01c2e65f-f231-4407-b1d1-6bc209a4166f")
-		(at 198.5666666666667 173.06415925794533 199.91107923603522)
+		(at 263.7017459556467 194.55084303169792 90.59242949196044)
 		(property "Reference" "SW6"
 			(at -5.3 -3.7 90)
 			(layer "F.SilkS")
@@ -428,7 +428,7 @@
 	(footprint "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal"
 		(layer "F.Cu")
 		(uuid "0692c776-9eed-4c96-bed6-b9329ea1ef61")
-		(at 163.93912006683246 137.97320618125437 335.4469871593365)
+		(at 218.6035470301968 121.81627926517478 181.0002633085773)
 		(descr "Resistor, Axial_DIN0207 series, Axial, Horizontal, pin pitch=10.16mm, 0.25W = 1/4W, length*diameter=6.3*2.5mm^2, http://cdn-reichelt.de/documents/datenblatt/B400/1_4W%23YAG.pdf")
 		(tags "Resistor Axial_DIN0207 series Axial Horizontal pin pitch 10.16mm 0.25W = 1/4W length 6.3mm diameter 2.5mm")
 		(property "Reference" "R9"
@@ -688,7 +688,7 @@
 	(footprint "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal"
 		(layer "F.Cu")
 		(uuid "119c3428-2e21-444f-93bf-b37b4854c22d")
-		(at 163.93912006683246 137.97320618125437 91.3295199791786)
+		(at 204.94595536694024 61.2921545044538 0.05896505531424623)
 		(descr "Resistor, Axial_DIN0207 series, Axial, Horizontal, pin pitch=10.16mm, 0.25W = 1/4W, length*diameter=6.3*2.5mm^2, http://cdn-reichelt.de/documents/datenblatt/B400/1_4W%23YAG.pdf")
 		(tags "Resistor Axial_DIN0207 series Axial Horizontal pin pitch 10.16mm 0.25W = 1/4W length 6.3mm diameter 2.5mm")
 		(property "Reference" "R3"
@@ -948,7 +948,7 @@
 	(footprint "Capacitor_THT:C_Disc_D5.0mm_W2.5mm_P5.00mm"
 		(layer "F.Cu")
 		(uuid "170a1db5-436b-4894-86c0-81abb32b6313")
-		(at 158.0875365146028 124.8694867807599 184.88230064537242)
+		(at 223.88941470326074 67.02617111387259 178.94974269376615)
 		(descr "C, Disc series, Radial, pin pitch=5.00mm, , diameter*width=5*2.5mm^2, Capacitor, http://cdn-reichelt.de/documents/datenblatt/B300/DS_KERKO_TC.pdf")
 		(tags "C Disc series Radial pin pitch 5.00mm  diameter 5mm width 2.5mm Capacitor")
 		(property "Reference" "C4"
@@ -1188,7 +1188,7 @@
 	(footprint "Capacitor_THT:CP_Radial_D6.3mm_P2.50mm"
 		(layer "F.Cu")
 		(uuid "1cc4a23c-b301-4d28-8e5a-dc34ca1c7dcc")
-		(at 159.15533462922428 142.1186008412268 257.9577951840425)
+		(at 246.42793226654445 210.54843148606392 92.44627900042875)
 		(descr "CP, Radial series, Radial, pin pitch=2.50mm, , diameter=6.3mm, Electrolytic Capacitor")
 		(tags "CP Radial series Radial pin pitch 2.50mm  diameter 6.3mm Electrolytic Capacitor")
 		(property "Reference" "C12"
@@ -2701,7 +2701,7 @@
 	(footprint "LED_THT:LED_D5.0mm"
 		(layer "F.Cu")
 		(uuid "2035ea48-3ef5-4d7f-8c3c-50981b30c89a")
-		(at 182.95447805013666 140.37192619017486 24.467169448074884)
+		(at 182.28095390676452 129.62145320360702 88.83182773443025)
 		(descr "LED, diameter 5.0mm, 2 pins, http://cdn-reichelt.de/documents/datenblatt/A500/LL-504BC2E-009.pdf")
 		(tags "LED diameter 5.0mm 2 pins")
 		(property "Reference" "D3"
@@ -2918,7 +2918,7 @@
 	(footprint "MountingHole:MountingHole_3.2mm_M3_Pad"
 		(layer "F.Cu")
 		(uuid "21de29f1-55e6-491f-9b72-2d0cf15d30d9")
-		(at 44.7 241.3 90)
+		(at 52.485226886316205 233.35717404545505 90)
 		(descr "Mounting Hole 3.2mm, M3")
 		(tags "mounting hole 3.2mm m3")
 		(property "Reference" "H13"
@@ -3021,7 +3021,7 @@
 	(footprint "MountingHole:MountingHole_3.2mm_M3_Pad"
 		(layer "F.Cu")
 		(uuid "24b42847-745f-4b13-9d2d-3ca8b56bc9de")
-		(at 44.7 41.3 90)
+		(at 136.91418812971375 49.246793483253086 90)
 		(descr "Mounting Hole 3.2mm, M3")
 		(tags "mounting hole 3.2mm m3")
 		(property "Reference" "H2"
@@ -3185,7 +3185,7 @@
 	(footprint "LED_THT:LED_D5.0mm"
 		(layer "F.Cu")
 		(uuid "2a0b56f3-3524-4cc6-93eb-e6a13760c1e9")
-		(at 161.05978001670812 140.4683015453136 170.12239312423017)
+		(at 182.5288857887176 155.4499282465076 93.89157905085307)
 		(descr "LED, diameter 5.0mm, 2 pins, http://cdn-reichelt.de/documents/datenblatt/A500/LL-504BC2E-009.pdf")
 		(tags "LED diameter 5.0mm 2 pins")
 		(property "Reference" "D4"
@@ -3402,7 +3402,7 @@
 	(footprint "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal"
 		(layer "F.Cu")
 		(uuid "2dbb002a-b1a0-4eae-ad08-9cc5a13dab5b")
-		(at 156.26087993316753 144.62679381874565 268.44756493813225)
+		(at 217.99393871579454 213.02672469309917 178.0609777548292)
 		(descr "Resistor, Axial_DIN0207 series, Axial, Horizontal, pin pitch=10.16mm, 0.25W = 1/4W, length*diameter=6.3*2.5mm^2, http://cdn-reichelt.de/documents/datenblatt/B400/1_4W%23YAG.pdf")
 		(tags "Resistor Axial_DIN0207 series Axial Horizontal pin pitch 10.16mm 0.25W = 1/4W length 6.3mm diameter 2.5mm")
 		(property "Reference" "R17"
@@ -3784,7 +3784,7 @@
 	(footprint "sna:CUI_MJ-3536N"
 		(layer "F.Cu")
 		(uuid "38cfe839-c630-43d3-a9ec-6a89ba9e318a")
-		(at 164.70806179626965 132.5764157448281 100.84993513638051)
+		(at 198.57371887995356 106.9762515607036 5.503224837617182)
 		(property "Reference" "J3"
 			(at -10 -4.375 0)
 			(layer "F.SilkS")
@@ -4268,7 +4268,7 @@
 	(footprint "LED_THT:LED_D5.0mm"
 		(layer "F.Cu")
 		(uuid "38f31514-58c1-482b-85ce-4fad582668c4")
-		(at 161.20954991828867 133.6550553144714 42.46636893431608)
+		(at 182.67000413086413 204.8448245180836 86.05791516841441)
 		(descr "LED, diameter 5.0mm, 2 pins, http://cdn-reichelt.de/documents/datenblatt/A500/LL-504BC2E-009.pdf")
 		(tags "LED diameter 5.0mm 2 pins")
 		(property "Reference" "D6"
@@ -4485,7 +4485,7 @@
 	(footprint "sna:CUI_MJ-3536N"
 		(layer "F.Cu")
 		(uuid "3b1fe926-f465-4a4f-a4e2-e7b5cbbc18c6")
-		(at 201.5174822570641 175.50988118280085 -221.5077609564114)
+		(at 202.3236071258269 157.69357705080884 11.287513612804503)
 		(property "Reference" "J4"
 			(at -10 -4.375 0)
 			(layer "F.SilkS")
@@ -4969,7 +4969,7 @@
 	(footprint "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal"
 		(layer "F.Cu")
 		(uuid "3b81136f-5693-4591-a4d7-bac4e1c9421d")
-		(at 163.31633361028597 145.91896983917343 -14.452852122775312)
+		(at 250.86148742518162 61.72870552834128 157.0689183443163)
 		(descr "Resistor, Axial_DIN0207 series, Axial, Horizontal, pin pitch=10.16mm, 0.25W = 1/4W, length*diameter=6.3*2.5mm^2, http://cdn-reichelt.de/documents/datenblatt/B400/1_4W%23YAG.pdf")
 		(tags "Resistor Axial_DIN0207 series Axial Horizontal pin pitch 10.16mm 0.25W = 1/4W length 6.3mm diameter 2.5mm")
 		(property "Reference" "R5"
@@ -5229,7 +5229,7 @@
 	(footprint "sna:SPDT_Tayda-A5111"
 		(layer "F.Cu")
 		(uuid "3bd320cf-190a-4cb4-829c-255c072acdcc")
-		(at 275.5 174.63333333333333 90)
+		(at 263.9805915827248 87.82922809031932 87.50472296741225)
 		(property "Reference" "SW1"
 			(at -5.8 -3.8 90)
 			(layer "F.SilkS")
@@ -5515,7 +5515,7 @@
 	(footprint "Potentiometer_THT:Potentiometer_Bourns_PTA6043_Single_Slide"
 		(layer "F.Cu")
 		(uuid "3c761105-9383-4d83-a559-f36d2fb1a84a")
-		(at 234.04551834597885 131.14898225494144 22.39929353721294)
+		(at 266.52373741351454 186.3826083693146 168.4599371405434)
 		(descr "Bourns single-gang slide potentiometer, 60.0mm travel, https://www.bourns.com/docs/Product-Datasheets/pta.pdf")
 		(tags "Bourns single-gang slide potentiometer 60.0mm")
 		(property "Reference" "RV6"
@@ -5982,7 +5982,7 @@
 	(footprint "Potentiometer_THT:Potentiometer_Bourns_PTA6043_Single_Slide"
 		(layer "F.Cu")
 		(uuid "3d552623-2969-4b15-8623-368144f225e9")
-		(at 179.8301989829184 149.68886834398614 149.83696540547987)
+		(at 255.56789108139247 90.14989622162682 182.44253441304477)
 		(descr "Bourns single-gang slide potentiometer, 60.0mm travel, https://www.bourns.com/docs/Product-Datasheets/pta.pdf")
 		(tags "Bourns single-gang slide potentiometer 60.0mm")
 		(property "Reference" "RV1"
@@ -6449,7 +6449,7 @@
 	(footprint "MountingHole:MountingHole_3.2mm_M3_Pad"
 		(layer "F.Cu")
 		(uuid "3e63fcaa-261d-4d3c-a5b9-9e80616e71a6")
-		(at 275.5 41.3 90)
+		(at 268.6852006177125 141.66082540863056 90)
 		(descr "Mounting Hole 3.2mm, M3")
 		(tags "mounting hole 3.2mm m3")
 		(property "Reference" "H10"
@@ -6552,7 +6552,7 @@
 	(footprint "LED_THT:LED_D5.0mm"
 		(layer "F.Cu")
 		(uuid "3f9d816c-3252-49e8-972d-2c451fd2f827")
-		(at 161.05978001670812 142.13169845468641 -51.28601924750751)
+		(at 182.2418670884268 103.51896014724655 88.93506911544932)
 		(descr "LED, diameter 5.0mm, 2 pins, http://cdn-reichelt.de/documents/datenblatt/A500/LL-504BC2E-009.pdf")
 		(tags "LED diameter 5.0mm 2 pins")
 		(property "Reference" "D2"
@@ -6769,7 +6769,7 @@
 	(footprint "MountingHole:MountingHole_3.2mm_M3_Pad"
 		(layer "F.Cu")
 		(uuid "41456f29-a703-4d12-85d0-c21ea7c0a452")
-		(at 44.7 43.505513395919905 90)
+		(at 184.45462069358277 142.0738723229891 90)
 		(descr "Mounting Hole 3.2mm, M3")
 		(tags "mounting hole 3.2mm m3")
 		(property "Reference" "H9"
@@ -6872,7 +6872,7 @@
 	(footprint "Capacitor_THT:C_Disc_D5.0mm_W2.5mm_P5.00mm"
 		(layer "F.Cu")
 		(uuid "49c57a7a-609d-4060-baf8-80850a7d5ec8")
-		(at 202.21461986423856 139.29791265427156 -98.70906951068386)
+		(at 233.15161442069126 184.926847420384 2.5773872770892012)
 		(descr "C, Disc series, Radial, pin pitch=5.00mm, , diameter*width=5*2.5mm^2, Capacitor, http://cdn-reichelt.de/documents/datenblatt/B300/DS_KERKO_TC.pdf")
 		(tags "C Disc series Radial pin pitch 5.00mm  diameter 5mm width 2.5mm Capacitor")
 		(property "Reference" "C19"
@@ -7112,7 +7112,7 @@
 	(footprint "Capacitor_THT:CP_Radial_D6.3mm_P2.50mm"
 		(layer "F.Cu")
 		(uuid "4ad30a3a-840c-4674-87e6-72180fa571e3")
-		(at 158.85 241.3 180)
+		(at 245.4401115360103 215.81300249756484 108.29772797302047)
 		(descr "CP, Radial series, Radial, pin pitch=2.50mm, , diameter=6.3mm, Electrolytic Capacitor")
 		(tags "CP Radial series Radial pin pitch 2.50mm  diameter 6.3mm Electrolytic Capacitor")
 		(property "Reference" "C6"
@@ -8625,7 +8625,7 @@
 	(footprint "Capacitor_THT:CP_Radial_D6.3mm_P2.50mm"
 		(layer "F.Cu")
 		(uuid "4b812968-f973-4b77-8ee5-3e4c11cb62ca")
-		(at 158.85 241.3 -180)
+		(at 214.62048395537164 215.01001383682188 -59.854195019580914)
 		(descr "CP, Radial series, Radial, pin pitch=2.50mm, , diameter=6.3mm, Electrolytic Capacitor")
 		(tags "CP Radial series Radial pin pitch 2.50mm  diameter 6.3mm Electrolytic Capacitor")
 		(property "Reference" "C9"
@@ -10138,7 +10138,7 @@
 	(footprint "LED_THT:LED_D5.0mm"
 		(layer "F.Cu")
 		(uuid "4d92bb90-6bca-4195-a967-4894da74897a")
-		(at 171.49014104169194 140.42382826835183 152.02408045123576)
+		(at 185.46446126925485 182.576186981982 100.92138403908513)
 		(descr "LED, diameter 5.0mm, 2 pins, http://cdn-reichelt.de/documents/datenblatt/A500/LL-504BC2E-009.pdf")
 		(tags "LED diameter 5.0mm 2 pins")
 		(property "Reference" "D5"
@@ -10355,7 +10355,7 @@
 	(footprint "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal"
 		(layer "F.Cu")
 		(uuid "51640e88-90ea-4f40-8262-50b4044280a9")
-		(at 165.18 41.3 180)
+		(at 234.02463493671084 56.17199880860835 359.8632060486884)
 		(descr "Resistor, Axial_DIN0207 series, Axial, Horizontal, pin pitch=10.16mm, 0.25W = 1/4W, length*diameter=6.3*2.5mm^2, http://cdn-reichelt.de/documents/datenblatt/B400/1_4W%23YAG.pdf")
 		(tags "Resistor Axial_DIN0207 series Axial Horizontal pin pitch 10.16mm 0.25W = 1/4W length 6.3mm diameter 2.5mm")
 		(property "Reference" "R2"
@@ -10615,7 +10615,7 @@
 	(footprint "Potentiometer_THT:Potentiometer_Bourns_PTA6043_Single_Slide"
 		(layer "F.Cu")
 		(uuid "585261f5-dc92-422d-a84f-88ad3a8952a4")
-		(at 226.7664705857398 127.93076324443668 120.89109498657658)
+		(at 264.37520349001767 142.44469356914374 148.4841494875995)
 		(descr "Bourns single-gang slide potentiometer, 60.0mm travel, https://www.bourns.com/docs/Product-Datasheets/pta.pdf")
 		(tags "Bourns single-gang slide potentiometer 60.0mm")
 		(property "Reference" "RV4"
@@ -11082,7 +11082,7 @@
 	(footprint "sna:FCI_10118193-0001LF"
 		(layer "F.Cu")
 		(uuid "5c7d6eaf-f256-4349-8203-d2e836872231")
-		(at 171.2150597783874 168.2653252492949 -113.52983695840277)
+		(at 192.14190971470208 176.46039303348488 -128.1665332088405)
 		(property "Reference" "Q2"
 			(at 0.4 -4.8 180)
 			(layer "F.SilkS")
@@ -11591,7 +11591,7 @@
 	(footprint "MountingHole:MountingHole_3.2mm_M3_Pad"
 		(layer "F.Cu")
 		(uuid "5cff2459-d275-4803-8fa2-8289cb689a75")
-		(at 44.7 241.3 90)
+		(at 53.81553332692069 141.2984578265795 90)
 		(descr "Mounting Hole 3.2mm, M3")
 		(tags "mounting hole 3.2mm m3")
 		(property "Reference" "H7"
@@ -11694,7 +11694,7 @@
 	(footprint "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal"
 		(layer "F.Cu")
 		(uuid "6049c856-ea51-4355-b7ff-002cc00b09a3")
-		(at 164.1215340186122 155.3382524479019 -56.74800452816072)
+		(at 208.26875378498698 108.9495376627045 -1.1276323545557148)
 		(descr "Resistor, Axial_DIN0207 series, Axial, Horizontal, pin pitch=10.16mm, 0.25W = 1/4W, length*diameter=6.3*2.5mm^2, http://cdn-reichelt.de/documents/datenblatt/B400/1_4W%23YAG.pdf")
 		(tags "Resistor Axial_DIN0207 series Axial Horizontal pin pitch 10.16mm 0.25W = 1/4W length 6.3mm diameter 2.5mm")
 		(property "Reference" "R8"
@@ -11954,7 +11954,7 @@
 	(footprint "LED_THT:LED_D5.0mm"
 		(layer "F.Cu")
 		(uuid "6241e6d3-a754-45b6-9f7c-e43019b93226")
-		(at 181.23613375715044 142.375514229555 -71.94625296882542)
+		(at 182.18724941456946 80.33399795113976 91.09721788861287)
 		(descr "LED, diameter 5.0mm, 2 pins, http://cdn-reichelt.de/documents/datenblatt/A500/LL-504BC2E-009.pdf")
 		(tags "LED diameter 5.0mm 2 pins")
 		(property "Reference" "D1"
@@ -12171,7 +12171,7 @@
 	(footprint "MountingHole:MountingHole_3.2mm_M3_Pad"
 		(layer "F.Cu")
 		(uuid "66615e91-3e7a-41a3-a5de-d8915c5cd486")
-		(at 275.5 41.3 90)
+		(at 266.17441985803714 50.43607663945837 90)
 		(descr "Mounting Hole 3.2mm, M3")
 		(tags "mounting hole 3.2mm m3")
 		(property "Reference" "H4"
@@ -12274,7 +12274,7 @@
 	(footprint "Package_DIP:DIP-14_W7.62mm_Socket"
 		(layer "F.Cu")
 		(uuid "66d121ca-8b6d-4d1f-984e-49e7639044e0")
-		(at 149.2258789006459 158.54005020936825 -102.87947814933983)
+		(at 229.181841756228 198.6562536158844 101.61159371464356)
 		(descr "14-lead though-hole mounted DIP package, row spacing 7.62 mm (300 mils), Socket")
 		(tags "THT DIP DIL PDIP 2.54mm 7.62mm 300mil Socket")
 		(property "Reference" "U4"
@@ -12735,7 +12735,7 @@
 	(footprint "Capacitor_THT:C_Disc_D5.0mm_W2.5mm_P5.00mm"
 		(layer "F.Cu")
 		(uuid "708ba702-8485-410b-8771-6460405ea698")
-		(at 162.20837160710232 164.7841536768133 153.23398030044407)
+		(at 208.42567580455471 194.90598435978137 8.07664967198781)
 		(descr "C, Disc series, Radial, pin pitch=5.00mm, , diameter*width=5*2.5mm^2, Capacitor, http://cdn-reichelt.de/documents/datenblatt/B300/DS_KERKO_TC.pdf")
 		(tags "C Disc series Radial pin pitch 5.00mm  diameter 5mm width 2.5mm Capacitor")
 		(property "Reference" "C16"
@@ -12975,7 +12975,7 @@
 	(footprint "sna:CUI_MJ-3536N"
 		(layer "F.Cu")
 		(uuid "708cce40-0355-4439-a791-e1d8bd33c118")
-		(at 200.3370481673796 113.93840494573398 69.51069172477025)
+		(at 193.72328778399526 91.8905476666265 -40.89361285849614)
 		(property "Reference" "J2"
 			(at -9.7 -4.25 0)
 			(layer "F.SilkS")
@@ -13459,7 +13459,7 @@
 	(footprint "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal"
 		(layer "F.Cu")
 		(uuid "7ad9bbd7-e949-463c-8fd2-84caa2d30f79")
-		(at 163.93912006683246 137.97320618125437 -24.55301284066354)
+		(at 213.8618266652032 65.52748880022901 -175.13092628871314)
 		(descr "Resistor, Axial_DIN0207 series, Axial, Horizontal, pin pitch=10.16mm, 0.25W = 1/4W, length*diameter=6.3*2.5mm^2, http://cdn-reichelt.de/documents/datenblatt/B400/1_4W%23YAG.pdf")
 		(tags "Resistor Axial_DIN0207 series Axial Horizontal pin pitch 10.16mm 0.25W = 1/4W length 6.3mm diameter 2.5mm")
 		(property "Reference" "R6"
@@ -13719,7 +13719,7 @@
 	(footprint "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal"
 		(layer "F.Cu")
 		(uuid "7f60b8b3-9c72-4561-bb1d-dae2c618040d")
-		(at 164.04458202514311 131.74647059195422 33.247354164636505)
+		(at 246.5619590254065 64.2455459288791 -176.23292015795877)
 		(descr "Resistor, Axial_DIN0207 series, Axial, Horizontal, pin pitch=10.16mm, 0.25W = 1/4W, length*diameter=6.3*2.5mm^2, http://cdn-reichelt.de/documents/datenblatt/B400/1_4W%23YAG.pdf")
 		(tags "Resistor Axial_DIN0207 series Axial Horizontal pin pitch 10.16mm 0.25W = 1/4W length 6.3mm diameter 2.5mm")
 		(property "Reference" "R4"
@@ -13979,7 +13979,7 @@
 	(footprint "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal"
 		(layer "F.Cu")
 		(uuid "8462a3cd-a38d-4808-a6e8-34e254599174")
-		(at 156.26087993316753 137.97320618125437 153.75895248244206)
+		(at 209.48612632375352 173.3758002093021 0.9280325237093905)
 		(descr "Resistor, Axial_DIN0207 series, Axial, Horizontal, pin pitch=10.16mm, 0.25W = 1/4W, length*diameter=6.3*2.5mm^2, http://cdn-reichelt.de/documents/datenblatt/B400/1_4W%23YAG.pdf")
 		(tags "Resistor Axial_DIN0207 series Axial Horizontal pin pitch 10.16mm 0.25W = 1/4W length 6.3mm diameter 2.5mm")
 		(property "Reference" "R16"
@@ -14239,7 +14239,7 @@
 	(footprint "Capacitor_THT:C_Disc_D5.0mm_W2.5mm_P5.00mm"
 		(layer "F.Cu")
 		(uuid "883e9176-8fb8-4697-9a2d-1a656ba552fe")
-		(at 161.9893307415514 139.66279831754645 -126.0623763055563)
+		(at 208.41522115805225 88.7005861397513 -3.911145937377654)
 		(descr "C, Disc series, Radial, pin pitch=5.00mm, , diameter*width=5*2.5mm^2, Capacitor, http://cdn-reichelt.de/documents/datenblatt/B300/DS_KERKO_TC.pdf")
 		(tags "C Disc series Radial pin pitch 5.00mm  diameter 5mm width 2.5mm Capacitor")
 		(property "Reference" "C11"
@@ -14479,7 +14479,7 @@
 	(footprint "MountingHole:MountingHole_3.2mm_M3_Pad"
 		(layer "F.Cu")
 		(uuid "8c1a53c3-eda8-4cf7-9683-1f61b02265f4")
-		(at 44.7 41.3 90)
+		(at 135.6044951590689 141.3018227008041 90)
 		(descr "Mounting Hole 3.2mm, M3")
 		(tags "mounting hole 3.2mm m3")
 		(property "Reference" "H8"
@@ -14582,7 +14582,7 @@
 	(footprint "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal"
 		(layer "F.Cu")
 		(uuid "8ded1694-3932-42e7-a76f-493bdd3abdac")
-		(at 163.93912006683246 137.97320618125437 335.4469871593365)
+		(at 217.23120006554242 82.45417292545045 178.80033517932253)
 		(descr "Resistor, Axial_DIN0207 series, Axial, Horizontal, pin pitch=10.16mm, 0.25W = 1/4W, length*diameter=6.3*2.5mm^2, http://cdn-reichelt.de/documents/datenblatt/B400/1_4W%23YAG.pdf")
 		(tags "Resistor Axial_DIN0207 series Axial Horizontal pin pitch 10.16mm 0.25W = 1/4W length 6.3mm diameter 2.5mm")
 		(property "Reference" "R14"
@@ -14842,7 +14842,7 @@
 	(footprint "Capacitor_THT:C_Disc_D5.0mm_W2.5mm_P5.00mm"
 		(layer "F.Cu")
 		(uuid "95e51855-a2cc-4fa2-a2f0-469d0bf9cc59")
-		(at 161.9893307415514 142.93720168245358 188.1954231131939)
+		(at 210.03109673739493 166.7272811481352 -1.4001948787461913)
 		(descr "C, Disc series, Radial, pin pitch=5.00mm, , diameter*width=5*2.5mm^2, Capacitor, http://cdn-reichelt.de/documents/datenblatt/B300/DS_KERKO_TC.pdf")
 		(tags "C Disc series Radial pin pitch 5.00mm  diameter 5mm width 2.5mm Capacitor")
 		(property "Reference" "C5"
@@ -15082,7 +15082,7 @@
 	(footprint "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal"
 		(layer "F.Cu")
 		(uuid "98a629aa-1e83-493f-8645-040865c77197")
-		(at 155.52785006245324 172.37589089789898 209.52951261358868)
+		(at 217.57345911793902 187.48046403386738 178.78238945976713)
 		(descr "Resistor, Axial_DIN0207 series, Axial, Horizontal, pin pitch=10.16mm, 0.25W = 1/4W, length*diameter=6.3*2.5mm^2, http://cdn-reichelt.de/documents/datenblatt/B400/1_4W%23YAG.pdf")
 		(tags "Resistor Axial_DIN0207 series Axial Horizontal pin pitch 10.16mm 0.25W = 1/4W length 6.3mm diameter 2.5mm")
 		(property "Reference" "R15"
@@ -15342,7 +15342,7 @@
 	(footprint "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal"
 		(layer "F.Cu")
 		(uuid "9990eb6d-f6df-4523-8aeb-5f6a410d402d")
-		(at 155.01999999999998 41.3)
+		(at 214.4665854006147 53.520973813981165 -6.5265178402166555)
 		(descr "Resistor, Axial_DIN0207 series, Axial, Horizontal, pin pitch=10.16mm, 0.25W = 1/4W, length*diameter=6.3*2.5mm^2, http://cdn-reichelt.de/documents/datenblatt/B400/1_4W%23YAG.pdf")
 		(tags "Resistor Axial_DIN0207 series Axial Horizontal pin pitch 10.16mm 0.25W = 1/4W length 6.3mm diameter 2.5mm")
 		(property "Reference" "R1"
@@ -15602,7 +15602,7 @@
 	(footprint "Capacitor_THT:C_Disc_D5.0mm_W2.5mm_P5.00mm"
 		(layer "F.Cu")
 		(uuid "9a09d49c-b6c6-4adb-8f3e-3eaa973775d6")
-		(at 157.6 241.3 35.698553922687324)
+		(at 209.36056432987033 221.25396473054377 1.7749640305010246)
 		(descr "C, Disc series, Radial, pin pitch=5.00mm, , diameter*width=5*2.5mm^2, Capacitor, http://cdn-reichelt.de/documents/datenblatt/B300/DS_KERKO_TC.pdf")
 		(tags "C Disc series Radial pin pitch 5.00mm  diameter 5mm width 2.5mm Capacitor")
 		(property "Reference" "C17"
@@ -15842,7 +15842,7 @@
 	(footprint "MountingHole:MountingHole_3.2mm_M3_Pad"
 		(layer "F.Cu")
 		(uuid "9af83bb3-277c-48a2-a28d-fdf5837ad153")
-		(at 44.7 41.3 90)
+		(at 94.77646849549565 50.46398309429094 90)
 		(descr "Mounting Hole 3.2mm, M3")
 		(tags "mounting hole 3.2mm m3")
 		(property "Reference" "H5"
@@ -15944,7 +15944,7 @@
 	(footprint "Capacitor_THT:C_Disc_D5.0mm_W2.5mm_P5.00mm"
 		(layer "F.Cu")
 		(uuid "9e545722-5ed0-4138-b501-3fc44b75e6e9")
-		(at 161.9893307415514 139.66279831754645 114.06510621758846)
+		(at 238.1069001735813 132.76552163154955 182.65692939951964)
 		(descr "C, Disc series, Radial, pin pitch=5.00mm, , diameter*width=5*2.5mm^2, Capacitor, http://cdn-reichelt.de/documents/datenblatt/B300/DS_KERKO_TC.pdf")
 		(tags "C Disc series Radial pin pitch 5.00mm  diameter 5mm width 2.5mm Capacitor")
 		(property "Reference" "C14"
@@ -16184,7 +16184,7 @@
 	(footprint "sna:SPDT_Tayda-A5111"
 		(layer "F.Cu")
 		(uuid "9f86f83e-8920-4750-acd7-9011145a634a")
-		(at 133.71170066991405 173.6629858494526 208.13314903806895)
+		(at 263.58965955541123 169.8082923456119 89.83441123184389)
 		(property "Reference" "SW5"
 			(at -5.3 -3.7 90)
 			(layer "F.SilkS")
@@ -16470,7 +16470,7 @@
 	(footprint "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal"
 		(layer "F.Cu")
 		(uuid "a013a492-fc3f-49d8-83d4-04c80616cac3")
-		(at 155.1500911050701 215.81168250243158 68.80055200427682)
+		(at 207.31195390635006 200.4123154905845 1.6452056479812427)
 		(descr "Resistor, Axial_DIN0207 series, Axial, Horizontal, pin pitch=10.16mm, 0.25W = 1/4W, length*diameter=6.3*2.5mm^2, http://cdn-reichelt.de/documents/datenblatt/B400/1_4W%23YAG.pdf")
 		(tags "Resistor Axial_DIN0207 series Axial Horizontal pin pitch 10.16mm 0.25W = 1/4W length 6.3mm diameter 2.5mm")
 		(property "Reference" "R18"
@@ -16730,7 +16730,7 @@
 	(footprint "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal"
 		(layer "F.Cu")
 		(uuid "a18a9dc4-c961-4422-ba2e-afd65cf4cae1")
-		(at 169.50716979081116 137.75001543318598 183.96024814091282)
+		(at 217.32582738251682 96.44615957137822 180.7884179430455)
 		(descr "Resistor, Axial_DIN0207 series, Axial, Horizontal, pin pitch=10.16mm, 0.25W = 1/4W, length*diameter=6.3*2.5mm^2, http://cdn-reichelt.de/documents/datenblatt/B400/1_4W%23YAG.pdf")
 		(tags "Resistor Axial_DIN0207 series Axial Horizontal pin pitch 10.16mm 0.25W = 1/4W length 6.3mm diameter 2.5mm")
 		(property "Reference" "R11"
@@ -16990,7 +16990,7 @@
 	(footprint "MountingHole:MountingHole_3.2mm_M3_Pad"
 		(layer "F.Cu")
 		(uuid "a2d16f16-08e6-4947-a6d1-6d787ead02c9")
-		(at 44.7 241.3 90)
+		(at 136.9150438431788 233.3572734725992 90)
 		(descr "Mounting Hole 3.2mm, M3")
 		(tags "mounting hole 3.2mm m3")
 		(property "Reference" "H14"
@@ -17093,7 +17093,7 @@
 	(footprint "Capacitor_THT:C_Disc_D5.0mm_W2.5mm_P5.00mm"
 		(layer "F.Cu")
 		(uuid "a4e8f23a-5d17-40a1-8047-761d12109510")
-		(at 162.6 41.3 242.97745765641696)
+		(at 238.2868116038861 66.84318337593632 179.4070346178315)
 		(descr "C, Disc series, Radial, pin pitch=5.00mm, , diameter*width=5*2.5mm^2, Capacitor, http://cdn-reichelt.de/documents/datenblatt/B300/DS_KERKO_TC.pdf")
 		(tags "C Disc series Radial pin pitch 5.00mm  diameter 5mm width 2.5mm Capacitor")
 		(property "Reference" "C3"
@@ -17333,7 +17333,7 @@
 	(footprint "MountingHole:MountingHole_3.2mm_M3_Pad"
 		(layer "F.Cu")
 		(uuid "a899f147-0456-4c4c-a26b-178ed678750a")
-		(at 275.5 241.3 90)
+		(at 266.192642303826 232.58407650971995 90)
 		(descr "Mounting Hole 3.2mm, M3")
 		(tags "mounting hole 3.2mm m3")
 		(property "Reference" "H16"
@@ -17436,7 +17436,7 @@
 	(footprint "sna:SPDT_Tayda-A5111"
 		(layer "F.Cu")
 		(uuid "a95209b0-8f65-4d6d-8e37-0534c51c8ae4")
-		(at 275.5 174.63333333333333 90)
+		(at 263.9282721695318 112.65082758790693 89.34379965932601)
 		(property "Reference" "SW2"
 			(at -5.8 -3.8 90)
 			(layer "F.SilkS")
@@ -17722,7 +17722,7 @@
 	(footprint "sna:SPDT_Tayda-A5111"
 		(layer "F.Cu")
 		(uuid "a97af78b-8cc9-4389-96e1-14dd98e5ef8c")
-		(at 209.7040131292534 107.96666666666668 0)
+		(at 263.7243529022009 143.70479014484644 90.44753365225694)
 		(property "Reference" "SW4"
 			(at -5.3 -3.7 90)
 			(layer "F.SilkS")
@@ -18069,7 +18069,7 @@
 	(footprint "Capacitor_THT:C_Disc_D5.0mm_W2.5mm_P5.00mm"
 		(layer "F.Cu")
 		(uuid "b645d37d-1e6b-4250-ad47-b8c41dbd61dc")
-		(at 165.90901092091516 139.5035912319573 132.90704550193388)
+		(at 238.24282303812433 81.0179641346897 182.9446940064879)
 		(descr "C, Disc series, Radial, pin pitch=5.00mm, , diameter*width=5*2.5mm^2, Capacitor, http://cdn-reichelt.de/documents/datenblatt/B300/DS_KERKO_TC.pdf")
 		(tags "C Disc series Radial pin pitch 5.00mm  diameter 5mm width 2.5mm Capacitor")
 		(property "Reference" "C8"
@@ -18309,7 +18309,7 @@
 	(footprint "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal"
 		(layer "F.Cu")
 		(uuid "b7a30c72-d95b-4de0-ae8a-d9e0a13159a2")
-		(at 161.74123992843073 137.4012944139693 336.684295496565)
+		(at 204.75842307247254 71.60327872557131 359.8433319163141)
 		(descr "Resistor, Axial_DIN0207 series, Axial, Horizontal, pin pitch=10.16mm, 0.25W = 1/4W, length*diameter=6.3*2.5mm^2, http://cdn-reichelt.de/documents/datenblatt/B400/1_4W%23YAG.pdf")
 		(tags "Resistor Axial_DIN0207 series Axial Horizontal pin pitch 10.16mm 0.25W = 1/4W length 6.3mm diameter 2.5mm")
 		(property "Reference" "R13"
@@ -18569,7 +18569,7 @@
 	(footprint "Capacitor_THT:C_Disc_D5.0mm_W2.5mm_P5.00mm"
 		(layer "F.Cu")
 		(uuid "ba611afe-ecbc-427a-998d-1bededb03a3e")
-		(at 157.6 41.3 342.3312897738788)
+		(at 216.69752688073396 52.47830785232122 174.294330951232)
 		(descr "C, Disc series, Radial, pin pitch=5.00mm, , diameter*width=5*2.5mm^2, Capacitor, http://cdn-reichelt.de/documents/datenblatt/B300/DS_KERKO_TC.pdf")
 		(tags "C Disc series Radial pin pitch 5.00mm  diameter 5mm width 2.5mm Capacitor")
 		(property "Reference" "C1"
@@ -18809,7 +18809,7 @@
 	(footprint "Capacitor_THT:C_Disc_D5.0mm_W2.5mm_P5.00mm"
 		(layer "F.Cu")
 		(uuid "bad30efe-f6cb-45ce-9909-bf6c2dd7e437")
-		(at 231.9455200519066 143.6002044524279 127.62875191423808)
+		(at 233.10472553988384 97.97132007414771 -2.563383269301255)
 		(descr "C, Disc series, Radial, pin pitch=5.00mm, , diameter*width=5*2.5mm^2, Capacitor, http://cdn-reichelt.de/documents/datenblatt/B300/DS_KERKO_TC.pdf")
 		(tags "C Disc series Radial pin pitch 5.00mm  diameter 5mm width 2.5mm Capacitor")
 		(property "Reference" "C10"
@@ -19049,7 +19049,7 @@
 	(footprint "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal"
 		(layer "F.Cu")
 		(uuid "bc1f5df9-2164-4924-8e67-6edc6bb39b39")
-		(at 156.26087993316753 137.97320618125437 -117.39015439498876)
+		(at 206.6196574960184 135.91855940817692 -0.6090129503937476)
 		(descr "Resistor, Axial_DIN0207 series, Axial, Horizontal, pin pitch=10.16mm, 0.25W = 1/4W, length*diameter=6.3*2.5mm^2, http://cdn-reichelt.de/documents/datenblatt/B400/1_4W%23YAG.pdf")
 		(tags "Resistor Axial_DIN0207 series Axial Horizontal pin pitch 10.16mm 0.25W = 1/4W length 6.3mm diameter 2.5mm")
 		(property "Reference" "R10"
@@ -19309,7 +19309,7 @@
 	(footprint "Capacitor_THT:C_Disc_D5.0mm_W2.5mm_P5.00mm"
 		(layer "F.Cu")
 		(uuid "bca8db1c-ac1f-4f72-9af8-84d4569acb97")
-		(at 157.98697628009057 166.99523832543153 -87.6056042041425)
+		(at 233.08030872354064 201.98763016954447 -2.485155722122471)
 		(descr "C, Disc series, Radial, pin pitch=5.00mm, , diameter*width=5*2.5mm^2, Capacitor, http://cdn-reichelt.de/documents/datenblatt/B300/DS_KERKO_TC.pdf")
 		(tags "C Disc series Radial pin pitch 5.00mm  diameter 5mm width 2.5mm Capacitor")
 		(property "Reference" "C18"
@@ -19549,7 +19549,7 @@
 	(footprint "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal"
 		(layer "F.Cu")
 		(uuid "beb1de02-c5bf-486a-8fc7-1d5a8ae7cea6")
-		(at 164.81406516394654 145.04098155924092 43.61074625508064)
+		(at 206.4727028610988 147.10289440125518 0.7160178344243207)
 		(descr "Resistor, Axial_DIN0207 series, Axial, Horizontal, pin pitch=10.16mm, 0.25W = 1/4W, length*diameter=6.3*2.5mm^2, http://cdn-reichelt.de/documents/datenblatt/B400/1_4W%23YAG.pdf")
 		(tags "Resistor Axial_DIN0207 series Axial Horizontal pin pitch 10.16mm 0.25W = 1/4W length 6.3mm diameter 2.5mm")
 		(property "Reference" "R12"
@@ -19809,7 +19809,7 @@
 	(footprint "Capacitor_THT:C_Disc_D5.0mm_W2.5mm_P5.00mm"
 		(layer "F.Cu")
 		(uuid "c017087c-ebd1-44eb-ae3d-6ea011e0f8cc")
-		(at 161.9893307415514 139.66279831754645 -204.55301284066314)
+		(at 198.66397793287356 72.21733441692903 -91.84024801136371)
 		(descr "C, Disc series, Radial, pin pitch=5.00mm, , diameter*width=5*2.5mm^2, Capacitor, http://cdn-reichelt.de/documents/datenblatt/B300/DS_KERKO_TC.pdf")
 		(tags "C Disc series Radial pin pitch 5.00mm  diameter 5mm width 2.5mm Capacitor")
 		(property "Reference" "C13"
@@ -20049,7 +20049,7 @@
 	(footprint "MountingHole:MountingHole_3.2mm_M3_Pad"
 		(layer "F.Cu")
 		(uuid "c17a4a8d-de18-485c-a192-237b6836c150")
-		(at 44.7 241.3 90)
+		(at 94.67178529644625 160.95805605260608 90)
 		(descr "Mounting Hole 3.2mm, M3")
 		(tags "mounting hole 3.2mm m3")
 		(property "Reference" "H6"
@@ -20151,7 +20151,7 @@
 	(footprint "MountingHole:MountingHole_3.2mm_M3_Pad"
 		(layer "F.Cu")
 		(uuid "c217d968-abfe-45cc-8ff9-0996be5bc8c7")
-		(at 44.7 241.3 90)
+		(at 183.07796092634325 233.6079477317927 90)
 		(descr "Mounting Hole 3.2mm, M3")
 		(tags "mounting hole 3.2mm m3")
 		(property "Reference" "H15"
@@ -20254,7 +20254,7 @@
 	(footprint "sna:CUI_MJ-3536N"
 		(layer "F.Cu")
 		(uuid "c33f8d6d-cd49-4cd5-b4d5-d99a14c34a4b")
-		(at 128.69444759112494 106.65578973587223 154.99076959937062)
+		(at 203.1026451664694 183.0174785651605 18.630571789105915)
 		(property "Reference" "J5"
 			(at -10 -4.375 0)
 			(layer "F.SilkS")
@@ -20738,7 +20738,7 @@
 	(footprint "sna:CUI_MJ-3536N"
 		(layer "F.Cu")
 		(uuid "c49d5c2a-d58c-4af1-bad7-6218ea588f1a")
-		(at 149.08094139598182 108.15332402349645 6.138346237726125)
+		(at 203.43084619509074 204.58552026492626 14.123008470347571)
 		(property "Reference" "J6"
 			(at -10 -4.375 0)
 			(layer "F.SilkS")
@@ -21222,7 +21222,7 @@
 	(footprint "Package_DIP:DIP-8_W7.62mm_Socket"
 		(layer "F.Cu")
 		(uuid "c6e3d729-2e15-4a9e-9b88-6bb5e1235768")
-		(at 170.6694249856775 137.96851055159001 50.29853246164237)
+		(at 219.18579168023507 63.51259089682693 92.84852233761825)
 		(descr "8-lead though-hole mounted DIP package, row spacing 7.62 mm (300 mils), Socket")
 		(tags "THT DIP DIL PDIP 2.54mm 7.62mm 300mil Socket")
 		(property "Reference" "U1"
@@ -21619,7 +21619,7 @@
 	(footprint "Potentiometer_THT:Potentiometer_Bourns_PTA6043_Single_Slide"
 		(layer "F.Cu")
 		(uuid "ca5b6af8-ca05-4338-b852-b51f2b49b1db")
-		(at 180.03024472274058 158.57057601623967 128.04849314988508)
+		(at 263.6469011588734 111.7725099352692 149.5932070077625)
 		(descr "Bourns single-gang slide potentiometer, 60.0mm travel, https://www.bourns.com/docs/Product-Datasheets/pta.pdf")
 		(tags "Bourns single-gang slide potentiometer 60.0mm")
 		(property "Reference" "RV3"
@@ -22086,7 +22086,7 @@
 	(footprint "MountingHole:MountingHole_3.2mm_M3_Pad"
 		(layer "F.Cu")
 		(uuid "cb23e2e7-de0c-4a6a-9419-1c472c13f509")
-		(at 44.7 41.3 90)
+		(at 52.48424879727325 49.23858748118219 90)
 		(descr "Mounting Hole 3.2mm, M3")
 		(tags "mounting hole 3.2mm m3")
 		(property "Reference" "H1"
@@ -22189,7 +22189,7 @@
 	(footprint "MountingHole:MountingHole_3.2mm_M3_Pad"
 		(layer "F.Cu")
 		(uuid "d253b606-c6d4-4ab5-bb6d-97f4b72f210a")
-		(at 44.7 41.3 90)
+		(at 187.15725507475858 49.388354806360724 90)
 		(descr "Mounting Hole 3.2mm, M3")
 		(tags "mounting hole 3.2mm m3")
 		(property "Reference" "H3"
@@ -22292,7 +22292,7 @@
 	(footprint "Potentiometer_THT:Potentiometer_Bourns_3296W_Vertical"
 		(layer "F.Cu")
 		(uuid "d50938de-efe4-40e6-a88d-07f18969e908")
-		(at 172.95379078360133 174.63333333333335 218.48794129743976)
+		(at 244.87592611072083 65.321642446696 210.37438241813578)
 		(descr "Potentiometer, vertical, Bourns 3296W, https://www.bourns.com/pdfs/3296.pdf")
 		(tags "Potentiometer vertical Bourns 3296W")
 		(property "Reference" "T1"
@@ -22557,7 +22557,7 @@
 	(footprint "Potentiometer_THT:Potentiometer_Bourns_3296W_Vertical"
 		(layer "F.Cu")
 		(uuid "d64ab7fb-2bb2-4fb8-a09a-712f10cc54f6")
-		(at 121.63333333333333 142.95731487889668 -146.47380467015844)
+		(at 209.58859950712664 63.1670642188386 -33.27848028512619)
 		(descr "Potentiometer, vertical, Bourns 3296W, https://www.bourns.com/pdfs/3296.pdf")
 		(tags "Potentiometer vertical Bourns 3296W")
 		(property "Reference" "T2"
@@ -22822,7 +22822,7 @@
 	(footprint "sna:CUI_MJ-3536N"
 		(layer "F.Cu")
 		(uuid "d91e3033-b5c7-4099-9476-4e90b98d2f33")
-		(at 177.73853709132703 177.15676065660895 -5.173597910670821)
+		(at 202.2928505763108 64.10026490299107 15.543063294794337)
 		(property "Reference" "J1"
 			(at -9.7 -4.25 0)
 			(layer "F.SilkS")
@@ -23306,7 +23306,7 @@
 	(footprint "Package_DIP:DIP-14_W7.62mm_Socket"
 		(layer "F.Cu")
 		(uuid "da583fd8-297c-45d1-a802-ffe1e43db9b6")
-		(at 181.20181408139453 171.93640329879 196.10007391960147)
+		(at 229.80967485728436 145.21592139116436 89.22221736926724)
 		(descr "14-lead though-hole mounted DIP package, row spacing 7.62 mm (300 mils), Socket")
 		(tags "THT DIP DIL PDIP 2.54mm 7.62mm 300mil Socket")
 		(property "Reference" "U3"
@@ -23828,7 +23828,7 @@
 	(footprint "Connector_PinHeader_2.54mm:PinHeader_1x07_P2.54mm_Vertical"
 		(layer "F.Cu")
 		(uuid "dbe92a0d-89cb-4d3f-9497-c2c1d93a3018")
-		(at 143.5049422198302 175.72321637312945 -271.2725973235605)
+		(at 230.45960765142962 219.03516399065023 -89.05902291346274)
 		(descr "Through hole straight pin header, 1x07, 2.54mm pitch, single row")
 		(tags "Through hole pin header THT 1x07 2.54mm single row")
 		(property "Reference" "Q1"
@@ -24113,7 +24113,7 @@
 	(footprint "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal"
 		(layer "F.Cu")
 		(uuid "e66db360-ea01-4169-833f-e687886c1455")
-		(at 156.26087993316753 137.97320618125437 207.73554462792123)
+		(at 219.5515813125624 161.03539422413087 178.8470064483031)
 		(descr "Resistor, Axial_DIN0207 series, Axial, Horizontal, pin pitch=10.16mm, 0.25W = 1/4W, length*diameter=6.3*2.5mm^2, http://cdn-reichelt.de/documents/datenblatt/B400/1_4W%23YAG.pdf")
 		(tags "Resistor Axial_DIN0207 series Axial Horizontal pin pitch 10.16mm 0.25W = 1/4W length 6.3mm diameter 2.5mm")
 		(property "Reference" "R7"
@@ -24373,7 +24373,7 @@
 	(footprint "Capacitor_THT:C_Disc_D5.0mm_W2.5mm_P5.00mm"
 		(layer "F.Cu")
 		(uuid "e68efea5-beb5-4611-ac50-b1ebc7698333")
-		(at 161.9893307415514 139.66279831754645 -24.553012840663143)
+		(at 210.2030293376694 115.58654655139657 4.014185210820415)
 		(descr "C, Disc series, Radial, pin pitch=5.00mm, , diameter*width=5*2.5mm^2, Capacitor, http://cdn-reichelt.de/documents/datenblatt/B300/DS_KERKO_TC.pdf")
 		(tags "C Disc series Radial pin pitch 5.00mm  diameter 5mm width 2.5mm Capacitor")
 		(property "Reference" "C7"
@@ -24613,7 +24613,7 @@
 	(footprint "MountingHole:MountingHole_3.2mm_M3_Pad"
 		(layer "F.Cu")
 		(uuid "e8ae19c6-9244-40d9-aebe-15ec65c831f3")
-		(at 44.7 41.3 90)
+		(at 94.89329112334943 121.63997102108313 90)
 		(descr "Mounting Hole 3.2mm, M3")
 		(tags "mounting hole 3.2mm m3")
 		(property "Reference" "H6"
@@ -24715,7 +24715,7 @@
 	(footprint "MountingHole:MountingHole_3.2mm_M3_Pad"
 		(layer "F.Cu")
 		(uuid "ecab347a-7fd7-494d-aef3-5936ea84c864")
-		(at 44.7 41.3 90)
+		(at 94.31743072312804 86.66358243532565 90)
 		(descr "Mounting Hole 3.2mm, M3")
 		(tags "mounting hole 3.2mm m3")
 		(property "Reference" "H6"
@@ -24817,7 +24817,7 @@
 	(footprint "Capacitor_THT:C_Disc_D5.0mm_W2.5mm_P5.00mm"
 		(layer "F.Cu")
 		(uuid "ed38e5ef-45f5-454a-9c46-a5175fb4555b")
-		(at 161.9893307415514 139.66279831754645 -24.553012840663143)
+		(at 233.3771344430705 149.75383958433838 -2.7865471418497805)
 		(descr "C, Disc series, Radial, pin pitch=5.00mm, , diameter*width=5*2.5mm^2, Capacitor, http://cdn-reichelt.de/documents/datenblatt/B300/DS_KERKO_TC.pdf")
 		(tags "C Disc series Radial pin pitch 5.00mm  diameter 5mm width 2.5mm Capacitor")
 		(property "Reference" "C15"
@@ -25057,7 +25057,7 @@
 	(footprint "Potentiometer_THT:Potentiometer_Bourns_PTA6043_Single_Slide"
 		(layer "F.Cu")
 		(uuid "ee035e10-0fdd-4c3d-9df9-35003b357eb9")
-		(at 181.36094581431615 157.1526502499381 87.13430192248781)
+		(at 264.05358772264884 90.23021733085415 150.04992262554106)
 		(descr "Bourns single-gang slide potentiometer, 60.0mm travel, https://www.bourns.com/docs/Product-Datasheets/pta.pdf")
 		(tags "Bourns single-gang slide potentiometer 60.0mm")
 		(property "Reference" "RV2"
@@ -25524,7 +25524,7 @@
 	(footprint "Package_DIP:DIP-14_W7.62mm_Socket"
 		(layer "F.Cu")
 		(uuid "ef4533db-6ea4-4b68-b436-8e9575be570d")
-		(at 168.70635176080432 131.08171836539103 130.39715181806596)
+		(at 228.73107607010957 93.0926202843684 87.27914062453246)
 		(descr "14-lead though-hole mounted DIP package, row spacing 7.62 mm (300 mils), Socket")
 		(tags "THT DIP DIL PDIP 2.54mm 7.62mm 300mil Socket")
 		(property "Reference" "U2"
@@ -25985,7 +25985,7 @@
 	(footprint "MountingHole:MountingHole_3.2mm_M3_Pad"
 		(layer "F.Cu")
 		(uuid "f0147ab6-add1-4c75-a9d9-a1cab84d195e")
-		(at 44.7 241.3 90)
+		(at 94.70515673392958 195.93706655426996 90)
 		(descr "Mounting Hole 3.2mm, M3")
 		(tags "mounting hole 3.2mm m3")
 		(property "Reference" "H6"
@@ -26087,7 +26087,7 @@
 	(footprint "Potentiometer_THT:Potentiometer_Bourns_PTA6043_Single_Slide"
 		(layer "F.Cu")
 		(uuid "f73db121-f78f-4701-b25b-5f9b01a7bf2b")
-		(at 182.48146629479805 158.47064794557744 129.35061590099366)
+		(at 265.3250921943849 165.10326022300876 146.63257687884075)
 		(descr "Bourns single-gang slide potentiometer, 60.0mm travel, https://www.bourns.com/docs/Product-Datasheets/pta.pdf")
 		(tags "Bourns single-gang slide potentiometer 60.0mm")
 		(property "Reference" "RV5"
@@ -26615,7 +26615,7 @@
 	(footprint "MountingHole:MountingHole_3.2mm_M3_Pad"
 		(layer "F.Cu")
 		(uuid "f880ca65-7b41-4901-91da-03cfd1c464c6")
-		(at 44.7 241.3 90)
+		(at 94.69992620237112 232.13697527702857 90)
 		(descr "Mounting Hole 3.2mm, M3")
 		(tags "mounting hole 3.2mm m3")
 		(property "Reference" "H6"
@@ -26717,7 +26717,7 @@
 	(footprint "Capacitor_THT:C_Disc_D5.0mm_W2.5mm_P5.00mm"
 		(layer "F.Cu")
 		(uuid "fb118437-6c93-45c1-ac46-bdf5c42a3715")
-		(at 157.6 41.3)
+		(at 231.61964438118156 50.82898403211737 0.8202234831183262)
 		(descr "C, Disc series, Radial, pin pitch=5.00mm, , diameter*width=5*2.5mm^2, Capacitor, http://cdn-reichelt.de/documents/datenblatt/B300/DS_KERKO_TC.pdf")
 		(tags "C Disc series Radial pin pitch 5.00mm  diameter 5mm width 2.5mm Capacitor")
 		(property "Reference" "C2"
@@ -26957,7 +26957,7 @@
 	(footprint "sna:SPDT_Tayda-A5111"
 		(layer "F.Cu")
 		(uuid "fbbf84e8-f3b0-4bba-a1a9-853a277a1b66")
-		(at 275.5 174.63333333333333 90)
+		(at 252.2052510735704 127.48688058715129 66.25352154860695)
 		(property "Reference" "SW3"
 			(at -5.3 -3.7 90)
 			(layer "F.SilkS")

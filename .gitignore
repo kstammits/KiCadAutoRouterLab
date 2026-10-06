@@ -23,6 +23,9 @@ placement.json
 # Generated board outputs from the autorouter first pass
 experiments/out/
 
+# Scratch / temp artifacts (DRC reports, throwaway test boards)
+tmp/
+
 # KiCad project-local / cache files (not for version control)
 *.kicad_prl
 fp-info-cache

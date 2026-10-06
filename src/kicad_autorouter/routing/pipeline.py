@@ -6,9 +6,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Tuple
 
+import numpy as np
+
 from ..board_model import BoardModel, board_model
 from ..io import nudge_footprint_by_uuid, save_pair, parse_file, load_pair
 from ..placement import PlacementParams, PlacementProposal, run_placement
+from ..drc import run_drc_on_tree, DRCResult, write_pcb_tree
 from . import (
     build_occupancy_grid,
     create_grid_from_model,
@@ -19,7 +22,7 @@ from . import (
 )
 from .output import routes_to_tracks_vias, apply_routes_to_tree
 from .power import identify_power_nets, route_power_rails, route_ground_stitching, route_decap_fanout
-from .grid import RoutingGrid
+from .grid import RoutingGrid, board_to_grid
 
 
 @dataclass
@@ -31,6 +34,8 @@ class RoutingResult:
     nets_failed: int
     drc_clean: bool
     drc_violations: int
+    drc_result: Optional[DRCResult] = None
+    pcb_tree: Optional = None  # Modified PCB tree after routing
 
 
 def run_routing(
@@ -44,6 +49,8 @@ def run_routing(
     via_size_mm: float = 0.8,
     via_drill_mm: float = 0.4,
     max_attempts_per_net: int = 3,
+    run_drc: bool = True,
+    original_pcb_tree: Optional = None,
 ) -> RoutingResult:
     """Run complete routing on a board model.
     
@@ -133,7 +140,7 @@ def run_routing(
     all_results.update(power_results)
     all_results.update(ground_results)
     all_results.update(decap_results)
-    all_results.update({n: ripup.routed_paths[n] for n in ripup.routed_nets})
+    all_results.update({n: ripup.routed_paths[n] for n in ripup.routed_paths})
     
     # Convert to tracks/vias
     tracks, vias = routes_to_tracks_vias(
@@ -143,8 +150,18 @@ def run_routing(
         power_width_mm=power_width_mm,
     )
     
+    # 10. Apply routes to PCB tree
+    pcb_tree = None
+    if original_pcb_tree is not None:
+        pcb_tree = apply_routes_to_tree(original_pcb_tree, tracks, vias)
+    
+    # 11. Run DRC if requested
+    drc_result = None
+    if run_drc and pcb_tree is not None:
+        drc_result = run_drc_on_tree(pcb_tree, prefix="route_")
+    
     # Stats
-    nets_routed = len(ripup.routed_nets) + len(power_results) + len(ground_results)
+    nets_routed = len(ripup.routed_paths) + len(power_results) + len(ground_results)
     nets_failed = len(ripup.get_failed_nets())
     
     return RoutingResult(
@@ -152,24 +169,11 @@ def run_routing(
         vias_added=len(vias),
         nets_routed=nets_routed,
         nets_failed=nets_failed,
-        drc_clean=True,  # would run DRC here
-        drc_violations=0,
+        drc_clean=drc_result.clean if drc_result else True,
+        drc_violations=drc_result.total_issues if drc_result else 0,
+        drc_result=drc_result,
+        pcb_tree=pcb_tree,
     )
-
-
-def _apply_route_to_grid(result: RouteResult, cost_grid: np.ndarray, grid: RoutingGrid):
-    """Mark routed path as blocked on cost grid."""
-    for c, r, l in result.path:
-        if 0 <= l < cost_grid.shape[0] and 0 <= r < cost_grid.shape[1] and 0 <= c < cost_grid.shape[2]:
-            cost_grid[l, r, c] = max(cost_grid[l, r, c], 100)  # BLOCKED
-    
-    # Also mark vias
-    for i in range(len(result.path) - 1):
-        c1, r1, l1 = result.path[i]
-        c2, r2, l2 = result.path[i + 1]
-        if l1 != l2:
-            for layer_idx in range(cost_grid.shape[0]):
-                cost_grid[layer_idx, r1, c1] = max(cost_grid[layer_idx, r1, c1], 100)
 
 
 def run_full_pipeline(
@@ -187,9 +191,11 @@ def run_full_pipeline(
     if sch_path:
         pair = load_pair(pcb_path, sch_path)
         model = board_model(pair.pcb)
+        original_pcb_tree = pair.pcb
     else:
         pcb_tree = parse_file(pcb_path)
         model = board_model(pcb_tree)
+        original_pcb_tree = pcb_tree
     
     # Placement
     if params is None:
@@ -200,18 +206,12 @@ def run_full_pipeline(
     from ..board_model import apply_deltas
     model = apply_deltas(model, proposal.deltas)
     
-    # Route
-    result = run_routing(model)
+    # Route (with original PCB tree for writeback)
+    result = run_routing(model, original_pcb_tree=original_pcb_tree, run_drc=validate)
     
     # Writeback
-    if output_pcb:
-        # Would write modified PCB here
-        pass
-    
-    # DRC
-    if validate:
-        # Would run kicad-cli drc here
-        pass
+    if output_pcb and result.pcb_tree is not None:
+        result.pcb_tree = write_pcb_tree(result.pcb_tree, output_pcb, "final_")
     
     return model, result
 
@@ -236,9 +236,10 @@ def route_single_board(
     model = apply_deltas(model, proposal.deltas)
     
     # Route
-    result = run_routing(model)
+    result = run_routing(model, original_pcb_tree=pcb_tree, run_drc=validate)
     
     # Write output
-    # (Would need to write modified S-expression here)
+    if result.pcb_tree is not None:
+        write_pcb_tree(result.pcb_tree, output_path, "final_")
     
     return result

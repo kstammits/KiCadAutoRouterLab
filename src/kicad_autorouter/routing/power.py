@@ -110,7 +110,7 @@ def route_ground_stitching(
     
     for net_name in ground_nets:
         # Find all ground zone polygons
-        ground_zones = [z for z in model.zones if net_name in z.net_name]
+        ground_zones = [z for z in model.zones if net_name in (z.net_name or "")]
         if len(ground_zones) < 2:
             continue
         
@@ -119,6 +119,8 @@ def route_ground_stitching(
         # For now, route between zone centroids
         for i, z1 in enumerate(ground_zones):
             for z2 in ground_zones[i+1:]:
+                if not z1.layers or not z2.layers:
+                    continue  # skip zones without layer info
                 if z1.layers != z2.layers:
                     continue  # different layers - will be stitched via vias
                 
