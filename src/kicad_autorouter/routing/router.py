@@ -39,6 +39,7 @@ class SingleNetRouter:
         grid: RoutingGrid,
         cost_grid: np.ndarray,
         cost_map: Optional[CostMap] = None,
+        tht_via_mask: Optional[np.ndarray] = None,
     ):
         self.grid = grid
         self.cost_grid = cost_grid
@@ -46,6 +47,8 @@ class SingleNetRouter:
         self.n_layers = len(grid.layers)
         self.H = grid.height_cells
         self.W = grid.width_cells
+        # THT via mask: True at (row, col) where through-hole pads allow free layer transition
+        self.tht_via_mask = tht_via_mask if tht_via_mask is not None else np.zeros((self.H, self.W), dtype=bool)
 
     def route(
         self,
@@ -62,6 +65,7 @@ class SingleNetRouter:
         n = len(terminals)
         dist_matrix = np.full((n, n), np.inf, dtype=np.float32)
         path_matrix = [[None] * n for _ in range(n)]
+        cost_matrix = np.full((n, n), np.inf, dtype=np.float32)  # Store actual A* costs
 
         for i in range(n):
             for j in range(i + 1, n):
@@ -69,9 +73,10 @@ class SingleNetRouter:
                 if result.success:
                     dist_matrix[i, j] = dist_matrix[j, i] = result.cost
                     path_matrix[i][j] = path_matrix[j][i] = result.path
+                    cost_matrix[i, j] = cost_matrix[j, i] = result.cost
 
-        # Check connectivity
-        if np.any(np.isinf(dist_matrix)):
+        # Check connectivity (ignore diagonal)
+        if np.any(np.isinf(dist_matrix[np.triu_indices(n, k=1)])):
             return RouteResult([], 0.0, 0, 0.0, False)
 
         # Prim's MST
@@ -107,7 +112,11 @@ class SingleNetRouter:
                     # Disconnected - should not happen with MST
                     full_path.extend(edge_path[1:])
 
-            # Compute cost for this edge
+            # Use the A* cost for this edge (includes free via handling)
+            edge_cost = cost_matrix[i, j]
+            total_cost += edge_cost
+            
+            # Count wire length and vias for reporting
             for k in range(len(edge_path) - 1):
                 c1, r1, l1 = edge_path[k]
                 c2, r2, l2 = edge_path[k + 1]
@@ -115,7 +124,6 @@ class SingleNetRouter:
                     total_vias += 1
                 total_wire += 1
 
-        total_cost = total_wire + total_vias * (self.cost_map.via_cost / self.cost_map.base_cost)
         wire_mm = total_wire * self.grid.resolution_mm
 
         return RouteResult(
@@ -189,10 +197,14 @@ class SingleNetRouter:
             # Via transitions (up/down)
             for nl in [l - 1, l + 1]:
                 if 0 <= nl < self.n_layers:
-                    if self._is_blocked(nr, nc, nl):  # Check same cell on other layer
+                    # Check same cell on other layer
+                    if self._is_blocked(r, c, nl):
                         continue
-                    # Via cost
-                    cell_cost = self.cost_map.via_cost
+                    # Via cost: free at THT pad locations
+                    if self.tht_via_mask[r, c]:
+                        cell_cost = 0
+                    else:
+                        cell_cost = self.cost_map.via_cost
                     ng = g + cell_cost
                     if ng < g_score[nl, r, c]:
                         g_score[nl, r, c] = ng

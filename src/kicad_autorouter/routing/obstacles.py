@@ -98,7 +98,7 @@ def _mark_pad(
     col, row = board_to_grid(grid, x_mm, y_mm)
     
     # Determine which layers this pad occupies
-    is_through_hole = pad.shape in ("rect", "oval")  # typical for THT
+    is_through_hole = pad.is_through_hole
     pad_layers = [0, 1] if is_through_hole else [fp.layer == "F.Cu" and 0 or 1]
     
     # Get clearance for this pad's net

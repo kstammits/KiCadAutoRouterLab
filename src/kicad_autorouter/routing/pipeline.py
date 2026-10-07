@@ -62,13 +62,16 @@ def run_routing(
     # 2. Build occupancy grid
     cost_grid = build_occupancy_grid(model, grid)
     
-    # 3. Create router
+    # 3. Create THT via mask for free layer transitions at through-hole pads
+    tht_via_mask = _build_tht_via_mask(model, grid)
+    
+    # 4. Create router
     cost_map = CostMap(
         base_cost=1,
         via_cost=int(via_cost / grid_resolution_mm),
         blocked_threshold=100,
     )
-    router = SingleNetRouter(grid, cost_grid, cost_map)
+    router = SingleNetRouter(grid, cost_grid, cost_map, tht_via_mask)
     
     # 4. Identify net classes
     power_nets, ground_nets, signal_nets = identify_power_nets(model)
@@ -174,6 +177,25 @@ def run_routing(
         drc_result=drc_result,
         pcb_tree=pcb_tree,
     )
+
+
+def _build_tht_via_mask(model, grid) -> np.ndarray:
+    """Build a 2D boolean mask marking THT pad locations for free via transitions.
+    
+    Returns (H, W) boolean array where True = through-hole pad at that grid cell.
+    """
+    from .grid import board_to_grid
+    H, W = grid.height_cells, grid.width_cells
+    mask = np.zeros((H, W), dtype=bool)
+    
+    for fp in model.footprints:
+        for pad in fp.pads:
+            if pad.is_through_hole:
+                col, row = board_to_grid(grid, pad.position.x_mm, pad.position.y_mm)
+                if 0 <= row < H and 0 <= col < W:
+                    mask[row, col] = True
+    
+    return mask
 
 
 def run_full_pipeline(

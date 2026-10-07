@@ -195,8 +195,13 @@ def apply_routes_to_tree(
     tracks: List[Track],
     vias: List[Via],
 ):
-    """Insert tracks and vias into a PCB S-expression tree."""
-    from ..sexpr import SExpr, to_sexpr
+    """Insert tracks and vias into a PCB S-expression tree.
+    
+    Returns a new tree with the routes added (SExpr is immutable).
+    """
+    from ..sexpr import SExpr
+    
+    new_args = list(tree.args)
     
     # Add track segments
     for t in tracks:
@@ -207,11 +212,10 @@ def apply_routes_to_tree(
             SExpr("layer", (t.layer,)),
             SExpr("net", (t.net_name,)),
         ))
-        tree.args = tree.args + (seg,)
+        new_args.append(seg)
     
     # Add vias
     for v in vias:
-        layers_expr = " ".join(v.layers)
         via = SExpr("via", (
             SExpr("at", (f"{v.position[0]:.3f}", f"{v.position[1]:.3f}")),
             SExpr("size", (f"{v.size_mm:.3f}",)),
@@ -219,9 +223,10 @@ def apply_routes_to_tree(
             SExpr("layers", tuple(v.layers)),
             SExpr("net", (v.net_name,)),
         ))
-        tree.args = tree.args + (via,)
+        new_args.append(via)
     
-    return tree
+    # Create new tree with updated args
+    return SExpr(tree.head, tuple(new_args))
 
 
 def tracks_vias_to_sexpr(

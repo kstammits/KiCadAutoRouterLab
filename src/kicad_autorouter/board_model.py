@@ -41,6 +41,9 @@ class Pad:
     ``net_name`` is None for unconnected pads (e.g. mounting holes).
     ``size_mm`` is the pad's (width, height); ``shape`` is the KiCad shape
     symbol (circle/rect/...); ``angle_deg`` is the pad's local rotation.
+    ``pad_type`` is the KiCad pad type (thru_hole, np_thru_hole, smd).
+    ``drill_mm`` is the drill diameter (0 for SMD).
+    ``layers`` is the tuple of layer names this pad exists on.
     """
 
     number: str
@@ -49,6 +52,19 @@ class Pad:
     size_mm: Tuple[float, float] = (1.0, 1.0)
     shape: str = "circle"
     angle_deg: float = 0.0
+    pad_type: str = "smd"
+    drill_mm: float = 0.0
+    layers: Tuple[str, ...] = ()
+
+    @property
+    def is_through_hole(self) -> bool:
+        """True for plated or non-plated through-hole pads (thru_hole / np_thru_hole)."""
+        return self.pad_type in ("thru_hole", "np_thru_hole") and self.drill_mm > 0.0
+
+    @property
+    def is_plated_through_hole(self) -> bool:
+        """True for plated through-hole pads (thru_hole)."""
+        return self.pad_type == "thru_hole" and self.drill_mm > 0.0
 
 
 @dataclass(frozen=True)
@@ -248,6 +264,7 @@ def _pad(
     node: SExpr, x_mm: float, y_mm: float, angle_deg: float, layer: str
 ) -> Pad:
     number = str(node.args[0]) if node.args else ""
+    pad_type = str(node.args[1]) if len(node.args) > 1 else "smd"
     shape = str(node.args[2]) if len(node.args) > 2 else "circle"
     at = node.find("at")
     px = py = pangle = 0.0
@@ -258,6 +275,29 @@ def _pad(
     size_node = node.find("size")
     if size_node is not None and len(size_node.args) >= 2:
         size = (float(size_node.args[0]), float(size_node.args[1]))
+    drill = 0.0
+    drill_node = node.find("drill")
+    if drill_node is not None and drill_node.args:
+        # drill can be simple (drill 0.8) or oval (drill oval 4 3.2)
+        first_arg = drill_node.args[0]
+        if isinstance(first_arg, (int, float)):
+            drill = float(first_arg)
+        elif isinstance(first_arg, str) and first_arg not in ("oval", "circle"):
+            # handle case where first arg is the diameter
+            try:
+                drill = float(first_arg)
+            except ValueError:
+                drill = 0.0
+        elif isinstance(first_arg, str) and first_arg in ("oval", "circle"):
+            # oval/circle drill: args[1] is the major diameter
+            if len(drill_node.args) > 1 and isinstance(drill_node.args[1], (int, float)):
+                drill = float(drill_node.args[1])
+    layers_node = node.find("layers")
+    layers = ()
+    if layers_node is not None and layers_node.args:
+        layers = tuple(
+            str(a) for a in layers_node.args if not isinstance(a, SExpr)
+        )
     return Pad(
         number=number,
         net_name=_net_name(node.find("net")),
@@ -265,6 +305,9 @@ def _pad(
         size_mm=size,
         shape=shape,
         angle_deg=pangle,
+        pad_type=pad_type,
+        drill_mm=drill,
+        layers=layers,
     )
 
 
