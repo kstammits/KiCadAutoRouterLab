@@ -1,12 +1,18 @@
 """Minimal stdlib web server for the autorouter workflow UI."""
 
+import base64
+import io
 import json
+import signal
 import sys
 import threading
-from typing import Dict, Tuple, Set, Optional
+from typing import Dict, Tuple, Set, Optional, Any
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+
+import numpy as np
+from PIL import Image
 
 UI_DIR = Path(__file__).resolve().parent
 REPO_ROOT = UI_DIR.parent.resolve()
@@ -21,6 +27,7 @@ from kicad_autorouter.placement import (
     PlacementProposal,
     run_placement,
 )
+from kicad_autorouter.routing.pipeline import RoutingParams, route_nets
 from kicad_autorouter.routing.power import identify_power_nets
 from kicad_autorouter.sexpr import parse
 from kicad_autorouter.svg_render import render_board_svg
@@ -54,6 +61,11 @@ class BoardState:
         self.max_undo_depth = 20
         self.board_version: str = ""  # KiCad generator_version (e.g., "10.0")
         self.version_warning: Optional[str] = None  # Warning for v11+ boards
+        # Routing state
+        self.protected_nets: set[str] = set()  # Nets protected from rip-up (power/ground + user)
+        self.cost_grid: Optional[np.ndarray] = None  # Persistent occupancy grid for incremental routing
+        self.routing_grid: Optional[Any] = None  # Persistent RoutingGrid for reuse
+        self.routing_model: Optional[Any] = None  # Updated BoardModel after routing
 
     def load(self, data: bytes, name: str, kind: str) -> int:
         tree = parse(data.decode("utf-8"))
@@ -81,6 +93,16 @@ class BoardState:
                 self.drc_for_version = None
                 self.drc_unconnected = 0
                 self.drc_error = None
+                # Reset routing state
+                self.cost_grid = None
+                self.routing_grid = None
+                self.routing_model = None
+                # Auto-detect protected nets (power/ground)
+                self.protected_nets.clear()
+                power_nets, ground_nets, _ = identify_power_nets(self.model)
+                self.protected_nets.update(power_nets)
+                self.protected_nets.update(ground_nets)
+                self.protected_nets.update({"GND", "GND_PWR", "VCC", "VDD", "VSS", "GROUND"})
                 # Capture board version and warning
                 self.board_version = self.model.version if self.model else ""
                 self.version_warning = self.model.version_warning if self.model else None
@@ -224,6 +246,60 @@ class BoardState:
             self.version += 1
             return self.version
 
+    # ==================== Protected Nets & Routing State ====================
+
+    def get_protected_nets(self) -> set[str]:
+        """Return copy of protected nets set."""
+        with self._lock:
+            return self.protected_nets.copy()
+
+    def set_protected_nets(self, nets: set[str]) -> int:
+        """Replace the entire protected nets set."""
+        with self._lock:
+            self.protected_nets = set(nets)
+            self.version += 1
+            return self.version
+
+    def toggle_protected_net(self, net_name: str) -> int:
+        """Toggle a net's protected status."""
+        with self._lock:
+            if net_name in self.protected_nets:
+                self.protected_nets.remove(net_name)
+            else:
+                self.protected_nets.add(net_name)
+            self.version += 1
+            return self.version
+
+    def auto_detect_protected_nets(self) -> int:
+        """Auto-detect power/ground nets and add them to protected set."""
+        if self.model is None:
+            return self.version
+        power_nets, ground_nets, _ = identify_power_nets(self.model)
+        with self._lock:
+            self.protected_nets.update(power_nets)
+            self.protected_nets.update(ground_nets)
+            self.protected_nets.update({"GND", "GND_PWR", "VCC", "VDD", "VSS", "GROUND"})
+            self.version += 1
+            return self.version
+
+    def get_routing_state(self) -> dict:
+        """Get current routing state for UI."""
+        with self._lock:
+            return {
+                "has_cost_grid": self.cost_grid is not None,
+                "has_routing_grid": self.routing_grid is not None,
+                "protected_nets": sorted(self.protected_nets),
+            }
+
+    def reset_routing_state(self) -> int:
+        """Clear routing state (cost_grid, routing_grid, routing_model)."""
+        with self._lock:
+            self.cost_grid = None
+            self.routing_grid = None
+            self.routing_model = None
+            self.version += 1
+            return self.version
+
     def push_undo(self) -> None:
         """Push current state to undo stack (called before mutating)."""
         with self._lock:
@@ -240,6 +316,10 @@ class BoardState:
             self.model, self.pcb_tree = self.undo_stack.pop()
             self.proposal = None
             self.selected_uuids.clear()
+            # Reset routing state on undo
+            self.cost_grid = None
+            self.routing_grid = None
+            self.routing_model = None
             self.version += 1
             return self.version
 
@@ -252,6 +332,10 @@ class BoardState:
                 self.proposal = None
                 self.selected_uuids.clear()
                 self.undo_stack.clear()
+                # Reset routing state
+                self.cost_grid = None
+                self.routing_grid = None
+                self.routing_model = None
                 # Restore board version and warning from original
                 self.board_version = self.model.version if self.model else ""
                 self.version_warning = self.model.version_warning if self.model else None
@@ -282,9 +366,8 @@ class BoardState:
                 u for u, d in self.proposal.deltas.items()
                 if d != (0.0, 0.0, 0.0) and d != (0.0, 0.0)
             }
-            # Auto-detect power nets to protect
-            power_nets, ground_nets, _ = identify_power_nets(self.model)
-            protected_nets = set(power_nets) | set(ground_nets) | {"GND", "GND_PWR", "VCC", "VDD", "VSS", "GROUND"}
+            # Use protected nets from BoardState (includes auto-detected + user-added)
+            protected_nets = self.get_protected_nets()
             # Apply to BoardModel: move footprints + rip up tracks/vias on affected nets
             self.model = commit_placement(self.model, self.proposal.deltas, protected_nets)
             # Apply to S-expression tree: move footprints + rip up tracks/vias
@@ -347,18 +430,153 @@ def load_params() -> PlacementParams:
     """Effective params: defaults overlaid with placement.json when present."""
     if PARAMS_PATH.is_file():
         try:
-            return PlacementParams.from_dict(
-                json.loads(PARAMS_PATH.read_text(encoding="utf-8"))
-            )
+            data = json.loads(PARAMS_PATH.read_text(encoding="utf-8"))
+            return PlacementParams.from_dict(data)
         except (ValueError, json.JSONDecodeError):
             pass  # corrupt file falls back to defaults; next save overwrites it
     return PlacementParams()
 
 
+def load_routing_params() -> RoutingParams:
+    """Load routing params from placement.json routing section."""
+    if PARAMS_PATH.is_file():
+        try:
+            data = json.loads(PARAMS_PATH.read_text(encoding="utf-8"))
+            routing_data = data.get("routing", {})
+            return RoutingParams.from_dict(routing_data)
+        except (ValueError, json.JSONDecodeError):
+            pass
+    return RoutingParams()
+
+
 def save_params(params: PlacementParams) -> None:
+    # Load existing data to preserve routing section
+    existing = {}
+    if PARAMS_PATH.is_file():
+        try:
+            existing = json.loads(PARAMS_PATH.read_text(encoding="utf-8"))
+        except (ValueError, json.JSONDecodeError):
+            pass
+    # Update placement params
+    existing.update(params.to_dict())
     PARAMS_PATH.write_text(
-        json.dumps(params.to_dict(), indent=2) + "\n", encoding="utf-8"
+        json.dumps(existing, indent=2) + "\n", encoding="utf-8"
     )
+
+
+def save_routing_params(params: RoutingParams) -> None:
+    # Load existing data to preserve placement section
+    existing = {}
+    if PARAMS_PATH.is_file():
+        try:
+            existing = json.loads(PARAMS_PATH.read_text(encoding="utf-8"))
+        except (ValueError, json.JSONDecodeError):
+            pass
+    # Update routing params
+    existing["routing"] = params.to_dict()
+    PARAMS_PATH.write_text(
+        json.dumps(existing, indent=2) + "\n", encoding="utf-8"
+    )
+
+
+def _cost_grid_to_debug(cost_grid: np.ndarray, routing_grid) -> dict:
+    """Convert cost grid to downsampled debug format for SVG overlay.
+    
+    Cost values:
+    - 0 = FREE
+    - 50 = HIGH_COST (pad clearance)
+    - 80 = EDGE_KEEPOUT (board edge)
+    - 100+ = BLOCKED (tracks, vias, courtyards, zones)
+    """
+    n_layers, H, W = cost_grid.shape
+    
+    # Downsample to max 200x200 for reasonable JSON size
+    max_dim = 200
+    scale = max(H // max_dim, W // max_dim, 1)
+    
+    if scale > 1:
+        # Take max in each block to preserve blocked cells
+        h_ds = H // scale
+        w_ds = W // scale
+        ds_grid = np.zeros((n_layers, h_ds, w_ds), dtype=np.int16)
+        for l in range(n_layers):
+            for r in range(h_ds):
+                for c in range(w_ds):
+                    r0, r1 = r * scale, min((r + 1) * scale, H)
+                    c0, c1 = c * scale, min((c + 1) * scale, W)
+                    ds_grid[l, r, c] = np.max(cost_grid[l, r0:r1, c0:c1])
+    else:
+        ds_grid = cost_grid
+        h_ds, w_ds = H, W
+    
+    # Convert to lists for JSON
+    layers = []
+    for l in range(n_layers):
+        layer_data = ds_grid[l].tolist()
+        # Find min/max for color scaling
+        vals = [v for row in layer_data for v in row if v > 0]
+        layers.append({
+            "layer": routing_grid.layers[l] if l < len(routing_grid.layers) else f"layer_{l}",
+            "data": layer_data,
+            "height": h_ds,
+            "width": w_ds,
+            "scale": scale,
+            "min_cost": min(vals) if vals else 0,
+            "max_cost": max(vals) if vals else 0,
+        })
+    
+    return {
+        "layers": layers,
+        "origin_mm": routing_grid.origin_mm,
+        "resolution_mm": routing_grid.resolution_mm * scale,
+        "cost_scale": {
+            "FREE": 0,
+            "HIGH_COST": 50,
+            "EDGE_KEEPOUT": 80,
+            "BLOCKED": 100,
+        }
+    }
+
+
+def _cost_grid_to_png(cost_grid: np.ndarray, routing_grid) -> str:
+    """Convert cost grid to base64-encoded PNG for SVG overlay.
+    
+    Returns base64-encoded PNG data URL.
+    """
+    n_layers, H, W = cost_grid.shape
+    
+    # Use F.Cu layer (layer 0)
+    layer_data = cost_grid[0]
+    
+    # Create RGBA array directly
+    # Colors: 0=transparent, 50=yellow (HIGH_COST), 80=orange (EDGE_KEEPOUT), 100+=red (BLOCKED)
+    rgba = np.zeros((H, W, 4), dtype=np.uint8)
+    
+    # Mask for non-zero costs
+    mask = layer_data > 0
+    
+    # HIGH_COST (50) -> yellow
+    high_cost = (layer_data == 50) & mask
+    rgba[high_cost] = [255, 255, 0, 180]
+    
+    # EDGE_KEEPOUT (80) -> orange
+    edge_keepout = (layer_data == 80) & mask
+    rgba[edge_keepout] = [255, 165, 0, 200]
+    
+    # BLOCKED (100+) -> red
+    blocked = (layer_data >= 100) & mask
+    rgba[blocked] = [255, 0, 0, 220]
+    
+    # Create image
+    img_rgba = Image.fromarray(rgba, mode='RGBA')
+    
+    # Save to bytes
+    buf = io.BytesIO()
+    img_rgba.save(buf, format='PNG', optimize=True)
+    buf.seek(0)
+    
+    b64 = base64.b64encode(buf.read()).decode()
+    return f"data:image/png;base64,{b64}"
 
 
 def proposal_to_json(proposal) -> dict:
@@ -506,6 +724,7 @@ class Handler(BaseHTTPRequestHandler):
             selected = STATE.get_selected_uuids()
             locked = {fp.uuid for fp in model.footprints if fp.locked and fp.uuid}
             footprints_data = []
+            # Real footprints
             for fp in model.footprints:
                 if not fp.uuid:
                     continue
@@ -534,9 +753,70 @@ class Handler(BaseHTTPRequestHandler):
                     "selected": fp.uuid in selected,
                     "nets": nets,
                     "bbox": [minx, miny, maxx, maxy],
+                    "ghost": False,
+                })
+            # Ghost footprints
+            for fp in model.ghost_footprints:
+                if not fp.uuid:
+                    continue
+                nets = sorted({pad.net_name for pad in fp.pads if pad.net_name})
+                minx = miny = float('inf')
+                maxx = maxy = float('-inf')
+                for a, b in fp.courtyard:
+                    minx = min(minx, a.x_mm, b.x_mm)
+                    miny = min(miny, a.y_mm, b.y_mm)
+                    maxx = max(maxx, a.x_mm, b.x_mm)
+                    maxy = max(maxy, a.y_mm, b.y_mm)
+                if minx == float('inf'):
+                    minx = miny = maxx = maxy = 0.0
+                footprints_data.append({
+                    "uuid": fp.uuid,
+                    "ref": fp.ref,
+                    "footprint_id": fp.footprint_id,
+                    "layer": fp.layer,
+                    "x_mm": fp.x_mm,
+                    "y_mm": fp.y_mm,
+                    "angle_deg": fp.angle_deg,
+                    "locked": False,  # Ghosts are never locked in the traditional sense
+                    "pinned": False,
+                    "selected": False,  # Ghosts can't be selected/pinned
+                    "nets": nets,
+                    "bbox": [minx, miny, maxx, maxy],
+                    "ghost": True,
                 })
             self._send(200, json.dumps({"ok": True, "footprints": footprints_data}).encode(), "application/json")
             return
+        
+        # GET /api/routing/debug/cost-grid - return cost grid for visualization
+        if parsed.path == "/api/routing/debug/cost-grid":
+            model, _, _, _, _, _ = STATE.snapshot
+            if model is None:
+                self._send(404, b"no board loaded", "text/plain")
+                return
+            if STATE.cost_grid is None or STATE.routing_grid is None:
+                self._send(404, b"no cost grid available (run routing first)", "text/plain")
+                return
+            payload = _cost_grid_to_debug(STATE.cost_grid, STATE.routing_grid)
+            self._send(200, json.dumps(payload).encode(), "application/json")
+            return
+        
+        # GET /api/routing/debug/cost-grid.png - return cost grid as PNG for SVG overlay
+        if parsed.path == "/api/routing/debug/cost-grid.png":
+            model, _, _, _, _, _ = STATE.snapshot
+            if model is None:
+                self._send(404, b"no board loaded", "text/plain")
+                return
+            if STATE.cost_grid is None or STATE.routing_grid is None:
+                self._send(404, b"no cost grid available (run routing first)", "text/plain")
+                return
+            try:
+                png_data_url = _cost_grid_to_png(STATE.cost_grid, STATE.routing_grid)
+                payload = json.dumps({"png": png_data_url}).encode()
+                self._send(200, payload, "application/json")
+            except Exception as exc:
+                self._send(500, f"PNG generation failed: {exc}".encode(), "text/plain")
+            return
+        
         rel_path = parsed.path.lstrip("/")
         rel = Path(rel_path) if rel_path else Path("index.html")
         full = (UI_DIR / rel).resolve()
@@ -866,6 +1146,168 @@ class Handler(BaseHTTPRequestHandler):
                 501, b"writeback not implemented yet (PLAN item 3)", "text/plain"
             )
             return
+        
+        # ==================== Nets API ====================
+        
+        if parsed.path == "/api/nets":
+            model, _, _, _, _, _ = STATE.snapshot
+            if model is None:
+                self._send(404, b"no board loaded", "text/plain")
+                return
+            protected = STATE.get_protected_nets()
+            # Count existing tracks/vias per net
+            track_counts = {}
+            via_counts = {}
+            for t in model.tracks:
+                if t.net_name:
+                    track_counts[t.net_name] = track_counts.get(t.net_name, 0) + 1
+            for v in model.vias:
+                if v.net_name:
+                    via_counts[v.net_name] = via_counts.get(v.net_name, 0) + 1
+            
+            nets_data = []
+            for net_name, conns in model.nets.items():
+                footprint_refs = set()
+                for conn in conns:
+                    footprint_refs.add(conn.ref)
+                nets_data.append({
+                    "name": net_name,
+                    "pad_count": len(conns),
+                    "footprint_count": len(footprint_refs),
+                    "track_count": track_counts.get(net_name, 0),
+                    "via_count": via_counts.get(net_name, 0),
+                    "protected": net_name in protected,
+                })
+            # Sort: protected first, then by pad count descending
+            nets_data.sort(key=lambda n: (not n["protected"], -n["pad_count"]))
+            self._send(200, json.dumps({"ok": True, "nets": nets_data}).encode(), "application/json")
+            return
+        
+        if parsed.path == "/api/nets/protected":
+            if parsed.query_string and "GET" in parsed.query_string:
+                pass  # handled by query method
+            # Handle via query string method
+            pass
+        
+        if parsed.path == "/api/nets/protected":
+            protected = STATE.get_protected_nets()
+            self._send(200, json.dumps({"ok": True, "protected": sorted(protected)}).encode(), "application/json")
+            return
+        
+        # POST /api/nets/protected - toggle protected net
+        if parsed.path == "/api/nets/protected" and self.command == "POST":
+            length = int(self.headers.get("Content-Length") or 0)
+            body_data = self.rfile.read(length) if length > 0 else b"{}"
+            try:
+                req = json.loads(body_data.decode("utf-8"))
+            except json.JSONDecodeError:
+                self._send(400, b"invalid JSON", "text/plain")
+                return
+            net_name = req.get("net")
+            protected_flag = req.get("protected")
+            if not net_name:
+                self._send(400, b"net name required", "text/plain")
+                return
+            if protected_flag:
+                version = STATE.toggle_protected_net(net_name)
+            else:
+                # Explicit set
+                with STATE._lock:
+                    if protected_flag:
+                        STATE.protected_nets.add(net_name)
+                    else:
+                        STATE.protected_nets.discard(net_name)
+                    version = STATE.version + 1
+                    STATE.version = version
+            protected = STATE.get_protected_nets()
+            self._send(200, json.dumps({"ok": True, "protected": sorted(protected), "version": version}).encode(), "application/json")
+            return
+        
+        # ==================== Routing API ====================
+        
+        # GET /api/routing/params
+        if parsed.path == "/api/routing/params":
+            params = load_routing_params()
+            self._send(200, json.dumps({"ok": True, "params": params.to_dict()}).encode(), "application/json")
+            return
+        
+        # POST /api/routing/params - save routing params
+        if parsed.path == "/api/routing/params" and self.command == "POST":
+            length = int(self.headers.get("Content-Length") or 0)
+            body_data = self.rfile.read(length) if length > 0 else b"{}"
+            try:
+                req = json.loads(body_data.decode("utf-8"))
+            except json.JSONDecodeError:
+                self._send(400, b"invalid JSON", "text/plain")
+                return
+            params = RoutingParams.from_dict(req)
+            save_routing_params(params)
+            self._send(200, json.dumps({"ok": True, "params": params.to_dict()}).encode(), "application/json")
+            return
+        
+        # POST /api/routing/run - route selected nets
+        if parsed.path == "/api/routing/run":
+            model, _, _, _, _, _ = STATE.snapshot
+            if model is None:
+                self._send(404, b"no board loaded", "text/plain")
+                return
+            length = int(self.headers.get("Content-Length") or 0)
+            body_data = self.rfile.read(length) if length > 0 else b"{}"
+            try:
+                req = json.loads(body_data.decode("utf-8"))
+            except json.JSONDecodeError:
+                self._send(400, b"invalid JSON", "text/plain")
+                return
+            net_names = req.get("net_names", [])
+            if not net_names:
+                self._send(400, b"net_names required (non-empty list)", "text/plain")
+                return
+            # Load routing params from request or file
+            route_params_dict = req.get("params", {})
+            route_params = RoutingParams.from_dict(route_params_dict)
+            protected_nets = STATE.get_protected_nets()
+            
+            try:
+                result, cost_grid, routing_grid = route_nets(
+                    model=model,
+                    net_names=net_names,
+                    protected_nets=protected_nets,
+                    cost_grid=STATE.cost_grid,
+                    routing_grid=STATE.routing_grid,
+                    params=route_params,
+                    original_pcb_tree=STATE.pcb_tree,
+                )
+            except Exception as exc:
+                import traceback
+                traceback.print_exc()
+                self._send(500, f"routing failed: {exc}".encode(), "text/plain")
+                return
+            
+            # Update BoardState with new routing state
+            with STATE._lock:
+                STATE.cost_grid = cost_grid
+                STATE.routing_grid = routing_grid
+                STATE.routing_model = model
+                STATE.pcb_tree = result.pcb_tree
+                STATE.version += 1
+                version = STATE.version
+            
+            payload = {
+                "ok": True,
+                "tracks_added": result.tracks_added,
+                "vias_added": result.vias_added,
+                "nets_routed": result.nets_routed,
+                "nets_failed": result.nets_failed,
+                "drc_clean": result.drc_clean,
+                "drc_violations": result.drc_violations,
+                "version": version,
+            }
+            # Include debug info if requested
+            if route_params.debug:
+                payload["debug"] = _cost_grid_to_debug(cost_grid, routing_grid)
+            self._send(200, json.dumps(payload).encode(), "application/json")
+            return
+        
         self._send(404, b"not found", "text/plain")
 
     def log_message(self, fmt, *args):  # keep console quiet
@@ -876,6 +1318,14 @@ def main() -> None:
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8000
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     print(f"Workflow UI: http://127.0.0.1:{port}")
+
+    def shutdown(signum, frame):
+        print("\nShutting down...")
+        threading.Thread(target=server.shutdown, daemon=True).start()
+
+    signal.signal(signal.SIGINT, shutdown)
+    signal.signal(signal.SIGTERM, shutdown)
+
     server.serve_forever()
 
 

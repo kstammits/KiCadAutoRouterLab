@@ -7,6 +7,9 @@ PORT=${1:-8000}
 .venv/bin/python ui/server.py $PORT &
 SERVER_PID=$!
 
+# Trap signals and forward to child process
+trap 'kill $SERVER_PID; wait $SERVER_PID; exit 1' INT TERM
+
 # Wait a moment for server to start
 sleep 2
 
