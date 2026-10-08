@@ -84,9 +84,13 @@
   .board-viewport.selecting { cursor:crosshair; }
   .zoom-info { font-size:.65rem; color:#7d8b99; font-variant-numeric:tabular-nums; }
 
-  /* Bottom panel for Place/Route controls */
-  .bottom-panel { border-top:1px solid #2a3540; background:#161c22; height:300px; max-height:70vh; display:flex; flex-direction:column; overflow:hidden; flex-shrink:0; }
-  .bottom-panel.collapsed { height: 32px; }
+  /* Right side panel for Place/Route controls (pull-out drawer) */
+  .side-panel { border-left:1px solid #2a3540; background:#161c22; width:380px; min-width:300px; max-width:600px; display:flex; flex-direction:column; overflow:hidden; flex-shrink:0; }
+  .side-panel.collapsed { width:40px; min-width:40px; }
+  .side-panel.collapsed .panel-tabs .tab-btn,
+  .side-panel.collapsed .panel-content { display:none; }
+  .side-panel .params { grid-template-columns:1fr; }
+  .side-panel .bar { display:flex; flex-wrap:wrap; gap:.4rem; align-items:center; }
   .panel-tabs { display:flex; gap:.25rem; align-items:center; padding:.3rem .5rem; border-bottom:1px solid #2a3540; background:#1a1f25; }
   .panel-toggle { margin-left:auto; font-size:.6rem; padding:.1rem .4rem; background:#1a222a; border-color:#3a4a5a; color:#9fb0c0; }
   .panel-toggle:hover:not(:disabled) { border-color:#7ee0a0; color:#d7e0e9; }
@@ -295,15 +299,15 @@
       </div>
 </div>
     
-    <!-- Vertical resizer between board and bottom panel -->
-    <div class="resizer resizer-h" id="panel-resizer" aria-label="Resize bottom panel"></div>
-    
-    <!-- Bottom panel for Place/Route controls (collapsible) -->
-    <div class="bottom-panel" id="bottom-panel">
+  </main>
+  <div class="resizer" id="panel-resizer" aria-label="Resize side panel"></div>
+
+  <!-- Right side panel for Place/Route controls (pull-out drawer) -->
+  <aside class="side-panel" id="side-panel">
       <div class="panel-tabs">
         <button id="place-tab-btn" class="tab-btn active" title="Placement panel">Place</button>
         <button id="route-tab-btn" class="tab-btn" title="Routing panel">Route</button>
-        <button id="bottom-panel-toggle" class="panel-toggle" title="Collapse panel">▲</button>
+        <button id="side-panel-toggle" class="panel-toggle" title="Collapse panel">◀</button>
       </div>
       <div class="panel-content" id="panel-content">
         <!-- Placement panel -->
@@ -353,8 +357,7 @@
           </div>
         </div>
       </div>
-    </div>
-  </main>
+    </aside>
 </div>
 
 <script>
@@ -381,14 +384,20 @@ pipelineToggleBtn.addEventListener("click", () => {
   pipelineToggleBtn.textContent = pipelineCollapsed ? "Pipeline ▶" : "Pipeline ▼";
 });
 
-// Bottom panel collapse/expand
-const bottomPanel = document.getElementById("bottom-panel");
-const bottomPanelToggle = document.getElementById("bottom-panel-toggle");
-let bottomPanelCollapsed = false;
-bottomPanelToggle.addEventListener("click", () => {
-  bottomPanelCollapsed = !bottomPanelCollapsed;
-  bottomPanel.classList.toggle("collapsed", bottomPanelCollapsed);
-  bottomPanelToggle.textContent = bottomPanelCollapsed ? "▼" : "▲";
+// Side panel collapse/expand
+const sidePanel = document.getElementById("side-panel");
+const sidePanelToggle = document.getElementById("side-panel-toggle");
+let sidePanelCollapsed = false;
+sidePanelToggle.addEventListener("click", () => {
+  sidePanelCollapsed = !sidePanelCollapsed;
+  if (sidePanelCollapsed) {
+    sidePanel.dataset.width = sidePanel.style.width;
+    sidePanel.style.width = "";
+  } else if (sidePanel.dataset.width) {
+    sidePanel.style.width = sidePanel.dataset.width;
+  }
+  sidePanel.classList.toggle("collapsed", sidePanelCollapsed);
+  sidePanelToggle.textContent = sidePanelCollapsed ? "▶" : "◀";
 });
 
 // Net legend collapse/expand
@@ -785,7 +794,7 @@ async function poll() {
   const dropZone = document.getElementById("drop-zone");
   if (st.loaded) {
     boardEl.hidden = false;
-    bottomPanel.hidden = false;
+    sidePanel.hidden = false;
     if (dropZone) dropZone.hidden = true;
     nameEl.textContent = `${st.name} — v${st.version}`;
     schChip.hidden = st.has_sch;
@@ -797,7 +806,7 @@ async function poll() {
       await loadSelectionState();
     }
   } else {
-    bottomPanel.hidden = true;
+    sidePanel.hidden = true;
     if (dropZone) dropZone.hidden = false;
     document.getElementById("download-btn").hidden = true;
     document.getElementById("reset-btn").hidden = true;
@@ -1598,7 +1607,8 @@ document.getElementById("reset-btn").addEventListener("click", async () => {
     const r = await res.json();
     diagEl.textContent = `board reset to original (v${r.version})`;
     document.getElementById("accept-btn").disabled = true;
-    document.getElementById("run-btn").textContent = "Step placement";
+    const runBtn = document.getElementById("run-btn");
+    if (runBtn) runBtn.textContent = "Step placement";
     document.getElementById("undo-btn").disabled = true;
   } catch (err) {
     diagEl.textContent = `reset failed: ${err.message}`;
@@ -2034,23 +2044,28 @@ if (document.readyState === "loading") {
   initResizer();
 }
 
-// Bottom panel vertical resizer
+// Side panel horizontal resizer
 const panelResizer = document.getElementById("panel-resizer");
-let panelStartY, panelStartHeight;
+let panelStartX, panelStartWidth;
+
+function getSidePanelWidth() {
+  const computed = getComputedStyle(sidePanel).width;
+  const px = parseInt(computed, 10);
+  return isNaN(px) || px === 0 ? sidePanel.offsetWidth : px;
+}
 
 function initPanelResizer() {
   // Restore from localStorage
-  const savedHeight = localStorage.getItem("bottom-panel-height");
-  if (savedHeight) {
-    bottomPanel.style.height = savedHeight + "px";
+  const savedWidth = localStorage.getItem("side-panel-width");
+  if (savedWidth) {
+    sidePanel.style.width = savedWidth + "px";
   }
 
   panelResizer.addEventListener("mousedown", e => {
     e.preventDefault();
-    panelStartY = e.clientY;
-    // bottomPanel height is in px, get computed value
-    const computed = getComputedStyle(bottomPanel).height;
-    panelStartHeight = parseInt(computed, 10);
+    if (sidePanelCollapsed) sidePanelToggle.click();
+    panelStartX = e.clientX;
+    panelStartWidth = getSidePanelWidth();
     panelResizer.classList.add("dragging");
     document.addEventListener("mousemove", doPanelDrag);
     document.addEventListener("mouseup", stopPanelDrag);
@@ -2058,17 +2073,17 @@ function initPanelResizer() {
 }
 
 function doPanelDrag(e) {
-  // Drag up = increase panel height (negative deltaY since Y increases downward)
-  const height = panelStartHeight - (e.clientY - panelStartY);
-  const clamped = Math.max(32, Math.min(window.innerHeight * 0.7, height));
-  bottomPanel.style.height = clamped + "px";
+  // Drag left = widen panel (X increases rightward)
+  const width = panelStartWidth - (e.clientX - panelStartX);
+  const clamped = Math.max(300, Math.min(600, width));
+  sidePanel.style.width = clamped + "px";
 }
 
 function stopPanelDrag() {
   panelResizer.classList.remove("dragging");
   document.removeEventListener("mousemove", doPanelDrag);
   document.removeEventListener("mouseup", stopPanelDrag);
-  localStorage.setItem("bottom-panel-height", bottomPanel.style.height);
+  localStorage.setItem("side-panel-width", parseInt(sidePanel.style.width, 10));
 }
 
 // Initialize panel resizer

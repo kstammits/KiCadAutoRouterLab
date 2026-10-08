@@ -17,8 +17,8 @@ from __future__ import annotations
 
 import math
 import uuid as uuid_module
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass, field, replace
+from typing import Dict, List, Optional, Set, Tuple
 
 from .sexpr import SExpr, get_generator_version
 
@@ -638,8 +638,14 @@ def edge_arcs(tree: SExpr) -> Tuple[EdgeCutArc, ...]:
 
 
 def _point_key(p: Point) -> Tuple[float, float]:
-    """Rounded point key for graph adjacency (1e-6 mm tolerance)."""
-    return (round(p.x_mm, 6), round(p.y_mm, 6))
+    """Rounded point key for graph adjacency (1e-3 mm tolerance).
+
+    1e-3mm (1 micron) tolerance handles KiCad's floating-point discrepancies
+    between gr_line and gr_arc endpoints while staying well below PCB
+    manufacturing tolerances.
+    """
+    tolerance = 1e-3
+    return (round(p.x_mm / tolerance) * tolerance, round(p.y_mm / tolerance) * tolerance)
 
 
 def _approximate_arc_as_segments(arc: EdgeCutArc, num_segments: int = 8) -> List[Segment]:
@@ -881,6 +887,12 @@ def _to_local(
     return Point(lx, ly)
 
 
+def _to_local_point(p: Point, fp: Footprint) -> Tuple[float, float]:
+    """Board point -> footprint-local (x, y), single _to_local() call."""
+    local = _to_local(p.x_mm, p.y_mm, fp.x_mm, fp.y_mm, fp.angle_deg, fp.layer)
+    return (local.x_mm, local.y_mm)
+
+
 def apply_deltas(
     model: BoardModel, deltas: Dict[str, Tuple[float, float, float]]
 ) -> BoardModel:
@@ -903,86 +915,39 @@ def apply_deltas(
         new_y = fp.y_mm + dy
         new_angle = fp.angle_deg + da
 
-        # Recompute pad positions from new footprint pose
+        new_pose = replace(fp, x_mm=new_x, y_mm=new_y, angle_deg=new_angle)
+
+        # Recompute pad positions from new footprint pose, preserving
+        # all other pad properties (pad_type, drill, layers, ...).
         new_pads = tuple(
-            Pad(
-                number=pad.number,
-                net_name=pad.net_name,
+            replace(
+                pad,
                 position=transform_local(
-                    Footprint(
-                        ref=fp.ref,
-                        footprint_id=fp.footprint_id,
-                        layer=fp.layer,
-                        x_mm=new_x,
-                        y_mm=new_y,
-                        angle_deg=new_angle,
-                        pads=(),
-                        courtyard=(),
-                        locked=fp.locked,
-                        uuid=fp.uuid,
-                    ),
+                    new_pose,
                     # Convert board pad position to local coordinates using old pose
-                    _to_local(pad.position.x_mm, pad.position.y_mm, fp.x_mm, fp.y_mm, fp.angle_deg, fp.layer).x_mm,
-                    _to_local(pad.position.x_mm, pad.position.y_mm, fp.x_mm, fp.y_mm, fp.angle_deg, fp.layer).y_mm,
+                    *_to_local_point(pad.position, fp),
                 ),
-                size_mm=pad.size_mm,
-                shape=pad.shape,
-                angle_deg=pad.angle_deg,
             )
             for pad in fp.pads
         )
 
-        # Recompute courtyard from new footprint pose
+        # Recompute courtyard from new footprint pose.
         new_courtyard = tuple(
             (
-                transform_local(
-                    Footprint(
-                        ref=fp.ref,
-                        footprint_id=fp.footprint_id,
-                        layer=fp.layer,
-                        x_mm=new_x,
-                        y_mm=new_y,
-                        angle_deg=new_angle,
-                        pads=(),
-                        courtyard=(),
-                        locked=fp.locked,
-                        uuid=fp.uuid,
-                    ),
-                    _to_local(a.x_mm, a.y_mm, fp.x_mm, fp.y_mm, fp.angle_deg, fp.layer).x_mm,
-                    _to_local(a.x_mm, a.y_mm, fp.x_mm, fp.y_mm, fp.angle_deg, fp.layer).y_mm,
-                ),
-                transform_local(
-                    Footprint(
-                        ref=fp.ref,
-                        footprint_id=fp.footprint_id,
-                        layer=fp.layer,
-                        x_mm=new_x,
-                        y_mm=new_y,
-                        angle_deg=new_angle,
-                        pads=(),
-                        courtyard=(),
-                        locked=fp.locked,
-                        uuid=fp.uuid,
-                    ),
-                    _to_local(b.x_mm, b.y_mm, fp.x_mm, fp.y_mm, fp.angle_deg, fp.layer).x_mm,
-                    _to_local(b.x_mm, b.y_mm, fp.x_mm, fp.y_mm, fp.angle_deg, fp.layer).y_mm,
-                ),
+                transform_local(new_pose, *_to_local_point(a, fp)),
+                transform_local(new_pose, *_to_local_point(b, fp)),
             )
             for a, b in fp.courtyard
         )
 
         updated_footprints.append(
-            Footprint(
-                ref=fp.ref,
-                footprint_id=fp.footprint_id,
-                layer=fp.layer,
+            replace(
+                fp,
                 x_mm=new_x,
                 y_mm=new_y,
                 angle_deg=new_angle,
                 pads=new_pads,
                 courtyard=new_courtyard,
-                locked=fp.locked,
-                uuid=fp.uuid,
             )
         )
 
@@ -991,17 +956,7 @@ def apply_deltas(
         if fp.ref and fp.ref not in by_ref:
             by_ref[fp.ref] = fp
 
-    return BoardModel(
-        footprints=tuple(updated_footprints),
-        keepout_zones=model.keepout_zones,
-        nets=model.nets,
-        by_ref=by_ref,
-        tracks=model.tracks,
-        vias=model.vias,
-        zones=model.zones,
-        edge_cuts=model.edge_cuts,
-        edge_arcs=model.edge_arcs,
-    )
+    return replace(model, footprints=tuple(updated_footprints), by_ref=by_ref)
 
 
 def commit_placement(
@@ -1048,23 +1003,13 @@ def commit_placement(
     kept_tracks = tuple(t for t in model.tracks if keep_copper(t.net_name))
     kept_vias = tuple(v for v in model.vias if keep_copper(v.net_name))
 
-    # Apply footprint movement
+    # Apply footprint movement (preserves all board metadata via replace
+    # inside apply_deltas), then prune copper.
     moved_model = apply_deltas(model, deltas)
 
-    # Return model with pruned copper
-    return BoardModel(
-        footprints=moved_model.footprints,
-        keepout_zones=moved_model.keepout_zones,
-        nets=moved_model.nets,
-        by_ref=moved_model.by_ref,
-        tracks=kept_tracks,
-        vias=kept_vias,
-        zones=moved_model.zones,
-        edge_cuts=moved_model.edge_cuts,
-        edge_arcs=moved_model.edge_arcs,
-        board_regions=moved_model.board_regions,
-        footprint_region=moved_model.footprint_region,
-    )
+    # Return model with pruned copper, preserving everything else
+    # (ghost_footprints, version, regions, ...).
+    return replace(moved_model, tracks=kept_tracks, vias=kept_vias)
 
 
 def _parse_version(version_str: Optional[str]) -> tuple[str, Optional[str]]:

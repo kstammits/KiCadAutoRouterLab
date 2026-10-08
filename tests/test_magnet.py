@@ -25,6 +25,8 @@ from kicad_autorouter.board_model import (
     Footprint,
     Pad,
     Point,
+    apply_deltas,
+    commit_placement,
 )
 from kicad_autorouter.placement import PlacementParams, run_placement
 from kicad_autorouter.svg_render import render_board_svg
@@ -364,6 +366,122 @@ class TestNetMagnet:
         print(f"SVG: {svg_path}")
 
         assert svg_path.exists() and svg_path.stat().st_size > 1000
+
+
+class TestMovePreservation:
+    """A moved part must keep its pad/footprint/board properties.
+
+    Regression for apply_deltas()/commit_placement() rebuilding Pad /
+    Footprint / BoardModel with a subset of fields (dropping pad_type,
+    drill_mm, layers, ghost, ghost_attractions, version, regions, ...).
+    """
+
+    def _enriched_model(self, magnet_model: BoardModel) -> BoardModel:
+        """Return magnet_model with R1 enriched as THT + ghost attractions."""
+        orig = magnet_model.by_ref["R1"]
+        tht_pads = tuple(
+            replace(
+                p,
+                pad_type="thru_hole",
+                drill_mm=0.8,
+                layers=("F.Cu", "B.Cu", "*.Cu"),
+            )
+            for p in orig.pads
+        )
+        enriched = replace(
+            orig,
+            pads=tht_pads,
+            ghost_attractions=(("R2", 25.0, 0.1),),
+        )
+        footprints = tuple(
+            enriched if fp.uuid == orig.uuid else fp
+            for fp in magnet_model.footprints
+        )
+        by_ref = dict(magnet_model.by_ref)
+        by_ref["R1"] = enriched
+        ghost = _create_resistor("GHOST1", "ghost-uuid-0001", "NET_A", "NET_B", 10.0, 10.0)
+        ghost = replace(ghost, ghost=True)
+        return replace(
+            magnet_model,
+            footprints=footprints,
+            by_ref=by_ref,
+            ghost_footprints=(ghost,),
+            version="10.0",
+        )
+
+    def test_apply_deltas_preserves_moved_part_properties(
+        self, magnet_model: BoardModel
+    ):
+        model = self._enriched_model(magnet_model)
+        before = model.by_ref["R1"]
+        assert before.pads[0].is_through_hole
+
+        moved = apply_deltas(model, {before.uuid: (5.0, -3.0, 10.0)})
+        after = moved.by_ref["R1"]
+
+        # Pose actually changed.
+        assert (after.x_mm, after.y_mm, after.angle_deg) == pytest.approx(
+            (before.x_mm + 5.0, before.y_mm - 3.0, before.angle_deg + 10.0)
+        )
+        # Pad identity preserved (this is the serious THT free-via bug).
+        assert len(after.pads) == len(before.pads)
+        for pad_before, pad_after in zip(before.pads, after.pads):
+            assert pad_after.number == pad_before.number
+            assert pad_after.net_name == pad_before.net_name
+            assert pad_after.pad_type == pad_before.pad_type
+            assert pad_after.drill_mm == pytest.approx(pad_before.drill_mm)
+            assert tuple(pad_after.layers) == tuple(pad_before.layers)
+            assert pad_after.size_mm == pad_before.size_mm
+            assert pad_after.shape == pad_before.shape
+            assert pad_after.angle_deg == pytest.approx(pad_before.angle_deg)
+        assert after.pads[0].is_through_hole
+        # Footprint identity preserved.
+        assert after.ref == before.ref
+        assert after.footprint_id == before.footprint_id
+        assert after.layer == before.layer
+        assert after.locked == before.locked
+        assert after.uuid == before.uuid
+        assert after.ghost == before.ghost
+        assert tuple(after.ghost_attractions) == tuple(before.ghost_attractions)
+        # Board metadata preserved.
+        assert moved.version == model.version
+        assert moved.version_warning == model.version_warning
+        assert moved.board_regions == model.board_regions
+        assert moved.footprint_region == model.footprint_region
+        assert moved.ghost_footprints == model.ghost_footprints
+        assert moved.keepout_zones == model.keepout_zones
+        assert moved.nets == model.nets
+
+    def test_commit_placement_preserves_properties(
+        self, magnet_model: BoardModel
+    ):
+        model = self._enriched_model(magnet_model)
+        before = model.by_ref["R1"]
+
+        moved = commit_placement(
+            model, {before.uuid: (2.0, 1.0, 0.0)}, protected_nets=set()
+        )
+        after = moved.by_ref["R1"]
+
+        assert after.pads[0].pad_type == "thru_hole"
+        assert after.pads[0].drill_mm == pytest.approx(0.8)
+        assert tuple(after.pads[0].layers) == ("F.Cu", "B.Cu", "*.Cu")
+        assert tuple(after.ghost_attractions) == (("R2", 25.0, 0.1),)
+        assert moved.version == model.version
+        assert moved.ghost_footprints == model.ghost_footprints
+        assert moved.board_regions == model.board_regions
+        assert moved.footprint_region == model.footprint_region
+
+    def test_locked_part_ignores_delta(self, magnet_model: BoardModel):
+        locked = next(fp for fp in magnet_model.footprints if fp.locked)
+        moved = apply_deltas(model=magnet_model, deltas={locked.uuid: (5.0, 5.0, 45.0)})
+        after = moved.by_ref.get(locked.ref, None)
+        # First-wins by_ref may point at another fp with same ref; fall back to uuid lookup.
+        if after is None or after.uuid != locked.uuid:
+            after = next(fp for fp in moved.footprints if fp.uuid == locked.uuid)
+        assert (after.x_mm, after.y_mm, after.angle_deg) == pytest.approx(
+            (locked.x_mm, locked.y_mm, locked.angle_deg)
+        )
 
 
 if __name__ == "__main__":

@@ -300,13 +300,13 @@ class TestPerRegionSimulation:
         prop = run_placement(dccf_model, p)
         assert prop.iterations >= 0
 
-    def test_tube111_two_regions(self):
-        """tube111 with 2 regions runs without error."""
+    def test_tube111_three_regions(self):
+        """tube111 with 3 regions runs without error."""
         tube111_model = board_model(parse_file(TUBE111_PCB))
         p = PlacementParams(stub=False, max_iterations=10)
         prop = run_placement(tube111_model, p)
 
-        assert len(tube111_model.board_regions) == 2
+        assert len(tube111_model.board_regions) == 3
         assert prop.iterations >= 0
 
 

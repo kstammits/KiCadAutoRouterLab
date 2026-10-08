@@ -240,20 +240,22 @@ class TestBoardRegions:
         assert any(xmax > 150 for _, xmax in x_ranges)  # right region
 
     def test_extract_board_polygons_tube111(self):
-        """tube111 has two disconnected board outlines -> 2 regions."""
+        """tube111 has three disconnected board outlines -> 3 regions."""
         tube111_tree = parse_file(TUBE111_PCB)
         edge_cuts_list = edge_cuts(tube111_tree)
         edge_arcs_list = edge_arcs(tube111_tree)
         polygons = _extract_board_polygons(edge_cuts_list, edge_arcs_list)
 
-        assert len(polygons) == 2
+        assert len(polygons) == 3
 
-        # Region 0: rectangular (34.55-64.55, 27.25-155.75)
-        # Region 1: complex with rounded corners (75.55-143.55, 39.25-143.75)
+        # Region 0: left rectangular (34.55-64.55, 27.25-155.75)
+        # Region 1: middle complex with rounded corners (75.55-103.55, 39.25-143.75)
+        # Region 2: right complex with rounded corners (115.55-143.55, 39.25-129.65)
         bboxes = [_polygon_bbox(poly) for poly in polygons]
         x_ranges = [(bbox[0], bbox[1]) for bbox in bboxes]
         assert any(xmin < 70 for xmin, _ in x_ranges)  # left region
-        assert any(xmax > 70 for _, xmax in x_ranges)  # right region
+        assert any(70 < xmin < 110 for xmin, _ in x_ranges)  # middle region
+        assert any(xmin > 110 for xmin, _ in x_ranges)  # right region
 
     def test_assign_regions(self, dccf_tree):
         """Footprints are assigned to correct board region by centroid."""
@@ -299,11 +301,11 @@ class TestBoardRegions:
                 assert model.footprint_region[fp.uuid] in (0, 1, -1)
 
     def test_tube111_board_model_has_regions(self):
-        """tube111 BoardModel has 2 regions with footprints assigned."""
+        """tube111 BoardModel has 3 regions with footprints assigned."""
         tube111_tree = parse_file(TUBE111_PCB)
         model = board_model(tube111_tree)
 
-        assert len(model.board_regions) == 2
+        assert len(model.board_regions) == 3
         # Some footprints may be unassigned (region -1) due to complex polygon
         assigned = sum(1 for v in model.footprint_region.values() if v >= 0)
         assert assigned > 0

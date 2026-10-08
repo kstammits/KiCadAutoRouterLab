@@ -1,19 +1,21 @@
 # KiCad AutoRouter - TODO
 
-Can we move the Route/Place dialogs, which are currently on the bottom of the page, put them on the right side as a pull out panel? I have a wide-screen laptop and not much vertical space.
-Also let's get a version number visible somewhere, and bump it. we should be past 0.2 so far.
+- [x] Move the Route/Place dialogs from the bottom to the right side as a pull-out panel (done: `ui/index.html` right-side `#side-panel` drawer, 2026-10-08).
+- [x] Version number visible + bumped past 0.2 (done: top-bar `#app-version` chip via `/api/version`, now v0.3.0; `pyproject.toml` + `__init__.py` synced, 2026-10-08).
 
-## ⚠️ Session State Notes (2026-10-06, verified)
+## ⚠️ Session State Notes (2026-10-08, verified)
 
-**Working tree batch** (not yet committed; branch is 2 commits ahead of origin):
+**Working tree batch** (not yet committed; branch is 4 commits ahead of origin):
 per-region placement rewrite + shapely courtyard collision (`placement.py`), routing infra R1–R4/R7, new `src/kicad_autorouter/drc.py`, track rip-up (`io.rip_up_nets`, `board_model.commit_placement`) + `tests/test_track_ripup.py`, UI overhaul phases 1–4, pyproject.toml editable install, shapely in requirements.txt, start_server.sh browser-open.
+Plus this session: move-preservation fix (`apply_deltas`/`commit_placement` via `replace`) + `TestMovePreservation`, tube111 3-region asserts, pipeline stages → implemented, right-side `#side-panel` drawer, version 0.3.0 sync, `run-btn` null guard.
 
-**Test status:** 150 passed, 3 skipped — all green.
+**Test status:** 239 passed, 12 skipped — all green (full suite 2026-10-08; `test_server.py` 14 passed after UI changes).
 (Fixed 2026-10-05: `accept_proposal` unpacked `identify_power_nets` as 2 values and used list `|` union; now unpacks 3 and converts to sets. `ui/server.py` import is fine — `UI_DIR`/`REPO_ROOT` are defined at module level.)
+(Fixed 2026-10-08: `apply_deltas` dropped `pad_type`/`drill_mm`/`layers`/`ghost`/`version`/regions on move; now uses `replace` throughout. `commit_placement` preserves board metadata via `replace(moved_model, tracks=…, vias=…)`.)
 
-### Half-wired features (UI controls exist, backend missing)
-1. **DRC overlay:** UI has DRC toggle + `STATE.drc_violations`, but NO endpoint ever calls `set_drc_violations()` — no `/api/drc` handler exists. Overlay can never show anything. Backend should use existing `drc.run_drc_on_tree()`.
-2. **Layer toggles (F.Cu/B.Cu):** server reads `fcu`/`bcu` query params (~lines 322–323) but never passes them to `render_board_svg`, which has no such parameters. Toggles do nothing.
+### Half-wired features (UI controls exist, backend incomplete)
+1. **DRC overlay (needs UI trigger):** backend is wired (`POST /api/drc` runs kicad-cli, `GET /api/drc/status`, `set_drc_violations()`, svg `drc=` renders the cache) — but the UI never POSTs `/api/drc`, so the cache stays empty and the toggle shows nothing. Needs a "Run DRC" button or auto-run on toggle.
+2. **Layer toggles (F.Cu/B.Cu):** checkboxes exist but have no listeners, `boardSrc()` doesn't send `fcu`/`bcu`, server parses them (`server.py` ~lines 640–641) yet never passes them to `render_board_svg`, which has no such parameters. Toggles do nothing.
 
 ## In Progress / Next Session 📋
 
@@ -51,11 +53,11 @@ per-region placement rewrite + shapely courtyard collision (`placement.py`), rou
 - [ ] Benchmark rip_up_nets on large boards (5000+ segments)
 - [ ] Profile commit_placement on 200+ footprints
 
-### Pad Model Enhancement
-- [ ] Add `pad_type`, `drill_mm`, `layers` fields to `Pad` dataclass
-- [ ] Parse `thru_hole`/`smd` from S-expression in `_pad()`
-- [ ] Add `is_through_hole` property (pad_type=="thru_hole" + drill>0 + *.Cu in layers)
-- [ ] Update `obstacles.py` to use `pad.is_through_hole` instead of shape check
+### Pad Model Enhancement ✅ (done 2026-10-08 — verified in tree, guarded by `TestMovePreservation`)
+- [x] Add `pad_type`, `drill_mm`, `layers` fields to `Pad` dataclass
+- [x] Parse `thru_hole`/`smd` from S-expression in `_pad()`
+- [x] Add `is_through_hole` property (pad_type=="thru_hole" + drill>0 + *.Cu in layers)
+- [x] Update `obstacles.py` to use `pad.is_through_hole` instead of shape check (`obstacles.py:101`)
 
 ---
 
@@ -75,9 +77,9 @@ per-region placement rewrite + shapely courtyard collision (`placement.py`), rou
 - [ ] Layer toggle (F.Cu / B.Cu / both)
 
 ### Routing Integration
-- [ ] "Route" button in UI (trigger routing pipeline)
-- [ ] Show routing progress
-- [ ] DRC violations overlay
+- [x] "Route" button in UI (done: Route Selected / Route All in routing panel)
+- [x] Show routing progress (done: loading spinner on buttons)
+- [ ] DRC violations overlay (backend wired, UI trigger missing — see Half-wired)
 - [ ] Writeback/download with routed tracks
 
 ### Performance
@@ -99,14 +101,18 @@ per-region placement rewrite + shapely courtyard collision (`placement.py`), rou
 ```
 
 ### Key Files Modified
-- `ui/index.html` - Complete UI overhaul
+- `ui/index.html` - Complete UI overhaul; right-side `#side-panel` drawer (2026-10-08)
 - `ui/server.py` - New endpoints, accept logic, rip-up integration
 - `src/kicad_autorouter/io.py` - `rip_up_nets()` function
-- `src/kicad_autorouter/board_model.py` - `commit_placement()` function
+- `src/kicad_autorouter/board_model.py` - `commit_placement()` function; move-preservation fix via `replace` (2026-10-08)
 - `src/kicad_autorouter/svg_render.py` - Movable footprint styling
 - `src/kicad_autorouter/sexpr.py` - Version extraction helpers
 - `src/kicad_autorouter/placement.py` - Vectorized force-spring simulation
 - `src/kicad_autorouter/routing/` - Grid, obstacles, router, scheduler, output, pipeline
+- `src/kicad_autorouter/pipeline.py` - Stage statuses corrected to implemented (2026-10-08)
+- `tests/test_magnet.py` - `TestMovePreservation` regression (2026-10-08)
+- `tests/test_board_model.py`, `tests/test_placement.py` - tube111 3-region asserts (2026-10-08)
+- `pyproject.toml`, `src/kicad_autorouter/__init__.py` - version 0.3.0 sync (2026-10-08)
 
 ### Protected Nets Logic
 Auto-detected via `identify_power_nets()` + hardcoded fallbacks:
