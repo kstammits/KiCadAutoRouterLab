@@ -7,7 +7,6 @@
   :root { color-scheme: dark; }
   body { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background:#101418; color:#d7e0e9; margin:0; padding:0; height:100vh; display:flex; flex-direction:column; }
   h1 { font-size:1.1rem; margin:0; padding:.5rem 1rem; background:#161c22; border-bottom:1px solid #2a3540; }
-  .sub { color:#7d8b99; margin:0; padding:.25rem 1rem .5rem; font-size:.8rem; }
   
   /* Main layout */
   .app-layout { display:flex; flex:1; overflow:hidden; }
@@ -34,6 +33,7 @@
   .fp-table tr.fp-selected-row td { background:#1a2e1a; }
   .fp-table tr.fp-locked-row td { opacity:.6; }
   .fp-table tr.fp-pinned-row td { opacity:.8; }
+  .fp-table tr.fp-ghost-row td { opacity:.5; background:#2a1a2a; }
   .fp-col-select { width:28px; text-align:center; }
   .fp-col-ref { font-family:monospace; font-weight:500; color:#d7e0e9; max-width:90px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .fp-col-footprint { color:#9fb0c0; max-width:130px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -48,6 +48,7 @@
   .state-selected { background:#1a3d1a; color:#7ee0a0; border:1px solid #2a5a2a; }
   .state-movable { background:#1a2a1a; color:#5aaa5a; border:1px solid #2a4a2a; }
   .state-fixed { background:#2a2a2a; color:#5b6b7a; border:1px solid #3a3a3a; }
+  .state-ghost { background:#3d1a3d; color:#a85cf5; border:1px solid #5a2a5a; }
   
   .sidebar-footer { padding:.5rem .75rem; border-top:1px solid #2a3540; display:flex; gap:.4rem; flex-wrap:wrap; }
   .sidebar-footer button { flex:1; min-width:0; padding:.3rem .5rem; font-size:.65rem; }
@@ -55,7 +56,11 @@
   /* Resizer */
   .resizer { width:4px; background:#2a3540; cursor:col-resize; flex-shrink:0; }
   .resizer:hover, .resizer.dragging { background:#7ee0a0; }
+  .resizer-h { height:4px; cursor:row-resize; }
+  .resizer-h:hover, .resizer-h.dragging { background:#7ee0a0; }
   
+  [hidden] { display: none !important; }
+
   /* Main content area */
   .main-content { flex:1; display:flex; flex-direction:column; overflow:hidden; min-width:0; }
   .top-bar { background:#161c22; border-bottom:1px solid #2a3540; padding:.5rem .75rem; display:flex; gap:.6rem; align-items:center; flex-wrap:wrap; font-size:.8rem; color:#7d8b99; }
@@ -78,11 +83,54 @@
   .board-viewport.panning { cursor:grabbing; }
   .board-viewport.selecting { cursor:crosshair; }
   .zoom-info { font-size:.65rem; color:#7d8b99; font-variant-numeric:tabular-nums; }
+
+  /* Bottom panel for Place/Route controls */
+  .bottom-panel { border-top:1px solid #2a3540; background:#161c22; height:300px; max-height:70vh; display:flex; flex-direction:column; overflow:hidden; flex-shrink:0; }
+  .bottom-panel.collapsed { height: 32px; }
+  .panel-tabs { display:flex; gap:.25rem; align-items:center; padding:.3rem .5rem; border-bottom:1px solid #2a3540; background:#1a1f25; }
+  .panel-toggle { margin-left:auto; font-size:.6rem; padding:.1rem .4rem; background:#1a222a; border-color:#3a4a5a; color:#9fb0c0; }
+  .panel-toggle:hover:not(:disabled) { border-color:#7ee0a0; color:#d7e0e9; }
+  .panel-content { flex:1; overflow:auto; padding:.5rem; }
+  .panel-content > div[hidden] { display: none; }
+  .panel-content > div:not([hidden]) { display: block; }
+
+  /* Drop zone inside board viewport */
+  .board-viewport .drop { position:absolute; inset:0; margin:0; border:2px dashed #3a4a5a; border-radius:8px; background:rgba(16,20,24,0.95); display:flex; flex-direction:column; align-items:center; justify-content:center; z-index:10; transition: border-color 0.2s, background 0.2s; }
+  .board-viewport .drop:hover, .board-viewport .drop.drag-over { border-color: #7ee0a0; background:rgba(16,20,24,0.98); }
+  .board-viewport .drop p { margin-top:.5rem; }
+  .board-viewport .drop code { background:#161c22; padding:.1rem .4rem; border-radius:3px; border:1px solid #3a4a5a; }
   button { background:#1f2833; border:1px solid #3a4a5a; color:#d7e0e9; border-radius:5px; padding:.25rem .6rem; cursor:pointer; font-family:inherit; font-size:.7rem; }
   button:hover:not(:disabled) { border-color:#7ee0a0; }
   button:disabled { opacity:.45; cursor:default; }
   button.primary { background:#1a3a1a; border-color:#2e6b45; color:#7ee0a0; }
   button.primary:hover:not(:disabled) { background:#225522; }
+  
+  /* Loading spinner on button */
+  button.loading {
+    position: relative;
+    color: transparent !important;
+    pointer-events: none;
+  }
+  button.loading::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 14px;
+    height: 14px;
+    margin: -7px 0 0 -7px;
+    border: 2px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    opacity: 0.8;
+  }
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+  .tab-btn { background:#1a222a; border-color:#3a4a5a; color:#9fb0c0; padding:.2rem .5rem; font-size:.65rem; }
+  .tab-btn:hover:not(:disabled) { border-color:#7ee0a0; color:#d7e0e9; }
+  .tab-btn.active { background:#1a3a1a; border-color:#2e6b45; color:#7ee0a0; }
   .chk { display:flex; gap:.3rem; align-items:center; font-size:.7rem; color:#9fb0c0; }
   #diag { margin-left:auto; color:#7d8b99; font-size:.65rem; min-width:200px; }
   
@@ -98,8 +146,12 @@
   .sel-count { margin-left:auto; font-variant-numeric:tabular-nums; }
   
   /* Net legend */
-  .net-legend { display:flex; gap:.4rem; flex-wrap:wrap; padding:.35rem .7rem; border-top:1px solid #2a3540; font-size:.6rem; color:#9fb0c0; background:#161c22; align-items:center; }
-  .net-legend-item { display:flex; align-items:center; gap:.2rem; padding:.1rem .4rem; border-radius:3px; cursor:pointer; border:1px solid transparent; }
+  .net-legend { display:flex; gap:.4rem; flex-wrap:wrap; align-content:flex-start; max-height:120px; overflow-y:auto; padding:.35rem .7rem; border-top:1px solid #2a3540; font-size:.6rem; color:#9fb0c0; background:#161c22; align-items:center; }
+  .net-legend.collapsed { max-height: 0; padding: 0; border-top: none; overflow: hidden; }
+  .net-legend-header { display:flex; gap:.4rem; align-items:center; padding:.35rem .7rem; border-top:1px solid #2a3540; font-size:.6rem; color:#9fb0c0; background:#161c22; }
+  .net-legend-toggle { background:#1a222a; border:1px solid #3a4a5a; color:#9fb0c0; padding:.1rem .4rem; font-size:.6rem; border-radius:3px; cursor:pointer; }
+  .net-legend-toggle:hover { border-color:#7ee0a0; color:#d7e0e9; }
+  .net-legend-item { display:flex; align-items:center; gap:.2rem; padding:.1rem .4rem; border-radius:3px; cursor:pointer; border:1px solid transparent; white-space:nowrap; }
   .net-legend-item:hover { background:#1a222a; border-color:#3a4a5a; }
   .net-legend-swatch { width:10px; height:10px; border-radius:2px; flex-shrink:0; }
   .net-legend-name { max-width:100px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -132,7 +184,6 @@
 <body>
 <header>
   <h1>KiCad AutoRouter — Workflow</h1>
-  <div class="sub">Reads <code>.kicad_pcb</code> files. Select footprints in the list or on the board, then step placement.</div>
 </header>
 
 <div class="app-layout">
@@ -163,6 +214,7 @@
           <option value="locked">Locked (KiCad)</option>
           <option value="pinned">Pinned (User)</option>
           <option value="selected">Selected</option>
+          <option value="ghost">Ghost</option>
         </select>
       </div>
       <div class="filter-row">
@@ -216,8 +268,14 @@
     
     <div class="pipeline" id="pipeline"></div>
     
-    <div class="board" id="board" hidden>
+    <!-- Board viewport - takes remaining space -->
+    <div class="board" id="board">
       <div class="board-viewport" id="board-viewport">
+        <!-- Drop zone shown when no board loaded -->
+        <div class="drop" id="drop-zone" hidden>
+          Drop <code>.kicad_pcb</code> / <code>.kicad_sch</code> files here to load them.
+          <p style="margin-top:.5rem;font-size:.75rem;color:#5b6b7a;">Or click <button id="load-btn-drop" style="background:none;border:1px solid #3a4a5a;padding:.15rem .5rem;border-radius:4px;cursor:pointer;">Load…</button></p>
+        </div>
         <!-- SVG injected here -->
       </div>
       <div class="sel-toolbar" id="sel-toolbar" hidden>
@@ -227,34 +285,75 @@
         <button id="unpin-btn" title="Unpin selected">Unpin</button>
         <span class="sel-count" id="sel-count">0 selected, 0 pinned</span>
       </div>
-      <div class="net-legend" id="net-legend" hidden>
+      <div class="net-legend-header" id="net-legend-header">
         <span style="margin-right:.5rem; opacity:.6;">Nets:</span>
+        <button id="net-legend-toggle" class="net-legend-toggle" title="Toggle net legend">▼</button>
+      </div>
+      <div class="net-legend" id="net-legend" hidden>
         <div id="net-legend-items"></div>
       </div>
-    </div>
+</div>
     
-    <div class="board" id="placement-panel" hidden>
-      <div class="bar">
-        <span class="num">Place</span>
-        <label class="chk" style="margin-left:.5rem;"><input type="number" id="step-iters" value="50" min="1" max="5000" step="10" style="width:5rem;"> iters</label>
-        <label class="chk" style="margin-left:.5rem;"><input type="checkbox" id="physics-mode" checked> Physics</label>
-        <button id="step-selected-btn" class="primary" title="Run placement on selected footprints only">Step Selected</button>
-        <button id="step-all-btn" title="Run placement on all movable footprints">Step All Movable</button>
-        <button id="preview-btn" title="Quick preview of where selected would move">Preview</button>
-        <button id="refresh-forces-btn" title="Recompute forces with current parameters">↻ Forces</button>
-        <button id="accept-btn" disabled>Accept</button>
-        <button id="clear-btn">Clear</button>
-        <span id="diag"></span>
+    <!-- Vertical resizer between board and bottom panel -->
+    <div class="resizer resizer-h" id="panel-resizer" aria-label="Resize bottom panel"></div>
+    
+    <!-- Bottom panel for Place/Route controls (collapsible) -->
+    <div class="bottom-panel" id="bottom-panel">
+      <div class="panel-tabs">
+        <button id="place-tab-btn" class="tab-btn active" title="Placement panel">Place</button>
+        <button id="route-tab-btn" class="tab-btn" title="Routing panel">Route</button>
+        <button id="bottom-panel-toggle" class="panel-toggle" title="Collapse panel">▲</button>
       </div>
-      <div class="params" id="params-grid"></div>
-      <div class="bar"><button id="reset-params-btn">Reset params</button></div>
+      <div class="panel-content" id="panel-content">
+        <!-- Placement panel -->
+        <div id="placement-panel">
+          <div class="bar">
+            <span class="num">Place</span>
+            <label class="chk" style="margin-left:.5rem;"><input type="number" id="step-iters" value="50" min="1" max="5000" step="10" style="width:5rem;"> iters</label>
+            <label class="chk" style="margin-left:.5rem;"><input type="checkbox" id="physics-mode" checked> Physics</label>
+            <button id="step-selected-btn" class="primary" title="Run placement on selected footprints only">Step Selected</button>
+            <button id="step-all-btn" title="Run placement on all movable footprints">Step All Movable</button>
+            <button id="preview-btn" title="Quick preview of where selected would move">Preview</button>
+            <button id="refresh-forces-btn" title="Recompute forces with current parameters">↻ Forces</button>
+            <button id="accept-btn" disabled>Accept</button>
+            <button id="clear-btn">Clear</button>
+            <span id="diag"></span>
+          </div>
+          <div class="params" id="params-grid"></div>
+          <div class="bar"><button id="reset-params-btn">Reset params</button></div>
+        </div>
+
+        <!-- Routing panel -->
+        <div id="routing-panel" hidden>
+          <div class="bar">
+            <span class="num">Route</span>
+            <button id="route-selected-btn" class="primary" title="Route selected nets">Route Selected Nets</button>
+            <button id="route-all-btn" title="Route all unprotected nets">Route All Unprotected</button>
+            <span id="route-diag"></span>
+          </div>
+          <div class="params" id="routing-params-grid"></div>
+          <div class="nets-table-container">
+            <table id="nets-table">
+              <thead>
+                <tr>
+                  <th style="width:3rem;"><input type="checkbox" id="nets-select-all" title="Select all visible"></th>
+                  <th>Net Name</th>
+                  <th style="width:4rem;">Pads</th>
+                  <th style="width:5rem;">Footprints</th>
+                  <th style="width:5rem;">Tracks</th>
+                  <th style="width:4rem;">Vias</th>
+                  <th class="net-col-protect" style="width:4rem;" title="Protected nets are routed first and never ripped up">
+                    <label class="chk"><input type="checkbox" id="nets-protect-all" title="Protect all visible">🔒</label>
+                  </th>
+                </tr>
+              </thead>
+              <tbody id="nets-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
     </div>
   </main>
-</div>
-
-<div class="drop" id="drop" hidden>
-  Drop <code>.kicad_pcb</code> / <code>.kicad_sch</code> files here to load them.
-  <p style="margin-top:.5rem;font-size:.75rem;color:#5b6b7a;">Or click <button id="load-btn-drop" style="background:none;border:1px solid #3a4a5a;padding:.15rem .5rem;border-radius:4px;cursor:pointer;">Load…</button></p>
 </div>
 
 <script>
@@ -281,6 +380,26 @@ pipelineToggleBtn.addEventListener("click", () => {
   pipelineToggleBtn.textContent = pipelineCollapsed ? "Pipeline ▶" : "Pipeline ▼";
 });
 
+// Bottom panel collapse/expand
+const bottomPanel = document.getElementById("bottom-panel");
+const bottomPanelToggle = document.getElementById("bottom-panel-toggle");
+let bottomPanelCollapsed = false;
+bottomPanelToggle.addEventListener("click", () => {
+  bottomPanelCollapsed = !bottomPanelCollapsed;
+  bottomPanel.classList.toggle("collapsed", bottomPanelCollapsed);
+  bottomPanelToggle.textContent = bottomPanelCollapsed ? "▼" : "▲";
+});
+
+// Net legend collapse/expand
+const netLegend = document.getElementById("net-legend");
+const netLegendToggle = document.getElementById("net-legend-toggle");
+let netLegendCollapsed = false;
+netLegendToggle.addEventListener("click", () => {
+  netLegendCollapsed = !netLegendCollapsed;
+  netLegend.classList.toggle("collapsed", netLegendCollapsed);
+  netLegendToggle.textContent = netLegendCollapsed ? "▶" : "▼";
+});
+
 async function uploadFile(f) {
   const kind = f.name.endsWith(".kicad_sch") ? "sch" : "pcb";
   const res = await fetch(
@@ -291,19 +410,39 @@ async function uploadFile(f) {
   return res.json();
 }
 
-const drop = document.getElementById("drop");
-drop.addEventListener("dragover", e => { e.preventDefault(); drop.style.borderColor = "#7ee0a0"; });
-drop.addEventListener("dragleave", () => { drop.style.borderColor = ""; });
+// Auto-pair PCB/SCH files: group by stem, load PCB first then SCH
 async function uploadFiles(files) {
-  const list = [...files].sort(
-    (a, b) => Number(a.name.endsWith(".kicad_sch")) - Number(b.name.endsWith(".kicad_sch"))
-  );
-  for (const f of list) await uploadFile(f);
+  const fileArray = [...files];
+  // Group by stem (filename without extension)
+  const byStem = new Map();
+  for (const f of fileArray) {
+    const stem = f.name.replace(/\.(kicad_pcb|kicad_sch)$/i, "");
+    if (!byStem.has(stem)) byStem.set(stem, { pcb: null, sch: null });
+    const entry = byStem.get(stem);
+    if (f.name.endsWith(".kicad_pcb")) entry.pcb = f;
+    else if (f.name.endsWith(".kicad_sch")) entry.sch = f;
+  }
+  
+  // Upload: PCB first, then SCH for each pair
+  for (const [stem, { pcb, sch }] of byStem) {
+    if (pcb) await uploadFile(pcb);
+    if (sch) await uploadFile(sch);
+  }
+  // Any unpaired files (shouldn't happen with current grouping, but just in case)
+  const unpaired = fileArray.filter(f => {
+    const stem = f.name.replace(/\.(kicad_pcb|kicad_sch)$/i, "");
+    const entry = byStem.get(stem);
+    return !entry || (!entry.pcb && !entry.sch);
+  });
+  for (const f of unpaired) await uploadFile(f);
 }
 
-drop.addEventListener("drop", async e => {
+const dropZone = document.getElementById("drop-zone");
+dropZone.addEventListener("dragover", e => { e.preventDefault(); dropZone.classList.add("drag-over"); });
+dropZone.addEventListener("dragleave", () => { dropZone.classList.remove("drag-over"); });
+dropZone.addEventListener("drop", async e => {
   e.preventDefault();
-  drop.style.borderColor = "";
+  dropZone.classList.remove("drag-over");
   await uploadFiles(e.dataTransfer.files);
 });
 
@@ -525,11 +664,106 @@ function fitToView() {
   }
 }
 
+let costGridDebug = null;
+let costGridOverlay = false;
+
+function showCostGridDebug(debug) {
+  costGridDebug = debug;
+  // Add overlay toggle to toolbar if not present
+  if (!document.getElementById("cost-grid-toggle")) {
+    const toggle = document.createElement("label");
+    toggle.className = "chk";
+    toggle.style.marginLeft = "0.5rem";
+    toggle.innerHTML = '<input type="checkbox" id="cost-grid-toggle"> Cost Grid';
+    document.getElementById("board-viewport").parentElement.insertBefore(toggle, document.getElementById("board-viewport"));
+    document.getElementById("cost-grid-toggle").addEventListener("change", e => {
+      costGridOverlay = e.target.checked;
+      renderCostGridOverlay();
+    });
+  }
+  renderCostGridOverlay();
+}
+
+function renderCostGridOverlay() {
+  if (!costGridDebug || !costGridOverlay) {
+    // Remove existing overlay
+    const existing = viewport.querySelector(".cost-grid-overlay");
+    if (existing) existing.remove();
+    return;
+  }
+  
+  // Remove existing overlay
+  const existing = viewport.querySelector(".cost-grid-overlay");
+  if (existing) existing.remove();
+  
+  const svg = viewport.querySelector("svg");
+  if (!svg) return;
+  
+  // Get SVG viewBox for coordinate mapping
+  const vbAttr = svg.getAttribute("viewBox");
+  if (!vbAttr) return;
+  const [vbx, vby, vbw, vbh] = vbAttr.split(" ").map(Number);
+  
+  // Use F.Cu layer data for PNG overlay
+  const fcuLayer = costGridDebug.layers.find(l => l.layer === "F.Cu");
+  if (!fcuLayer) return;
+  
+  // Create image element for PNG overlay
+  const img = document.createElementNS("http://www.w3.org/2000/svg", "image");
+  img.classList.add("cost-grid-overlay");
+  img.style.pointerEvents = "none";
+  img.style.opacity = "0.5";
+  
+  // Map cost grid bounds to board coordinates
+  const originX = costGridDebug.origin_mm[0];
+  const originY = costGridDebug.origin_mm[1];
+  const resolutionMm = costGridDebug.resolution_mm;
+  const scale = fcuLayer.scale;
+  const gridWidthMm = fcuLayer.width * scale * resolutionMm;
+  const gridHeightMm = fcuLayer.height * scale * resolutionMm;
+  
+  // Position in board mm coordinates
+  const xMm = originX;
+  const yMm = originY + gridHeightMm; // Bottom of grid in board coords
+  
+  // Map to SVG coordinates (viewport units)
+  const xPx = ((xMm - vbx) / vbw) * viewport.clientWidth;
+  const yPx = ((vby + vbh - yMm) / vbh) * viewport.clientHeight;
+  const widthPx = (gridWidthMm / vbw) * viewport.clientWidth;
+  const heightPx = (gridHeightMm / vbh) * viewport.clientHeight;
+  
+  img.setAttribute("x", xPx);
+  img.setAttribute("y", yPx - heightPx);
+  img.setAttribute("width", widthPx);
+  img.setAttribute("height", heightPx);
+  img.setAttribute("href", ""); // Will be set by fetch
+  img.setAttribute("preserveAspectRatio", "none");
+  
+  // Fetch PNG and set it
+  fetch("/api/routing/debug/cost-grid.png")
+    .then(res => {
+      if (!res.ok) throw new Error("PNG fetch failed");
+      return res.json();
+    })
+    .then(data => {
+      if (data.png) {
+        img.setAttribute("href", data.png);
+        svg.appendChild(img);
+      }
+    })
+    .catch(err => {
+      console.error("Cost grid PNG fetch failed:", err);
+    });
+}
+
 async function fetchAndInjectSVG(version) {
   const res = await fetch(boardSrc(version));
   if (!res.ok) return;
   const svgText = await res.text();
-  viewport.innerHTML = svgText;
+  viewport.querySelectorAll("svg").forEach(el => el.remove());
+  const tpl = document.createElement("template");
+  tpl.innerHTML = svgText;
+  for (const node of tpl.content.childNodes) viewport.appendChild(node);
   // Capture initial viewBox for zoom reference ONLY on first load
   const svg = viewport.querySelector("svg");
   if (svg && viewBox === null) {
@@ -547,9 +781,11 @@ async function fetchAndInjectSVG(version) {
 async function poll() {
   const res = await fetch("/api/state");
   const st = await res.json();
+  const dropZone = document.getElementById("drop-zone");
   if (st.loaded) {
     boardEl.hidden = false;
-    document.getElementById("placement-panel").hidden = false;
+    bottomPanel.hidden = false;
+    if (dropZone) dropZone.hidden = true;
     nameEl.textContent = `${st.name} — v${st.version}`;
     schChip.hidden = st.has_sch;
     document.getElementById("download-btn").hidden = false;
@@ -560,13 +796,13 @@ async function poll() {
       await loadSelectionState();
     }
   } else {
-    boardEl.hidden = true;
-    document.getElementById("placement-panel").hidden = true;
+    bottomPanel.hidden = true;
+    if (dropZone) dropZone.hidden = false;
     document.getElementById("download-btn").hidden = true;
     document.getElementById("reset-btn").hidden = true;
     document.getElementById("undo-btn").disabled = true;
     lastVersion = 0;
-    viewport.innerHTML = "";
+    viewport.querySelectorAll("svg").forEach(el => el.remove());
     viewBox = null;
   }
 }
@@ -580,6 +816,10 @@ overlayToggle.addEventListener("change", () => {
 
 async function refreshForces() {
   if (!lastVersion) return;
+  const btn = document.getElementById("refresh-forces-btn");
+  const originalText = btn.textContent;
+  btn.textContent = "⟳";
+  btn.disabled = true;
   try {
     const res = await fetch("/api/placement/forces", {
       method: "POST",
@@ -587,9 +827,14 @@ async function refreshForces() {
       body: JSON.stringify(readParams())
     });
     if (!res.ok) throw new Error(await res.text());
+    diagEl.textContent = "forces refreshed";
   } catch (err) {
     console.error("Failed to fetch forces:", err);
     forcesToggle.checked = false;
+    diagEl.textContent = `forces failed: ${err.message}`;
+  } finally {
+    btn.textContent = originalText;
+    btn.disabled = false;
   }
   fetchAndInjectSVG(lastVersion);
   loadSelectionState();
@@ -629,24 +874,19 @@ layerBcuToggle.addEventListener("change", () => {
 viewport.addEventListener("wheel", e => {
   e.preventDefault();
   if (!viewBox) return;
-  const rect = viewport.getBoundingClientRect();
-  const cx = e.clientX - rect.left;
-  const cy = e.clientY - rect.top;
   const svg = viewport.querySelector("svg");
   if (!svg) return;
-  const svgRect = svg.getBoundingClientRect();
-  // Mouse position in SVG coordinates (before zoom)
-  const svgX = viewBox[0] + (cx / svgRect.width) * viewBox[2];
-  const svgY = viewBox[1] + (cy / svgRect.height) * viewBox[3];
+  // Mouse position in SVG user coordinates (before zoom), exact under any aspect ratio
+  const ctm = svg.getScreenCTM();
+  if (!ctm) return;
+  const p = new DOMPoint(e.clientX, e.clientY).matrixTransform(ctm.inverse());
   // Zoom factor
   const factor = e.deltaY > 0 ? 1.2 : 0.8333;
-  const newWidth = viewBox[2] * factor;
-  const newHeight = viewBox[3] * factor;
-  // Keep mouse point fixed
-  viewBox[0] = svgX - (cx / svgRect.width) * newWidth;
-  viewBox[1] = svgY - (cy / svgRect.height) * newHeight;
-  viewBox[2] = newWidth;
-  viewBox[3] = newHeight;
+  // Keep mouse point fixed: anchor the new viewBox around p
+  viewBox[0] = p.x - (p.x - viewBox[0]) * factor;
+  viewBox[1] = p.y - (p.y - viewBox[1]) * factor;
+  viewBox[2] *= factor;
+  viewBox[3] *= factor;
   applyViewBox();
 }, { passive: false });
 
@@ -664,7 +904,8 @@ viewport.addEventListener("mousedown", e => {
   // Start marquee selection on Shift+drag on empty space, or just drag on empty space
   if (isEmptySpace && (e.shiftKey || !fpEl)) {
     isMarqueeSelecting = true;
-    marqueeStart = { x: e.clientX, y: e.clientY };
+    const startRect = viewport.getBoundingClientRect();
+    marqueeStart = { x: e.clientX - startRect.left, y: e.clientY - startRect.top };
     marqueeEl = document.createElement("div");
     marqueeEl.className = "marquee";
     viewport.appendChild(marqueeEl);
@@ -681,10 +922,13 @@ viewport.addEventListener("mousedown", e => {
 
 window.addEventListener("mousemove", e => {
   if (isMarqueeSelecting && marqueeEl && marqueeStart) {
-    const left = Math.min(marqueeStart.x, e.clientX);
-    const top = Math.min(marqueeStart.y, e.clientY);
-    const width = Math.abs(e.clientX - marqueeStart.x);
-    const height = Math.abs(e.clientY - marqueeStart.y);
+    const moveRect = viewport.getBoundingClientRect();
+    const mx = e.clientX - moveRect.left;
+    const my = e.clientY - moveRect.top;
+    const left = Math.min(marqueeStart.x, mx);
+    const top = Math.min(marqueeStart.y, my);
+    const width = Math.abs(mx - marqueeStart.x);
+    const height = Math.abs(my - marqueeStart.y);
     marqueeEl.style.left = left + "px";
     marqueeEl.style.top = top + "px";
     marqueeEl.style.width = width + "px";
@@ -693,8 +937,10 @@ window.addEventListener("mousemove", e => {
   }
   
   if (!isPanning || !viewBox) return;
-  const dx = (e.clientX - panStart.x) / viewport.clientWidth * viewBox[2];
-  const dy = (e.clientY - panStart.y) / viewport.clientHeight * viewBox[3];
+  // Uniform rendered scale under preserveAspectRatio="xMidYMid meet" (px per user unit)
+  const scale = Math.min(viewport.clientWidth / viewBox[2], viewport.clientHeight / viewBox[3]);
+  const dx = (e.clientX - panStart.x) / scale;
+  const dy = (e.clientY - panStart.y) / scale;
   viewBox[0] = panStart.vb[0] - dx;
   viewBox[1] = panStart.vb[1] - dy;
   applyViewBox();
@@ -705,23 +951,18 @@ window.addEventListener("mouseup", e => {
     // Process marquee selection
     if (marqueeEl) {
       const rect = marqueeEl.getBoundingClientRect();
-      const viewportRect = viewport.getBoundingClientRect();
-      
-      // Convert to SVG coordinates
+
+      // Convert marquee bounds to SVG user coordinates via the browser's exact CTM
       const svg = viewport.querySelector("svg");
       if (svg && viewBox) {
-        const svgRect = svg.getBoundingClientRect();
-        
-        // Marquee bounds in SVG coordinates
-        const marqueeLeft = viewBox[0] + ((rect.left - svgRect.left) / svgRect.width) * viewBox[2];
-        const marqueeRight = viewBox[0] + ((rect.right - svgRect.left) / svgRect.width) * viewBox[2];
-        const marqueeTop = viewBox[1] + ((rect.top - svgRect.top) / svgRect.height) * viewBox[3];
-        const marqueeBottom = viewBox[1] + ((rect.bottom - svgRect.top) / svgRect.height) * viewBox[3];
-        
-        const minX = Math.min(marqueeLeft, marqueeRight);
-        const maxX = Math.max(marqueeLeft, marqueeRight);
-        const minY = Math.min(marqueeTop, marqueeBottom);
-        const maxY = Math.max(marqueeTop, marqueeBottom);
+        const inv = svg.getScreenCTM().inverse();
+        const p1 = new DOMPoint(rect.left, rect.top).matrixTransform(inv);
+        const p2 = new DOMPoint(rect.right, rect.bottom).matrixTransform(inv);
+
+        const minX = Math.min(p1.x, p2.x);
+        const maxX = Math.max(p1.x, p2.x);
+        const minY = Math.min(p1.y, p2.y);
+        const maxY = Math.max(p1.y, p2.y);
         
         // Find footprints whose centroids are within the marquee
         svg.querySelectorAll(".footprint").forEach(fpEl => {
@@ -949,6 +1190,7 @@ function matchesFilter(fp, filters) {
     if (filters.state === "locked" && !fp.locked) return false;
     if (filters.state === "pinned" && !fp.pinned) return false;
     if (filters.state === "selected" && !fp.selected) return false;
+    if (filters.state === "ghost" && !fp.ghost) return false;
   }
   if (filters.ref) {
     const pattern = filters.ref.replace(/\*/g, ".*");
@@ -976,6 +1218,7 @@ function getFilteredFootprints() {
 }
 
 function getStateBadge(fp) {
+  if (fp.ghost) return '<span class="state-badge state-ghost">Ghost</span>';
   if (fp.locked) return '<span class="state-badge state-locked">Locked</span>';
   if (fp.pinned) return '<span class="state-badge state-pinned">Pinned</span>';
   if (fp.selected) return '<span class="state-badge state-selected">Selected</span>';
@@ -989,8 +1232,8 @@ function renderFootprintTable() {
     const netsStr = fp.nets.slice(0, 3).join(", ") + (fp.nets.length > 3 ? ` +${fp.nets.length - 3}` : "");
     const layerClass = fp.layer === "B" ? "B" : "F";
     return `
-      <tr class="${fp.selected ? 'fp-selected-row' : ''} ${fp.locked ? 'fp-locked-row' : ''} ${fp.pinned ? 'fp-pinned-row' : ''}" data-uuid="${fp.uuid}">
-        <td class="fp-col-select"><input type="checkbox" ${fp.selected ? 'checked' : ''} ${fp.locked || fp.pinned ? 'disabled' : ''} data-uuid="${fp.uuid}"></td>
+      <tr class="${fp.selected ? 'fp-selected-row' : ''} ${fp.locked ? 'fp-locked-row' : ''} ${fp.pinned ? 'fp-pinned-row' : ''} ${fp.ghost ? 'fp-ghost-row' : ''}" data-uuid="${fp.uuid}">
+        <td class="fp-col-select"><input type="checkbox" ${fp.selected ? 'checked' : ''} ${fp.locked || fp.pinned || fp.ghost ? 'disabled' : ''} data-uuid="${fp.uuid}"></td>
         <td class="fp-col-ref" title="${fp.ref}">${fp.ref}</td>
         <td class="fp-col-footprint" title="${fp.footprint_id}">${fp.footprint_id}</td>
         <td class="fp-col-layer"><span class="fp-col-layer ${layerClass}">${fp.layer}</span></td>
@@ -1064,7 +1307,8 @@ function renderFootprintTable() {
 function renderNetLegend() {
   const legendItems = document.getElementById("net-legend-items");
   const legendBar = document.getElementById("net-legend");
-  if (!legendItems || !legendBar) return;
+  const legendHeader = document.getElementById("net-legend-header");
+  if (!legendItems || !legendBar || !legendHeader) return;
   
   // Aggregate nets from all footprints
   const netCounts = {};
@@ -1087,6 +1331,7 @@ function renderNetLegend() {
   
   if (sortedNets.length > 0) {
     legendBar.hidden = false;
+    legendHeader.hidden = false;
     legendItems.innerHTML = sortedNets.map(([net, count], idx) => {
       const color = netColor(net, idx);
       return `
@@ -1107,6 +1352,7 @@ function renderNetLegend() {
     });
   } else {
     legendBar.hidden = true;
+    legendHeader.hidden = true;
   }
 }
 
@@ -1235,9 +1481,9 @@ async function runPlacement(movableUuids, iterations, isPreview = false) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ 
-        iterations: isPreview ? 0 : iterations,  // Preview uses 0 iterations
+        iterations: isPreview ? 1 : iterations,  // Preview uses 1 physics iteration
         movable_uuids: movableUuids,
-        stub: isPreview || !document.getElementById("physics-mode").checked
+        stub: false  // Always use physics mode; preview just runs fewer iterations
       })
     });
     if (!res.ok) throw new Error(await res.text());
@@ -1356,12 +1602,387 @@ document.getElementById("reset-params-btn").addEventListener("click", async () =
   }
 });
 
+// ==================== Routing Panel Logic ====================
+
+let selectedNets = new Set();  // Set of net names selected for routing
+let routingParams = {};  // Current routing parameters
+
+// Net color function (shared with net legend)
+function netColor(net, idx) {
+  const hue = (idx * 137.508) % 360;
+  return `hsl(${hue}, 75%, 62%)`;
+}
+
+// Fetch all nets from server and render net table
+async function fetchNets() {
+  if (!lastVersion) return;
+  try {
+    const res = await fetch("/api/nets");
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    renderNetsTable(data.nets || []);
+  } catch (err) {
+    console.error("Failed to fetch nets:", err);
+  }
+}
+
+// Render nets table
+function renderNetsTable(nets) {
+  const tbody = document.getElementById("nets-tbody");
+  if (!tbody) return;
+  
+  tbody.innerHTML = nets.map((net, idx) => {
+    const color = netColor(net.name, idx);
+    return `
+      <tr class="${selectedNets.has(net.name) ? 'net-selected-row' : ''}" data-net="${net.name}" style="--net-color: ${color};">
+        <td class="net-col-select"><input type="checkbox" class="net-col-select" ${selectedNets.has(net.name) ? 'checked' : ''} data-net="${net.name}"></td>
+        <td class="net-col-name">
+          <span class="net-swatch" style="background: ${color};"></span>
+          ${net.name}
+        </td>
+        <td class="net-col-pads">${net.pad_count}</td>
+        <td class="net-col-fps">${net.footprint_count}</td>
+        <td class="net-col-tracks">${net.track_count}</td>
+        <td class="net-col-vias">${net.via_count}</td>
+        <td class="net-col-protect">
+          <label class="chk"><input type="checkbox" class="net-protect-cb" ${net.protected ? 'checked' : ''} data-net="${net.name}" title="Protected nets are routed first and never ripped up"></label>
+        </td>
+      </tr>
+    `;
+  }).join("");
+  
+  // Add click handlers for checkboxes
+  tbody.querySelectorAll('input.net-col-select[type="checkbox"]').forEach(cb => {
+    cb.addEventListener("change", e => {
+      const net = e.target.dataset.net;
+      if (e.target.checked) {
+        selectedNets.add(net);
+      } else {
+        selectedNets.delete(net);
+      }
+      updateNetSelectionUI();
+    });
+  });
+  
+  // Add click handlers for protected checkboxes
+  tbody.querySelectorAll('input.net-protect-cb[type="checkbox"]').forEach(cb => {
+    cb.addEventListener("change", async e => {
+      const net = e.target.dataset.net;
+      const protectedFlag = e.target.checked;
+      try {
+        const res = await fetch("/api/nets/protected", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ net, protected: protectedFlag })
+        });
+        if (!res.ok) throw new Error(await res.text());
+        // Re-fetch to update table
+        await fetchNets();
+      } catch (err) {
+        console.error("Failed to toggle protected:", err);
+        // Revert checkbox on error
+        await fetchNets();
+      }
+    });
+  });
+  
+  // Row click to select/deselect
+  tbody.querySelectorAll("tr").forEach(tr => {
+    tr.addEventListener("click", e => {
+      if (e.target.type === "checkbox") return;
+      const net = tr.dataset.net;
+      if (!net) return;
+      
+      if (e.shiftKey || e.ctrlKey || e.metaKey) {
+        toggleNetSelection(net).then(() => renderNetsTable(Array.from(selectedNets).map(n => ({name: n}))));
+      } else {
+        selectedNets.clear();
+        selectedNets.add(net);
+        renderNetsTable(Array.from(selectedNets).map(n => ({name: n})));
+      }
+    });
+  });
+  
+  // Update "select all" checkbox
+  const selectAllCb = document.getElementById("nets-select-all");
+  if (selectAllCb) {
+    selectAllCb.checked = nets.length > 0 && nets.every(n => selectedNets.has(n.name));
+    selectAllCb.indeterminate = nets.some(n => selectedNets.has(n.name)) && !nets.every(n => selectedNets.has(n.name));
+  }
+}
+
+async function toggleNetSelection(net) {
+  if (selectedNets.has(net)) {
+    selectedNets.delete(net);
+  } else {
+    selectedNets.add(net);
+  }
+}
+
+function updateNetSelectionUI() {
+  const count = selectedNets.size;
+  const routeBtn = document.getElementById("route-selected-btn");
+  if (routeBtn) {
+    routeBtn.disabled = count === 0;
+    routeBtn.textContent = count > 0 ? `Route ${count} Selected Net${count > 1 ? 's' : ''}` : "Route Selected Nets";
+  }
+}
+
+// Load routing params from server
+async function loadRoutingParams() {
+  try {
+    const res = await fetch("/api/routing/params");
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    routingParams = data.params || {};
+    renderRoutingParams(routingParams);
+  } catch (err) {
+    console.error("Failed to load routing params:", err);
+    renderRoutingParams({});
+  }
+}
+
+// Render routing params sliders
+function renderRoutingParams(params) {
+  const grid = document.getElementById("routing-params-grid");
+  if (!grid) return;
+  
+  const ROUTING_PARAM_DEFS = [
+    { key: "track_width_mm", label: "Track Width (mm)", min: 0.1, max: 2.0, step: 0.05, default: 0.25 },
+    { key: "power_width_mm", label: "Power Width (mm)", min: 0.2, max: 3.0, step: 0.05, default: 0.5 },
+    { key: "clearance_mm", label: "Clearance (mm)", min: 0.1, max: 1.0, step: 0.05, default: 0.2 },
+    { key: "via_cost_mm", label: "Via Cost (mm)", min: 1, max: 20, step: 0.5, default: 5 },
+    { key: "max_via_count", label: "Max Vias", min: 10, max: 50, step: 10, default: 50 },
+    { key: "grid_resolution_mm", label: "Grid Resolution (mm)", min: 0.05, max: 0.5, step: 0.05, default: 0.1 },
+  ];
+  
+  // Debug checkbox
+  const debugChecked = params.debug ? "checked" : "";
+  const debugHtml = `
+    <div class="param">
+      <span title="Enable debug output (cost grid, search frontier)">Debug Mode</span>
+      <div class="row">
+        <label class="chk" style="margin:0;">
+          <input type="checkbox" data-key="debug" ${debugChecked}> Enabled
+        </label>
+      </div>
+    </div>
+  `;
+  
+  grid.innerHTML = ROUTING_PARAM_DEFS.map(def => {
+    const value = params[def.key] ?? def.default;
+    return `
+      <div class="param">
+        <span title="${def.label}">${def.label}</span>
+        <div class="row">
+          <input type="range" data-key="${def.key}" min="${def.min}" max="${def.max}" step="${def.step}" value="${value}">
+          <input type="number" data-key="${def.key}" min="${def.min}" max="${def.max}" step="${def.step}" value="${value}">
+        </div>
+      </div>
+    `;
+  }).join("") + debugHtml;
+  
+  // Sync range and number inputs
+  grid.querySelectorAll('input[type="range"]').forEach(range => {
+    range.addEventListener("input", e => {
+      const key = e.target.dataset.key;
+      const num = grid.querySelector(`input[type="number"][data-key="${key}"]`);
+      if (num) num.value = range.value;
+    });
+  });
+  grid.querySelectorAll('input[type="number"]').forEach(num => {
+    num.addEventListener("input", e => {
+      const key = e.target.dataset.key;
+      const range = grid.querySelector(`input[type="range"][data-key="${key}"]`);
+      if (range) range.value = num.value;
+    });
+  });
+}
+
+// Read routing params from UI
+function readRoutingParams() {
+  const grid = document.getElementById("routing-params-grid");
+  if (!grid) return {};
+  const params = {};
+  grid.querySelectorAll('input[data-key]').forEach(input => {
+    if (input.type === "checkbox") {
+      params[input.dataset.key] = input.checked;
+    } else {
+      params[input.dataset.key] = input.type === "number" ? Number(input.value) : input.value;
+    }
+  });
+  return params;
+}
+
+// Save routing params to server
+async function saveRoutingParams() {
+  const params = readRoutingParams();
+  try {
+    const res = await fetch("/api/routing/params", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(params)
+    });
+    if (!res.ok) throw new Error(await res.text());
+    routingParams = params;
+  } catch (err) {
+    console.error("Failed to save routing params:", err);
+  }
+}
+
+// Route selected nets
+async function routeSelectedNets() {
+  if (selectedNets.size === 0) return;
+  const diag = document.getElementById("route-diag");
+  const routeBtn = document.getElementById("route-selected-btn");
+  const routeAllBtn = document.getElementById("route-all-btn");
+  
+  routeBtn.disabled = true;
+  routeAllBtn.disabled = true;
+  routeBtn.classList.add("loading");
+  routeAllBtn.classList.add("loading");
+  diag.textContent = "Routing...";
+  
+  try {
+    const params = readRoutingParams();
+    const res = await fetch("/api/routing/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ 
+        net_names: Array.from(selectedNets),
+        params
+      })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const r = await res.json();
+    diag.textContent = `v${r.version} — ${r.tracks_added} tracks, ${r.vias_added} vias, ${r.nets_routed} routed, ${r.nets_failed} failed`;
+    if (r.pcb_tree) {
+      // Refresh SVG to show new routes
+      await fetchAndInjectSVG(r.version);
+    }
+    // Handle debug response
+    if (r.debug) {
+      showCostGridDebug(r.debug);
+    }
+    // Re-fetch nets to update track/via counts
+    await fetchNets();
+  } catch (err) {
+    diag.textContent = `routing failed: ${err.message}`;
+  } finally {
+    routeBtn.disabled = false;
+    routeAllBtn.disabled = false;
+    routeBtn.classList.remove("loading");
+    routeAllBtn.classList.remove("loading");
+    updateNetSelectionUI();
+  }
+}
+
+// Route all unprotected nets
+async function routeAllNets() {
+  const diag = document.getElementById("route-diag");
+  const routeBtn = document.getElementById("route-selected-btn");
+  const routeAllBtn = document.getElementById("route-all-btn");
+  
+  routeBtn.disabled = true;
+  routeAllBtn.disabled = true;
+  routeBtn.classList.add("loading");
+  routeAllBtn.classList.add("loading");
+  diag.textContent = "Routing...";
+  
+  try {
+    const res = await fetch("/api/nets");
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    const unprotected = (data.nets || []).filter(n => !n.protected).map(n => n.name);
+    if (unprotected.length === 0) return;
+    
+    // Temporarily select all unprotected
+    const originalSelected = new Set(selectedNets);
+    selectedNets = new Set(unprotected);
+    renderNetsTable(Array.from(selectedNets).map(n => ({name: n})));
+    await routeSelectedNets();
+  } catch (err) {
+    diag.textContent = `routing failed: ${err.message}`;
+  } finally {
+    routeBtn.disabled = false;
+    routeAllBtn.disabled = false;
+    routeBtn.classList.remove("loading");
+    routeAllBtn.classList.remove("loading");
+  }
+}
+
+// Event listeners for routing panel
+document.getElementById("route-selected-btn").addEventListener("click", routeSelectedNets);
+document.getElementById("route-all-btn").addEventListener("click", routeAllNets);
+
+// Select all checkbox in nets table
+document.getElementById("nets-select-all").addEventListener("change", e => {
+  const rows = document.querySelectorAll("#nets-tbody tr");
+  if (e.target.checked) {
+    rows.forEach(tr => {
+      const net = tr.dataset.net;
+      if (net) selectedNets.add(net);
+    });
+  } else {
+    selectedNets.clear();
+  }
+  renderNetsTable(Array.from(selectedNets).map(n => ({name: n})));
+});
+
+// Protect all checkbox
+document.getElementById("nets-protect-all").addEventListener("change", async e => {
+  const rows = document.querySelectorAll("#nets-tbody tr");
+  for (const tr of rows) {
+    const net = tr.dataset.net;
+    const cb = tr.querySelector(".net-protect-cb");
+    if (cb && cb.checked !== e.target.checked) {
+      cb.checked = e.target.checked;
+      try {
+        await fetch("/api/nets/protected", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ net, protected: e.target.checked })
+        });
+      } catch (err) {
+        console.error("Failed to toggle protect all:", err);
+      }
+    }
+  }
+  await fetchNets();
+});
+
+const routingPanel = document.getElementById("routing-panel");
+const placementPanel = document.getElementById("placement-panel");
+
+// Tab switching for Place/Route panels
+document.getElementById("place-tab-btn").addEventListener("click", () => {
+  placementPanel.hidden = false;
+  routingPanel.hidden = true;
+  document.getElementById("place-tab-btn").classList.add("active");
+  document.getElementById("route-tab-btn").classList.remove("active");
+});
+
+document.getElementById("route-tab-btn").addEventListener("click", () => {
+  placementPanel.hidden = true;
+  routingPanel.hidden = false;
+  document.getElementById("place-tab-btn").classList.remove("active");
+  document.getElementById("route-tab-btn").classList.add("active");
+  fetchNets();
+  loadRoutingParams();
+});
+
 // Resizable sidebar splitter
 const sidebar = document.getElementById("sidebar");
 const resizer = document.getElementById("resizer");
 const mainContent = document.querySelector(".main-content");
 
 let startX, startWidth;
+
+function getSidebarWidth() {
+  const computed = getComputedStyle(sidebar).width;
+  const px = parseInt(computed, 10);
+  return isNaN(px) || px === 0 ? sidebar.offsetWidth : px;
+}
 
 function initResizer() {
   // Restore from localStorage
@@ -1373,7 +1994,7 @@ function initResizer() {
   resizer.addEventListener("mousedown", e => {
     e.preventDefault();
     startX = e.clientX;
-    startWidth = parseInt(getComputedStyle(sidebar).width, 10);
+    startWidth = getSidebarWidth();
     resizer.classList.add("dragging");
     document.addEventListener("mousemove", doDrag);
     document.addEventListener("mouseup", stopDrag);
@@ -1393,7 +2014,56 @@ function stopDrag() {
   localStorage.setItem("sidebar-width", sidebar.style.width);
 }
 
-initResizer();
+// Initialize after DOM is ready (handles timing issues)
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", initResizer);
+} else {
+  initResizer();
+}
+
+// Bottom panel vertical resizer
+const panelResizer = document.getElementById("panel-resizer");
+let panelStartY, panelStartHeight;
+
+function initPanelResizer() {
+  // Restore from localStorage
+  const savedHeight = localStorage.getItem("bottom-panel-height");
+  if (savedHeight) {
+    bottomPanel.style.height = savedHeight + "px";
+  }
+
+  panelResizer.addEventListener("mousedown", e => {
+    e.preventDefault();
+    panelStartY = e.clientY;
+    // bottomPanel height is in px, get computed value
+    const computed = getComputedStyle(bottomPanel).height;
+    panelStartHeight = parseInt(computed, 10);
+    panelResizer.classList.add("dragging");
+    document.addEventListener("mousemove", doPanelDrag);
+    document.addEventListener("mouseup", stopPanelDrag);
+  });
+}
+
+function doPanelDrag(e) {
+  // Drag up = increase panel height (negative deltaY since Y increases downward)
+  const height = panelStartHeight - (e.clientY - panelStartY);
+  const clamped = Math.max(32, Math.min(window.innerHeight * 0.7, height));
+  bottomPanel.style.height = clamped + "px";
+}
+
+function stopPanelDrag() {
+  panelResizer.classList.remove("dragging");
+  document.removeEventListener("mousemove", doPanelDrag);
+  document.removeEventListener("mouseup", stopPanelDrag);
+  localStorage.setItem("bottom-panel-height", bottomPanel.style.height);
+}
+
+// Initialize panel resizer
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", initPanelResizer);
+} else {
+  initPanelResizer();
+}
 
 // Keyboard shortcuts
 document.addEventListener("keydown", e => {
