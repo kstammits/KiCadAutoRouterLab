@@ -18,7 +18,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Optional, Set, Union
 
-from .sexpr import SExpr, parse_file, to_sexpr
+from .sexpr import SExpr, parse_file, to_sexpr, Symbol
+from .board_model import _to_local
 
 
 @dataclass(frozen=True)
@@ -176,3 +177,245 @@ def save_pair(
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(to_sexpr(tree) + "\n", encoding="utf-8")
     return pcb_path, sch_path
+
+
+def _format_at(x_mm: float, y_mm: float, angle_deg: float = 0.0) -> SExpr:
+    """Create an (at x y [angle]) SExpr."""
+    if angle_deg != 0.0:
+        return SExpr("at", (x_mm, y_mm, angle_deg))
+    return SExpr("at", (x_mm, y_mm))
+
+
+def _format_size(w: float, h: float) -> SExpr:
+    """Create a (size w h) SExpr."""
+    return SExpr("size", (w, h))
+
+
+def _format_drill(drill_mm: float) -> SExpr:
+    """Create a (drill d) SExpr."""
+    return SExpr("drill", (drill_mm,))
+
+
+def _format_layers(layers: Tuple[str, ...]) -> SExpr:
+    """Create a (layers ...) SExpr."""
+    return SExpr("layers", layers)
+
+
+def _format_stroke(width: float, type_: str = "solid") -> SExpr:
+    """Create a (stroke (width w) (type t)) SExpr."""
+    return SExpr("stroke", (
+        SExpr("width", (width,)),
+        SExpr("type", (Symbol(type_),)),
+    ))
+
+
+def _format_effects(font_size: Tuple[float, float] = (1.0, 1.0), thickness: float = 0.15, hide: bool = False) -> SExpr:
+    """Create an (effects ...) SExpr for text."""
+    args = [
+        SExpr("font", (
+            SExpr("size", font_size),
+            SExpr("thickness", (thickness,)),
+        ))
+    ]
+    if hide:
+        args.append(SExpr("hide", (Symbol("yes"),)))
+    return SExpr("effects", tuple(args))
+
+
+def _pad_to_sexpr(pad) -> SExpr:
+    """Convert a Pad dataclass to KiCad pad S-expression."""
+    # Pad position is in board coordinates, need to convert to local
+    # For now, assume pads are at local positions relative to footprint center
+    # The board_model pads have absolute positions; we need to compute local
+    
+    args = [
+        Symbol(pad.number),
+        Symbol(pad.pad_type),
+        Symbol(pad.shape),
+    ]
+    
+    # at position (local coordinates)
+    args.append(_format_at(pad.position.x_mm, pad.position.y_mm, pad.angle_deg))
+    
+    # size
+    args.append(_format_size(pad.size_mm[0], pad.size_mm[1]))
+    
+    # drill
+    if pad.drill_mm > 0:
+        args.append(_format_drill(pad.drill_mm))
+    
+    # layers
+    if pad.layers:
+        args.append(_format_layers(pad.layers))
+    
+    # net
+    if pad.net_name:
+        args.append(SExpr("net", (pad.net_name,)))
+    
+    # pinfunction/pintype if available
+    if hasattr(pad, 'pinfunction') and pad.pinfunction:
+        args.append(SExpr("pinfunction", (pad.pinfunction,)))
+    if hasattr(pad, 'pintype') and pad.pintype:
+        args.append(SExpr("pintype", (pad.pintype,)))
+    
+    # uuid
+    import uuid as uuid_module
+    args.append(SExpr("uuid", (uuid_module.uuid4().hex,)))
+    
+    return SExpr("pad", tuple(args))
+
+
+def _courtyard_to_sexpr(courtyard_segments) -> list[SExpr]:
+    """Convert courtyard segments to fp_line/fp_circle S-expressions."""
+    sexprs = []
+    for start, end in courtyard_segments:
+        # Check if it's a circle approximation (many small segments)
+        # For simplicity, emit as fp_line
+        sexprs.append(SExpr("fp_line", (
+            SExpr("start", (start.x_mm, start.y_mm)),
+            SExpr("end", (end.x_mm, end.y_mm)),
+            _format_stroke(0.05),
+            SExpr("layer", (Symbol("F.CrtYd"),)),
+            SExpr("uuid", (__import__("uuid").uuid4().hex,)),
+        )))
+    return sexprs
+
+
+def _reference_text_to_sexpr(ref: str, x_mm: float = 0.0, y_mm: float = 0.0, layer: str = "F.Fab") -> SExpr:
+    """Create fp_text for reference designator."""
+    return SExpr("fp_text", (
+        Symbol("user"),
+        f"${{REFERENCE}}",
+        _format_at(x_mm, y_mm, 0.0),
+        SExpr("layer", (Symbol(layer),)),
+        SExpr("uuid", (__import__("uuid").uuid4().hex,)),
+        _format_effects(hide=True),
+    ))
+
+
+def footprint_to_sexpr(fp, footprint_library_id: str = "Test:R_0805") -> SExpr:
+    """Convert a Footprint dataclass to KiCad footprint S-expression.
+    
+    Args:
+        fp: Footprint dataclass from board_model (pads/courtyard in board coords)
+        footprint_library_id: Library identifier like "Resistor_SMD:R_0805"
+    
+    Returns:
+        SExpr representing the footprint with pads/courtyard in LOCAL coordinates
+    """
+    args = [Symbol(footprint_library_id)]
+    
+    if fp.locked:
+        args.append(SExpr("locked", (Symbol("yes"),)))
+    
+    args.append(SExpr("layer", (Symbol(fp.layer),)))
+    
+    if fp.uuid:
+        args.append(SExpr("uuid", (fp.uuid,)))
+    
+    # Position in board coordinates
+    args.append(_format_at(fp.x_mm, fp.y_mm, fp.angle_deg))
+    
+    # Description (optional)
+    if hasattr(fp, 'footprint_id') and fp.footprint_id:
+        args.append(SExpr("descr", (fp.footprint_id,)))
+    
+    # Reference property
+    args.append(SExpr("property", (
+        Symbol("Reference"),
+        fp.ref,
+        _format_at(0, -3.35, 0.0),
+        SExpr("layer", (Symbol("F.SilkS"),)),
+        SExpr("hide", (Symbol("yes"),)),
+        SExpr("uuid", (__import__("uuid").uuid4().hex,)),
+        _format_effects(),
+    )))
+    
+    # Value property
+    args.append(SExpr("property", (
+        Symbol("Value"),
+        fp.footprint_id,
+        _format_at(0, 3.35, 0.0),
+        SExpr("layer", (Symbol("F.Fab"),)),
+        SExpr("hide", (Symbol("yes"),)),
+        SExpr("uuid", (__import__("uuid").uuid4().hex,)),
+        _format_effects(),
+    )))
+    
+    # Datasheet property (empty)
+    args.append(SExpr("property", (
+        Symbol("Datasheet"),
+        "",
+        _format_at(0, 0, 0.0),
+        SExpr("unlocked", (Symbol("yes"),)),
+        SExpr("layer", (Symbol("F.Fab"),)),
+        SExpr("hide", (Symbol("yes"),)),
+        SExpr("uuid", (__import__("uuid").uuid4().hex,)),
+        _format_effects(font_size=(1.27, 1.27)),
+    )))
+    
+    # Description property (empty)
+    args.append(SExpr("property", (
+        Symbol("Description"),
+        "",
+        _format_at(0, 0, 0.0),
+        SExpr("unlocked", (Symbol("yes"),)),
+        SExpr("layer", (Symbol("F.Fab"),)),
+        SExpr("hide", (Symbol("yes"),)),
+        SExpr("uuid", (__import__("uuid").uuid4().hex,)),
+        _format_effects(font_size=(1.27, 1.27)),
+    )))
+    
+    # Attributes
+    args.append(SExpr("attr", (Symbol("exclude_from_pos_files"), Symbol("exclude_from_bom"))))
+    
+    # Courtyard graphics - convert from board to local coordinates
+    for start, end in fp.courtyard:
+        local_start = _to_local(start.x_mm, start.y_mm, fp.x_mm, fp.y_mm, fp.angle_deg, fp.layer)
+        local_end = _to_local(end.x_mm, end.y_mm, fp.x_mm, fp.y_mm, fp.angle_deg, fp.layer)
+        args.append(SExpr("fp_line", (
+            SExpr("start", (local_start.x_mm, local_start.y_mm)),
+            SExpr("end", (local_end.x_mm, local_end.y_mm)),
+            _format_stroke(0.05),
+            SExpr("layer", (Symbol("F.CrtYd"),)),
+            SExpr("uuid", (__import__("uuid").uuid4().hex,)),
+        )))
+    
+    # Reference text on F.Fab (local coordinates)
+    args.append(_reference_text_to_sexpr(fp.ref))
+    
+    # Pads - convert from board to local coordinates
+    for pad in fp.pads:
+        local_pos = _to_local(pad.position.x_mm, pad.position.y_mm, fp.x_mm, fp.y_mm, fp.angle_deg, fp.layer)
+        args.append(SExpr("pad", (
+            Symbol(pad.number),
+            Symbol(pad.pad_type),
+            Symbol(pad.shape),
+            _format_at(local_pos.x_mm, local_pos.y_mm, pad.angle_deg),
+            _format_size(pad.size_mm[0], pad.size_mm[1]),
+            _format_drill(pad.drill_mm) if pad.drill_mm > 0 else SExpr("drill", (0,)),
+            _format_layers(pad.layers) if pad.layers else SExpr("layers", ("F.Cu",)),
+            SExpr("net", (pad.net_name,)) if pad.net_name else SExpr("net", (0,)),
+            SExpr("uuid", (__import__("uuid").uuid4().hex,)),
+        )))
+    
+    # Embedded fonts
+    args.append(SExpr("embedded_fonts", (Symbol("no"),)))
+    
+    return SExpr("footprint", tuple(args))
+
+
+def add_footprint_to_tree(tree: SExpr, fp, footprint_library_id: str = "Test:R_0805") -> SExpr:
+    """Add a footprint to a PCB S-expression tree.
+    
+    Args:
+        tree: PCB SExpr tree (head="kicad_pcb")
+        fp: Footprint dataclass
+        footprint_library_id: Library identifier
+    
+    Returns:
+        New tree with footprint added
+    """
+    new_fp = footprint_to_sexpr(fp, footprint_library_id)
+    new_args = list(tree.args) + [new_fp]
+    return SExpr(tree.head, tuple(new_args))

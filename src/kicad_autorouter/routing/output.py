@@ -206,9 +206,9 @@ def apply_routes_to_tree(
     # Add track segments
     for t in tracks:
         seg = SExpr("segment", (
-            SExpr("start", (f"{t.start[0]:.3f}", f"{t.start[1]:.3f}")),
-            SExpr("end", (f"{t.end[0]:.3f}", f"{t.end[1]:.3f}")),
-            SExpr("width", (f"{t.width_mm:.3f}",)),
+            SExpr("start", (round(t.start[0], 3), round(t.start[1], 3))),
+            SExpr("end", (round(t.end[0], 3), round(t.end[1], 3))),
+            SExpr("width", (round(t.width_mm, 3),)),
             SExpr("layer", (t.layer,)),
             SExpr("net", (t.net_name,)),
         ))
@@ -217,9 +217,9 @@ def apply_routes_to_tree(
     # Add vias
     for v in vias:
         via = SExpr("via", (
-            SExpr("at", (f"{v.position[0]:.3f}", f"{v.position[1]:.3f}")),
-            SExpr("size", (f"{v.size_mm:.3f}",)),
-            SExpr("drill", (f"{v.drill_mm:.3f}",)),
+            SExpr("at", (round(v.position[0], 3), round(v.position[1], 3))),
+            SExpr("size", (round(v.size_mm, 3),)),
+            SExpr("drill", (round(v.drill_mm, 3),)),
             SExpr("layers", tuple(v.layers)),
             SExpr("net", (v.net_name,)),
         ))

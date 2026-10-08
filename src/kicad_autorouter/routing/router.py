@@ -103,7 +103,7 @@ class SingleNetRouter:
                 if edge_path[0] == full_path[-1]:
                     full_path.extend(edge_path[1:])
                 elif edge_path[-1] == full_path[-1]:
-                    full_path.extend(reversed(edge_path)[:-1])
+                    full_path.extend(list(reversed(edge_path))[:-1])
                 elif edge_path[0] == full_path[0]:
                     full_path = list(reversed(edge_path))[:-1] + full_path
                 elif edge_path[-1] == full_path[0]:
@@ -143,12 +143,19 @@ class SingleNetRouter:
         if (sc, sr, sl) == (gc, gr, gl):
             return RouteResult([start], 0.0, 0, 0.0, True)
 
-        if self._is_blocked(sr, sc, sl) or self._is_blocked(gr, gc, gl):
+        # Allow start/goal on blocked cells (e.g., existing pads/tracks)
+        # Only check bounds, not blocked status for terminals
+        if not (0 <= sr < self.H and 0 <= sc < self.W and 0 <= sl < self.n_layers):
+            return RouteResult([], 0.0, 0, 0.0, False)
+        if not (0 <= gr < self.H and 0 <= gc < self.W and 0 <= gl < self.n_layers):
             return RouteResult([], 0.0, 0, 0.0, False)
 
-        # Heuristic: Manhattan distance * base_cost
+        # Heuristic: Weighted A* with weight > 1 for faster search
+        # Admissible heuristic is Manhattan * base_cost (min step cost = 1)
+        # Weighted A*: f = g + W * h, where W > 1 makes search more greedy
+        heuristic_weight = 200  # Very high = essentially greedy best-first
         def heuristic(c, r, l):
-            return (abs(c - gc) + abs(r - gr) + abs(l - gl)) * self.cost_map.base_cost
+            return (abs(c - gc) + abs(r - gr) + abs(l - gl)) * self.cost_map.base_cost * heuristic_weight
 
         # A* with (f, g, col, row, layer, parent)
         # f = g + h
