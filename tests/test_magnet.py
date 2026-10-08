@@ -368,6 +368,7 @@ class TestNetMagnet:
         assert svg_path.exists() and svg_path.stat().st_size > 1000
 
 
+@pytest.mark.regression
 class TestMovePreservation:
     """A moved part must keep its pad/footprint/board properties.
 

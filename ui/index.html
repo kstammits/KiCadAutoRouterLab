@@ -135,6 +135,17 @@
   .tab-btn { background:#1a222a; border-color:#3a4a5a; color:#9fb0c0; padding:.2rem .5rem; font-size:.65rem; }
   .tab-btn:hover:not(:disabled) { border-color:#7ee0a0; color:#d7e0e9; }
   .tab-btn.active { background:#1a3a1a; border-color:#2e6b45; color:#7ee0a0; }
+  /* Docs panel rendering (minimal client-side markdown subset) */
+  #docs-content h1, #docs-content h2, #docs-content h3 { color:#d7e0e9; margin:.6em 0 .3em; }
+  #docs-content h1 { font-size:.9rem; } #docs-content h2 { font-size:.8rem; } #docs-content h3 { font-size:.75rem; }
+  #docs-content p { margin:.35em 0; color:#9fb0c0; }
+  #docs-content code { background:#0b0e12; padding:.05rem .25rem; border-radius:3px; font-size:.65rem; }
+  #docs-content pre { background:#0b0e12; border:1px solid #2a3540; border-radius:5px; padding:.5rem; overflow:auto; font-size:.65rem; }
+  #docs-content pre code { background:none; padding:0; }
+  #docs-content ul { margin:.3em 0; padding-left:1.2em; color:#9fb0c0; }
+  #docs-content a { color:#7ee0a0; }
+  #docs-content table { border-collapse:collapse; font-size:.65rem; margin:.4em 0; }
+  #docs-content th, #docs-content td { border:1px solid #2a3540; padding:.2rem .4rem; text-align:left; }
   .chk { display:flex; gap:.3rem; align-items:center; font-size:.7rem; color:#9fb0c0; }
   #diag { margin-left:auto; color:#7d8b99; font-size:.65rem; min-width:200px; }
   
@@ -261,6 +272,8 @@
       <label class="chk"><input type="checkbox" id="overlay-toggle" checked> proposal</label>
       <label class="chk"><input type="checkbox" id="forces-toggle"> forces</label>
       <label class="chk"><input type="checkbox" id="drc-toggle"> DRC</label>
+      <button id="drc-run-btn" title="Run kicad-cli DRC on the current board">Run DRC</button>
+      <span class="zoom-info" id="drc-info"></span>
       <label class="chk"><input type="checkbox" id="layer-fcu" checked> F.Cu</label>
       <label class="chk"><input type="checkbox" id="layer-bcu" checked> B.Cu</label>
       <span class="zoom-info" id="zoom-info">100%</span>
@@ -307,6 +320,7 @@
       <div class="panel-tabs">
         <button id="place-tab-btn" class="tab-btn active" title="Placement panel">Place</button>
         <button id="route-tab-btn" class="tab-btn" title="Routing panel">Route</button>
+        <button id="docs-tab-btn" class="tab-btn" title="Docs panel">Docs</button>
         <button id="side-panel-toggle" class="panel-toggle" title="Collapse panel">◀</button>
       </div>
       <div class="panel-content" id="panel-content">
@@ -355,6 +369,17 @@
               <tbody id="nets-tbody"></tbody>
             </table>
           </div>
+        </div>
+
+        <!-- Docs panel -->
+        <div id="docs-panel" hidden>
+          <div class="bar">
+            <span class="num">Docs</span>
+            <select id="docs-select" class="filter-select" title="Select a doc"></select>
+            <button id="docs-open-tab-btn" title="Open doc in a new browser tab">Open in new tab ↗</button>
+            <span id="docs-diag" style="font-size:.65rem;color:#7d8b99;"></span>
+          </div>
+          <div id="docs-content" style="padding:.6rem .7rem;font-size:.72rem;line-height:1.45;overflow:auto;"></div>
         </div>
       </div>
     </aside>
@@ -786,6 +811,7 @@ async function fetchAndInjectSVG(version) {
     }
   }
   applyViewBox();
+  applyLayerVisibility();
 }
 
 async function poll() {
@@ -860,25 +886,81 @@ forcesToggle.addEventListener("change", async () => {
   }
 });
 
-layerFcuToggle.addEventListener("change", () => {
-  const svg = viewport.querySelector("svg");
-  if (svg) {
-    const layer = svg.querySelector("#layer-F.Cu-tracks");
-    if (layer) layer.style.display = layerFcuToggle.checked ? "" : "none";
-    const layerZones = svg.querySelector("#layer-F.Cu-zones");
-    if (layerZones) layerZones.style.display = layerFcuToggle.checked ? "" : "none";
+const drcRunBtn = document.getElementById("drc-run-btn");
+const drcInfo = document.getElementById("drc-info");
+
+function drcCountText(r) {
+  const n = Array.isArray(r.violations) ? r.violations.length : (r.violations ?? 0);
+  const unc = r.unconnected ?? 0;
+  return `DRC: ${n} violations, ${unc} unconnected`;
+}
+
+async function runDrc() {
+  if (!lastVersion) return;
+  drcRunBtn.disabled = true;
+  drcRunBtn.classList.add("loading");
+  drcInfo.textContent = "DRC running…";
+  try {
+    const res = await fetch("/api/drc", { method: "POST" });
+    if (!res.ok) throw new Error(await res.text());
+    const r = await res.json();
+    if (r.error) throw new Error(r.error);
+    drcInfo.textContent = drcCountText(r) + (r.cached ? " (cached)" : "");
+    drcToggle.checked = true;
+  } catch (err) {
+    drcInfo.textContent = `DRC failed: ${err.message}`;
+  } finally {
+    drcRunBtn.disabled = false;
+    drcRunBtn.classList.remove("loading");
   }
+  fetchAndInjectSVG(lastVersion);
+}
+
+drcRunBtn.addEventListener("click", runDrc);
+
+drcToggle.addEventListener("change", async () => {
+  if (!lastVersion) return;
+  if (!drcToggle.checked) {
+    fetchAndInjectSVG(lastVersion);
+    return;
+  }
+  // Toggle-on: run DRC when the cache is empty, stale, or errored.
+  try {
+    const res = await fetch("/api/drc/status");
+    if (!res.ok) throw new Error(await res.text());
+    const st = await res.json();
+    if (st.for_version == null || st.stale || st.error) {
+      await runDrc();
+      return;
+    }
+    drcInfo.textContent = `DRC: ${st.violations} violations, ${st.unconnected} unconnected (cached)`;
+  } catch (err) {
+    drcInfo.textContent = `DRC status failed: ${err.message}`;
+  }
+  fetchAndInjectSVG(lastVersion);
 });
 
-layerBcuToggle.addEventListener("change", () => {
+function layerGroup(svg, layer, kind) {
+  // Attribute selector: group ids contain dots ("layer-F.Cu-tracks"),
+  // which a #id querySelector would misparse as id + class.
+  return svg.querySelector(`[id="layer-${layer}-${kind}"]`);
+}
+
+function applyLayerVisibility() {
   const svg = viewport.querySelector("svg");
-  if (svg) {
-    const layer = svg.querySelector("#layer-B.Cu-tracks");
-    if (layer) layer.style.display = layerBcuToggle.checked ? "" : "none";
-    const layerZones = svg.querySelector("#layer-B.Cu-zones");
-    if (layerZones) layerZones.style.display = layerBcuToggle.checked ? "" : "none";
+  if (!svg) return;
+  for (const [layer, toggle] of [["F.Cu", layerFcuToggle], ["B.Cu", layerBcuToggle]]) {
+    const show = toggle.checked ? "" : "none";
+    for (const kind of ["tracks", "zones"]) {
+      const g = layerGroup(svg, layer, kind);
+      if (g) g.style.display = show;
+    }
   }
-});
+}
+
+layerFcuToggle.addEventListener("change", applyLayerVisibility);
+
+layerBcuToggle.addEventListener("change", applyLayerVisibility);
 
 // Zoom / Pan handlers
 viewport.addEventListener("wheel", e => {
@@ -1551,7 +1633,17 @@ document.getElementById("accept-btn").addEventListener("click", async () => {
     const res = await fetch("/api/placement/accept", { method: "POST" });
     if (!res.ok) throw new Error(await res.text());
     const r = await res.json();
-    diagEl.textContent = `proposal accepted — board updated to v${r.version}. Click "Step Selected" or "Step All Movable" to continue.`;
+    const ripped = r.ripped || {};
+    const rippedNames = Object.keys(ripped);
+    const rippedTxt = rippedNames.length
+      ? rippedNames.map(n => `${n}: ${ripped[n].tracks || 0} tracks/${ripped[n].vias || 0} vias`).join(", ")
+      : "no copper ripped";
+    const skipped = (r.skipped_protected || []).join(", ");
+    const moveTxt = r.moved != null ? `${r.moved} moved` : "";
+    const iterTxt = r.iterations != null ? `${r.iterations} iters, disp ${r.final_max_disp_mm}mm` : "";
+    diagEl.textContent = `accepted v${r.version} (${moveTxt}; ${iterTxt}) — ripped ${rippedTxt}`
+      + (skipped ? `; kept protected ${skipped}` : "")
+      + `. Re-route via Route panel if needed.`;
     document.getElementById("accept-btn").disabled = true;
     document.getElementById("step-selected-btn").textContent = "Step Selected";
     document.getElementById("step-all-btn").textContent = "Step All Movable";
@@ -1976,22 +2068,163 @@ document.getElementById("nets-protect-all").addEventListener("change", async e =
 
 const routingPanel = document.getElementById("routing-panel");
 const placementPanel = document.getElementById("placement-panel");
+const docsPanel = document.getElementById("docs-panel");
 
-// Tab switching for Place/Route panels
+function setActivePanel(which) {
+  placementPanel.hidden = which !== "place";
+  routingPanel.hidden = which !== "route";
+  docsPanel.hidden = which !== "docs";
+  document.getElementById("place-tab-btn").classList.toggle("active", which === "place");
+  document.getElementById("route-tab-btn").classList.toggle("active", which === "route");
+  document.getElementById("docs-tab-btn").classList.toggle("active", which === "docs");
+}
+
+// Tab switching for Place/Route/Docs panels
 document.getElementById("place-tab-btn").addEventListener("click", () => {
-  placementPanel.hidden = false;
-  routingPanel.hidden = true;
-  document.getElementById("place-tab-btn").classList.add("active");
-  document.getElementById("route-tab-btn").classList.remove("active");
+  setActivePanel("place");
 });
 
 document.getElementById("route-tab-btn").addEventListener("click", () => {
-  placementPanel.hidden = true;
-  routingPanel.hidden = false;
-  document.getElementById("place-tab-btn").classList.remove("active");
-  document.getElementById("route-tab-btn").classList.add("active");
+  setActivePanel("route");
   fetchNets();
   loadRoutingParams();
+});
+
+document.getElementById("docs-tab-btn").addEventListener("click", () => {
+  setActivePanel("docs");
+  loadDocsList();
+});
+
+// ---- Docs tab: curated markdown served by /api/docs/* (no new deps) ----
+function escapeHtml(s) {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function renderInline(s) {
+  let out = escapeHtml(s);
+  out = out.replace(/`([^`]+)`/g, "<code>$1</code>");
+  out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  out = out.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  out = out.replace(/(^|[^*\w])\*([^*\n]+)\*/g, "$1<em>$2</em>");
+  return out;
+}
+
+function renderMarkdown(md) {
+  // Minimal subset: headings, fenced code, - lists, tables (as tables),
+  // paragraphs. Anything else falls back to escaped paragraphs.
+  const lines = md.split("\n");
+  let html = "";
+  let inCode = false;
+  let inList = false;
+  const flushList = () => { if (inList) { html += "</ul>"; inList = false; } };
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.trim().startsWith("```")) {
+      flushList();
+      html += inCode ? "</code></pre>" : "<pre><code>";
+      inCode = !inCode;
+      continue;
+    }
+    if (inCode) { html += escapeHtml(line) + "\n"; continue; }
+    const h = line.match(/^(#{1,3})\s+(.*)/);
+    if (h) {
+      flushList();
+      const lvl = h[1].length;
+      html += `<h${lvl}>${renderInline(h[2])}</h${lvl}>`;
+      continue;
+    }
+    // GFM table row: | a | b |  (header + --- separator + rows)
+    if (/^\s*\|.*\|\s*$/.test(line) && i + 1 < lines.length && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1])) {
+      flushList();
+      const cells = (r) => r.trim().replace(/^\||\|$/g, "").split("|").map(c => `<td>${renderInline(c.trim())}</td>`).join("");
+      html += `<table><tr>${cells(line).replace(/<td>/g, "<th>").replace(/<\/td>/g, "</th>")}</tr>`;
+      i += 2; // skip separator, then consume body rows
+      while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) {
+        html += `<tr>${cells(lines[i])}</tr>`;
+        i++;
+      }
+      html += "</table>";
+      i--;
+      continue;
+    }
+    const li = line.match(/^\s*[-*]\s+(.*)/);
+    if (li) {
+      if (!inList) { html += "<ul>"; inList = true; }
+      html += `<li>${renderInline(li[1])}</li>`;
+      continue;
+    }
+    if (!line.trim()) { flushList(); continue; }
+    flushList();
+    html += `<p>${renderInline(line)}</p>`;
+  }
+  flushList();
+  if (inCode) html += "</code></pre>";
+  return html;
+}
+
+let docsLoaded = false;
+
+async function loadDocsList() {
+  const sel = document.getElementById("docs-select");
+  const diag = document.getElementById("docs-diag");
+  if (docsLoaded && sel.options.length) { loadDocContent(sel.value); return; }
+  try {
+    const res = await fetch("/api/docs/list");
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    sel.innerHTML = "";
+    for (const d of (data.docs || [])) {
+      const opt = document.createElement("option");
+      opt.value = d.name;
+      opt.textContent = `${d.title} (${d.name})`;
+      sel.appendChild(opt);
+    }
+    docsLoaded = true;
+    if (sel.options.length) {
+      sel.value = [...sel.options].some(o => o.value === "README.md") ? "README.md" : sel.options[0].value;
+      await loadDocContent(sel.value);
+    }
+  } catch (err) {
+    diag.textContent = `docs failed: ${err.message}`;
+  }
+}
+
+async function loadDocContent(name) {
+  const el = document.getElementById("docs-content");
+  const diag = document.getElementById("docs-diag");
+  if (!name) return;
+  diag.textContent = "loading…";
+  try {
+    const res = await fetch(`/api/docs/content?name=${encodeURIComponent(name)}`);
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    el.innerHTML = renderMarkdown(data.markdown || "");
+    // Rewrite relative .md links to stay inside the allowlisted viewer
+    el.querySelectorAll("a").forEach(a => {
+      const href = a.getAttribute("href") || "";
+      if (/^[^:/?#]+\.md(#.*)?$/i.test(href) || href.startsWith("docs/")) {
+        const target = href.split("#")[0].replace(/^\.\//, "");
+        a.addEventListener("click", (e) => {
+          e.preventDefault();
+          const sel = document.getElementById("docs-select");
+          const match = [...sel.options].find(o => o.value === target || o.value.endsWith("/" + target) || target.endsWith(o.value));
+          if (match) { sel.value = match.value; loadDocContent(match.value); }
+        });
+      }
+    });
+    diag.textContent = data.truncated ? "truncated (size cap)" : `${data.title}`;
+  } catch (err) {
+    diag.textContent = `docs failed: ${err.message}`;
+  }
+}
+
+document.getElementById("docs-select").addEventListener("change", (e) => {
+  loadDocContent(e.target.value);
+});
+
+document.getElementById("docs-open-tab-btn").addEventListener("click", () => {
+  const name = document.getElementById("docs-select").value;
+  if (name) window.open(`/docs.html?doc=${encodeURIComponent(name)}`, "_blank", "noopener");
 });
 
 // Resizable sidebar splitter

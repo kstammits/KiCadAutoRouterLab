@@ -77,6 +77,14 @@ with interactive zoom/pan and component selection for iterative placement:
 - "Pin" button — pin all currently selected footprints
 - Mouse wheel — zoom; drag — pan; "Fit" button — reset view
 
+### DRC overlay
+
+Tick **DRC** or press **Run DRC** to run `kicad-cli pcb drc` on the current
+board; violations render as markers on the SVG. Silkscreen, library-metadata
+and router-irrelevant classes are hidden by default — see
+[`docs/autorouting_glossary.md`](docs/autorouting_glossary.md) (DRC stage) for
+the ignored list.
+
 ## Headless iterative mode
 
 The CLI supports the same iterative flow:

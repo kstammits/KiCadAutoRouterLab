@@ -38,6 +38,41 @@ with open(REPO_ROOT / "pyproject.toml", "rb") as f:
 # User-tuned placement parameters persist here (gitignored).
 PARAMS_PATH = REPO_ROOT / "placement.json"
 
+# Curated docs servable via /api/docs/*. Large KiCad manuals and wikipedia
+# sources are deliberately excluded (pcbnew.md alone is ~700KB and would
+# freeze the side panel on inject).
+DOCS_ALLOWLIST: Dict[str, Path] = {
+    "README.md": REPO_ROOT / "README.md",
+    "PLAN.md": REPO_ROOT / "PLAN.md",
+    "TODO.md": REPO_ROOT / "TODO.md",
+    "docs/README.md": REPO_ROOT / "docs" / "README.md",
+    "docs/autorouting_glossary.md": REPO_ROOT / "docs" / "autorouting_glossary.md",
+}
+DOCS_MAX_BYTES = 200 * 1024
+
+
+def _docs_title(text: str, fallback: str) -> str:
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            return stripped.lstrip("#").strip() or fallback
+    return fallback
+
+
+def _docs_entry(name: str, path: Path) -> dict:
+    try:
+        size = path.stat().st_size
+    except OSError:
+        size = 0
+    title = name
+    try:
+        with open(path, encoding="utf-8") as f:
+            head = f.read(2048)
+        title = _docs_title(head, name)
+    except OSError:
+        pass
+    return {"name": name, "title": title, "size_bytes": size}
+
 
 class BoardState:
     """In-memory snapshot of the currently loaded board pair + proposal + undo stack."""
@@ -69,6 +104,7 @@ class BoardState:
         self.cost_grid: Optional[np.ndarray] = None  # Persistent occupancy grid for incremental routing
         self.routing_grid: Optional[Any] = None  # Persistent RoutingGrid for reuse
         self.routing_model: Optional[Any] = None  # Updated BoardModel after routing
+        self.last_accept_report: dict = {}  # Report from most recent accept (for UI diag)
 
     def load(self, data: bytes, name: str, kind: str) -> int:
         tree = parse(data.decode("utf-8"))
@@ -358,7 +394,13 @@ class BoardState:
         return affected
 
     def accept_proposal(self) -> int:
-        """Apply current proposal to both model and PCB tree, push to undo stack."""
+        """Apply current proposal to both model and PCB tree, push to undo stack.
+
+        Also records ``last_accept_report`` with per-net rip-up counts so the
+        UI can explain e.g. why only one of R1's two nets was ripped (the
+        other — GND — is protected and intentionally kept). Routing stays
+        manual; this method only rips, never re-routes.
+        """
         with self._lock:
             if self.proposal is None or self.model is None or self.pcb_tree is None:
                 raise ValueError("no proposal to accept")
@@ -371,13 +413,43 @@ class BoardState:
             }
             # Use protected nets from BoardState (includes auto-detected + user-added)
             protected_nets = self.get_protected_nets()
+            affected_nets = self._get_affected_nets(moved_uuids)
+            # Snapshot proposal diagnostics before clearing
+            proposal_iterations = getattr(self.proposal, "iterations", 0)
+            proposal_disp = getattr(self.proposal, "final_max_disp_mm", 0.0)
+            moved_deltas = {
+                u: self.proposal.deltas[u] for u in moved_uuids
+                if u in self.proposal.deltas
+            }
+            # Copper counts before (model = authoritative, tree should match)
+            from collections import Counter as _Counter
+            tracks_before = _Counter(t.net_name for t in self.model.tracks if t.net_name)
+            vias_before = _Counter(v.net_name for v in self.model.vias if v.net_name)
             # Apply to BoardModel: move footprints + rip up tracks/vias on affected nets
             self.model = commit_placement(self.model, self.proposal.deltas, protected_nets)
             # Apply to S-expression tree: move footprints + rip up tracks/vias
-            self.pcb_tree = rip_up_nets(self.pcb_tree, self._get_affected_nets(moved_uuids), protected_nets)
+            self.pcb_tree = rip_up_nets(self.pcb_tree, affected_nets, protected_nets)
             for uuid, (dx, dy, da) in self.proposal.deltas.items():
                 if dx != 0.0 or dy != 0.0 or da != 0.0:
                     self.pcb_tree = nudge_footprint_by_uuid(self.pcb_tree, uuid, dx, dy, da)
+            # Copper counts after -> per-net ripped report
+            tracks_after = _Counter(t.net_name for t in self.model.tracks if t.net_name)
+            vias_after = _Counter(v.net_name for v in self.model.vias if v.net_name)
+            ripped: dict = {}
+            for net in sorted(affected_nets - protected_nets):
+                dt = tracks_before.get(net, 0) - tracks_after.get(net, 0)
+                dv = vias_before.get(net, 0) - vias_after.get(net, 0)
+                if dt or dv:
+                    ripped[net] = {"tracks": dt, "vias": dv}
+            self.last_accept_report = {
+                "moved": len(moved_uuids),
+                "iterations": proposal_iterations,
+                "final_max_disp_mm": proposal_disp,
+                "affected_nets": sorted(affected_nets),
+                "ripped": ripped,
+                "skipped_protected": sorted(affected_nets & protected_nets),
+                "moved_deltas": {u: list(d) for u, d in moved_deltas.items()},
+            }
             self.proposal = None
             self.version += 1
             return self.version
@@ -612,6 +684,37 @@ class Handler(BaseHTTPRequestHandler):
             return
         parsed = urlparse(self.path)
         qs = parse_qs(parsed.query)
+        if parsed.path == "/api/docs/list":
+            docs = [_docs_entry(name, DOCS_ALLOWLIST[name]) for name in sorted(DOCS_ALLOWLIST)]
+            self._send(200, json.dumps({"ok": True, "docs": docs}).encode(), "application/json")
+            return
+        if parsed.path == "/api/docs/content":
+            name = (qs.get("name") or [""])[0]
+            if name not in DOCS_ALLOWLIST:
+                self._send(404, b"unknown doc", "text/plain")
+                return
+            full = DOCS_ALLOWLIST[name].resolve()
+            if not str(full).startswith(str(REPO_ROOT.resolve())) or not full.is_file():
+                self._send(404, b"unknown doc", "text/plain")
+                return
+            try:
+                text = full.read_text(encoding="utf-8")
+            except OSError:
+                self._send(404, b"unknown doc", "text/plain")
+                return
+            truncated = False
+            if len(text.encode("utf-8")) > DOCS_MAX_BYTES:
+                text = text[:DOCS_MAX_BYTES]
+                truncated = True
+            payload = {
+                "ok": True,
+                "name": name,
+                "title": _docs_title(text, name),
+                "markdown": text,
+                "truncated": truncated,
+            }
+            self._send(200, json.dumps(payload).encode(), "application/json")
+            return
         if parsed.path == "/api/state":
             model, has_sch, name, version, board_version, version_warning = STATE.snapshot
             body = json.dumps(
@@ -1090,9 +1193,13 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as exc:
                 self._send(400, f"{exc}".encode(), "text/plain")
                 return
+            with STATE._lock:
+                report = dict(getattr(STATE, "last_accept_report", {}))
+            payload = {"ok": True, "version": version}
+            payload.update(report)
             self._send(
                 200,
-                json.dumps({"ok": True, "version": version}).encode(),
+                json.dumps(payload).encode(),
                 "application/json",
             )
             return

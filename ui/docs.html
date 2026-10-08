@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>KiCad AutoRouter — Docs</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background:#101418; color:#d7e0e9; margin:0; padding:0; }
+  header { display:flex; gap:.6rem; align-items:center; padding:.5rem 1rem; background:#161c22; border-bottom:1px solid #2a3540; }
+  header h1 { font-size:.95rem; margin:0; }
+  header select { background:#101418; border:1px solid #3a4a5a; color:#d7e0e9; border-radius:4px; padding:.2rem .5rem; font-family:inherit; font-size:.75rem; }
+  main { max-width:900px; margin:0 auto; padding:1rem 1.5rem 3rem; font-size:.8rem; line-height:1.5; }
+  main h1, main h2, main h3 { color:#d7e0e9; }
+  main p, main li { color:#9fb0c0; }
+  main code { background:#0b0e12; padding:.05rem .3rem; border-radius:3px; }
+  main pre { background:#0b0e12; border:1px solid #2a3540; border-radius:6px; padding:.7rem; overflow:auto; }
+  main pre code { background:none; padding:0; }
+  main a { color:#7ee0a0; }
+  main table { border-collapse:collapse; font-size:.75rem; margin:.5em 0; }
+  main th, main td { border:1px solid #2a3540; padding:.25rem .5rem; text-align:left; }
+  #diag { color:#7d8b99; font-size:.7rem; }
+</style>
+</head>
+<body>
+<header>
+  <h1>KiCad AutoRouter — Docs</h1>
+  <select id="docs-select" title="Select a doc"></select>
+  <a href="/" style="color:#7ee0a0;font-size:.75rem;">← Back to board</a>
+  <span id="diag"></span>
+</header>
+<main id="docs-content"></main>
+<script>
+function escapeHtml(s) {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+function renderInline(s) {
+  let out = escapeHtml(s);
+  out = out.replace(/`([^`]+)`/g, "<code>$1</code>");
+  out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  out = out.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  out = out.replace(/(^|[^*\w])\*([^*\n]+)\*/g, "$1<em>$2</em>");
+  return out;
+}
+function renderMarkdown(md) {
+  const lines = md.split("\n");
+  let html = "";
+  let inCode = false;
+  let inList = false;
+  const flushList = () => { if (inList) { html += "</ul>"; inList = false; } };
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.trim().startsWith("```")) {
+      flushList();
+      html += inCode ? "</code></pre>" : "<pre><code>";
+      inCode = !inCode;
+      continue;
+    }
+    if (inCode) { html += escapeHtml(line) + "\n"; continue; }
+    const h = line.match(/^(#{1,3})\s+(.*)/);
+    if (h) {
+      flushList();
+      const lvl = h[1].length;
+      html += `<h${lvl}>${renderInline(h[2])}</h${lvl}>`;
+      continue;
+    }
+    if (/^\s*\|.*\|\s*$/.test(line) && i + 1 < lines.length && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1])) {
+      flushList();
+      const cells = (r) => r.trim().replace(/^\||\|$/g, "").split("|").map(c => `<td>${renderInline(c.trim())}</td>`).join("");
+      html += `<table><tr>${cells(line).replace(/<td>/g, "<th>").replace(/<\/td>/g, "</th>")}</tr>`;
+      i += 2;
+      while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) {
+        html += `<tr>${cells(lines[i])}</tr>`;
+        i++;
+      }
+      html += "</table>";
+      i--;
+      continue;
+    }
+    const li = line.match(/^\s*[-*]\s+(.*)/);
+    if (li) {
+      if (!inList) { html += "<ul>"; inList = true; }
+      html += `<li>${renderInline(li[1])}</li>`;
+      continue;
+    }
+    if (!line.trim()) { flushList(); continue; }
+    flushList();
+    html += `<p>${renderInline(line)}</p>`;
+  }
+  flushList();
+  if (inCode) html += "</code></pre>";
+  return html;
+}
+
+async function loadDoc(name) {
+  const el = document.getElementById("docs-content");
+  const diag = document.getElementById("diag");
+  diag.textContent = "loading…";
+  const res = await fetch(`/api/docs/content?name=${encodeURIComponent(name)}`);
+  if (!res.ok) throw new Error(await res.text());
+  const data = await res.json();
+  document.title = `Docs — ${data.title}`;
+  el.innerHTML = renderMarkdown(data.markdown || "");
+  diag.textContent = data.truncated ? "truncated (size cap)" : data.title;
+}
+
+async function init() {
+  const sel = document.getElementById("docs-select");
+  const params = new URLSearchParams(location.search);
+  const wanted = params.get("doc") || "README.md";
+  const res = await fetch("/api/docs/list");
+  const data = await res.json();
+  for (const d of (data.docs || [])) {
+    const opt = document.createElement("option");
+    opt.value = d.name;
+    opt.textContent = `${d.title} (${d.name})`;
+    sel.appendChild(opt);
+  }
+  sel.value = [...sel.options].some(o => o.value === wanted) ? wanted : (sel.options[0] ? sel.options[0].value : "");
+  sel.addEventListener("change", () => {
+    history.replaceState(null, "", `?doc=${encodeURIComponent(sel.value)}`);
+    loadDoc(sel.value).catch(e => { document.getElementById("diag").textContent = `failed: ${e.message}`; });
+  });
+  if (sel.value) await loadDoc(sel.value);
+}
+init().catch(e => { document.getElementById("diag").textContent = `failed: ${e.message}`; });
+</script>
+</body>
+</html>

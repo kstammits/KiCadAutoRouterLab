@@ -5,21 +5,17 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "kicad-autorouter"
 version = "0.3.0"
-description = "KiCad autorouter: reads .kicad_pcb files and updates PCB trace placement"
+description = "KiCad autorouter: force-spring placement and grid routing for .kicad_pcb boards"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "numpy>=1.21.0",
-    "networkx>=2.6.0",
-    "pyyaml>=5.4.1",
     "shapely>=2.0.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0.0",
-    "black>=22.0.0",
-    "mypy>=0.950",
 ]
 
 [tool.setuptools.packages.find]

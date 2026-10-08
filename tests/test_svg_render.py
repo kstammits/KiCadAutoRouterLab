@@ -120,3 +120,65 @@ def test_viewbox_grows_with_max_move():
     dx, dy = 5.0, 0.0
     moved = render_board_svg(m, proposal=_proposal(dx, dy))
     assert vb_width(moved) == pytest.approx(vb_width(plain) + 2 * math.hypot(dx, dy))
+
+
+def _tube111_model():
+    return board_model(parse_file(FIXTURES / "tube111.kicad_pcb"))
+
+
+def test_tube111_back_footprints_inside_region_in_svg():
+    """D6/D7 courtyards must render inside board region 2 (not mirrored out).
+
+    Regression for the B.Cu mirror bug: the model used to mirror B.Cu local
+    X, so D6 stuck out the left edge (112.34 < 115.55) and D7 the right
+    edge (149.56 > 143.55) while pcbnew showed both inside.
+    """
+    import re
+
+    m = _tube111_model()
+    region = m.board_regions[2]
+    min_x, max_x, min_y, max_y = region.bbox
+    s = render_board_svg(m)
+    for ref, uuid_suffix in (("D6", "61efabca"), ("D7", "61efabe9")):
+        fp = next(
+            f for f in m.footprints
+            if f.ref == ref and f.uuid.endswith(uuid_suffix)
+        )
+        # Extract this footprint's group and its courtyard line coords.
+        grp = re.search(
+            rf'<g class="[^"]*" data-fp-uuid="{re.escape(fp.uuid)}".*?</g>',
+            s, re.DOTALL,
+        )
+        assert grp, f"no SVG group for {ref}"
+        xs, ys = [], []
+        for ln in re.finditer(
+            r'<line x1="([\d.]+)" y1="([\d.]+)" '
+            r'x2="([\d.]+)" y2="([\d.]+)"', grp.group(0),
+        ):
+            xs += [float(ln.group(1)), float(ln.group(3))]
+            ys += [float(ln.group(2)), float(ln.group(4))]
+        assert xs, f"no courtyard lines for {ref}"
+        assert min(xs) >= min_x - 1e-6 and max(xs) <= max_x + 1e-6
+        assert min(ys) >= min_y - 1e-6 and max(ys) <= max_y + 1e-6
+
+
+def test_tube111_back_pad_rect_uses_effective_angle():
+    """Q1 (B.Cu, fp 90, pads file-angle 90) renders pads rotated 90.
+
+    The file stores each pad's effective board orientation, so the renderer
+    must use it directly instead of combining it with the footprint angle
+    (which double-counts and draws the rect unrotated).
+    """
+    import re
+
+    m = _tube111_model()
+    s = render_board_svg(m)
+    q1 = m.by_ref["Q1"]
+    grp = re.search(
+        rf'<g class="[^"]*" data-fp-uuid="{re.escape(q1.uuid)}".*?</g>',
+        s, re.DOTALL,
+    )
+    assert grp
+    # Pad 1 is a 1.05 x 0.8 rect at board (130.63, 94.345); effective
+    # orientation 90 must appear as rotate(90 ...) in the SVG.
+    assert 'rotate(90.000 130.630 94.345)' in grp.group(0)

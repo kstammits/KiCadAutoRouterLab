@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Optional, Set, Union
+from typing import Dict, Optional, Set, Union
 
 from .sexpr import SExpr, parse_file, to_sexpr, Symbol
 from .board_model import _to_local
@@ -82,12 +82,41 @@ def find_footprint_by_uuid(tree: SExpr, uuid: str) -> SExpr:
 
 
 def _net_name_of(node: Optional[SExpr]) -> Optional[str]:
-    """Extract net name from a (net <name>) node."""
+    """Extract net name from a ``(net ...)`` node.
+
+    Handles both KiCad forms:
+    - ``(net "NAME")`` (single-arg, e.g. tube111 segments/vias)
+    - ``(net <index> "NAME")`` (indexed, KiCad 6+)
+    Empty names and bare numeric refs map to None.
+    """
     if node is None or not node.args:
         return None
+    if len(node.args) >= 2 and isinstance(node.args[1], str):
+        name = node.args[1]
+        return name if name else None
     value = node.args[0]
     name = str(value) if isinstance(value, str) else None
     return name or None
+
+
+def copper_counts_by_net(tree: SExpr) -> Dict[str, Dict[str, int]]:
+    """Count ``(segment)``/``(via)`` nodes per net name.
+
+    Returns ``{net_name: {"tracks": n, "vias": m}}``. Nodes without a
+    net assignment are skipped.
+    """
+    from collections import defaultdict
+
+    counts: Dict[str, Dict[str, int]] = defaultdict(lambda: {"tracks": 0, "vias": 0})
+    for seg in tree.children("segment"):
+        name = _net_name_of(seg.find("net"))
+        if name:
+            counts[name]["tracks"] += 1
+    for via in tree.children("via"):
+        name = _net_name_of(via.find("net"))
+        if name:
+            counts[name]["vias"] += 1
+    return dict(counts)
 
 
 def rip_up_nets(

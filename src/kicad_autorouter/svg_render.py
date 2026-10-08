@@ -14,6 +14,7 @@ import math
 from typing import Dict, List, Optional, Set, Tuple
 
 from .board_model import BoardModel, Point
+from .drc import DEFAULT_IGNORED_TYPES
 from .placement import PlacementProposal
 
 # Dark-theme palette (matches ui/index.html).
@@ -187,14 +188,17 @@ def _footprint_pads_svg(
         px, py = pad.position.x_mm, pad.position.y_mm
         x, y = _fmt(px), _fmt(py)
         w, h = pad.size_mm
-        
-        # Pad angle in board coordinates (Y-up)
-        # For F.Cu: footprint local coords are Y-down, so board angle = fp_angle - pad_angle
-        # For B.Cu: X-mirror flips rotation direction, so board angle = fp_angle + pad_angle
-        if flip:  # B.Cu
-            angle = fp_angle_deg + pad.angle_deg
-        else:     # F.Cu
-            angle = fp_angle_deg - pad.angle_deg
+
+        # Pad angle is used directly: the `.kicad_pcb` file stores each pad's
+        # `(at ...)` angle at its effective board orientation (pcbnew rewrites
+        # pad angles when the footprint rotates — verified 2026-10-08: Q1/R3
+        # on B.Cu store 90 with fp angle 90 and pcbnew reports effective 90;
+        # rotating the footprint to 0 rewrites the pads to 0). Combining it
+        # with fp_angle again would double-count the rotation. (Symmetric
+        # square/circular pads may store a stale 0, e.g. D7, which is
+        # visually identical.)
+        # `flip`/`fp_angle_deg` are retained in the signature for callers.
+        angle = pad.angle_deg
         rot = f' transform="rotate({_fmt(angle)} {x} {y})"' if angle else ""
         if pad.shape == "circle":
             out.append(
@@ -333,12 +337,9 @@ def _ghost_footprints_svg(
             px, py = pad.position.x_mm, pad.position.y_mm
             x, y = _fmt(px), _fmt(py)
             w, h = pad.size_mm
-            # Pad angle in board coordinates (same logic as real footprints)
-            flip = fp.layer.startswith("B")
-            if flip:
-                angle = fp.angle_deg + pad.angle_deg
-            else:
-                angle = fp.angle_deg - pad.angle_deg
+            # Pad angle used directly (same semantics as real footprints:
+            # file stores the effective board orientation).
+            angle = pad.angle_deg
             rot = f' transform="rotate({_fmt(angle)} {x} {y})"' if angle else ""
             if pad.shape == "circle":
                 r = w / 2.0
@@ -464,18 +465,7 @@ def _drc_violations_overlay(
         List of SVG strings for the violation markers
     """
     if ignored_types is None:
-        ignored_types = {
-            "silk_over_copper",
-            "silk_overlap",
-            "silk_edge_clearance",
-            "lib_footprint_issues",
-            "lib_footprint_mismatch",
-            "footprint_filters_mismatch",
-            "footprint_type_mismatch",
-            "missing_courtyard",
-            "track_not_centered_on_via",
-            "tuning_profile_track_geometries",
-        }
+        ignored_types = DEFAULT_IGNORED_TYPES
     
     # Filter violations
     filtered = [v for v in violations if v.get("type") not in ignored_types]

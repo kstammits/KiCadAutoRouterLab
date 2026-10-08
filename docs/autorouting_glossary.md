@@ -87,6 +87,14 @@ Key facts that shape the algorithm choice:
   exit code reflect violations, not just load failures (see [`kicad/cli.md`](kicad/cli.md)
   and `src/kicad_autorouter/validate.py`).
 - Example violation (from the old demo-track pass): `track_dangling | Track has unconnected end`.
+- **Ignored violation classes**: the UI overlay and `DRCResult.filter_violations()` hide
+  non-routing noise by default (`DEFAULT_IGNORED_TYPES` in `src/kicad_autorouter/drc.py`,
+  shared by the SVG overlay): silkscreen (`silk_over_copper`, `silk_overlap`,
+  `silk_edge_clearance`), library/footprint metadata (`lib_footprint_issues`,
+  `lib_footprint_mismatch`, `footprint_filters_mismatch`, `footprint_type_mismatch`,
+  `missing_courtyard`), and router-irrelevant geometry (`track_not_centered_on_via`,
+  `tuning_profile_track_geometries`). Counts shown in the UI are post-filter;
+  the raw `kicad-cli` JSON report in `tmp/` keeps everything.
 
 ## Stage: writeback — emit updated `.kicad_pcb`
 

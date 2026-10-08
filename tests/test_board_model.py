@@ -31,6 +31,11 @@ GHOST_TEST_PCB = FIXTURES / "ghost_test.kicad_pcb"
 
 
 @pytest.fixture(scope="module")
+def tube111_model():
+    return board_model(parse_file(TUBE111_PCB))
+
+
+@pytest.fixture(scope="module")
 def ghost_test_tree():
     return parse_file(GHOST_TEST_PCB)
 
@@ -71,13 +76,15 @@ class TestTransformLocal:
 
     def test_bottom_layer_mirror(self):
         fp = _fp(layer="B.Cu")
-        # local (1, 2) -> B.Cu mirror X -> (-1, 2) -> board (-1, 2)
-        assert_point(transform_local(fp, 1.0, 2.0), -1.0, 2.0)
+        # No mirroring: B.Cu uses the same transform as F.Cu (verified
+        # against pcbnew on tube111 D6/D7, 2026-10-08).
+        # local (1, 2) -> board (1, 2)
+        assert_point(transform_local(fp, 1.0, 2.0), 1.0, 2.0)
 
     def test_bottom_layer_mirror_then_rotate(self):
-        # mirror (1,0) -> (-1,0), then rotate -90 in Y-down: (-1,0) -> (0,1)
+        # No mirror; rotate -90 in Y-down: (1,0) -> (0,-1)
         fp = _fp(angle_deg=90.0, layer="B.Cu")
-        assert_point(transform_local(fp, 1.0, 0.0), 0.0, 1.0)
+        assert_point(transform_local(fp, 1.0, 0.0), 0.0, -1.0)
 
 
 def _sw6(dccf_tree):
@@ -467,3 +474,65 @@ class TestGhostFootprints:
         ferrule_ghost = next(fp for fp in model.ghost_footprints if fp.ref == "GHOST_FERRULE")
         assert ferrule_ghost.uuid == "ghost-ferrule-001"
         assert ferrule_ghost.uuid in model.footprint_region
+
+
+class TestBackLayerNoMirror:
+    """Regression: B.Cu footprints are NOT mirrored (tube111 D6/D7).
+
+    Verified against pcbnew (2026-10-08): pad positions, courtyard extents
+    and effective shapes match     ``pcbnew.LoadBoard`` exactly. The old code
+    mirrored B.Cu local X, pushing asymmetric footprints outside their
+    board region in the model/SVG while pcbnew showed them inside.
+    """
+
+    def test_d6_pad_positions_match_pcbnew(self, tube111_model):
+        d6 = tube111_model.by_ref["D6"]
+        assert d6.layer == "B.Cu"
+        assert (d6.x_mm, d6.y_mm, d6.angle_deg) == (123.85, 41.125, 0.0)
+        by_num = {p.number: p for p in d6.pads}
+        assert_point(by_num["1"].position, 123.85, 41.125)
+        # pcbnew: 134.01 (unmirrored 123.85 + 10.16; mirrored would be 113.69)
+        assert_point(by_num["2"].position, 134.01, 41.125)
+
+    def test_d7_pad_positions_match_pcbnew(self, tube111_model):
+        d7 = tube111_model.by_ref["D7"]
+        assert d7.layer == "B.Cu"
+        assert (d7.x_mm, d7.y_mm, d7.angle_deg) == (138.05, 74.5, 180.0)
+        by_num = {p.number: p for p in d7.pads}
+        assert_point(by_num["1"].position, 138.05, 74.5)
+        # pcbnew: 127.89 (138.05 - 10.16 under 180-deg rotation, no mirror)
+        assert_point(by_num["2"].position, 127.89, 74.5)
+
+    def test_d6_d7_courtyards_inside_region_2(self, tube111_model):
+        region = tube111_model.board_regions[2]
+        min_x, max_x, min_y, max_y = region.bbox
+        assert (min_x, max_x, min_y, max_y) == pytest.approx(
+            (115.55, 143.55, 39.25, 129.65)
+        )
+        for ref, x_lo, x_hi in (("D6", 122.5, 135.36), ("D7", 126.54, 139.4)):
+            fp = tube111_model.by_ref[ref]
+            xs = [p.x_mm for seg in fp.courtyard for p in seg]
+            ys = [p.y_mm for seg in fp.courtyard for p in seg]
+            assert min(xs) == pytest.approx(x_lo, abs=1e-6)
+            assert max(xs) == pytest.approx(x_hi, abs=1e-6)
+            assert min(xs) >= min_x and max(xs) <= max_x
+            assert min(ys) >= min_y and max(ys) <= max_y
+
+    def test_rotated_back_footprints_match_pcbnew(self, tube111_model):
+        # Spot-check 90/-90-deg B.Cu placements (positions verified in pcbnew).
+        expectations = {
+            # ref: ((origin), {pad_num: (x, y)})
+            "Q1": ((129.68, 93.27, 90.0),
+                   {"1": (130.63, 94.345), "2": (128.73, 94.345),
+                    "3": (129.68, 92.195)}),
+            "R3": ((97.1, 46.3, 90.0),
+                   {"1": (97.1, 47.3), "2": (97.1, 45.3)}),
+            "C9": ((88.95, 132.325, -90.0),
+                   {"1": (88.95, 131.2875), "2": (88.95, 133.3625)}),
+        }
+        for ref, (origin, pads) in expectations.items():
+            fp = tube111_model.by_ref[ref]
+            assert (fp.x_mm, fp.y_mm, fp.angle_deg) == pytest.approx(origin)
+            by_num = {p.number: p for p in fp.pads}
+            for num, (x, y) in pads.items():
+                assert_point(by_num[num].position, x, y)

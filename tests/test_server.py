@@ -326,3 +326,69 @@ def test_run_rejects_bad_movable_uuids():
         assert ei.value.code == 400
     finally:
         httpd.shutdown()
+
+
+@pytest.mark.server
+@pytest.mark.minimal
+def test_docs_list_returns_curated_set():
+    """GET /api/docs/list returns exactly the curated allowlist."""
+    httpd, base = _client()
+    try:
+        with urllib.request.urlopen(f"{base}/api/docs/list") as r:
+            data = json.load(r)
+        assert data["ok"] is True
+        names = sorted(d["name"] for d in data["docs"])
+        assert names == sorted([
+            "README.md",
+            "PLAN.md",
+            "TODO.md",
+            "docs/README.md",
+            "docs/autorouting_glossary.md",
+        ])
+    finally:
+        httpd.shutdown()
+
+
+@pytest.mark.server
+@pytest.mark.minimal
+def test_docs_content_readme():
+    """GET /api/docs/content serves README markdown."""
+    httpd, base = _client()
+    try:
+        with urllib.request.urlopen(f"{base}/api/docs/content?name=README.md") as r:
+            data = json.load(r)
+        assert data["ok"] is True
+        assert data["name"] == "README.md"
+        assert "KiCad AutoRouter Lab" in data["markdown"]
+        assert data["truncated"] is False
+    finally:
+        httpd.shutdown()
+
+
+@pytest.mark.server
+@pytest.mark.minimal
+def test_docs_content_rejects_unknown_and_traversal():
+    """Unknown keys and path traversal are 404, never file reads."""
+    httpd, base = _client()
+    try:
+        for bad in ("docs/kicad/pcbnew.md", "../pyproject.toml", "", "nope.md"):
+            with pytest.raises(urllib.error.HTTPError) as ei:
+                urllib.request.urlopen(
+                    f"{base}/api/docs/content?name={urllib.request.quote(bad, safe='')}"
+                )
+            assert ei.value.code == 404
+    finally:
+        httpd.shutdown()
+
+
+@pytest.mark.server
+@pytest.mark.minimal
+def test_docs_html_served():
+    """Standalone /docs.html viewer is served as HTML."""
+    httpd, base = _client()
+    try:
+        with urllib.request.urlopen(f"{base}/docs.html") as r:
+            body = r.read().decode()
+        assert "<title>KiCad AutoRouter — Docs</title>" in body
+    finally:
+        httpd.shutdown()

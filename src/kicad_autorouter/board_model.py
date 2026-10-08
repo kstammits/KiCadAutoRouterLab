@@ -7,10 +7,16 @@ Python :class:`~kicad_autorouter.sexpr.SExpr` tree (no ``pcbnew`` import), so it
 runs in the project .venv for testing; ``pcbnew_adapter.py`` remains the
 routing-accurate semantic source per the 2026-09-29 decision.
 
-Local footprint coordinates are converted to board space with KiCad's transform
-order: a B.Cu footprint is mirrored across its local X axis first, then rotated
-by its angle (counter-clockwise positive), then translated by its position —
-matching ``pcbnew::TRANSFORM`` for back-side footprints.
+Local footprint coordinates are converted to board space by rotating
+by the footprint angle and translating by its position. There is no
+mirroring for ``B.Cu`` footprints: footprint-local ``(at ...)`` positions
+of pads and drawing primitives are stored relative to the footprint origin
+and rotated the same way on both copper layers. This was verified against
+``pcbnew`` on ``tests/fixtures/tube111.kicad_pcb`` (2026-10-08): e.g. ``D6``
+(``B.Cu``, angle 0) has its second pad at ``123.85 + 10.16 = 134.01`` and
+its ``B.Courtyard`` at ``122.5–135.36`` — i.e. *unmirrored*. (An earlier
+revision mirrored ``B.Cu`` local X, which pushed ``D6``/``D7`` outside
+board region 2 in the SVG while ``pcbnew`` showed them inside.)
 """
 
 from __future__ import annotations
@@ -210,10 +216,12 @@ def _to_board(
     Footprint local coordinates have Y pointing DOWN (KiCad editor convention);
     board coordinates have Y pointing UP. The PCB file stores footprint orientation
     as CCW angle in board (Y-up) coordinates. A CCW rotation in Y-up equals a
-    CW (negative) rotation in Y-down local coords. Apply B.Cu mirror on X,
-    then rotate by -angle_deg.
+    CW (negative) rotation in Y-down local coords, so rotate by -angle_deg.
+    Both ``F.Cu`` and ``B.Cu`` footprints use the same transform (no mirroring;
+    verified against ``pcbnew`` — see module docstring). ``layer`` is accepted
+    for API compatibility and ignored.
     """
-    x = -local_x_mm if layer == "B.Cu" else local_x_mm
+    x = local_x_mm
     y = local_y_mm
     rad = math.radians(-angle_deg)
     cos_a, sin_a = math.cos(rad), math.sin(rad)
@@ -869,21 +877,24 @@ def _to_local(
     layer: str,
 ) -> Point:
     """Map a board-space point to footprint-local coordinates.
-    
-    Inverse of _to_board().
+
+    No mirroring on either layer (see module docstring); ``layer`` is
+    accepted for API compatibility and ignored.
+
+    Note on the rotation convention: this applies the same ``R(-angle)``
+    rotation as :func:`_to_board` (not its transpose), matching the frame
+    that ``placement._compute_footprint_pose_from_pads`` builds its Kabsch
+    fit around (no-move yields ``da == 0``). For footprints rotated by a
+    multiple of 180 degrees (e.g. D6 at 0, D7 at 180) this is the exact
+    inverse; for 90/270-degree footprints the round trip is approximate —
+    a pre-existing limitation, out of scope for the B.Cu mirror fix.
     """
-    rad = math.radians(angle_deg)
+    rad = math.radians(-angle_deg)
     cos_a, sin_a = math.cos(rad), math.sin(rad)
     bx = board_x_mm - x_mm
     by = board_y_mm - y_mm
-    if layer == "B.Cu":
-        # B.Cu was mirrored across X before rotation
-        lx = bx * cos_a + by * sin_a
-        ly = -bx * sin_a + by * cos_a
-        lx = -lx
-    else:
-        lx = bx * cos_a + by * sin_a
-        ly = -bx * sin_a + by * cos_a
+    lx = bx * cos_a - by * sin_a
+    ly = bx * sin_a + by * cos_a
     return Point(lx, ly)
 
 

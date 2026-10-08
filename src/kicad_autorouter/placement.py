@@ -330,19 +330,14 @@ def _compute_footprint_pose_from_pads(
     for global_idx in pad_indices:
         local_idx = global_pad_idx_to_local[global_idx]
         pad = fp.pads[local_idx]
-        # Transform from board to local (inverse of _to_board)
+        # Transform from board to local (inverse of _to_board; no mirroring
+        # on either layer — verified against pcbnew, see board_model docstring)
         rad = math.radians(fp.angle_deg)
         cos_a, sin_a = math.cos(rad), math.sin(rad)
         bx = pad.position.x_mm - fp.x_mm
         by = pad.position.y_mm - fp.y_mm
-        if fp.layer == "B.Cu":
-            # B.Cu was mirrored across X before rotation
-            lx = (bx * cos_a + by * sin_a)  # reverse rotation
-            ly = (-bx * sin_a + by * cos_a)
-            lx = -lx  # reverse mirror
-        else:
-            lx = bx * cos_a + by * sin_a
-            ly = -bx * sin_a + by * cos_a
+        lx = bx * cos_a + by * sin_a
+        ly = -bx * sin_a + by * cos_a
         orig_local.append([lx, ly])
     orig_local = np.array(orig_local, dtype=np.float64)
 

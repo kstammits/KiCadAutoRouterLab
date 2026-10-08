@@ -13,9 +13,9 @@ Plus this session: move-preservation fix (`apply_deltas`/`commit_placement` via 
 (Fixed 2026-10-05: `accept_proposal` unpacked `identify_power_nets` as 2 values and used list `|` union; now unpacks 3 and converts to sets. `ui/server.py` import is fine — `UI_DIR`/`REPO_ROOT` are defined at module level.)
 (Fixed 2026-10-08: `apply_deltas` dropped `pad_type`/`drill_mm`/`layers`/`ghost`/`version`/regions on move; now uses `replace` throughout. `commit_placement` preserves board metadata via `replace(moved_model, tracks=…, vias=…)`.)
 
-### Half-wired features (UI controls exist, backend incomplete)
-1. **DRC overlay (needs UI trigger):** backend is wired (`POST /api/drc` runs kicad-cli, `GET /api/drc/status`, `set_drc_violations()`, svg `drc=` renders the cache) — but the UI never POSTs `/api/drc`, so the cache stays empty and the toggle shows nothing. Needs a "Run DRC" button or auto-run on toggle.
-2. **Layer toggles (F.Cu/B.Cu):** checkboxes exist but have no listeners, `boardSrc()` doesn't send `fcu`/`bcu`, server parses them (`server.py` ~lines 640–641) yet never passes them to `render_board_svg`, which has no such parameters. Toggles do nothing.
+### Half-wired features ✅ (wired 2026-10-08 — verified live on tube111)
+1. **DRC overlay:** added "Run DRC" button (`POST /api/drc`) + auto-run when the toggle is switched on with an empty/stale cache; result counts shown in `#drc-info`. Verified: 28 violations + 4 unconnected, overlay renders with `drc=1`, absent with `drc=0`.
+2. **Layer toggles (F.Cu/B.Cu):** fixed selector bug — `#layer-F.Cu-tracks` never matches (dot parses as class); now uses `[id="…"]` attribute selectors via `applyLayerVisibility()`, re-applied on every SVG inject. Toggles hide/show the layer's tracks+zones groups (vias share one group and stay visible).
 
 ## In Progress / Next Session 📋
 
@@ -74,12 +74,12 @@ Plus this session: move-preservation fix (`apply_deltas`/`commit_placement` via 
 - [ ] Highlight selected footprint in SVG on table hover
 - [ ] Show force vectors as SVG overlay option
 - [ ] Mini-map/overview panel
-- [ ] Layer toggle (F.Cu / B.Cu / both)
+- [x] Layer toggle (F.Cu / B.Cu / both) — done 2026-10-08 for tracks+zones (vias share one group)
 
 ### Routing Integration
 - [x] "Route" button in UI (done: Route Selected / Route All in routing panel)
 - [x] Show routing progress (done: loading spinner on buttons)
-- [ ] DRC violations overlay (backend wired, UI trigger missing — see Half-wired)
+- [x] DRC violations overlay (done 2026-10-08: Run button + toggle auto-run + svg overlay)
 - [ ] Writeback/download with routed tracks
 
 ### Performance

@@ -5,8 +5,8 @@ from pathlib import Path
 import pytest
 
 from kicad_autorouter.board_model import BoardModel, Footprint, Pad, Point, board_model, commit_placement
-from kicad_autorouter.io import rip_up_nets
-from kicad_autorouter.sexpr import parse_file
+from kicad_autorouter.io import _net_name_of, copper_counts_by_net, rip_up_nets
+from kicad_autorouter.sexpr import SExpr, parse_file
 
 FIXTURES = Path(__file__).parent / "fixtures"
 TUBE111_PCB = FIXTURES / "tube111.kicad_pcb"
@@ -201,6 +201,40 @@ class TestRipUpNetsSexpr:
         # Tracks/vias without net should be preserved
         assert segs_no_net_after == segs_no_net_before
         assert vias_no_net_after == vias_no_net_before
+
+    def test_rip_up_nets_indexed_net_form(self, tube111_tree):
+        """rip_up_nets must handle (net <idx> NAME) segment/via form (KiCad 6+)."""
+        assert _net_name_of(SExpr("net", (5, "GND"))) == "GND"
+        assert _net_name_of(SExpr("net", ("GND",))) == "GND"
+        assert _net_name_of(SExpr("net", (0,))) is None
+        assert _net_name_of(SExpr("net", (0, ""))) is None
+
+        seg = SExpr(
+            "segment",
+            (
+                SExpr("start", (0.0, 0.0)),
+                SExpr("end", (1.0, 1.0)),
+                SExpr("net", (5, "GND")),
+            ),
+        )
+        via = SExpr(
+            "via",
+            (
+                SExpr("at", (0.0, 0.0)),
+                SExpr("net", (7, "SIG")),
+            ),
+        )
+        tree = SExpr("kicad_pcb", (seg, via))
+        assert copper_counts_by_net(tree) == {
+            "GND": {"tracks": 1, "vias": 0},
+            "SIG": {"tracks": 0, "vias": 1},
+        }
+        result = rip_up_nets(tree, {"GND"}, set())
+        assert list(result.children("segment")) == []
+        assert len(list(result.children("via"))) == 1
+        # Protected indexed net is preserved
+        result2 = rip_up_nets(tree, {"GND"}, {"GND"})
+        assert len(list(result2.children("segment"))) == 1
 
 
 class TestEdgeCases:
