@@ -1,6 +1,6 @@
 # KiCad AutoRouter Lab
 
-> **Note:** This project is **mostly AI-generated** and has **not been extensively human-tested**. Expect bugs, incomplete features, and potential regressions. Use at your own risk.
+> **Note:** This project is **mostly AI-generated** (Nemotron, Qwen3.8, and Muse Spark 1.3, plus Karl's brain) and has **not been extensively human-tested**. Expect bugs, incomplete features, and potential regressions. Use at your own risk.
 
 Utility that reads KiCad files (`.kicad_pcb`, `.kicad_sch`) and updates PCB trace
 placement. Current phase: **per-pad force-spring placement with organic rotation**
