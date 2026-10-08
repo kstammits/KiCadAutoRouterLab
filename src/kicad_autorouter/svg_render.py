@@ -379,10 +379,16 @@ def _tracks_svg(model: BoardModel, colors: Dict[str, str]) -> List[str]:
         out.append(f'<g id="layer-{layer}-tracks" fill="none" stroke-linecap="round" opacity="{opacity}">')
         for t in layer_tracks:
             color = colors.get(t.net_name or "", NO_NET)
+            net_attr = html.escape(t.net_name or "", quote=True)
+            title = html.escape(
+                f"{t.net_name or '(no net)'} · {t.layer} · {t.width_mm:.2f}mm",
+            )
             out.append(
-                f'<line x1="{_fmt(t.start.x_mm)}" y1="{_fmt(t.start.y_mm)}" '
+                f'<line class="track" data-net="{net_attr}" data-layer="{layer}" '
+                f'x1="{_fmt(t.start.x_mm)}" y1="{_fmt(t.start.y_mm)}" '
                 f'x2="{_fmt(t.end.x_mm)}" y2="{_fmt(t.end.y_mm)}" '
-                f'stroke="{color}" stroke-width="{_fmt(t.width_mm)}"{dash}/>'
+                f'stroke="{color}" stroke-width="{_fmt(t.width_mm)}"{dash}>'
+                f"<title>{title}</title></line>"
             )
         out.append("</g>")
     return out
@@ -394,15 +400,19 @@ def _vias_svg(model: BoardModel, colors: Dict[str, str]) -> List[str]:
         color = colors.get(v.net_name or "", NO_NET)
         r = v.size_mm / 2.0
         x, y = _fmt(v.position.x_mm), _fmt(v.position.y_mm)
+        net_attr = html.escape(v.net_name or "", quote=True)
+        title = html.escape(f"{v.net_name or '(no net)'} · via · {v.size_mm:.2f}mm")
+        out.append(f'<g class="via" data-net="{net_attr}"><title>{title}</title>')
         out.append(
             f'<circle cx="{x}" cy="{y}" r="{_fmt(r)}" fill="none" '
-            f'stroke="{color}" stroke-width="0.2"/>'
+            f'stroke="{color}" stroke-width="0.2" pointer-events="none"/>'
         )
         hr = v.drill_mm / 2.0
         if hr > 0:
             out.append(
-                f'<circle cx="{x}" cy="{y}" r="{_fmt(hr)}" fill="{HOLE_BG}"/>'
+                f'<circle cx="{x}" cy="{y}" r="{_fmt(hr)}" fill="{HOLE_BG}" pointer-events="none"/>'
             )
+        out.append("</g>")
     out.append("</g>")
     return out
 

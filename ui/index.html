@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>KiCad AutoRouter — Workflow</title>
+<title>Karltron Autorouter — Workflow</title>
 <style>
   :root { color-scheme: dark; }
   body { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background:#101418; color:#d7e0e9; margin:0; padding:0; height:100vh; display:flex; flex-direction:column; }
@@ -28,6 +28,10 @@
   .sidebar-content { flex:1; overflow:auto; }
   .fp-table { width:100%; border-collapse:collapse; font-size:.7rem; }
   .fp-table th { position:sticky; top:0; background:#161c22; color:#7d8b99; font-weight:600; text-align:left; padding:.3rem .5rem; border-bottom:1px solid #2a3540; z-index:1; white-space:nowrap; }
+  .fp-table th.sortable { cursor:pointer; user-select:none; }
+  .fp-table th.sortable:hover { color:#d7e0e9; }
+  .fp-table th.sorted-asc::after { content:" ▲"; }
+  .fp-table th.sorted-desc::after { content:" ▼"; }
   .fp-table td { padding:.25rem .5rem; border-bottom:1px solid #1a2028; vertical-align:middle; }
   .fp-table tr:hover td { background:#1a222a; }
   .fp-table tr.fp-selected-row td { background:#1a2e1a; }
@@ -191,6 +195,12 @@
   
   /* Marquee selection rectangle */
   .marquee { position:absolute; pointer-events:none; border:1px dashed #7ee0a0; background:rgba(126,224,160,0.1); z-index:10; }
+
+  /* Copper (track/via) click-to-select net */
+  .track { pointer-events: stroke; cursor: pointer; }
+  .via { cursor: pointer; }
+  .track.net-selected { filter: drop-shadow(0 0 1px #fff) brightness(1.4); }
+  .via.net-selected { filter: drop-shadow(0 0 1.5px #fff) brightness(1.4); }
   
   .drop { margin:1rem; border:1px dashed #3a4a5a; border-radius:8px; padding:2rem; text-align:center; color:#7d8b99; font-size:.8rem; }
   .file { color:#d7e0e9; }
@@ -198,7 +208,7 @@
 </head>
 <body>
 <header>
-  <h1>KiCad AutoRouter — Workflow</h1>
+  <h1>Karltron Autorouter — Workflow</h1>
 </header>
 
 <div class="app-layout">
@@ -242,11 +252,11 @@
         <thead>
           <tr>
             <th class="fp-col-select"><input type="checkbox" id="fp-select-all" title="Select all visible"></th>
-            <th class="fp-col-ref">Ref</th>
-            <th class="fp-col-footprint">Footprint</th>
-            <th class="fp-col-layer">Layer</th>
-            <th class="fp-col-nets">Nets</th>
-            <th class="fp-col-state">State</th>
+            <th class="fp-col-ref sortable" data-sort="ref" title="Sort by reference">Ref</th>
+            <th class="fp-col-footprint sortable" data-sort="footprint" title="Sort by footprint">Footprint</th>
+            <th class="fp-col-layer sortable" data-sort="layer" title="Sort by layer">Layer</th>
+            <th class="fp-col-nets sortable" data-sort="nets" title="Sort by nets">Nets</th>
+            <th class="fp-col-state sortable" data-sort="state" title="Sort by state">State</th>
           </tr>
         </thead>
         <tbody id="fp-tbody"></tbody>
@@ -281,10 +291,10 @@
       <button id="download-btn" title="Download modified PCB" hidden>Download</button>
       <button id="undo-btn" title="Undo last accept" disabled>Undo</button>
       <button id="reset-btn" title="Reset to original board" hidden>Reset</button>
-      <button id="pipeline-toggle-btn" class="pipeline-toggle" title="Toggle pipeline">Pipeline ▼</button>
+      <button id="pipeline-toggle-btn" class="pipeline-toggle" title="Toggle pipeline">Pipeline ▶</button>
     </div>
     
-    <div class="pipeline" id="pipeline"></div>
+    <div class="pipeline collapsed" id="pipeline"></div>
     
     <!-- Board viewport - takes remaining space -->
     <div class="board" id="board">
@@ -402,7 +412,7 @@ async function loadStages() {
 
 // Pipeline collapse/expand
 const pipelineToggleBtn = document.getElementById("pipeline-toggle-btn");
-let pipelineCollapsed = false;
+let pipelineCollapsed = true;
 pipelineToggleBtn.addEventListener("click", () => {
   pipelineCollapsed = !pipelineCollapsed;
   pipeline.classList.toggle("collapsed", pipelineCollapsed);
@@ -812,6 +822,7 @@ async function fetchAndInjectSVG(version) {
   }
   applyViewBox();
   applyLayerVisibility();
+  highlightSelectedNets();
 }
 
 async function poll() {
@@ -1228,27 +1239,117 @@ async function clearSelection() {
 viewport.addEventListener("click", e => {
   if (isPanning) return; // Don't select while panning
   const fpEl = e.target.closest(".footprint");
-  if (!fpEl) return;
-  const uuid = fpEl.dataset.fpUuid;
-  if (!uuid) return;
-  
-  if (e.shiftKey) {
-    toggleSelect(uuid);
-  } else if (e.altKey) {
-    togglePin(uuid);
-  } else {
-    // Single select: clear others, select this
-    if (!pinnedUuids.has(uuid)) {
-      selectedUuids.clear();
-      selectedUuids.add(uuid);
-      updateFootprintVisuals();
-      updateSelectionUI();
+  if (fpEl) {
+    const uuid = fpEl.dataset.fpUuid;
+    if (!uuid) return;
+
+    if (e.shiftKey) {
+      toggleSelect(uuid);
+    } else if (e.altKey) {
+      togglePin(uuid);
+    } else {
+      // Single select: clear others, select this
+      if (!pinnedUuids.has(uuid)) {
+        selectedUuids.clear();
+        selectedUuids.add(uuid);
+        updateFootprintVisuals();
+        updateSelectionUI();
+      }
     }
+    return;
+  }
+  // Copper click selects its net (net-only: never touches footprint selection)
+  const copperEl = e.target.closest(".track, .via");
+  if (copperEl) {
+    selectNetFromCopper(copperEl.dataset.net, e.shiftKey || e.ctrlKey || e.metaKey);
   }
 });
 
+function highlightSelectedNets() {
+  const svg = viewport.querySelector("svg");
+  if (!svg) return;
+  svg.querySelectorAll(".track, .via").forEach(el => {
+    el.classList.toggle("net-selected", selectedNets.has(el.dataset.net));
+  });
+}
+
+function selectNetFromCopper(net, additive) {
+  if (!net) {
+    const diag = document.getElementById("route-diag");
+    if (diag) diag.textContent = "copper has no net assignment";
+    return;
+  }
+  if (additive) {
+    if (selectedNets.has(net)) selectedNets.delete(net);
+    else selectedNets.add(net);
+  } else {
+    selectedNets.clear();
+    selectedNets.add(net);
+  }
+  // Net-only: never touch selectedUuids / footprints.
+  updateNetSelectionUI();
+  highlightSelectedNets();
+  // Sync nets table rows if rendered
+  document.querySelectorAll("#nets-tbody tr").forEach(tr => {
+    const n = tr.dataset.net;
+    if (!n) return;
+    const on = selectedNets.has(n);
+    const cb = tr.querySelector("input.net-col-select");
+    if (cb) cb.checked = on;
+    tr.classList.toggle("net-selected-row", on);
+  });
+  const diag = document.getElementById("route-diag");
+  if (diag) {
+    diag.textContent = selectedNets.size
+      ? `net: ${[...selectedNets].join(", ")}`
+      : "";
+  }
+}
+
 // Load footprints list from server
 let allFootprints = []; // Cache of all footprints from server
+let fpSortKey = null; // Current sort column: ref | footprint | layer | nets | state
+let fpSortDir = 1; // 1 = asc, -1 = desc
+
+function fpStateRank(fp) {
+  if (fp.ghost) return 0;
+  if (fp.locked) return 1;
+  if (fp.pinned) return 2;
+  if (fp.selected) return 3;
+  return 4;
+}
+
+function compareFootprints(a, b) {
+  if (!fpSortKey) return 0;
+  let r = 0;
+  if (fpSortKey === "ref") {
+    r = (a.ref || "").localeCompare(b.ref || "", undefined, { numeric: true, sensitivity: "base" });
+  } else if (fpSortKey === "footprint") {
+    r = (a.footprint_id || "").localeCompare(b.footprint_id || "", undefined, { numeric: true, sensitivity: "base" });
+  } else if (fpSortKey === "layer") {
+    r = (a.layer || "").localeCompare(b.layer || "");
+  } else if (fpSortKey === "nets") {
+    const an = (a.nets && a.nets[0]) || "";
+    const bn = (b.nets && b.nets[0]) || "";
+    r = an.localeCompare(bn, undefined, { sensitivity: "base" }) || ((a.nets?.length || 0) - (b.nets?.length || 0));
+  } else if (fpSortKey === "state") {
+    r = fpStateRank(a) - fpStateRank(b);
+  }
+  if (r === 0) {
+    // Stable tiebreak by ref (natural order)
+    r = (a.ref || "").localeCompare(b.ref || "", undefined, { numeric: true, sensitivity: "base" });
+  }
+  return r * fpSortDir;
+}
+
+function updateFpSortHeaders() {
+  document.querySelectorAll("#fp-table th.sortable").forEach(th => {
+    th.classList.remove("sorted-asc", "sorted-desc");
+    if (th.dataset.sort === fpSortKey) {
+      th.classList.add(fpSortDir === 1 ? "sorted-asc" : "sorted-desc");
+    }
+  });
+}
 
 async function fetchFootprints() {
   if (!lastVersion) return;
@@ -1308,7 +1409,9 @@ function matchesFilter(fp, filters) {
 
 function getFilteredFootprints() {
   const filters = getFilterValues();
-  return allFootprints.filter(fp => matchesFilter(fp, filters));
+  const filtered = allFootprints.filter(fp => matchesFilter(fp, filters));
+  if (fpSortKey) filtered.sort(compareFootprints);
+  return filtered;
 }
 
 function getStateBadge(fp) {
@@ -1322,6 +1425,7 @@ function getStateBadge(fp) {
 function renderFootprintTable() {
   const tbody = document.getElementById("fp-tbody");
   const filtered = getFilteredFootprints();
+  updateFpSortHeaders();
   tbody.innerHTML = filtered.map(fp => {
     const netsStr = fp.nets.slice(0, 3).join(", ") + (fp.nets.length > 3 ? ` +${fp.nets.length - 3}` : "");
     const layerClass = fp.layer === "B" ? "B" : "F";
@@ -1507,6 +1611,20 @@ document.getElementById("pin-btn").addEventListener("click", () => {
 ["fp-search", "filter-ref", "filter-net", "filter-layer", "filter-state", "filter-hide-locked", "filter-hide-fixed"].forEach(id => {
   const el = document.getElementById(id);
   if (el) el.addEventListener("input", renderFootprintTable);
+});
+
+// Sortable footprint table headers
+document.querySelectorAll("#fp-table th.sortable").forEach(th => {
+  th.addEventListener("click", () => {
+    const key = th.dataset.sort;
+    if (fpSortKey === key) {
+      fpSortDir = fpSortDir === 1 ? -1 : 1;
+    } else {
+      fpSortKey = key;
+      fpSortDir = 1;
+    }
+    renderFootprintTable();
+  });
 });
 
 // Sidebar buttons
