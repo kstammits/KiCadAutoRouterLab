@@ -26,6 +26,7 @@ KEEPOUT_FILL = "#e06c75"  # keepout zones
 HOLE_BG = "#0b0e12"  # via holes (matches the viewer panel background)
 PAD_STROKE = "#0e1216"
 GHOST_COURTYARD = "#3d4a56"  # original position of moved parts (ghost overlay)
+GHOST_FOOTPRINT = "#a85cf5"  # ghost/pseudo component color (purple)
 MOVE_ARROW = "#e0a458"  # old -> new displacement arrows
 
 # DRC violation colors
@@ -37,6 +38,7 @@ FP_LOCKED_COLOR = "#e06c75"    # KiCad locked - red
 FP_PINNED_COLOR = "#e0a458"    # User pinned - orange
 FP_SELECTED_COLOR = "#7ee0a0"  # Selected for move - green
 FP_DEFAULT_COLOR = COURTYARD   # Default unlocked - gray-blue
+FP_GHOST_COLOR = GHOST_FOOTPRINT  # Ghost components - purple
 
 
 def _fmt(v: float) -> str:
@@ -176,6 +178,7 @@ def _footprint_pads_svg(
     fp,
     colors: Dict[str, str],
     flip: bool,
+    fp_angle_deg: float,
 ) -> str:
     """Generate pad elements for a single footprint."""
     out = []
@@ -184,7 +187,14 @@ def _footprint_pads_svg(
         px, py = pad.position.x_mm, pad.position.y_mm
         x, y = _fmt(px), _fmt(py)
         w, h = pad.size_mm
-        angle = -pad.angle_deg if flip else pad.angle_deg
+        
+        # Pad angle in board coordinates (Y-up)
+        # For F.Cu: footprint local coords are Y-down, so board angle = fp_angle - pad_angle
+        # For B.Cu: X-mirror flips rotation direction, so board angle = fp_angle + pad_angle
+        if flip:  # B.Cu
+            angle = fp_angle_deg + pad.angle_deg
+        else:     # F.Cu
+            angle = fp_angle_deg - pad.angle_deg
         rot = f' transform="rotate({_fmt(angle)} {x} {y})"' if angle else ""
         if pad.shape == "circle":
             out.append(
@@ -286,11 +296,73 @@ def _footprints_svg(
         fp_group = [
             f'<g class="{cls}" data-fp-uuid="{fp.uuid}"{transform}>',
             _footprint_courtyard_svg(fp, is_locked, is_pinned, is_selected, is_movable),
-            _footprint_pads_svg(fp, colors, flip),
+            _footprint_pads_svg(fp, colors, flip, fp.angle_deg),
             _footprint_ref_svg(fp, dx, dy, da),
             "</g>",
         ]
         out.append("\n".join(fp_group))
+    return out
+
+
+def _ghost_footprints_svg(
+    model: BoardModel,
+    colors: Dict[str, str],
+) -> List[str]:
+    """Generate ghost footprint elements (courtyards, pads, refs) for pseudo-components.
+    
+    Ghost footprints are rendered with a distinct purple color, dashed style,
+    and semi-transparency to distinguish them from real footprints.
+    """
+    out = []
+    if not model.ghost_footprints:
+        return out
+    
+    out.append(
+        f'<g stroke="{GHOST_FOOTPRINT}" stroke-width="0.15" '
+        f'stroke-dasharray="4 3" opacity="0.7" fill="none">'
+    )
+    for fp in model.ghost_footprints:
+        # Courtyard lines
+        for a, b in fp.courtyard:
+            out.append(
+                f'<line x1="{_fmt(a.x_mm)}" y1="{_fmt(a.y_mm)}" '
+                f'x2="{_fmt(b.x_mm)}" y2="{_fmt(b.y_mm)}"/>'
+            )
+        # Pads (smaller, ghost color)
+        for pad in fp.pads:
+            px, py = pad.position.x_mm, pad.position.y_mm
+            x, y = _fmt(px), _fmt(py)
+            w, h = pad.size_mm
+            # Pad angle in board coordinates (same logic as real footprints)
+            flip = fp.layer.startswith("B")
+            if flip:
+                angle = fp.angle_deg + pad.angle_deg
+            else:
+                angle = fp.angle_deg - pad.angle_deg
+            rot = f' transform="rotate({_fmt(angle)} {x} {y})"' if angle else ""
+            if pad.shape == "circle":
+                r = w / 2.0
+                out.append(
+                    f'<circle cx="{x}" cy="{y}" r="{_fmt(r * 0.7)}" '
+                    f'fill="{GHOST_FOOTPRINT}" fill-opacity="0.4" '
+                    f'stroke="{GHOST_FOOTPRINT}" stroke-width="0.1"{rot}/>'
+                )
+            else:
+                out.append(
+                    f'<rect x="{_fmt(px - w / 2.0)}" y="{_fmt(py - h / 2.0)}" '
+                    f'width="{_fmt(w * 0.7)}" height="{_fmt(h * 0.7)}" '
+                    f'fill="{GHOST_FOOTPRINT}" fill-opacity="0.4" '
+                    f'stroke="{GHOST_FOOTPRINT}" stroke-width="0.1"{rot}/>'
+                )
+        # Reference text at centroid
+        if fp.ref:
+            cx, cy = _courtyard_centroid(fp)
+            out.append(
+                f'<text x="{_fmt(cx)}" y="{_fmt(cy - 0.5)}" '
+                f'fill="{GHOST_FOOTPRINT}" font-family="monospace" font-size="1" opacity="0.7">'
+                f'{html.escape(fp.ref)}</text>'
+            )
+    out.append("</g>")
     return out
 
 
@@ -538,6 +610,7 @@ def render_board_svg(
     parts.extend(_edge_cuts_svg(model))
     parts.extend(_zones_svg(model))
     parts.extend(_footprints_svg(model, colors, offsets, locked_uuids, pinned, selected))
+    parts.extend(_ghost_footprints_svg(model, colors))
     parts.extend(_tracks_svg(model, colors))
     parts.extend(_vias_svg(model, colors))
     if moved:

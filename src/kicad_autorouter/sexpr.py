@@ -97,6 +97,12 @@ def tokenize(text: str) -> list[Token]:
             line += 1
             col = 1
             continue
+        if ch == ";":
+            # Skip KiCad-style comment to end of line
+            while i < n and text[i] != "\n":
+                i += 1
+                col += 1
+            continue
         if ch in " \t\r":
             i += 1
             col += 1

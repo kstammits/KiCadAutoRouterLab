@@ -1,11 +1,10 @@
-"""Minimal stdlib web server for the autorouter workflow UI."""
-
 import base64
 import io
 import json
 import signal
 import sys
 import threading
+import tomllib
 from typing import Dict, Tuple, Set, Optional, Any
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -31,6 +30,10 @@ from kicad_autorouter.routing.pipeline import RoutingParams, route_nets
 from kicad_autorouter.routing.power import identify_power_nets
 from kicad_autorouter.sexpr import parse
 from kicad_autorouter.svg_render import render_board_svg
+
+# App version from pyproject.toml
+with open(REPO_ROOT / "pyproject.toml", "rb") as f:
+    APP_VERSION = tomllib.load(f)["project"]["version"]
 
 # User-tuned placement parameters persist here (gitignored).
 PARAMS_PATH = REPO_ROOT / "placement.json"
@@ -604,6 +607,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/api/stages":
             self._send(200, json.dumps(stages()).encode(), "application/json")
             return
+        if self.path == "/api/version":
+            self._send(200, json.dumps({"version": APP_VERSION}).encode(), "application/json")
+            return
         parsed = urlparse(self.path)
         qs = parse_qs(parsed.query)
         if parsed.path == "/api/state":
@@ -787,6 +793,40 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps({"ok": True, "footprints": footprints_data}).encode(), "application/json")
             return
         
+        if parsed.path == "/api/nets":
+            model, _, _, _, _, _ = STATE.snapshot
+            if model is None:
+                self._send(404, b"no board loaded", "text/plain")
+                return
+            protected = STATE.get_protected_nets()
+            # Count existing tracks/vias per net
+            track_counts = {}
+            via_counts = {}
+            for t in model.tracks:
+                if t.net_name:
+                    track_counts[t.net_name] = track_counts.get(t.net_name, 0) + 1
+            for v in model.vias:
+                if v.net_name:
+                    via_counts[v.net_name] = via_counts.get(v.net_name, 0) + 1
+            
+            nets_data = []
+            for net_name, conns in model.nets.items():
+                footprint_refs = set()
+                for conn in conns:
+                    footprint_refs.add(conn.ref)
+                nets_data.append({
+                    "name": net_name,
+                    "pad_count": len(conns),
+                    "footprint_count": len(footprint_refs),
+                    "track_count": track_counts.get(net_name, 0),
+                    "via_count": via_counts.get(net_name, 0),
+                    "protected": net_name in protected,
+                })
+            # Sort: protected first, then by pad count descending
+            nets_data.sort(key=lambda n: (not n["protected"], -n["pad_count"]))
+            self._send(200, json.dumps({"ok": True, "nets": nets_data}).encode(), "application/json")
+            return
+        
         # GET /api/routing/debug/cost-grid - return cost grid for visualization
         if parsed.path == "/api/routing/debug/cost-grid":
             model, _, _, _, _, _ = STATE.snapshot
@@ -932,13 +972,12 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
             params = load_params()
+            req_stub = req.get("stub", params.stub)
             if iterations is not None:
-                if not isinstance(iterations, int) or iterations < 1:
-                    self._send(400, b"iterations must be a positive integer", "text/plain")
+                if not isinstance(iterations, int) or (iterations < 1 and not req_stub):
+                    self._send(400, b"iterations must be a positive integer (or 0 for stub mode)", "text/plain")
                     return
                 # Create params with overridden max_iterations, preserve other settings
-                # Use request body for stub if provided, else fall back to saved params
-                req_stub = req.get("stub", params.stub)
                 params = PlacementParams(
                     repulsion_kr=params.repulsion_kr,
                     attraction_ka=params.attraction_ka,
@@ -951,14 +990,18 @@ class Handler(BaseHTTPRequestHandler):
                     stub=req_stub,
                 )
 
-            # If movable_uuids not provided, compute as all unlocked except pinned
+# If movable_uuids not provided, compute as all unlocked except pinned
             if movable_uuids is None:
                 movable_uuids = {
                     fp.uuid for fp in model.footprints
                     if fp.uuid and not fp.locked and fp.uuid not in STATE.get_pinned_uuids()
                 }
+            else:
+                # Filter out any pinned footprints from explicit movable_uuids
+                pinned = STATE.get_pinned_uuids()
+                movable_uuids = {u for u in movable_uuids if u not in pinned}
             
-
+            
             try:
                 proposal = run_placement(model, params, movable_uuids)
             except Exception as exc:
@@ -1019,6 +1062,10 @@ class Handler(BaseHTTPRequestHandler):
                     fp.uuid for fp in model.footprints
                     if fp.uuid and not fp.locked and fp.uuid not in STATE.get_pinned_uuids()
                 }
+            else:
+                # Filter out any pinned footprints from explicit movable_uuids
+                pinned = STATE.get_pinned_uuids()
+                movable_uuids = {u for u in movable_uuids if u not in pinned}
 
             try:
                 proposal = run_placement(model, params, movable_uuids)
@@ -1148,40 +1195,6 @@ class Handler(BaseHTTPRequestHandler):
             return
         
         # ==================== Nets API ====================
-        
-        if parsed.path == "/api/nets":
-            model, _, _, _, _, _ = STATE.snapshot
-            if model is None:
-                self._send(404, b"no board loaded", "text/plain")
-                return
-            protected = STATE.get_protected_nets()
-            # Count existing tracks/vias per net
-            track_counts = {}
-            via_counts = {}
-            for t in model.tracks:
-                if t.net_name:
-                    track_counts[t.net_name] = track_counts.get(t.net_name, 0) + 1
-            for v in model.vias:
-                if v.net_name:
-                    via_counts[v.net_name] = via_counts.get(v.net_name, 0) + 1
-            
-            nets_data = []
-            for net_name, conns in model.nets.items():
-                footprint_refs = set()
-                for conn in conns:
-                    footprint_refs.add(conn.ref)
-                nets_data.append({
-                    "name": net_name,
-                    "pad_count": len(conns),
-                    "footprint_count": len(footprint_refs),
-                    "track_count": track_counts.get(net_name, 0),
-                    "via_count": via_counts.get(net_name, 0),
-                    "protected": net_name in protected,
-                })
-            # Sort: protected first, then by pad count descending
-            nets_data.sort(key=lambda n: (not n["protected"], -n["pad_count"]))
-            self._send(200, json.dumps({"ok": True, "nets": nets_data}).encode(), "application/json")
-            return
         
         if parsed.path == "/api/nets/protected":
             if parsed.query_string and "GET" in parsed.query_string:

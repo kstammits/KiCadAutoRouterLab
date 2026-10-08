@@ -99,7 +99,7 @@ def _mark_pad(
     
     # Determine which layers this pad occupies
     is_through_hole = pad.is_through_hole
-    pad_layers = [0, 1] if is_through_hole else [fp.layer == "F.Cu" and 0 or 1]
+    pad_layers = [0, 1] if is_through_hole else [0 if fp.layer == "F.Cu" else 1]
     
     # Get clearance for this pad's net
     net_name = pad.net_name

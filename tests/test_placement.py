@@ -29,6 +29,12 @@ FIXTURES = Path(__file__).parent / "fixtures"
 MINIMAL_PCB = FIXTURES / "minimal.kicad_pcb"
 DCCF_PCB = FIXTURES / "DCCF.sved.kicad_pcb"
 TUBE111_PCB = FIXTURES / "tube111.kicad_pcb"
+GHOST_TEST_PCB = FIXTURES / "ghost_test.kicad_pcb"
+
+
+@pytest.fixture(scope="module")
+def ghost_test_model():
+    return board_model(parse_file(GHOST_TEST_PCB))
 
 
 @pytest.fixture(scope="module")
@@ -55,7 +61,7 @@ class TestParams:
         assert p.convergence_eps_mm == 0.01
         assert p.demo_jitter_mm == 0.0
         assert p.stub is False
-        assert p.rigid_stiffness == 1e6
+        assert p.rigid_stiffness == 5e5
 
     def test_roundtrip(self):
         p = PlacementParams(repulsion_kr=42.5, demo_jitter_mm=3.0)
@@ -225,7 +231,7 @@ class TestPhysicsRunner:
         """Rigid constraints should keep pad distances constant (within tolerance)."""
         from kicad_autorouter.placement import _collect_pad_nodes, _build_rigid_constraints_mst
 
-        pads, _, fp_uuid_to_pad_indices, _ = _collect_pad_nodes(dccf_model)
+        pads, _, fp_uuid_to_pad_indices, _, _ = _collect_pad_nodes(dccf_model)
         pad_positions = np.array([[p.position.x_mm, p.position.y_mm] for p in pads])
 
         rigid_src, rigid_dst, rigid_rest = _build_rigid_constraints_mst(pad_positions, fp_uuid_to_pad_indices)
@@ -334,3 +340,119 @@ class TestCourtyardCollision:
         total_force_magnitude = sum(math.hypot(fx, fy) for fx, fy in prop.forces.values())
         # Should still have other forces
         assert total_force_magnitude > 0.0
+
+
+@pytest.mark.physics
+@pytest.mark.minimal
+class TestGhostComponents:
+    """Tests for ghost/pseudo component behavior in placement."""
+
+    def test_ghost_repels_real_footprints(self, ghost_test_model):
+        """Ghost footprint with courtyard should repel real footprints via collision."""
+        # Run placement with strong courtyard repulsion
+        p = PlacementParams(
+            stub=False,
+            max_iterations=50,
+            courtyard_repulsion_kc=5000.0,
+            repulsion_kr=10.0,  # Low Coulomb repulsion to isolate courtyard effect
+        )
+        prop = run_placement(ghost_test_model, p)
+
+        # Ghost should not have deltas (never moves)
+        ghost_uuid = "ghost-rail-top-001"
+        assert ghost_uuid not in prop.deltas
+
+        # Real footprints should move away from ghost
+        assert prop.deltas
+        for uuid, (dx, dy, da) in prop.deltas.items():
+            fp = next(fp for fp in ghost_test_model.footprints if fp.uuid == uuid)
+            # Both R1 and R2 should move down (away from ghost at y=10)
+            assert dy > 0, f"{fp.ref} should move down (positive dy), got dy={dy}"
+
+    def test_ghost_no_deltas_in_proposal(self, ghost_test_model):
+        """Ghost footprints never appear in placement proposal deltas."""
+        p = PlacementParams(stub=False, max_iterations=10)
+        prop = run_placement(ghost_test_model, p)
+
+        ghost_uuid = "ghost-rail-top-001"
+        assert ghost_uuid not in prop.deltas
+        # Only real footprints should have deltas
+        for uuid in prop.deltas:
+            fp = next((fp for fp in ghost_test_model.footprints if fp.uuid == uuid), None)
+            assert fp is not None, f"Delta for unknown UUID {uuid}"
+            assert fp.ghost is False
+
+    def test_ghost_courtyard_collision_force(self, ghost_test_model):
+        """Ghost courtyard collision generates forces on real footprints."""
+        p = PlacementParams(stub=False, max_iterations=5, courtyard_repulsion_kc=2000.0)
+        prop = run_placement(ghost_test_model, p)
+
+        # Forces should be non-zero for real footprints near ghost
+        assert prop.forces
+        for uuid, (fx, fy) in prop.forces.items():
+            fp = next((fp for fp in ghost_test_model.footprints if fp.uuid == uuid), None)
+            if fp:
+                # R1 and R2 start at y=50, ghost at y=10 with courtyard up to y=15
+                # They should feel downward repulsion (positive fy)
+                assert fy > 0, f"{fp.ref} should feel downward force, got fy={fy}"
+
+    def test_ghost_attraction_parsing(self, ghost_test_model):
+        """Ghost attraction properties are parsed correctly."""
+        ghost = next(fp for fp in ghost_test_model.ghost_footprints if fp.ref == "GHOST_FERRULE")
+        assert len(ghost.ghost_attractions) == 1
+        target_ref, ideal_len, ka = ghost.ghost_attractions[0]
+        assert target_ref == "U1"
+        assert ideal_len == 25.0
+        assert ka == 0.1
+
+    def test_ghost_attracts_target_footprint(self, ghost_test_model):
+        """Ghost with attraction pulls target footprint toward it."""
+        # Ghost at y=20, U1 at y=50. Attraction should pull U1 up (negative dy).
+        p = PlacementParams(
+            stub=False,
+            max_iterations=30,
+            courtyard_repulsion_kc=0.0,  # Disable courtyard to isolate attraction
+            repulsion_kr=10.0,  # Low Coulomb repulsion
+        )
+        prop = run_placement(ghost_test_model, p)
+
+        # U1 should move toward ghost (upward = negative dy)
+        u1_uuid = "aaaaaaaa-1111-2222-3333-444444444444"
+        assert u1_uuid in prop.deltas
+        dx, dy, da = prop.deltas[u1_uuid]
+        assert dy < 0, f"U1 should move up toward ghost (negative dy), got dy={dy}"
+
+        # R2 (no attraction) should not move significantly toward ghost
+        r2_uuid = "bbbbbbbb-1111-2222-3333-444444444444"
+        if r2_uuid in prop.deltas:
+            dx2, dy2, da2 = prop.deltas[r2_uuid]
+            # R2 should not be pulled up as strongly
+            assert dy2 >= dy, f"R2 should not be pulled up more than U1"
+
+    def test_ghost_attraction_force_distribution(self, ghost_test_model):
+        """Attraction force is distributed equally to all target pads."""
+        p = PlacementParams(stub=False, max_iterations=5, courtyard_repulsion_kc=0.0)
+        prop = run_placement(ghost_test_model, p)
+
+        u1_uuid = "aaaaaaaa-1111-2222-3333-444444444444"
+        assert u1_uuid in prop.forces
+        fx, fy = prop.forces[u1_uuid]
+        # U1 should feel upward force toward ghost at y=20
+        assert fy < 0, f"U1 should feel upward force toward ghost, got fy={fy}"
+
+    def test_ghost_attraction_only_affects_target(self, ghost_test_model):
+        """Only the target footprint feels attraction force."""
+        p = PlacementParams(stub=False, max_iterations=10, courtyard_repulsion_kc=0.0, repulsion_kr=1.0)
+        prop = run_placement(ghost_test_model, p)
+
+        u1_uuid = "aaaaaaaa-1111-2222-3333-444444444444"
+        r2_uuid = "bbbbbbbb-1111-2222-3333-444444444444"
+
+        u1_force = prop.forces.get(u1_uuid, (0, 0))
+        r2_force = prop.forces.get(r2_uuid, (0, 0))
+
+        # U1 should have upward force (negative fy)
+        assert u1_force[1] < 0, f"U1 should have upward force, got {u1_force}"
+
+        # R2 should have minimal force (only weak Coulomb repulsion)
+        assert abs(r2_force[1]) < 1.0, f"R2 should have minimal force, got {r2_force}"

@@ -1,0 +1,215 @@
+(kicad_pcb
+	(version 20241229)
+	(generator "pcbnew")
+	(generator_version "9.0")
+	(general
+		(thickness 1.6)
+	)
+	(paper "A4")
+	(layers
+		(0 "F.Cu" signal)
+		(31 "F.CrtYd" user "F.Courtyard")
+		(25 "Edge.Cuts" user)
+	)
+	(setup
+		(stackup
+			(layer "F.Cu" (type "copper") (thickness 0.035))
+			(layer "dielectric 1" (type "core") (thickness 1.51) (material "FR4"))
+			(layer "B.Cu" (type "copper") (thickness 0.035))
+		)
+	)
+	(net 0 "")
+	(net 1 "NET1")
+	(net 2 "NET2")
+	; Real component 1 (target for attraction)
+	(footprint "Test:R_0805"
+		(layer "F.Cu")
+		(uuid "aaaaaaaa-1111-2222-3333-444444444444")
+		(at 50 50)
+		(property "Reference" "U1"
+			(at 0 -3 0)
+			(layer "F.SilkS")
+			(hide yes))
+		(property "Value" "IC_TEST"
+			(at 0 3 0)
+			(layer "F.Fab")
+			(hide yes))
+		(fp_line
+			(start -1 -0.5)
+			(end 1 -0.5)
+			(stroke (width 0.15))
+			(layer "F.CrtYd"))
+		(fp_line
+			(start 1 -0.5)
+			(end 1 0.5)
+			(stroke (width 0.15))
+			(layer "F.CrtYd"))
+		(fp_line
+			(start 1 0.5)
+			(end -1 0.5)
+			(stroke (width 0.15))
+			(layer "F.CrtYd"))
+		(fp_line
+			(start -1 0.5)
+			(end -1 -0.5)
+			(stroke (width 0.15))
+			(layer "F.CrtYd"))
+		(pad "1" smd rect
+			(at -1 0)
+			(size 1 1)
+			(layers "F.Cu" "F.Paste" "F.Mask")
+			(net 1 "NET1"))
+		(pad "2" smd rect
+			(at 1 0)
+			(size 1 1)
+			(layers "F.Cu" "F.Paste" "F.Mask")
+			(net 2 "NET2"))
+	)
+	; Real component 2
+	(footprint "Test:R_0805"
+		(layer "F.Cu")
+		(uuid "bbbbbbbb-1111-2222-3333-444444444444")
+		(at 80 50)
+		(property "Reference" "R2"
+			(at 0 -3 0)
+			(layer "F.SilkS")
+			(hide yes))
+		(property "Value" "10k"
+			(at 0 3 0)
+			(layer "F.Fab")
+			(hide yes))
+		(fp_line
+			(start -1 -0.5)
+			(end 1 -0.5)
+			(stroke (width 0.15))
+			(layer "F.CrtYd"))
+		(fp_line
+			(start 1 -0.5)
+			(end 1 0.5)
+			(stroke (width 0.15))
+			(layer "F.CrtYd"))
+		(fp_line
+			(start 1 0.5)
+			(end -1 0.5)
+			(stroke (width 0.15))
+			(layer "F.CrtYd"))
+		(fp_line
+			(start -1 0.5)
+			(end -1 -0.5)
+			(stroke (width 0.15))
+			(layer "F.CrtYd"))
+		(pad "1" smd rect
+			(at -1 0)
+			(size 1 1)
+			(layers "F.Cu" "F.Paste" "F.Mask")
+			(net 1 "NET1"))
+		(pad "2" smd rect
+			(at 1 0)
+			(size 1 1)
+			(layers "F.Cu" "F.Paste" "F.Mask")
+			(net 2 "NET2"))
+	)
+	; Ghost component 1: Rail at top edge (repulsion)
+	(footprint "Ghost:Rail_10mm"
+		(layer "F.Cu")
+		(uuid "ghost-rail-top-001")
+		(at 50 10)
+		(property "Reference" "GHOST_RAIL_TOP"
+			(at 0 0 0)
+			(layer "F.SilkS")
+			(hide yes))
+		(property "ghost" "yes"
+			(at 0 0 0)
+			(layer "F.SilkS")
+			(hide yes))
+		(fp_line
+			(start -30 -5)
+			(end 30 -5)
+			(stroke (width 0.1))
+			(layer "F.CrtYd"))
+		(fp_line
+			(start 30 -5)
+			(end 30 5)
+			(stroke (width 0.1))
+			(layer "F.CrtYd"))
+		(fp_line
+			(start 30 5)
+			(end -30 5)
+			(stroke (width 0.1))
+			(layer "F.CrtYd"))
+		(fp_line
+			(start -30 5)
+			(end -30 -5)
+			(stroke (width 0.1))
+			(layer "F.CrtYd"))
+		(pad "1" smd rect
+			(at 0 0)
+			(size 0.5 0.5)
+			(layers "F.Cu")
+			(net 0 ""))
+	)
+	; Ghost component 2: Ferrule at y=20 with attraction to U1
+	(footprint "Ghost:Ferrule"
+		(layer "F.Cu")
+		(uuid "ghost-ferrule-001")
+		(at 50 20)
+		(property "Reference" "GHOST_FERRULE"
+			(at 0 0 0)
+			(layer "F.SilkS")
+			(hide yes))
+		(property "ghost" "yes"
+			(at 0 0 0)
+			(layer "F.SilkS")
+			(hide yes))
+		(property "ghost_attract_1" "U1,25.0,0.1"
+			(at 0 0 0)
+			(layer "F.SilkS")
+			(hide yes))
+		(fp_line
+			(start -2 -1)
+			(end 2 -1)
+			(stroke (width 0.1))
+			(layer "F.CrtYd"))
+		(fp_line
+			(start 2 -1)
+			(end 2 1)
+			(stroke (width 0.1))
+			(layer "F.CrtYd"))
+		(fp_line
+			(start 2 1)
+			(end -2 1)
+			(stroke (width 0.1))
+			(layer "F.CrtYd"))
+		(fp_line
+			(start -2 1)
+			(end -2 -1)
+			(stroke (width 0.1))
+			(layer "F.CrtYd"))
+		(pad "1" smd rect
+			(at 0 0)
+			(size 0.5 0.5)
+			(layers "F.Cu")
+			(net 0 ""))
+	)
+	; Board outline
+	(gr_line
+		(start 0 0)
+		(end 100 0)
+		(stroke (width 0.15))
+		(layer "Edge.Cuts"))
+	(gr_line
+		(start 100 0)
+		(end 100 100)
+		(stroke (width 0.15))
+		(layer "Edge.Cuts"))
+	(gr_line
+		(start 100 100)
+		(end 0 100)
+		(stroke (width 0.15))
+		(layer "Edge.Cuts"))
+	(gr_line
+		(start 0 100)
+		(end 0 0)
+		(stroke (width 0.15))
+		(layer "Edge.Cuts"))
+)

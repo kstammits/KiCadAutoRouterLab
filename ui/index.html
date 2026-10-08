@@ -253,6 +253,7 @@
       <button id="load-btn">Load PCB…</button>
       <span id="board-name" style="flex:1; text-align:center;">no board loaded</span>
       <span id="board-sch" class="chip" hidden>pcb only</span>
+      <span id="app-version" class="chip" style="margin-left:0.5rem; font-size:0.6rem;">v?</span>
       <label class="chk"><input type="checkbox" id="overlay-toggle" checked> proposal</label>
       <label class="chk"><input type="checkbox" id="forces-toggle"> forces</label>
       <label class="chk"><input type="checkbox" id="drc-toggle"> DRC</label>
@@ -897,12 +898,14 @@ let marqueeEl = null;
 viewport.addEventListener("mousedown", e => {
   if (e.button !== 0) return; // left click only
   
-  // Check if clicking on empty space (for marquee) or on a footprint
+  // Check if clicking on a footprint
   const fpEl = e.target.closest(".footprint");
   const isEmptySpace = !fpEl;
   
-  // Start marquee selection on Shift+drag on empty space, or just drag on empty space
-  if (isEmptySpace && (e.shiftKey || !fpEl)) {
+  // Shift + click empty space = marquee select
+  // Click empty space = pan
+  // Click footprint = select (handled by click handler), drag = pan
+  if (isEmptySpace && e.shiftKey) {
     isMarqueeSelecting = true;
     const startRect = viewport.getBoundingClientRect();
     marqueeStart = { x: e.clientX - startRect.left, y: e.clientY - startRect.top };
@@ -914,7 +917,7 @@ viewport.addEventListener("mousedown", e => {
     return;
   }
   
-  // Otherwise start panning
+  // Start panning (empty space without shift, or footprint drag)
   isPanning = true;
   panStart = { x: e.clientX, y: e.clientY, vb: [...viewBox] };
   viewport.classList.add("panning");
@@ -1368,7 +1371,11 @@ async function selectByNet(net) {
   selectedUuids.clear();
   uuidsToSelect.forEach(uuid => selectedUuids.add(uuid));
   
-  // Update server for each
+  // Also select this net for routing
+  selectedNets.clear();
+  selectedNets.add(net);
+  
+  // Update server for each footprint
   for (const uuid of uuidsToSelect) {
     await fetch("/api/placement/select", {
       method: "POST",
@@ -1379,7 +1386,13 @@ async function selectByNet(net) {
   
   updateFootprintVisuals();
   updateSelectionUI();
+  updateNetSelectionUI();
   renderFootprintTable();
+  
+  // If routing panel is visible, update its table too
+  if (!document.getElementById("routing-panel").hidden) {
+    await fetchNets();
+  }
 }
 
 // Load pinned on board load
@@ -2093,6 +2106,20 @@ document.addEventListener("keydown", e => {
   }
 });
 
+// Fetch and display app version
+async function loadAppVersion() {
+  try {
+    const res = await fetch("/api/version");
+    if (res.ok) {
+      const data = await res.json();
+      document.getElementById("app-version").textContent = "v" + data.version;
+    }
+  } catch (err) {
+    console.error("Failed to load version:", err);
+  }
+}
+
+loadAppVersion();
 loadStages();
 loadParams().catch(() => {});
 poll();

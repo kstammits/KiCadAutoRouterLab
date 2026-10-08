@@ -1,5 +1,8 @@
 # KiCad AutoRouter - TODO
 
+Can we move the Route/Place dialogs, which are currently on the bottom of the page, put them on the right side as a pull out panel? I have a wide-screen laptop and not much vertical space.
+Also let's get a version number visible somewhere, and bump it. we should be past 0.2 so far.
+
 ## ⚠️ Session State Notes (2026-10-06, verified)
 
 **Working tree batch** (not yet committed; branch is 2 commits ahead of origin):

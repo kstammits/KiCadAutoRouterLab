@@ -37,12 +37,12 @@ class PlacementParams:
     ideal_length_mm: float = 25.0
     max_iterations: int = 1000
     convergence_eps_mm: float = 0.01
-    # Rigid constraint stiffness (very high to keep footprint pads together)
-    rigid_stiffness: float = 1e6
+    # Rigid constraint stiffness (high to keep footprint pads together)
+    rigid_stiffness: float = 5e5
     # Courtyard collision repulsion force constant
-    courtyard_repulsion_kc: float = 2000.0
+    courtyard_repulsion_kc: float = 10000.0
     # Boundary repulsion force constant (pushes footprints away from region edges)
-    boundary_repulsion_kb: float = 100000.0
+    boundary_repulsion_kb: float = 500000.0
     # Preview-only knob for the v0 stub: deterministic per-UUID jitter so the
     # proposal overlay is visibly testable before real physics exists.
     demo_jitter_mm: float = 0.0
@@ -128,20 +128,23 @@ def _jitter_for(uuid: str, max_mm: float) -> Tuple[float, float]:
     return (magnitude * math.cos(angle), magnitude * math.sin(angle))
 
 
-def _collect_pad_nodes(model: BoardModel) -> Tuple[List[Pad], List[int], Dict[str, List[int]], Dict[int, int]]:
-    """Collect all pads with net connections.
+def _collect_pad_nodes(model: BoardModel) -> Tuple[List[Pad], List[int], Dict[str, List[int]], Dict[int, int], List[bool]]:
+    """Collect all pads with net connections from both real and ghost footprints.
 
     Returns:
         - pads: list of Pad objects with net_name
-        - pad_to_fp_idx: list mapping pad index -> footprint index in model.footprints
+        - pad_to_fp_idx: list mapping pad index -> footprint index (negative for ghost footprints)
         - fp_uuid_to_pad_indices: dict mapping footprint UUID -> list of global pad indices
         - global_pad_idx_to_local: dict mapping global pad index -> local pad index within footprint
+        - pad_is_ghost: list of bool indicating if pad belongs to a ghost footprint
     """
     pads = []
     pad_to_fp_idx = []
     fp_uuid_to_pad_indices = {}
     global_pad_idx_to_local = {}
+    pad_is_ghost = []
 
+    # Real footprints (positive indices)
     for fp_idx, fp in enumerate(model.footprints):
         if not fp.uuid:
             continue
@@ -154,10 +157,28 @@ def _collect_pad_nodes(model: BoardModel) -> Tuple[List[Pad], List[int], Dict[st
             global_pad_idx_to_local[global_pad_idx] = local_pad_idx
             pads.append(pad)
             pad_to_fp_idx.append(fp_idx)
+            pad_is_ghost.append(False)
         if fp_pad_indices:
             fp_uuid_to_pad_indices[fp.uuid] = fp_pad_indices
 
-    return pads, pad_to_fp_idx, fp_uuid_to_pad_indices, global_pad_idx_to_local
+    # Ghost footprints (negative indices: -(ghost_idx + 1))
+    for ghost_idx, fp in enumerate(model.ghost_footprints):
+        if not fp.uuid:
+            continue
+        fp_pad_indices = []
+        for local_pad_idx, pad in enumerate(fp.pads):
+            if pad.net_name is None:
+                continue
+            global_pad_idx = len(pads)
+            fp_pad_indices.append(global_pad_idx)
+            global_pad_idx_to_local[global_pad_idx] = local_pad_idx
+            pads.append(pad)
+            pad_to_fp_idx.append(-(ghost_idx + 1))  # negative = ghost
+            pad_is_ghost.append(True)
+        if fp_pad_indices:
+            fp_uuid_to_pad_indices[fp.uuid] = fp_pad_indices
+
+    return pads, pad_to_fp_idx, fp_uuid_to_pad_indices, global_pad_idx_to_local, pad_is_ghost
 
 
 def _build_net_edges_pad_level(
@@ -405,22 +426,76 @@ def _footprint_courtyard_polygon(fp: Footprint, pad_positions: Optional[np.ndarr
     Args:
         fp: The footprint
         pad_positions: Optional (n_pads, 2) array of current pad positions for this region
-        pad_indices: Optional list of local pad indices for this footprint
+        pad_indices: Optional list of local pad indices for this footprint in the region's pad array
     """
-    if fp.courtyard:
-        # Collect all vertices from courtyard segments
+    def _get_courtyard_vertices() -> list[tuple[float, float]]:
+        if not fp.courtyard:
+            return []
         vertices = []
         for a, b in fp.courtyard:
             vertices.append((a.x_mm, a.y_mm))
             vertices.append((b.x_mm, b.y_mm))
-        if len(vertices) >= 3:
+        return vertices
+
+    def _get_original_pad_positions() -> np.ndarray:
+        """Get original pad positions in board coordinates from footprint."""
+        if not fp.pads:
+            return np.empty((0, 2), dtype=np.float64)
+        return np.array([(p.position.x_mm, p.position.y_mm) for p in fp.pads], dtype=np.float64)
+
+    def _transform_vertices(vertices: list[tuple[float, float]], orig_pos: np.ndarray, curr_pos: np.ndarray) -> list[tuple[float, float]]:
+        """Apply rigid transformation from original to current pad positions."""
+        if len(orig_pos) == 0 or len(curr_pos) == 0 or len(orig_pos) != len(curr_pos):
+            return vertices
+        
+        # Compute centroids
+        orig_centroid = orig_pos.mean(axis=0)
+        curr_centroid = curr_pos.mean(axis=0)
+        
+        # Translation
+        tx = curr_centroid[0] - orig_centroid[0]
+        ty = curr_centroid[1] - orig_centroid[1]
+        
+        # Rotation: use first two pads if available
+        angle = 0.0
+        if len(orig_pos) >= 2 and len(curr_pos) >= 2:
+            orig_vec = orig_pos[1] - orig_pos[0]
+            curr_vec = curr_pos[1] - curr_pos[0]
+            orig_angle = math.atan2(orig_vec[1], orig_vec[0])
+            curr_angle = math.atan2(curr_vec[1], curr_vec[0])
+            angle = curr_angle - orig_angle
+        
+        # Apply transformation
+        cos_a = math.cos(angle)
+        sin_a = math.sin(angle)
+        transformed = []
+        for vx, vy in vertices:
+            # Translate to origin, rotate, translate back + translation
+            dx = vx - orig_centroid[0]
+            dy = vy - orig_centroid[1]
+            rx = dx * cos_a - dy * sin_a
+            ry = dx * sin_a + dy * cos_a
+            transformed.append((rx + orig_centroid[0] + tx, ry + orig_centroid[1] + ty))
+        return transformed
+
+    # Try courtyard first
+    courtyard_vertices = _get_courtyard_vertices()
+    if courtyard_vertices:
+        if pad_positions is not None and pad_indices and len(pad_indices) > 0:
+            # Transform courtyard to current position
+            orig_pad_pos = _get_original_pad_positions()
+            curr_pad_pos = pad_positions[pad_indices]
+            if len(orig_pad_pos) == len(curr_pad_pos):
+                courtyard_vertices = _transform_vertices(courtyard_vertices, orig_pad_pos, curr_pad_pos)
+        if len(courtyard_vertices) >= 3:
             try:
-                poly = Polygon(vertices)
+                poly = Polygon(courtyard_vertices)
                 if poly.is_valid and poly.area > 0:
                     return poly
             except Exception:
                 pass
-    # Fallback: pad bounding box
+    
+    # Fallback: pad bounding box at current position
     if pad_positions is not None and pad_indices:
         xs = pad_positions[pad_indices, 0]
         ys = pad_positions[pad_indices, 1]
@@ -447,6 +522,14 @@ def _footprint_courtyard_polygon(fp: Footprint, pad_positions: Optional[np.ndarr
         (max_x + margin, max_y + margin),
         (min_x - margin, max_y + margin),
     ])
+    # Add small margin
+    margin = 0.1
+    return Polygon([
+        (min_x - margin, min_y - margin),
+        (max_x + margin, min_y - margin),
+        (max_x + margin, max_y + margin),
+        (min_x - margin, max_y + margin),
+    ])
 
 
 # This is the new run_placement function implementation
@@ -461,6 +544,7 @@ def _run_region_simulation(
     region_pad_to_fp_idx: List[int],
     region_fp_uuid_to_pad_indices: Dict[str, List[int]],
     region_global_pad_idx_to_local: Dict[int, int],
+    region_pad_is_ghost: List[bool],
     model: "BoardModel",
     params: "PlacementParams",
     movable_uuids: Optional[Set[str]],
@@ -488,7 +572,7 @@ def _run_region_simulation(
         pad_positions[i, 0] = pad.position.x_mm
         pad_positions[i, 1] = pad.position.y_mm
 
-    # Determine movable pads
+    # Determine movable pads (real footprints only; ghosts are always fixed)
     fp_movable = {}
     for fp in model.footprints:
         if not fp.uuid or fp.locked:
@@ -505,8 +589,15 @@ def _run_region_simulation(
         else:
             fp_movable[fp.uuid] = True
 
+    # Ghost footprints are never movable
+    for fp in model.ghost_footprints:
+        if fp.uuid and model.footprint_region.get(fp.uuid) == region_idx:
+            fp_movable[fp.uuid] = False
+
     pad_movable = np.array([
-        fp_movable.get(model.footprints[region_pad_to_fp_idx[i]].uuid, False)
+        (not region_pad_is_ghost[i] and fp_movable.get(
+            model.footprints[region_pad_to_fp_idx[i]].uuid, False
+        )) if region_pad_to_fp_idx[i] >= 0 else False
         for i in range(n_pads)
     ], dtype=bool)
 
@@ -571,12 +662,13 @@ def _run_region_simulation(
 
     iteration = 0
 
-    # Build list of footprints in this region with courtyards
+    # Build list of footprints in this region with courtyards (real + ghost)
     fp_uuids = []
     fp_movable_list = []
     fp_pad_indices = {}  # uuid -> list of local pad indices in region
     pad_to_fp_local = []  # pad_idx -> local fp index in fp_uuids
 
+    # Real footprints
     for fp in model.footprints:
         if not fp.uuid or model.footprint_region.get(fp.uuid) != region_idx:
             continue
@@ -586,14 +678,66 @@ def _run_region_simulation(
         if fp.uuid in region_fp_uuid_to_pad_indices:
             fp_pad_indices[fp.uuid] = region_fp_uuid_to_pad_indices[fp.uuid]
 
+    # Ghost footprints (always non-movable)
+    for fp in model.ghost_footprints:
+        if not fp.uuid or model.footprint_region.get(fp.uuid) != region_idx:
+            continue
+        local_idx = len(fp_uuids)
+        fp_uuids.append(fp.uuid)
+        fp_movable_list.append(False)  # Ghosts never movable
+        if fp.uuid in region_fp_uuid_to_pad_indices:
+            fp_pad_indices[fp.uuid] = region_fp_uuid_to_pad_indices[fp.uuid]
+
     # O(1) lookup: uuid -> local index in fp_uuids
     fp_uuid_to_local_idx = {uuid: i for i, uuid in enumerate(fp_uuids)}
 
     for i in range(len(region_pads)):
-        fp_uuid = model.footprints[region_pad_to_fp_idx[i]].uuid
+        fp_idx = region_pad_to_fp_idx[i]
+        if fp_idx >= 0:
+            fp_uuid = model.footprints[fp_idx].uuid
+        else:
+            # Ghost footprint: negative index = -(ghost_idx + 1)
+            ghost_idx = -fp_idx - 1
+            if ghost_idx < len(model.ghost_footprints):
+                fp_uuid = model.ghost_footprints[ghost_idx].uuid
+            else:
+                fp_uuid = ""
         pad_to_fp_local.append(fp_uuid_to_local_idx.get(fp_uuid, -1))
 
     fp_movable_arr = np.array(fp_movable_list, dtype=bool)
+
+    # Build same-footprint mask: True for pad pairs belonging to same footprint (exclude ghosts)
+    n_pads_local = len(region_pads)
+    same_fp_mask = np.zeros((n_pads_local, n_pads_local), dtype=bool)
+    for i in range(n_pads_local):
+        for j in range(n_pads_local):
+            if i != j and pad_to_fp_local[i] >= 0 and pad_to_fp_local[i] == pad_to_fp_local[j]:
+                same_fp_mask[i, j] = True
+
+    # Build ghost attraction edges: (ghost_anchor, target_pad_indices, ideal_len, ka)
+    ghost_attractions = []
+    for fp in model.ghost_footprints:
+        if not fp.uuid or model.footprint_region.get(fp.uuid) != region_idx:
+            continue
+        if not fp.ghost_attractions:
+            continue
+        # Ghost anchor is the footprint's position
+        ghost_anchor = np.array([fp.x_mm, fp.y_mm], dtype=np.float64)
+        for target_ref, ideal_len_attr, ka_attr in fp.ghost_attractions:
+            # Resolve target Ref to UUID and pad indices
+            target_fp = model.by_ref.get(target_ref)
+            if target_fp is None:
+                continue
+            if not target_fp.uuid:
+                continue
+            # Check target is in same region
+            if model.footprint_region.get(target_fp.uuid) != region_idx:
+                continue
+            # Get target pad indices in this region
+            target_pad_indices = fp_pad_indices.get(target_fp.uuid, [])
+            if not target_pad_indices:
+                continue
+            ghost_attractions.append((ghost_anchor, target_pad_indices, ideal_len_attr, ka_attr))
 
     positions = pad_positions.copy()
     prev_positions = pad_positions.copy()
@@ -611,6 +755,8 @@ def _run_region_simulation(
         rigid_src: np.ndarray,
         rigid_dst: np.ndarray,
         rigid_rest: np.ndarray,
+        ghost_attractions: list,
+        same_fp_mask: np.ndarray = None,
     ) -> np.ndarray:
         """Compute total force on each pad at given positions."""
         # Repulsion: all-pairs Coulomb k_r / d^2
@@ -622,6 +768,8 @@ def _run_region_simulation(
         dist = np.sqrt(dist_sq)
         force_mag = params.repulsion_kr / dist_sq
         np.fill_diagonal(force_mag, 0.0)
+        if same_fp_mask is not None:
+            force_mag[same_fp_mask] = 0.0  # No repulsion between pads of same footprint
         force_vec = diff * (force_mag[:, :, None] / dist[:, :, None])
         repulsion = np.sum(force_vec, axis=1)
 
@@ -637,6 +785,28 @@ def _run_region_simulation(
             np.add.at(attraction, src_idx, -force_vec_edge)
             np.add.at(attraction, dst_idx, force_vec_edge)
 
+        # Ghost attraction: centroid-to-centroid springs from ghost to target
+        ghost_attr_force = np.zeros((n_pads, 2), dtype=np.float64)
+        if ghost_attractions:
+            for ghost_anchor, target_pad_indices, ideal_len_attr, ka_attr in ghost_attractions:
+                if not target_pad_indices:
+                    continue
+                # Compute target centroid from current pad positions
+                target_centroid = np.mean(pos[target_pad_indices], axis=0)
+                # Vector from ghost anchor to target centroid
+                diff_attr = target_centroid - ghost_anchor
+                dist_attr = np.linalg.norm(diff_attr)
+                if dist_attr > 1e-6:
+                    unit_attr = diff_attr / dist_attr
+                    force_mag_attr = ka_attr * (dist_attr - ideal_len_attr)
+                    # Force on target points TOWARD ghost (opposite to unit_attr which points ghost->target)
+                    force_vec_attr = -unit_attr * force_mag_attr
+                    # Apply equally to all target pads (distribute)
+                    force_per_pad = force_vec_attr / len(target_pad_indices)
+                    for pad_idx in target_pad_indices:
+                        ghost_attr_force[pad_idx] += force_per_pad
+                    # Ghost is fixed - no reaction force applied to ghost pads
+
         # Rigid constraints
         rigid_force = np.zeros((n_pads, 2), dtype=np.float64)
         if has_rigid:
@@ -649,14 +819,14 @@ def _run_region_simulation(
             np.add.at(rigid_force, rigid_src, -force_vec_rigid)
             np.add.at(rigid_force, rigid_dst, force_vec_rigid)
 
-        force = repulsion + attraction + rigid_force
+        force = repulsion + attraction + rigid_force + ghost_attr_force
 
         # Polygon-based courtyard collision (rebuild polygons from current positions)
         if fp_uuids:
             n_pads_local = pos.shape[0]
             poly_force = np.zeros((n_pads_local, 2), dtype=np.float64)
 
-            # Build courtyard polygons at current positions
+            # Build courtyard polygons at current positions (real + ghost)
             courtyard_polys = {}
             fp_centroids = []
             fp_radii = []
@@ -664,15 +834,25 @@ def _run_region_simulation(
                 local_idx = fp_uuid_to_local_idx[fp_uuid]
                 pad_indices = fp_pad_indices.get(fp_uuid, [])
                 if pad_indices:
-                    poly = _footprint_courtyard_polygon(
-                        next(fp for fp in model.footprints if fp.uuid == fp_uuid),
-                        pad_positions=pos,
-                        pad_indices=pad_indices,
-                    )
+                    # Find footprint in real or ghost
+                    fp = next((fp for fp in model.footprints if fp.uuid == fp_uuid), None)
+                    if fp is None:
+                        fp = next((fp for fp in model.ghost_footprints if fp.uuid == fp_uuid), None)
+                    if fp is not None:
+                        poly = _footprint_courtyard_polygon(
+                            fp, pad_positions=pos, pad_indices=pad_indices
+                        )
+                    else:
+                        poly = Polygon()  # empty
                 else:
                     # Fallback: find the footprint and use its original position
-                    fp = next(fp for fp in model.footprints if fp.uuid == fp_uuid)
-                    poly = _footprint_courtyard_polygon(fp)
+                    fp = next((fp for fp in model.footprints if fp.uuid == fp_uuid), None)
+                    if fp is None:
+                        fp = next((fp for fp in model.ghost_footprints if fp.uuid == fp_uuid), None)
+                    if fp is not None:
+                        poly = _footprint_courtyard_polygon(fp)
+                    else:
+                        poly = Polygon()
                 courtyard_polys[fp_uuid] = poly
                 centroid = poly.centroid
                 fp_centroids.append([centroid.x, centroid.y])
@@ -688,22 +868,21 @@ def _run_region_simulation(
             fp_radii_arr = np.array(fp_radii, dtype=np.float64)
 
             # Compute collision forces per footprint pair, then distribute to pads
+            # Only movable (real) footprints receive forces, but they collide with ghosts too
             n_fp = len(fp_uuids)
             fp_forces = np.zeros((n_fp, 2), dtype=np.float64)
 
             for i in range(n_fp):
                 if not fp_movable_arr[i]:
-                    continue
+                    continue  # Only movable footprints accumulate forces
                 fp_i_uuid = fp_uuids[i]
                 poly_i = courtyard_polys[fp_i_uuid]
 
                 for j in range(i + 1, n_fp):
-                    if not fp_movable_arr[j]:
-                        continue
                     fp_j_uuid = fp_uuids[j]
                     poly_j = courtyard_polys[fp_j_uuid]
 
-                    # Check overlap
+                    # Check overlap (including ghost footprints)
                     if poly_i.intersects(poly_j):
                         intersection = poly_i.intersection(poly_j)
                         if intersection.area > 0:
@@ -720,24 +899,27 @@ def _run_region_simulation(
                                 fy = force_mag * dy / dist
                                 fp_forces[i, 0] += fx
                                 fp_forces[i, 1] += fy
-                                fp_forces[j, 0] -= fx
-                                fp_forces[j, 1] -= fy
+                                # Ghost (j) doesn't move, but we apply equal/opposite for completeness
+                                if fp_movable_arr[j]:
+                                    fp_forces[j, 0] -= fx
+                                    fp_forces[j, 1] -= fy
                     else:
                         # Near miss: distance-based falloff
-                        dist = poly_i.distance(poly_j)
-                        if dist < 1.5 * (fp_radii_arr[i] + fp_radii_arr[j]):
-                            # Gentle repulsion
+                        poly_dist = poly_i.distance(poly_j)
+                        near_miss_threshold = 1.5 * (fp_radii_arr[i] + fp_radii_arr[j])
+                        if poly_dist < near_miss_threshold:
+                            # Gentle repulsion - use polygon distance for margin (more accurate for asymmetric shapes)
                             min_dist = fp_radii_arr[i] + fp_radii_arr[j]
-                            margin = min_dist * 1.5 - dist
+                            margin = min_dist * 1.5 - poly_dist
                             if margin > 0:
                                 # Direction from j centroid to i centroid
                                 dx = fp_centroids_arr[i, 0] - fp_centroids_arr[j, 0]
                                 dy = fp_centroids_arr[i, 1] - fp_centroids_arr[j, 1]
-                                dist = math.hypot(dx, dy)
-                                if dist > 1e-6:
-                                    force_mag = params.courtyard_repulsion_kc * 0.1 * margin / (dist * dist + 1e-6)
-                                    fx = force_mag * dx / dist
-                                    fy = force_mag * dy / dist
+                                centroid_dist = math.hypot(dx, dy)
+                                if centroid_dist > 1e-6:
+                                    force_mag = params.courtyard_repulsion_kc * margin / (centroid_dist * centroid_dist + 1e-6)
+                                    fx = force_mag * dx / centroid_dist
+                                    fy = force_mag * dy / centroid_dist
                                     fp_forces[i, 0] += fx
                                     fp_forces[i, 1] += fy
                                     fp_forces[j, 0] -= fx
@@ -786,6 +968,10 @@ def _run_region_simulation(
                 if fp_i_uuid not in fp_bounds:
                     continue
                 minx, miny, maxx, maxy = fp_bounds[fp_i_uuid]
+                fp_width = maxx - minx
+                fp_height = maxy - miny
+                # Dynamic threshold: 10% of footprint size, minimum 1mm, maximum 10mm
+                threshold = max(1.0, min(10.0, 0.1 * max(fp_width, fp_height)))
 
                 # Distance to region boundaries
                 # Left edge
@@ -794,9 +980,9 @@ def _run_region_simulation(
                     # Already outside - strong push back
                     force_mag = boundary_k * abs(dist_left) / (abs(dist_left) + 1e-6)
                     boundary_force[pad_idx, 0] += force_mag
-                elif dist_left < 5.0:
+                elif dist_left < threshold:
                     # Close to edge - strong repulsion
-                    force_mag = boundary_k * 1.5 * (5.0 - dist_left) / (dist_left + 1e-6)
+                    force_mag = boundary_k * 2.0 * (threshold - dist_left) / (dist_left + 1e-6)
                     boundary_force[pad_idx, 0] += force_mag
 
                 # Right edge
@@ -804,8 +990,8 @@ def _run_region_simulation(
                 if dist_right < 0:
                     force_mag = boundary_k * abs(dist_right) / (abs(dist_right) + 1e-6)
                     boundary_force[pad_idx, 0] -= force_mag
-                elif dist_right < 5.0:
-                    force_mag = boundary_k * 1.5 * (5.0 - dist_right) / (dist_right + 1e-6)
+                elif dist_right < threshold:
+                    force_mag = boundary_k * 2.0 * (threshold - dist_right) / (dist_right + 1e-6)
                     boundary_force[pad_idx, 0] -= force_mag
 
                 # Bottom edge
@@ -813,8 +999,8 @@ def _run_region_simulation(
                 if dist_bottom < 0:
                     force_mag = boundary_k * abs(dist_bottom) / (abs(dist_bottom) + 1e-6)
                     boundary_force[pad_idx, 1] += force_mag
-                elif dist_bottom < 5.0:
-                    force_mag = boundary_k * 1.5 * (5.0 - dist_bottom) / (dist_bottom + 1e-6)
+                elif dist_bottom < threshold:
+                    force_mag = boundary_k * 2.0 * (threshold - dist_bottom) / (dist_bottom + 1e-6)
                     boundary_force[pad_idx, 1] += force_mag
 
                 # Top edge
@@ -822,8 +1008,8 @@ def _run_region_simulation(
                 if dist_top < 0:
                     force_mag = boundary_k * abs(dist_top) / (abs(dist_top) + 1e-6)
                     boundary_force[pad_idx, 1] -= force_mag
-                elif dist_top < 5.0:
-                    force_mag = boundary_k * 1.5 * (5.0 - dist_top) / (dist_top + 1e-6)
+                elif dist_top < threshold:
+                    force_mag = boundary_k * 2.0 * (threshold - dist_top) / (dist_top + 1e-6)
                     boundary_force[pad_idx, 1] -= force_mag
 
             force += boundary_force
@@ -837,6 +1023,8 @@ def _run_region_simulation(
             positions, len(region_pads), pad_movable,
             params, has_net_edges, src_idx, dst_idx, ideal_len,
             has_rigid, rigid_src, rigid_dst, rigid_rest,
+            ghost_attractions,
+            same_fp_mask,
         )
 
         # Displacement = force * temp (capped by temp)
@@ -850,8 +1038,8 @@ def _run_region_simulation(
         scale = np.minimum(1.0, max_step / np.maximum(disp_norm, 1e-6))
         disp *= scale
 
-        # Update positions
-        positions += disp
+        # Update positions (only movable pads)
+        positions[pad_movable] += disp[pad_movable]
         positions = np.nan_to_num(positions, nan=0.0, posinf=0.0, neginf=0.0)
 
         # Clamp to region bounds
@@ -877,6 +1065,8 @@ def _run_region_simulation(
         positions, len(region_pads), pad_movable,
         params, has_net_edges, src_idx, dst_idx, ideal_len,
         has_rigid, rigid_src, rigid_dst, rigid_rest,
+        ghost_attractions,
+        same_fp_mask,
     )
 
     for fp in model.footprints:
@@ -935,7 +1125,7 @@ def run_placement(
     start = time.perf_counter()
 
     # Collect pad nodes
-    pads, pad_to_fp_idx, fp_uuid_to_pad_indices, global_pad_idx_to_local = _collect_pad_nodes(model)
+    pads, pad_to_fp_idx, fp_uuid_to_pad_indices, global_pad_idx_to_local, pad_is_ghost = _collect_pad_nodes(model)
     n_pads = len(pads)
 
     # Backward compatibility: stub mode (identity deltas)
@@ -995,15 +1185,24 @@ def run_placement(
             region_pad_to_fp_idx = []
             region_fp_uuid_to_pad_indices = {}
             region_global_pad_idx_to_local = {}
+            region_pad_is_ghost = []
 
             for i, pad in enumerate(pads):
                 fp_idx = pad_to_fp_idx[i]
-                fp = model.footprints[fp_idx]
+                if fp_idx >= 0:
+                    fp = model.footprints[fp_idx]
+                else:
+                    # Ghost footprint
+                    ghost_idx = -fp_idx - 1
+                    if ghost_idx >= len(model.ghost_footprints):
+                        continue
+                    fp = model.ghost_footprints[ghost_idx]
                 if model.footprint_region.get(fp.uuid) == region_idx:
                     local_idx = len(region_pads)
                     region_pad_indices.append(i)
                     region_pads.append(pad)
                     region_pad_to_fp_idx.append(fp_idx)
+                    region_pad_is_ghost.append(pad_is_ghost[i])
                     if fp.uuid not in region_fp_uuid_to_pad_indices:
                         region_fp_uuid_to_pad_indices[fp.uuid] = []
                     region_fp_uuid_to_pad_indices[fp.uuid].append(local_idx)
@@ -1014,7 +1213,7 @@ def run_placement(
                     region_idx, model.board_regions[region_idx],
                     region_pad_indices, region_pads, region_pad_to_fp_idx,
                     region_fp_uuid_to_pad_indices, region_global_pad_idx_to_local,
-                    model, params, movable_uuids
+                    region_pad_is_ghost, model, params, movable_uuids
                 )
                 all_deltas.update(region_deltas)
                 all_forces.update(region_forces)
@@ -1044,12 +1243,13 @@ def run_placement(
     region_pad_to_fp_idx = pad_to_fp_idx
     region_fp_uuid_to_pad_indices = fp_uuid_to_pad_indices
     region_global_pad_idx_to_local = global_pad_idx_to_local
+    region_pad_is_ghost = pad_is_ghost
 
     region_deltas, region_forces, region_iters = _run_region_simulation(
         0, virtual_region,
         region_pad_indices, region_pads, region_pad_to_fp_idx,
         region_fp_uuid_to_pad_indices, region_global_pad_idx_to_local,
-        model, params, movable_uuids
+        region_pad_is_ghost, model, params, movable_uuids
     )
 
     return PlacementProposal(

@@ -27,6 +27,12 @@ FIXTURES = Path(__file__).parent / "fixtures"
 DCCF_PCB = FIXTURES / "DCCF.sved.kicad_pcb"
 TUBE111_PCB = FIXTURES / "tube111.kicad_pcb"
 MINIMAL_PCB = FIXTURES / "minimal.kicad_pcb"
+GHOST_TEST_PCB = FIXTURES / "ghost_test.kicad_pcb"
+
+
+@pytest.fixture(scope="module")
+def ghost_test_tree():
+    return parse_file(GHOST_TEST_PCB)
 
 
 @pytest.fixture(scope="module")
@@ -390,3 +396,72 @@ class TestVersionDetection:
         model = board_model(tree)
         assert model.version == ""
         assert model.version_warning is None
+
+
+class TestGhostFootprints:
+    """Tests for ghost/pseudo footprint parsing."""
+
+    def test_ghost_footprint_parsed(self, ghost_test_tree):
+        """Ghost footprints are detected and separated."""
+        model = board_model(ghost_test_tree)
+
+        # Should have 2 real footprints and 2 ghosts
+        assert len(model.footprints) == 2
+        assert len(model.ghost_footprints) == 2
+
+        # Check real footprints
+        refs = {fp.ref for fp in model.footprints}
+        assert refs == {"U1", "R2"}
+
+        # Check rail ghost
+        rail_ghost = next(fp for fp in model.ghost_footprints if fp.ref == "GHOST_RAIL_TOP")
+        assert rail_ghost.uuid == "ghost-rail-top-001"
+        assert rail_ghost.ghost is True
+        assert rail_ghost.x_mm == 50.0
+        assert rail_ghost.y_mm == 10.0
+
+        # Check ferrule ghost
+        ferrule_ghost = next(fp for fp in model.ghost_footprints if fp.ref == "GHOST_FERRULE")
+        assert ferrule_ghost.uuid == "ghost-ferrule-001"
+        assert ferrule_ghost.ghost is True
+        assert ferrule_ghost.x_mm == 50.0
+        assert ferrule_ghost.y_mm == 20.0
+        assert len(ferrule_ghost.ghost_attractions) == 1
+        target_ref, ideal_len, ka = ferrule_ghost.ghost_attractions[0]
+        assert target_ref == "U1"
+        assert ideal_len == 25.0
+        assert ka == 0.1
+
+    def test_ghost_courtyard_parsed(self, ghost_test_tree):
+        """Ghost footprint courtyard is parsed correctly."""
+        model = board_model(ghost_test_tree)
+        rail_ghost = next(fp for fp in model.ghost_footprints if fp.ref == "GHOST_RAIL_TOP")
+
+        # Should have courtyard segments (4 lines forming a rectangle)
+        assert len(rail_ghost.courtyard) == 4
+        # Check courtyard bounds (rectangle from -30,-5 to 30,5 relative to ghost position)
+        # Ghost at (50, 10), so courtyard spans x: 20-80, y: 5-15
+        xs = [p.x_mm for seg in rail_ghost.courtyard for p in seg]
+        ys = [p.y_mm for seg in rail_ghost.courtyard for p in seg]
+        assert min(xs) == pytest.approx(20.0)
+        assert max(xs) == pytest.approx(80.0)
+        assert min(ys) == pytest.approx(5.0)
+        assert max(ys) == pytest.approx(15.0)
+
+    def test_ghost_excluded_from_by_ref(self, ghost_test_tree):
+        """Ghost footprints are not in by_ref mapping."""
+        model = board_model(ghost_test_tree)
+        assert "GHOST_RAIL_TOP" not in model.by_ref
+        assert "GHOST_FERRULE" not in model.by_ref
+        assert "U1" in model.by_ref
+        assert "R2" in model.by_ref
+
+    def test_ghost_has_uuid(self, ghost_test_tree):
+        """Ghost footprints have UUIDs."""
+        model = board_model(ghost_test_tree)
+        rail_ghost = next(fp for fp in model.ghost_footprints if fp.ref == "GHOST_RAIL_TOP")
+        assert rail_ghost.uuid == "ghost-rail-top-001"
+        assert rail_ghost.uuid in model.footprint_region
+        ferrule_ghost = next(fp for fp in model.ghost_footprints if fp.ref == "GHOST_FERRULE")
+        assert ferrule_ghost.uuid == "ghost-ferrule-001"
+        assert ferrule_ghost.uuid in model.footprint_region

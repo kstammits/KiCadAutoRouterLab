@@ -116,6 +116,10 @@ class Footprint:
     locked footprints are fixed anchors that placement must not move.
     ``uuid`` is the footprint's stable identity — refs may be duplicated or
     missing, but every placed footprint carries its own ``(uuid ...)`` token.
+    ``ghost`` marks pseudo-components used for placement forces only; they
+    participate in the simulation but are never written back to the PCB.
+    ``ghost_attractions`` defines explicit attraction springs from this ghost
+    to target footprints by Reference: (target_ref, ideal_length_mm, ka).
     """
 
     ref: str
@@ -128,6 +132,8 @@ class Footprint:
     courtyard: Tuple[Segment, ...] = ()
     locked: bool = False
     uuid: str = ""
+    ghost: bool = False
+    ghost_attractions: Tuple[Tuple[str, float, float], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -171,12 +177,15 @@ class BoardModel:
 
     ``by_ref`` maps reference -> footprint with first-occurrence-wins semantics;
     refs are not guaranteed unique in masked fixtures, and empty refs are omitted.
+    ``ghost_footprints`` are pseudo-components that participate in placement forces
+    but are never written back to the PCB.
     """
 
     footprints: Tuple[Footprint, ...]
     keepout_zones: Tuple[KeepoutZone, ...]
     nets: Dict[str, Tuple[NetConnection, ...]]
     by_ref: Dict[str, Footprint]
+    ghost_footprints: Tuple[Footprint, ...] = ()
     tracks: Tuple[Track, ...] = ()
     vias: Tuple[Via, ...] = ()
     zones: Tuple[Zone, ...] = ()
@@ -231,12 +240,20 @@ def _first_number(node: Optional[SExpr]) -> Optional[float]:
 
 
 def _net_name(net_node: Optional[SExpr]) -> Optional[str]:
-    """Net name from a ``(net ...)`` node; empty/numeric refs map to None."""
+    """Net name from a ``(net ...)`` node; empty/numeric refs map to None.
+
+    KiCad stores net as (net <index> <name>) where index is int and name is string.
+    """
     if net_node is None or not net_node.args:
         return None
+    # KiCad format: (net <index> <name>) - use second arg if first is numeric
+    if len(net_node.args) >= 2 and isinstance(net_node.args[1], str):
+        name = net_node.args[1]
+        return name if name else None
+    # Fallback: first arg if it's a string
     value = net_node.args[0]
     name = str(value) if isinstance(value, str) else None
-    return name or None
+    return name if name else None
 
 
 def _layer_of(node: SExpr) -> str:
@@ -361,6 +378,45 @@ def _courtyard_segments(
     return tuple(segments)
 
 
+def _is_ghost(node: SExpr) -> bool:
+    """Check if footprint has ghost=yes property."""
+    for prop in node.children("property"):
+        if len(prop.args) >= 2 and str(prop.args[0]).lower() == "ghost":
+            val = str(prop.args[1]).lower()
+            if val in ("yes", "true", "1", "on"):
+                return True
+    return False
+
+
+def _parse_ghost_attractions(node: SExpr) -> Tuple[Tuple[str, float, float], ...]:
+    """Parse ghost_attract_N properties from a footprint node.
+    
+    Format: (property "ghost_attract_1" "TARGET_REF,ideal_length_mm,ka")
+    Returns tuple of (target_ref, ideal_length_mm, ka).
+    """
+    attractions = []
+    for prop in node.children("property"):
+        if len(prop.args) < 2:
+            continue
+        key = str(prop.args[0]).lower()
+        if key.startswith("ghost_attract_"):
+            val = str(prop.args[1]).strip()
+            if not val:
+                continue
+            parts = [p.strip() for p in val.split(",")]
+            if len(parts) != 3:
+                continue
+            target_ref, ideal_len_str, ka_str = parts
+            try:
+                ideal_len = float(ideal_len_str)
+                ka = float(ka_str)
+                if ideal_len >= 0 and ka >= 0:
+                    attractions.append((target_ref, ideal_len, ka))
+            except ValueError:
+                continue
+    return tuple(attractions)
+
+
 def footprints(tree: SExpr) -> list[Footprint]:
     """Extract every top-level footprint with board-space pads and courtyard."""
     result = []
@@ -401,6 +457,8 @@ def footprints(tree: SExpr) -> list[Footprint]:
                 courtyard=_courtyard_segments(node, x, y, angle, layer),
                 locked=_is_locked(node),
                 uuid=uuid,
+                ghost=_is_ghost(node),
+                ghost_attractions=_parse_ghost_attractions(node),
             )
         )
     return result
@@ -1036,9 +1094,12 @@ def _parse_version(version_str: Optional[str]) -> tuple[str, Optional[str]]:
 
 def board_model(tree: SExpr) -> BoardModel:
     """Build the aggregate :class:`BoardModel` from a parsed board tree."""
-    fps = footprints(tree)
+    all_fps = footprints(tree)
+    real_fps = [fp for fp in all_fps if not fp.ghost]
+    ghost_fps = [fp for fp in all_fps if fp.ghost]
+
     by_ref: Dict[str, Footprint] = {}
-    for fp in fps:  # first occurrence wins, matching io.find_footprint
+    for fp in real_fps:  # first occurrence wins, matching io.find_footprint
         if fp.ref and fp.ref not in by_ref:
             by_ref[fp.ref] = fp
 
@@ -1057,15 +1118,17 @@ def board_model(tree: SExpr) -> BoardModel:
         for poly in board_polygons
     )
 
-    # Assign footprints to regions
-    footprint_region = _assign_board_regions(fps, board_polygons)
+    # Assign footprints to regions (real + ghost)
+    all_fps_for_region = real_fps + ghost_fps
+    footprint_region = _assign_board_regions(all_fps_for_region, board_polygons)
 
     # Parse version and warning
     gen_version = get_generator_version(tree)
     version, version_warning = _parse_version(gen_version)
 
     return BoardModel(
-        footprints=tuple(fps),
+        footprints=tuple(real_fps),
+        ghost_footprints=tuple(ghost_fps),
         keepout_zones=tuple(keepout_zones(tree)),
         nets=netlist(tree),
         by_ref=by_ref,

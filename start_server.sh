@@ -11,7 +11,7 @@ SERVER_PID=$!
 trap 'kill $SERVER_PID; wait $SERVER_PID; exit 1' INT TERM
 
 # Wait a moment for server to start
-sleep 2
+sleep 3
 
 # Open default browser
 if command -v open >/dev/null 2>&1; then
