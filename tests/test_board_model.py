@@ -13,6 +13,9 @@ from kicad_autorouter.board_model import (
     _extract_board_polygons,
     _parse_version,
     _polygon_bbox,
+    _to_board,
+    _to_local,
+    apply_deltas,
     board_model,
     edge_arcs,
     edge_cuts,
@@ -85,6 +88,63 @@ class TestTransformLocal:
         # No mirror; rotate -90 in Y-down: (1,0) -> (0,-1)
         fp = _fp(angle_deg=90.0, layer="B.Cu")
         assert_point(transform_local(fp, 1.0, 0.0), 0.0, -1.0)
+
+
+class TestToLocalRoundTrip:
+    @pytest.mark.parametrize("angle", [0.0, 90.0, 180.0, 270.0, 25.454, -33.3])
+    @pytest.mark.parametrize("local", [(1.0, 2.0), (5.0, 0.0), (0.0, 0.0), (-3.1, 4.7)])
+    def test_round_trip_all_angles(self, angle, local):
+        """_to_local must be the exact inverse of _to_board at every angle.
+
+        Regression: it used to apply the same R(-angle) as the forward
+        transform, corrupting pads/courtyards by up to ~12mm for 90/270
+        footprints on every Accept (measured 11.7mm on DCCF SW6).
+        """
+        fp = _fp(x=204.1, y=90.2, angle_deg=angle)
+        lx, ly = local
+        b = _to_board(lx, ly, fp.x_mm, fp.y_mm, angle, fp.layer)
+        back = _to_local(b.x_mm, b.y_mm, fp.x_mm, fp.y_mm, angle, fp.layer)
+        assert_point(back, lx, ly)
+
+
+class TestApplyDeltasMatchesNudge:
+    def test_model_matches_reparsed_tree_all_angles(self, dccf_tree):
+        """apply_deltas must agree with nudge_footprint_by_uuid + re-parse.
+
+        The preview renders the apply_deltas model and Accept writes the
+        nudged tree; any divergence shows the part in one spot and lands it
+        in another (the C11/R7 report).
+        """
+        from kicad_autorouter.io import nudge_footprint_by_uuid
+
+        m = board_model(dccf_tree)
+        deltas = {
+            fp.uuid: (1.5, -2.25, 25.0)
+            for fp in m.footprints
+            if fp.uuid and not fp.locked
+        }
+        moved = apply_deltas(m, deltas)
+        tree = dccf_tree
+        for uuid, (dx, dy, da) in deltas.items():
+            tree = nudge_footprint_by_uuid(tree, uuid, dx, dy, da)
+        reparsed = board_model(tree)
+
+        by_uuid_moved = {fp.uuid: fp for fp in moved.footprints}
+        by_uuid_reparsed = {fp.uuid: fp for fp in reparsed.footprints}
+        assert set(by_uuid_moved) == set(by_uuid_reparsed)
+        for uuid, a in by_uuid_moved.items():
+            b = by_uuid_reparsed[uuid]
+            assert a.x_mm == pytest.approx(b.x_mm)
+            assert a.y_mm == pytest.approx(b.y_mm)
+            assert (a.angle_deg - b.angle_deg) == pytest.approx(0.0)
+            for pa, pb in zip(a.pads, b.pads):
+                assert pa.position.x_mm == pytest.approx(pb.position.x_mm)
+                assert pa.position.y_mm == pytest.approx(pb.position.y_mm)
+            for (a1, a2), (b1, b2) in zip(a.courtyard, b.courtyard):
+                assert a1.x_mm == pytest.approx(b1.x_mm)
+                assert a1.y_mm == pytest.approx(b1.y_mm)
+                assert a2.x_mm == pytest.approx(b2.x_mm)
+                assert a2.y_mm == pytest.approx(b2.y_mm)
 
 
 def _sw6(dccf_tree):
@@ -204,6 +264,39 @@ class TestNetlist:
     def test_minimal_empty(self, minimal_tree):
         # mounting-hole pads carry no (net ...) references
         assert netlist(minimal_tree) == {}
+
+
+class TestNetclasses:
+    def test_parse_netclass_declarations(self):
+        from kicad_autorouter.board_model import netclasses, netclass_trace_width
+        from kicad_autorouter.sexpr import parse
+        tree = parse(
+            '(kicad_pcb (net_class "Power" (clearance 0.3) (trace_width 0.6)'
+            ' (via_dia 0.8) (via_drill 0.4) (add_net "+12V") (add_net "GND"))'
+            ' (net_class "Signals" (add_net "SDA")))'
+        )
+        classes, net_map = netclasses(tree)
+        assert len(classes) == 2
+        power = next(c for c in classes if c.name == "Power")
+        assert power.clearance_mm == 0.3
+        assert power.trace_width_mm == 0.6
+        assert net_map["+12V"] == "Power"
+        assert net_map["SDA"] == "Signals"
+        # Defaults for missing numeric fields
+        signals = next(c for c in classes if c.name == "Signals")
+        assert signals.clearance_mm == 0.2
+        assert signals.trace_width_mm == 0.25
+
+    def test_fixtures_without_netclasses(self, minimal_tree):
+        from kicad_autorouter.board_model import netclasses
+        classes, net_map = netclasses(minimal_tree)
+        assert classes == ()
+        assert net_map == {}
+
+    def test_model_carries_netclasses(self, minimal_tree):
+        model = board_model(minimal_tree)
+        assert model.net_classes == ()
+        assert model.net_netclass == {}
 
 
 class TestBoardModel:

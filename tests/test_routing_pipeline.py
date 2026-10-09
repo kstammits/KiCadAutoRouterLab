@@ -14,6 +14,8 @@ from kicad_autorouter.routing.pipeline import (
     _apply_route_to_grid,
     _rip_up_nets_from_model,
     _build_tht_via_mask,
+    resolve_track_width,
+    resolve_clearance,
     RoutingParams,
     RoutingResult,
 )
@@ -249,7 +251,7 @@ class TestRunFullPipeline:
         from kicad_autorouter.board_model import apply_deltas
 
         # Place
-        proposal = run_placement(minimal_model, PlacementParams(stub=False, max_iterations=10))
+        proposal = run_placement(minimal_model, PlacementParams(max_iterations=10))
         model = apply_deltas(minimal_model, proposal.deltas)
 
         # Route
@@ -261,7 +263,7 @@ class TestRunFullPipeline:
         from kicad_autorouter.placement import PlacementParams, run_placement
         from kicad_autorouter.board_model import apply_deltas
 
-        proposal = run_placement(minimal_model, PlacementParams(stub=False, max_iterations=10))
+        proposal = run_placement(minimal_model, PlacementParams(max_iterations=10))
         model = apply_deltas(minimal_model, proposal.deltas)
 
         # With run_drc=False, should not attempt DRC
@@ -293,6 +295,96 @@ class TestRoutingParams:
         assert params.max_via_count == 200
         assert params.track_width_mm == 0.25  # default preserved
 
+    def test_routing_params_new_keys_roundtrip(self):
+        params = RoutingParams(
+            net_widths={"+12V": 0.6}, heuristic_weight=2.0
+        )
+        q = RoutingParams.from_dict(params.to_dict())
+        assert q.net_widths == {"+12V": 0.6}
+        assert q.heuristic_weight == 2.0
+        assert RoutingParams().heuristic_weight == 3.0
+
+
+class TestResolveTrackWidth:
+    """Width/clearance resolution: params override → netclass → heuristic → default."""
+
+    def _model_with_netclass(self):
+        from kicad_autorouter.board_model import BoardModel, NetClass
+        return BoardModel(
+            footprints=(),
+            keepout_zones=(),
+            nets={},
+            by_ref={},
+            net_classes=(
+                NetClass(name="Power", clearance_mm=0.3, trace_width_mm=0.6,
+                         nets=("+12V",)),
+            ),
+            net_netclass={"+12V": "Power"},
+        )
+
+    def test_explicit_params_override_wins(self):
+        model = self._model_with_netclass()
+        params = RoutingParams(net_widths={"+12V": 0.8})
+        assert resolve_track_width(model, params, "+12V") == 0.8
+
+    def test_netclass_beats_heuristic(self):
+        model = self._model_with_netclass()
+        params = RoutingParams()
+        # +12V matches the power keyword, but the file netclass (0.6) wins
+        assert resolve_track_width(model, params, "+12V") == 0.6
+        assert resolve_clearance(model, params, "+12V") == 0.3
+
+    def test_heuristic_for_unclassed_power(self):
+        model = self._model_with_netclass()
+        params = RoutingParams()
+        assert resolve_track_width(model, params, "GND") == 0.5
+        assert resolve_track_width(model, params, "SIG") == 0.25
+        assert resolve_clearance(model, params, "SIG") == 0.2
+
+
+class TestViaDedupe:
+    """Duplicate layer changes at one cell emit a single via."""
+
+    def test_revisited_cell_single_via(self, routing_setup):
+        from kicad_autorouter.routing.output import routes_to_tracks_vias
+        from kicad_autorouter.routing.router import RouteResult
+        grid, _, _ = routing_setup
+        # Path goes down and back up at the same cell (MST-merge artifact)
+        path = [(10, 10, 0), (10, 10, 1), (10, 10, 0)]
+        tracks, vias = routes_to_tracks_vias(
+            {"N": RouteResult(path, 0.0, 0, 0.0, True)}, grid
+        )
+        assert len(vias) == 1
+
+    def test_distinct_cells_keep_vias(self, routing_setup):
+        from kicad_autorouter.routing.output import routes_to_tracks_vias
+        from kicad_autorouter.routing.router import RouteResult
+        grid, _, _ = routing_setup
+        path = [(10, 10, 0), (10, 10, 1), (11, 10, 1), (11, 10, 0)]
+        _, vias = routes_to_tracks_vias(
+            {"N": RouteResult(path, 0.0, 0, 0.0, True)}, grid
+        )
+        assert len(vias) == 2
+
+
+class TestCorridorReservation:
+    """_apply_route_to_grid reserves the emitted track width."""
+
+    def test_wide_corridor(self, routing_setup):
+        from kicad_autorouter.routing.pipeline import _width_cells
+        from kicad_autorouter.routing.router import RouteResult
+        grid, cost_grid, _ = routing_setup
+        assert _width_cells(0.25, 0.1) == 2  # 0.25mm at 0.1mm grid
+        assert _width_cells(0.25, 0.5) == 1
+        path = [(100, 100, 0), (110, 100, 0)]
+        _apply_route_to_grid(
+            RouteResult(path, 0.0, 0, 0.0, True), cost_grid, grid,
+            half_width_cells=_width_cells(0.5, 0.1),
+        )
+        # 0.5mm corridor at 0.1mm grid: rows 100±2 blocked along the run
+        assert cost_grid[0, 98, 105] == 100
+        assert cost_grid[0, 102, 105] == 100
+
 
 class TestRoutingResult:
     """Tests for RoutingResult dataclass."""
@@ -322,7 +414,7 @@ class TestIntegration:
         from kicad_autorouter.placement import PlacementParams, run_placement
         from kicad_autorouter.board_model import apply_deltas
 
-        proposal = run_placement(minimal_model, PlacementParams(stub=False, max_iterations=10))
+        proposal = run_placement(minimal_model, PlacementParams(max_iterations=10))
         model = apply_deltas(minimal_model, proposal.deltas)
 
         result = run_routing(model, run_drc=False)
@@ -334,7 +426,7 @@ class TestIntegration:
         from kicad_autorouter.placement import PlacementParams, run_placement
         from kicad_autorouter.board_model import apply_deltas
 
-        proposal = run_placement(dccf_model, PlacementParams(stub=False, max_iterations=10))
+        proposal = run_placement(dccf_model, PlacementParams(max_iterations=10))
         model = apply_deltas(dccf_model, proposal.deltas)
 
         result = run_routing(model, run_drc=False)

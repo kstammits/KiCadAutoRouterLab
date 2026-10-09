@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Tuple, List, Set
+from typing import Optional, Tuple, List, Set, Dict
 
 import numpy as np
 
-from ..board_model import BoardModel, board_model
+from ..board_model import BoardModel, board_model, netclass_trace_width, netclass_clearance
 from ..io import nudge_footprint_by_uuid, save_pair, parse_file, load_pair, rip_up_nets
 from ..placement import PlacementParams, PlacementProposal, run_placement
 from ..drc import run_drc_on_tree, DRCResult, write_pcb_tree
@@ -23,7 +24,7 @@ from . import (
 from .output import routes_to_tracks_vias, apply_routes_to_tree
 from .power import identify_power_nets, route_power_rails, route_ground_stitching, route_decap_fanout
 from .grid import RoutingGrid, board_to_grid
-from .obstacles import BLOCKED
+from .obstacles import BLOCKED, build_fanout_cost
 
 
 @dataclass
@@ -54,6 +55,8 @@ class RoutingParams:
     max_attempts_per_net: int = 3     # Retry attempts per net
     run_drc: bool = False             # Run DRC after routing (slow)
     debug: bool = False               # Enable debug output (cost grid, search frontier)
+    net_widths: Dict[str, float] = field(default_factory=dict)  # Explicit per-net trace widths (override)
+    heuristic_weight: float = 3.0     # Weighted-A* greediness (lower respects penalties)
 
     def to_dict(self) -> dict:
         return {
@@ -69,6 +72,8 @@ class RoutingParams:
             "max_attempts_per_net": self.max_attempts_per_net,
             "run_drc": self.run_drc,
             "debug": self.debug,
+            "net_widths": dict(self.net_widths),
+            "heuristic_weight": self.heuristic_weight,
         }
 
     @classmethod
@@ -77,37 +82,99 @@ class RoutingParams:
         valid_keys = {
             "grid_resolution_mm", "margin_mm", "via_cost_mm", "max_via_count",
             "track_width_mm", "power_width_mm", "clearance_mm", "via_size_mm",
-            "via_drill_mm", "max_attempts_per_net", "run_drc", "debug"
+            "via_drill_mm", "max_attempts_per_net", "run_drc", "debug",
+            "net_widths", "heuristic_weight"
         }
         filtered = {k: v for k, v in d.items() if k in valid_keys}
         return cls(**filtered)
 
 
-def _apply_route_to_grid(result, cost_grid: np.ndarray, grid: RoutingGrid) -> None:
+_POWER_KEYWORDS = ("vcc", "vdd", "v+", "v-", "pwr", "power", "gnd", "ground")
+
+
+def resolve_track_width(model: BoardModel, params: RoutingParams, net_name: Optional[str]) -> float:
+    """Emitted trace width for a net.
+
+    Precedence: explicit ``params.net_widths`` → board ``(net_class
+    trace_width)`` → power-keyword heuristic → ``params.track_width_mm``.
+    """
+    if net_name and net_name in params.net_widths:
+        try:
+            if float(params.net_widths[net_name]) > 0:
+                return float(params.net_widths[net_name])
+        except (TypeError, ValueError):
+            pass
+    if net_name and net_name in model.net_netclass:
+        return netclass_trace_width(model, net_name, params.track_width_mm)
+    net_lower = (net_name or "").lower()
+    if any(kw in net_lower for kw in _POWER_KEYWORDS):
+        return max(params.track_width_mm, params.power_width_mm)
+    return params.track_width_mm
+
+
+def resolve_clearance(model: BoardModel, params: RoutingParams, net_name: Optional[str]) -> float:
+    """Clearance for a net: board netclass → ``params.clearance_mm``."""
+    if net_name and net_name in model.net_netclass:
+        return netclass_clearance(model, net_name, params.clearance_mm)
+    return params.clearance_mm
+
+
+def _terminals_for_net(model: BoardModel, grid: RoutingGrid, net_name: str) -> List[Tuple[int, int, int]]:
+    """Grid terminals ``[(col, row, layer_idx)]`` for a net's pads."""
+    terminals = []
+    for conn in model.nets.get(net_name, []):
+        fp = model.by_ref.get(conn.ref)
+        if not fp:
+            continue
+        pad = next((p for p in fp.pads if p.number == conn.pad_number), None)
+        if not pad:
+            continue
+        col, row = board_to_grid(grid, pad.position.x_mm, pad.position.y_mm)
+        layer_idx = 0 if fp.layer == "F.Cu" else 1
+        terminals.append((col, row, layer_idx))
+    return terminals
+
+
+def _width_cells(width_mm: float, resolution_mm: float) -> int:
+    """Corridor half-width in cells for reserving an emitted track's footprint."""
+    if resolution_mm <= 0:
+        return 1
+    return max(1, int(math.ceil(width_mm / resolution_mm / 2.0)))
+
+
+def _apply_route_to_grid(
+    result,
+    cost_grid: np.ndarray,
+    grid: RoutingGrid,
+    half_width_cells: int = 1,
+) -> None:
     """Mark routed tracks and vias as BLOCKED in the cost grid.
-    
-    This prevents subsequent nets from routing through already-occupied cells.
+
+    The corridor covers ``half_width_cells`` around the centerline so wide
+    tracks reserve their true emitted footprint for subsequent nets.
     Updates the cost_grid in-place.
-    
+
     Args:
         result: RouteResult containing the path [(col, row, layer_idx)]
         cost_grid: (n_layers, H, W) int16 array to update
         grid: RoutingGrid for coordinate transforms
+        half_width_cells: corridor half-width in cells (>= 1)
     """
     if not result.success or not result.path:
         return
-    
+
     path = result.path
     n_layers = cost_grid.shape[0]
-    
+    radius = max(0, half_width_cells - 1)
+
     for i in range(len(path) - 1):
         c1, r1, l1 = path[i]
         c2, r2, l2 = path[i + 1]
-        
+
         # Mark the segment cells as blocked
         if l1 == l2:
-            # Same layer - mark track cells along the line
-            _mark_line_blocked(cost_grid[l1], r1, c1, r2, c2)
+            # Same layer - mark track corridor along the line
+            _mark_line_blocked(cost_grid[l1], r1, c1, r2, c2, radius)
         else:
             # Layer transition - mark via at both layers
             if 0 <= l1 < n_layers and 0 <= r1 < cost_grid.shape[1] and 0 <= c1 < cost_grid.shape[2]:
@@ -116,19 +183,29 @@ def _apply_route_to_grid(result, cost_grid: np.ndarray, grid: RoutingGrid) -> No
                 cost_grid[l2, r2, c2] = BLOCKED
 
 
-def _mark_line_blocked(layer_grid: np.ndarray, r1: int, c1: int, r2: int, c2: int) -> None:
-    """Bresenham line drawing to mark cells as BLOCKED."""
+def _mark_line_blocked(layer_grid: np.ndarray, r1: int, c1: int, r2: int, c2: int, radius: int = 0) -> None:
+    """Bresenham line drawing to mark cells as BLOCKED (plus ``radius`` halo)."""
     H, W = layer_grid.shape
     dr = abs(r2 - r1)
     dc = abs(c2 - c1)
     sr = 1 if r1 < r2 else -1
     sc = 1 if c1 < c2 else -1
     err = dc - dr
-    
+
+    def _stamp(r: int, c: int) -> None:
+        r_min, r_max = max(0, r - radius), min(H - 1, r + radius)
+        c_min, c_max = max(0, c - radius), min(W - 1, c + radius)
+        layer_grid[r_min:r_max + 1, c_min:c_max + 1] = np.maximum(
+            layer_grid[r_min:r_max + 1, c_min:c_max + 1], BLOCKED
+        )
+
     r, c = r1, c1
     while True:
         if 0 <= r < H and 0 <= c < W:
-            layer_grid[r, c] = BLOCKED
+            if radius:
+                _stamp(r, c)
+            else:
+                layer_grid[r, c] = BLOCKED
         if r == r2 and c == c2:
             break
         e2 = 2 * err
@@ -193,6 +270,7 @@ def route_nets(
         base_cost=1,
         via_cost=int(params.via_cost_mm / params.grid_resolution_mm),
         blocked_threshold=100,
+        heuristic_weight=params.heuristic_weight,
     )
     router = SingleNetRouter(routing_grid, cost_grid, cost_map, tht_via_mask)
     
@@ -209,130 +287,66 @@ def route_nets(
     ripup = RipUpManager(max_attempts=params.max_attempts_per_net)
     nets_routed = 0
     nets_failed = 0
+    width_map: Dict[str, float] = {}
+
+    def _route_one_net(net_name: str) -> bool:
+        """Route one net with its resolved width/clearance + fanout halo.
+
+        Records into all_results/ripup, reserves the emitted-width corridor
+        on success. Returns True on success.
+        """
+        nonlocal nets_routed, nets_failed
+        conns = model.nets.get(net_name, [])
+        if len(conns) < 2:
+            return False
+        terminals = _terminals_for_net(model, routing_grid, net_name)
+        if len(terminals) < 2:
+            return False
+        width_mm = resolve_track_width(model, params, net_name)
+        width_map[net_name] = width_mm
+        secondary = build_fanout_cost(
+            model, routing_grid, net_name,
+            clearance_mm=resolve_clearance(model, params, net_name),
+            track_half_mm=width_mm / 2.0,
+        )
+        corridor = _width_cells(width_mm, params.grid_resolution_mm)
+        success = False
+        while ripup.can_retry(net_name):
+            result = router.route(terminals, secondary)
+            if result.success:
+                _apply_route_to_grid(result, cost_grid, routing_grid, corridor)
+                ripup.record_success(net_name, result.path)
+                all_results[net_name] = result
+                nets_routed += 1
+                success = True
+                break
+            else:
+                ripup.record_failure(net_name, "no path found")
+        if not success:
+            nets_failed += 1
+        return success
     
-    # 7. Route requested power nets using standard routing (respects pad layers)
+    # 7. Route requested power nets (respects pad layers)
     for net_name in requested_power:
-        conns = model.nets.get(net_name, [])
-        if len(conns) < 2:
-            continue
-        
-        # Convert to grid terminals - use actual pad layer
-        terminals = []
-        for conn in conns:
-            fp = model.by_ref.get(conn.ref)
-            if not fp:
-                continue
-            pad = next((p for p in fp.pads if p.number == conn.pad_number), None)
-            if not pad:
-                continue
-            col, row = board_to_grid(routing_grid, pad.position.x_mm, pad.position.y_mm)
-            layer_idx = 0 if fp.layer == "F.Cu" else 1
-            terminals.append((col, row, layer_idx))
-        
-        if len(terminals) < 2:
-            continue
-        
-        # Try routing with retries
-        success = False
-        while ripup.can_retry(net_name):
-            result = router.route(terminals)
-            if result.success:
-                _apply_route_to_grid(result, cost_grid, routing_grid)
-                ripup.record_success(net_name, result.path)
-                all_results[net_name] = result
-                nets_routed += 1
-                success = True
-                break
-            else:
-                ripup.record_failure(net_name, "no path found")
-        
-        if not success:
-            nets_failed += 1
+        _route_one_net(net_name)
     
-    # 8. Route requested ground nets using standard routing
+    # 8. Route requested ground nets
     for net_name in requested_ground:
-        conns = model.nets.get(net_name, [])
-        if len(conns) < 2:
-            continue
-        
-        # Convert to grid terminals - use actual pad layer
-        terminals = []
-        for conn in conns:
-            fp = model.by_ref.get(conn.ref)
-            if not fp:
-                continue
-            pad = next((p for p in fp.pads if p.number == conn.pad_number), None)
-            if not pad:
-                continue
-            col, row = board_to_grid(routing_grid, pad.position.x_mm, pad.position.y_mm)
-            layer_idx = 0 if fp.layer == "F.Cu" else 1
-            terminals.append((col, row, layer_idx))
-        
-        if len(terminals) < 2:
-            continue
-        
-        # Try routing with retries
-        success = False
-        while ripup.can_retry(net_name):
-            result = router.route(terminals)
-            if result.success:
-                _apply_route_to_grid(result, cost_grid, routing_grid)
-                ripup.record_success(net_name, result.path)
-                all_results[net_name] = result
-                nets_routed += 1
-                success = True
-                break
-            else:
-                ripup.record_failure(net_name, "no path found")
-        
-        if not success:
-            nets_failed += 1
+        _route_one_net(net_name)
     
     # 9. Route signal nets
     for net_name in requested_signal:
-        conns = model.nets.get(net_name, [])
-        if len(conns) < 2:
-            continue
-        
-        # Convert to grid terminals
-        terminals = []
-        for conn in conns:
-            fp = model.by_ref.get(conn.ref)
-            if not fp:
-                continue
-            pad = next((p for p in fp.pads if p.number == conn.pad_number), None)
-            if not pad:
-                continue
-            col, row = board_to_grid(routing_grid, pad.position.x_mm, pad.position.y_mm)
-            layer_idx = 0 if fp.layer == "F.Cu" else 1
-            terminals.append((col, row, layer_idx))
-        
-        if len(terminals) < 2:
-            continue
-        
-        # Try routing with retries
-        success = False
-        while ripup.can_retry(net_name):
-            result = router.route(terminals)
-            if result.success:
-                _apply_route_to_grid(result, cost_grid, routing_grid)
-                ripup.record_success(net_name, result.path)
-                all_results[net_name] = result
-                nets_routed += 1
-                success = True
-                break
-            else:
-                ripup.record_failure(net_name, "no path found")
-        
-        if not success:
-            nets_failed += 1
+        _route_one_net(net_name)
     
-    # 10. Convert all results to tracks/vias
+    # 10. Convert all results to tracks/vias (per-net resolved widths)
     tracks, vias = routes_to_tracks_vias(
         all_results,
         routing_grid,
+        net_class_widths=width_map,
         default_width_mm=params.track_width_mm,
         power_width_mm=params.power_width_mm,
+        via_size_mm=params.via_size_mm,
+        via_drill_mm=params.via_drill_mm,
     )
     
     # 11. Apply routes to PCB tree
@@ -383,12 +397,13 @@ def run_routing(
     
     # 3. Create THT via mask for free layer transitions at through-hole pads
     tht_via_mask = _build_tht_via_mask(model, grid)
-    
+
     # 4. Create router
     cost_map = CostMap(
         base_cost=1,
         via_cost=int(via_cost / grid_resolution_mm),
         blocked_threshold=100,
+        heuristic_weight=3.0,
     )
     router = SingleNetRouter(grid, cost_grid, cost_map, tht_via_mask)
     
@@ -416,38 +431,40 @@ def run_routing(
     ordered = [n for n in signal_nets if n in all_nets]  # signal nets last
     
     ripup = RipUpManager(max_attempts=max_attempts_per_net)
-    
+
+    # Width resolution for the legacy signature (file netclass → heuristic).
+    legacy_params = RoutingParams(
+        track_width_mm=track_width_mm, power_width_mm=power_width_mm
+    )
+
     for net_name in ordered:
         if net_name in power_nets or net_name in ground_nets:
             continue  # already routed
-        
+
         conns = model.nets.get(net_name, [])
         if len(conns) < 2:
             continue
-        
-        # Convert to grid terminals
-        terminals = []
-        for conn in conns:
-            fp = model.by_ref.get(conn.ref)
-            if not fp:
-                continue
-            pad = next((p for p in fp.pads if p.number == conn.pad_number), None)
-            if not pad:
-                continue
-            col, row = board_to_grid(grid, pad.position.x_mm, pad.position.y_mm)
-            layer_idx = 0 if fp.layer == "F.Cu" else 1
-            terminals.append((col, row, layer_idx))
-        
+
+        terminals = _terminals_for_net(model, grid, net_name)
+
         if len(terminals) < 2:
             continue
-        
+
+        width_mm = resolve_track_width(model, legacy_params, net_name)
+        secondary = build_fanout_cost(
+            model, grid, net_name,
+            clearance_mm=0.2,
+            track_half_mm=width_mm / 2.0,
+        )
+        corridor = _width_cells(width_mm, grid_resolution_mm)
+
         # Try routing with retries
         success = False
         while ripup.can_retry(net_name):
-            result = router.route(terminals)
+            result = router.route(terminals, secondary)
             if result.success:
                 # Apply to cost grid
-                _apply_route_to_grid(result, cost_grid, grid)
+                _apply_route_to_grid(result, cost_grid, grid, corridor)
                 ripup.record_success(net_name, result.path)
                 success = True
                 break
@@ -468,8 +485,10 @@ def run_routing(
     tracks, vias = routes_to_tracks_vias(
         all_results,
         grid,
-        default_width_mm=0.25,
+        default_width_mm=track_width_mm,
         power_width_mm=power_width_mm,
+        via_size_mm=via_size_mm,
+        via_drill_mm=via_drill_mm,
     )
     
     # 10. Apply routes to PCB tree

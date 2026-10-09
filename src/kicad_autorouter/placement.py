@@ -16,7 +16,6 @@ bounding box and temperature schedule.
 
 from __future__ import annotations
 
-import hashlib
 import math
 import time
 from dataclasses import asdict, dataclass, field, fields
@@ -41,15 +40,12 @@ class PlacementParams:
     rigid_stiffness: float = 5e5
     # Courtyard collision repulsion force constant
     courtyard_repulsion_kc: float = 10000.0
+    # Near-miss halo: courtyard interference reach past part outlines (mm).
+    # Caps the size-scaled 1.5x(radius_i + radius_j) halo so large parts
+    # don't push across the board; strength saturates at kc at contact.
+    courtyard_halo_mm: float = 3.0
     # Boundary repulsion force constant (pushes footprints away from region edges)
     boundary_repulsion_kb: float = 500000.0
-    # Preview-only knob for the v0 stub: deterministic per-UUID jitter so the
-    # proposal overlay is visibly testable before real physics exists.
-    demo_jitter_mm: float = 0.0
-    # Backward-compatibility: when True, use v0 stub behavior (identity
-    # deltas unless demo_jitter_mm > 0). When False (default), run the
-    # vectorized numpy force-spring simulation.
-    stub: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -70,9 +66,9 @@ def _validate(params: PlacementParams) -> None:
         "attraction_ka",
         "ideal_length_mm",
         "convergence_eps_mm",
-        "demo_jitter_mm",
         "rigid_stiffness",
         "courtyard_repulsion_kc",
+        "courtyard_halo_mm",
     )
     for name in numeric:
         value = getattr(params, name)
@@ -85,19 +81,16 @@ def _validate(params: PlacementParams) -> None:
         "convergence_eps_mm",
         "rigid_stiffness",
         "courtyard_repulsion_kc",
+        "courtyard_halo_mm",
     ):
         if getattr(params, name) <= 0:
             raise ValueError(f"{name} must be > 0")
-    if params.demo_jitter_mm < 0:
-        raise ValueError("demo_jitter_mm must be >= 0")
     if isinstance(params.max_iterations, bool) or not isinstance(
         params.max_iterations, int
     ):
         raise ValueError("max_iterations must be an integer")
     if params.max_iterations < 1:
         raise ValueError("max_iterations must be >= 1")
-    if not isinstance(params.stub, bool):
-        raise ValueError("stub must be a boolean")
 
 
 @dataclass(frozen=True)
@@ -114,18 +107,9 @@ class PlacementProposal:
     elapsed_s: float
     params: dict
     forces: Dict[str, Tuple[float, float]] = field(default_factory=dict)
-
-
-def _jitter_for(uuid: str, max_mm: float) -> Tuple[float, float]:
-    """Deterministic (angle, magnitude) jitter derived from the footprint UUID.
-
-    Returns 2-tuple (dx, dy) for backward compatibility with stub/demo mode.
-    """
-    digest = hashlib.sha256(uuid.encode("utf-8")).digest()
-    h = int.from_bytes(digest[:4], "big")
-    angle = (h % 360) * math.pi / 180.0
-    magnitude = max_mm * ((h >> 16) % 1000) / 1000.0
-    return (magnitude * math.cos(angle), magnitude * math.sin(angle))
+    force_components: Dict[str, Dict[str, Tuple[float, float]]] = field(
+        default_factory=dict
+    )
 
 
 def _collect_pad_nodes(model: BoardModel) -> Tuple[List[Pad], List[int], Dict[str, List[int]], Dict[int, int], List[bool]]:
@@ -559,7 +543,7 @@ def _run_region_simulation(
     # Filter pads for this region
     n_pads = len(region_pads)
     if n_pads == 0:
-        return {}, {}, 0
+        return {}, {}, 0, {}
 
     # Build pad positions array
     pad_positions = np.zeros((n_pads, 2), dtype=np.float64)
@@ -597,7 +581,7 @@ def _run_region_simulation(
     ], dtype=bool)
 
     if not pad_movable.any():
-        return {}, {}, 0
+        return {}, {}, 0, {}
 
     # Power net patterns to exclude from attraction (connect globally, not for placement)
     power_net_patterns = {"GND", "VCC", "VDD", "VSS", "GND", "GROUND", "+12V", "+5V", "+3.3V", "+1.8V", "-12V", "-5V"}
@@ -752,8 +736,16 @@ def _run_region_simulation(
         rigid_rest: np.ndarray,
         ghost_attractions: list,
         same_fp_mask: np.ndarray = None,
-    ) -> np.ndarray:
-        """Compute total force on each pad at given positions."""
+        return_components: bool = False,
+    ):
+        """Compute total force on each pad at given positions.
+
+        With ``return_components`` also returns the per-cause breakdown
+        ``{cause: (n_pads, 2)}`` for ``repulsion``/``attraction``/``rigid``/
+        ``ghost``/``courtyard``/``boundary``. The sim loop leaves it off
+        (it only needs the total); the end-of-run reporting recompute turns
+        it on for the forces overlay.
+        """
         # Repulsion: all-pairs Coulomb k_r / d^2
         diff = pos[:, None, :] - pos[None, :, :]  # (n, n, 2)
         dist_sq = np.sum(diff * diff, axis=2)
@@ -816,11 +808,14 @@ def _run_region_simulation(
 
         force = repulsion + attraction + rigid_force + ghost_attr_force
 
+        # Initialized here so the components breakdown below is well-defined
+        # even when there are no footprints with courtyards in this region.
+        n_pads_local = pos.shape[0]
+        poly_force = np.zeros((n_pads_local, 2), dtype=np.float64)
+        boundary_force = np.zeros((n_pads_local, 2), dtype=np.float64)
+
         # Polygon-based courtyard collision (rebuild polygons from current positions)
         if fp_uuids:
-            n_pads_local = pos.shape[0]
-            poly_force = np.zeros((n_pads_local, 2), dtype=np.float64)
-
             # Build courtyard polygons at current positions (real + ghost)
             courtyard_polys = {}
             fp_centroids = []
@@ -877,7 +872,10 @@ def _run_region_simulation(
                     fp_j_uuid = fp_uuids[j]
                     poly_j = courtyard_polys[fp_j_uuid]
 
-                    # Check overlap (including ghost footprints)
+                    # Check overlap (including ghost footprints). Lenient with
+                    # degenerate outlines: empty polygons never collide.
+                    if poly_i.is_empty or poly_j.is_empty:
+                        continue
                     if poly_i.intersects(poly_j):
                         intersection = poly_i.intersection(poly_j)
                         if intersection.area > 0:
@@ -899,22 +897,37 @@ def _run_region_simulation(
                                     fp_forces[j, 0] -= fx
                                     fp_forces[j, 1] -= fy
                     else:
-                        # Near miss: distance-based falloff
+                        # Near miss: bounded-halo linear falloff.
+                        # Reach is capped at an absolute halo past the part
+                        # outlines so giant parts (e.g. DCCF RV sockets with
+                        # r~37mm) don't project ~60mm halos: a quarter inch of
+                        # clearance then means no interference, like DRC
+                        # thinking. Strength saturates at kc (fraction of the
+                        # halo consumed) instead of growing with part size as
+                        # the old kc*margin/d^2 did. Lenient with degenerate
+                        # outlines: empty polygons are skipped, not crashed on.
+                        if poly_i.is_empty or poly_j.is_empty:
+                            continue
                         poly_dist = poly_i.distance(poly_j)
-                        near_miss_threshold = 1.5 * (fp_radii_arr[i] + fp_radii_arr[j])
-                        if poly_dist < near_miss_threshold:
+                        halo_reach = min(
+                            1.5 * (fp_radii_arr[i] + fp_radii_arr[j]),
+                            params.courtyard_halo_mm,
+                        )
+                        if poly_dist < halo_reach:
                             # Gentle repulsion - use polygon distance for margin (more accurate for asymmetric shapes)
-                            min_dist = fp_radii_arr[i] + fp_radii_arr[j]
-                            margin = min_dist * 1.5 - poly_dist
+                            margin = halo_reach - poly_dist
                             if margin > 0:
                                 # Direction from j centroid to i centroid
                                 dx = fp_centroids_arr[i, 0] - fp_centroids_arr[j, 0]
                                 dy = fp_centroids_arr[i, 1] - fp_centroids_arr[j, 1]
                                 centroid_dist = math.hypot(dx, dy)
                                 if centroid_dist > 1e-6:
-                                    force_mag = params.courtyard_repulsion_kc * margin / (centroid_dist * centroid_dist + 1e-6)
-                                    fx = force_mag * dx / centroid_dist
-                                    fy = force_mag * dy / centroid_dist
+                                    strength = (
+                                        params.courtyard_repulsion_kc
+                                        * (margin / halo_reach)
+                                    )
+                                    fx = strength * dx / centroid_dist
+                                    fy = strength * dy / centroid_dist
                                     fp_forces[i, 0] += fx
                                     fp_forces[i, 1] += fy
                                     fp_forces[j, 0] -= fx
@@ -930,8 +943,6 @@ def _run_region_simulation(
             force += poly_force
 
             # Boundary repulsion: push footprints away from region edges
-            n_pads_local = pos.shape[0]
-            boundary_force = np.zeros((n_pads_local, 2), dtype=np.float64)
             boundary_k = params.boundary_repulsion_kb
 
             # Compute current footprint bounds from pad positions, expanded by courtyard radius
@@ -1012,7 +1023,19 @@ def _run_region_simulation(
         # Replace NaN
         force = np.nan_to_num(force, nan=0.0, posinf=0.0, neginf=0.0)
         force[~pad_movable] = 0.0
-        return force
+        if not return_components:
+            return force
+        components = {
+            "repulsion": np.nan_to_num(repulsion, nan=0.0, posinf=0.0, neginf=0.0),
+            "attraction": np.nan_to_num(attraction, nan=0.0, posinf=0.0, neginf=0.0),
+            "rigid": np.nan_to_num(rigid_force, nan=0.0, posinf=0.0, neginf=0.0),
+            "ghost": np.nan_to_num(ghost_attr_force, nan=0.0, posinf=0.0, neginf=0.0),
+            "courtyard": np.nan_to_num(poly_force, nan=0.0, posinf=0.0, neginf=0.0),
+            "boundary": np.nan_to_num(boundary_force, nan=0.0, posinf=0.0, neginf=0.0),
+        }
+        for comp in components.values():
+            comp[~pad_movable] = 0.0
+        return force, components
     for iteration in range(params.max_iterations):
         force = _compute_total_force(
             positions, len(region_pads), pad_movable,
@@ -1054,14 +1077,17 @@ def _run_region_simulation(
     deltas = {}
     final_max_disp = 0.0
     footprint_forces = {}
+    footprint_components: Dict[str, Dict[str, Tuple[float, float]]] = {}
 
-    # Recompute final forces for force reporting
-    final_force = _compute_total_force(
+    # Recompute final forces for force reporting (with per-cause breakdown
+    # for the forces overlay)
+    final_force, final_components = _compute_total_force(
         positions, len(region_pads), pad_movable,
         params, has_net_edges, src_idx, dst_idx, ideal_len,
         has_rigid, rigid_src, rigid_dst, rigid_rest,
         ghost_attractions,
         same_fp_mask,
+        return_components=True,
     )
 
     for fp in model.footprints:
@@ -1084,16 +1110,25 @@ def _run_region_simulation(
         da = new_angle - fp.angle_deg
         da = (da + 180) % 360 - 180
 
-        if dx != 0.0 or dy != 0.0 or da != 0.0:
+        # Epsilon filter: Kabsch/SVD on (near-)unmoved pads leaves ~1e-12
+        # float noise; only report physically meaningful moves so that
+        # converged boards yield empty proposals (nothing left to accept).
+        if math.hypot(dx, dy) > 1e-9 or abs(da) > 1e-9:
             deltas[fp.uuid] = (dx, dy, da)
             final_max_disp = max(final_max_disp, math.hypot(dx, dy))
 
-        # Force for this footprint
+        # Force for this footprint (+ per-cause breakdown for tuning)
         if pad_indices:
             fp_force = final_force[pad_indices].sum(axis=0)
             footprint_forces[fp.uuid] = (float(fp_force[0]), float(fp_force[1]))
+            comp: Dict[str, Tuple[float, float]] = {}
+            for cause, arr in final_components.items():
+                s = arr[pad_indices].sum(axis=0)
+                if bool(np.all(np.isfinite(s))):
+                    comp[cause] = (float(s[0]), float(s[1]))
+            footprint_components[fp.uuid] = comp
 
-    return deltas, footprint_forces, iteration + 1
+    return deltas, footprint_forces, iteration + 1, footprint_components
 
 
 def run_placement(
@@ -1123,38 +1158,8 @@ def run_placement(
     pads, pad_to_fp_idx, fp_uuid_to_pad_indices, global_pad_idx_to_local, pad_is_ghost = _collect_pad_nodes(model)
     n_pads = len(pads)
 
-    # Backward compatibility: stub mode (identity deltas)
-    if params.stub and params.demo_jitter_mm == 0.0:
-        return PlacementProposal(
-            deltas={},
-            iterations=0,
-            final_max_disp_mm=0.0,
-            elapsed_s=time.perf_counter() - start,
-            params=params.to_dict(),
-            forces={},
-        )
-
-    # Backward compatibility: demo jitter (works even with no nets)
-    if params.demo_jitter_mm > 0:
-        deltas: Dict[str, Tuple[float, float, float]] = {}
-        for fp in model.footprints:
-            if fp.locked or not fp.uuid:
-                continue
-            if movable_uuids is not None and fp.uuid not in movable_uuids:
-                continue
-            dx, dy = _jitter_for(fp.uuid, params.demo_jitter_mm)
-            deltas[fp.uuid] = (dx, dy, 0.0)
-        max_disp = max((math.hypot(dx, dy) for dx, dy, _ in deltas.values()), default=0.0)
-        return PlacementProposal(
-            deltas=deltas,
-            iterations=0,
-            final_max_disp_mm=max_disp,
-            elapsed_s=time.perf_counter() - start,
-            params=params.to_dict(),
-            forces={},
-        )
-
-    # Physics mode requires pads with nets
+    # Physics requires pads with nets; boards without nets (e.g. the minimal
+    # mounting-hole fixture) correctly produce an empty proposal.
     if n_pads == 0:
         return PlacementProposal(
             deltas={},
@@ -1170,6 +1175,7 @@ def run_placement(
         # Multi-region mode
         all_deltas = {}
         all_forces = {}
+        all_components: Dict[str, Dict[str, Tuple[float, float]]] = {}
         total_iterations = 0
         max_final_disp = 0.0
 
@@ -1204,7 +1210,7 @@ def run_placement(
                     region_global_pad_idx_to_local[local_idx] = global_pad_idx_to_local[i]
 
             if region_pads:
-                region_deltas, region_forces, region_iters = _run_region_simulation(
+                region_deltas, region_forces, region_iters, region_comps = _run_region_simulation(
                     region_idx, model.board_regions[region_idx],
                     region_pad_indices, region_pads, region_pad_to_fp_idx,
                     region_fp_uuid_to_pad_indices, region_global_pad_idx_to_local,
@@ -1212,6 +1218,7 @@ def run_placement(
                 )
                 all_deltas.update(region_deltas)
                 all_forces.update(region_forces)
+                all_components.update(region_comps)
                 total_iterations = max(total_iterations, region_iters)
                 max_final_disp = max(max_final_disp, max((math.hypot(dx, dy) for dx, dy, _ in region_deltas.values()), default=0.0))
 
@@ -1222,6 +1229,7 @@ def run_placement(
             elapsed_s=time.perf_counter() - start,
             params=params.to_dict(),
             forces=all_forces,
+            force_components=all_components,
         )
 
     # Single region mode: create a virtual region covering the whole board
@@ -1240,7 +1248,7 @@ def run_placement(
     region_global_pad_idx_to_local = global_pad_idx_to_local
     region_pad_is_ghost = pad_is_ghost
 
-    region_deltas, region_forces, region_iters = _run_region_simulation(
+    region_deltas, region_forces, region_iters, region_comps = _run_region_simulation(
         0, virtual_region,
         region_pad_indices, region_pads, region_pad_to_fp_idx,
         region_fp_uuid_to_pad_indices, region_global_pad_idx_to_local,
@@ -1254,4 +1262,5 @@ def run_placement(
         elapsed_s=time.perf_counter() - start,
         params=params.to_dict(),
         forces=region_forces,
+        force_components=region_comps,
     )

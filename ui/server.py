@@ -5,6 +5,7 @@ import signal
 import sys
 import threading
 import tomllib
+from dataclasses import replace
 from typing import Dict, Tuple, Set, Optional, Any
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -88,6 +89,7 @@ class BoardState:
         self.version = 0
         self.proposal = None
         self.forces: Dict[str, Tuple[float, float]] = {}  # Cached forces for display
+        self.force_components: Dict[str, Dict[str, Tuple[float, float]]] = {}  # Per-cause breakdown
         self.pinned_uuids: set[str] = set()  # User-pinned (pseudo-locked)
         self.selected_uuids: set[str] = set()  # Currently selected for move
         self.drc_violations: list[dict] = []  # Cached DRC violations for overlay
@@ -124,6 +126,7 @@ class BoardState:
                 self.sch = None  # a new board invalidates any stale sibling
                 self.proposal = None  # a new board invalidates any stale proposal
                 self.forces.clear()  # clear cached forces
+                self.force_components.clear()
                 self.pinned_uuids.clear()
                 self.selected_uuids.clear()
                 self.undo_stack.clear()
@@ -186,6 +189,18 @@ class BoardState:
     def set_forces(self, forces: Dict[str, Tuple[float, float]]) -> int:
         with self._lock:
             self.forces = forces.copy()
+            self.version += 1
+            return self.version
+
+    def get_force_components(self) -> Dict[str, Dict[str, Tuple[float, float]]]:
+        with self._lock:
+            return {u: dict(c) for u, c in self.force_components.items()}
+
+    def set_force_components(
+        self, components: Dict[str, Dict[str, Tuple[float, float]]]
+    ) -> int:
+        with self._lock:
+            self.force_components = {u: dict(c) for u, c in components.items()}
             self.version += 1
             return self.version
 
@@ -404,13 +419,17 @@ class BoardState:
         with self._lock:
             if self.proposal is None or self.model is None or self.pcb_tree is None:
                 raise ValueError("no proposal to accept")
-            # Push current state to undo before applying
-            self.push_undo()
-            # Identify affected nets from moved footprints
+            # Identify moved footprints first: empty proposals (e.g. boards
+            # with no nets, or an already-converged step) are a no-op and
+            # must not pollute the undo stack.
             moved_uuids = {
                 u for u, d in self.proposal.deltas.items()
                 if d != (0.0, 0.0, 0.0) and d != (0.0, 0.0)
             }
+            if not moved_uuids:
+                raise ValueError("proposal has no movement to accept")
+            # Push current state to undo before applying
+            self.push_undo()
             # Use protected nets from BoardState (includes auto-detected + user-added)
             protected_nets = self.get_protected_nets()
             affected_nets = self._get_affected_nets(moved_uuids)
@@ -756,12 +775,15 @@ class Handler(BaseHTTPRequestHandler):
                     elapsed_s=0.0,
                     params={},
                     forces=STATE.get_forces(),
+                    force_components=STATE.get_force_components(),
                 )
             elif forces_on and proposal is not None:
                 # Merge stored forces into existing proposal
                 stored_forces = STATE.get_forces()
-                if stored_forces:
+                stored_comps = STATE.get_force_components()
+                if stored_forces or stored_comps:
                     merged_forces = {**proposal.forces, **stored_forces}
+                    merged_comps = {**proposal.force_components, **stored_comps}
                     proposal = PlacementProposal(
                         deltas=proposal.deltas,
                         iterations=proposal.iterations,
@@ -769,6 +791,7 @@ class Handler(BaseHTTPRequestHandler):
                         elapsed_s=proposal.elapsed_s,
                         params=proposal.params,
                         forces=merged_forces,
+                        force_components=merged_comps,
                     )
             
             # DRC overlay: draw cached violations; dim them when the cache is
@@ -1075,23 +1098,12 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
             params = load_params()
-            req_stub = req.get("stub", params.stub)
             if iterations is not None:
-                if not isinstance(iterations, int) or (iterations < 1 and not req_stub):
-                    self._send(400, b"iterations must be a positive integer (or 0 for stub mode)", "text/plain")
+                if not isinstance(iterations, int) or isinstance(iterations, bool) or iterations < 1:
+                    self._send(400, b"iterations must be a positive integer", "text/plain")
                     return
-                # Create params with overridden max_iterations, preserve other settings
-                params = PlacementParams(
-                    repulsion_kr=params.repulsion_kr,
-                    attraction_ka=params.attraction_ka,
-                    ideal_length_mm=params.ideal_length_mm,
-                    max_iterations=iterations,
-                    convergence_eps_mm=params.convergence_eps_mm,
-                    rigid_stiffness=params.rigid_stiffness,
-                    courtyard_repulsion_kc=params.courtyard_repulsion_kc,
-                    demo_jitter_mm=params.demo_jitter_mm,
-                    stub=req_stub,
-                )
+                # Step budget overrides the saved max_iterations; other settings preserved.
+                params = replace(params, max_iterations=iterations)
 
 # If movable_uuids not provided, compute as all unlocked except pinned
             if movable_uuids is None:
@@ -1113,6 +1125,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, f"placement failed: {exc}".encode(), "text/plain")
                 return
             STATE.set_forces(proposal.forces)
+            STATE.set_force_components(proposal.force_components)
             version = STATE.set_proposal(proposal)
             payload = {
                 "ok": True,
@@ -1155,8 +1168,6 @@ class Handler(BaseHTTPRequestHandler):
                 convergence_eps_mm=req.get("convergence_eps_mm", base_params.convergence_eps_mm),
                 rigid_stiffness=req.get("rigid_stiffness", base_params.rigid_stiffness),
                 courtyard_repulsion_kc=req.get("courtyard_repulsion_kc", base_params.courtyard_repulsion_kc),
-                demo_jitter_mm=req.get("demo_jitter_mm", base_params.demo_jitter_mm),
-                stub=False,  # Force physics mode for force computation
             )
 
             # If movable_uuids not provided, compute as all unlocked except pinned
@@ -1180,10 +1191,15 @@ class Handler(BaseHTTPRequestHandler):
 
             # Store forces in BoardState for SVG rendering
             STATE.set_forces(proposal.forces)
+            STATE.set_force_components(proposal.force_components)
 
             payload = {
                 "ok": True,
                 "forces": {u: [fx, fy] for u, (fx, fy) in proposal.forces.items()},
+                "force_components": {
+                    u: {c: [fx, fy] for c, (fx, fy) in comps.items()}
+                    for u, comps in proposal.force_components.items()
+                },
             }
             self._send(200, json.dumps(payload).encode(), "application/json")
             return

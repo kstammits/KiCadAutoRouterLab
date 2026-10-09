@@ -46,18 +46,15 @@ def test_identity_default(tmp_path, run_autoroute):
 
 @pytest.mark.cli
 @pytest.mark.minimal
-@pytest.mark.stub
-def test_jitter_moves_only_unlocked(tmp_path, run_autoroute):
-    from kicad_autorouter.placement import _jitter_for
+def test_no_movement_on_net_free_board(tmp_path, run_autoroute):
     from kicad_autorouter.sexpr import parse_file
 
     out = tmp_path / "out.kicad_pcb"
-    assert run_autoroute.main(
-        [str(MINIMAL_PCB), "-o", str(out), "--demo-jitter-mm", "5.0"]
-    ) == 0
+    assert run_autoroute.main([str(MINIMAL_PCB), "-o", str(out)]) == 0
+    # Minimal has no nets, so physics correctly produces no movement and the
+    # writeback leaves all footprints (including unlocked MH1) in place.
     at = _at_by_uuid(parse_file(out))
-    dx, dy = _jitter_for(MH1_UUID, 5.0)
-    assert at[MH1_UUID] == pytest.approx((58.57 + dx, 50.55 + dy))
+    assert at[MH1_UUID] == (58.57, 50.55)
     assert at[MH2_UUID] == (58.57, 139.45)  # locked part stays put
 
 

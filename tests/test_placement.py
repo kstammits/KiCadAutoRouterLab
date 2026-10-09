@@ -3,7 +3,6 @@
 Test categories (pytest markers):
 - unit: Pure logic, no fixtures
 - params: PlacementParams validation/serialization
-- stub: Demo jitter mode (works without nets)
 - physics: MST force-spring simulation (requires nets)
 - minimal: Uses minimal.kicad_pcb fixture (4 footprints, no nets)
 - dccf: Uses DCCF.sved.kicad_pcb fixture (97 footprints, 59 nets)
@@ -15,11 +14,17 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from kicad_autorouter.board_model import Footprint, board_model
+from kicad_autorouter.board_model import (
+    BoardModel,
+    BoardRegion,
+    Footprint,
+    Pad,
+    Point,
+    board_model,
+)
 from kicad_autorouter.placement import (
     PlacementParams,
     _collect_pad_nodes,
-    _jitter_for,
     _run_region_simulation,
     run_placement,
 )
@@ -59,12 +64,10 @@ class TestParams:
         assert p.ideal_length_mm == 25.0
         assert p.max_iterations == 1000
         assert p.convergence_eps_mm == 0.01
-        assert p.demo_jitter_mm == 0.0
-        assert p.stub is False
         assert p.rigid_stiffness == 5e5
 
     def test_roundtrip(self):
-        p = PlacementParams(repulsion_kr=42.5, demo_jitter_mm=3.0)
+        p = PlacementParams(repulsion_kr=42.5, max_iterations=7)
         q = PlacementParams.from_dict(p.to_dict())
         assert q == p
 
@@ -72,6 +75,16 @@ class TestParams:
         q = PlacementParams.from_dict({"repulsion_kr": 1.0, "future_param": 9})
         assert q.repulsion_kr == 1.0
         assert q.attraction_ka == 0.05
+
+    def test_from_dict_ignores_removed_legacy_keys(self):
+        # Old placement.json files may still carry demo_jitter_mm/stub;
+        # they must load without error and be dropped.
+        q = PlacementParams.from_dict(
+            {"repulsion_kr": 1.0, "demo_jitter_mm": 5.0, "stub": True}
+        )
+        assert q.repulsion_kr == 1.0
+        assert not hasattr(q, "demo_jitter_mm")
+        assert not hasattr(q, "stub")
 
     @pytest.mark.parametrize(
         "bad",
@@ -82,9 +95,7 @@ class TestParams:
             {"attraction_ka": -0.1},
             {"ideal_length_mm": 0},
             {"convergence_eps_mm": 0},
-            {"demo_jitter_mm": -1},
             {"repulsion_kr": "big"},
-            {"stub": "yes"},
         ],
     )
     def test_from_dict_rejects_bad_values(self, bad):
@@ -93,29 +104,9 @@ class TestParams:
 
 
 @pytest.mark.unit
-@pytest.mark.params
-class TestJitter:
-    """Deterministic per-UUID jitter for demo mode."""
-
-    def test_deterministic_per_uuid(self):
-        a = _jitter_for("uuid-a", 5.0)
-        b = _jitter_for("uuid-a", 5.0)
-        assert a == b
-
-    def test_magnitude_bounded(self):
-        for i in range(20):
-            dx, dy = _jitter_for(f"uuid-{i}", 7.5)
-            assert math.hypot(dx, dy) <= 7.5 + 1e-9
-
-    def test_different_uuids_produce_different_jitter(self):
-        results = {_jitter_for(f"uuid-{i}", 10.0) for i in range(50)}
-        assert len(results) > 1  # Should have variety
-
-
-@pytest.mark.stub
 @pytest.mark.minimal
-class TestStubRunner:
-    """Demo jitter mode (stub=True, demo_jitter_mm > 0) - works without nets."""
+class TestNoNetRunner:
+    """Boards without nets (minimal mounting-hole fixture) are a stable no-op."""
 
     MH1_UUID = "5c0af984-49c4-40a0-95aa-bb612ff4098b"
 
@@ -128,34 +119,33 @@ class TestStubRunner:
         assert prop.elapsed_s >= 0.0
         assert prop.params == p.to_dict()
 
-    def test_jitter_moves_only_unlocked_parts(self, minimal_model):
-        p = PlacementParams(demo_jitter_mm=5.0, stub=False)
-        prop = run_placement(minimal_model, p)
-        # only MH1 is unlocked in the minimal fixture
-        assert set(prop.deltas) == {self.MH1_UUID}
-        dx, dy, da = prop.deltas[self.MH1_UUID]
-        assert da == 0.0
-        assert 0.0 < math.hypot(dx, dy) <= 5.0 + 1e-9
-        assert prop.final_max_disp_mm == pytest.approx(math.hypot(dx, dy))
-
-    def test_jitter_is_deterministic(self, minimal_model):
-        p = PlacementParams(demo_jitter_mm=3.0)
-        first = run_placement(minimal_model, p).deltas
-        second = run_placement(minimal_model, p).deltas
-        assert first == second
+    def test_no_drift_on_repeat_runs(self, minimal_model):
+        # Regression: stepping must never produce movement on a net-free
+        # board, so accept-and-repeat cannot walk parts off the board.
+        p = PlacementParams(max_iterations=5)
+        for _ in range(3):
+            prop = run_placement(minimal_model, p)
+            assert prop.deltas == {}
 
     def test_locked_mask_from_fixture(self, minimal_model):
         locked = [fp.locked for fp in minimal_model.footprints]
         assert locked == [True, False, True, True]
 
+    def test_zero_iterations_yields_empty_proposal(self, dccf_model):
+        # The forces endpoint runs with max_iterations=0: float noise from
+        # the Kabsch fit must be filtered so no phantom deltas appear.
+        p = PlacementParams(max_iterations=0)
+        prop = run_placement(dccf_model, p)
+        assert prop.deltas == {}
+
 
 @pytest.mark.physics
 @pytest.mark.dccf
 class TestPhysicsRunner:
-    """MST force-spring simulation (stub=False) - requires nets."""
+    """MST force-spring simulation - requires nets."""
 
     def test_physics_moves_unlocked(self, dccf_model):
-        p = PlacementParams(stub=False, max_iterations=10)
+        p = PlacementParams(max_iterations=10)
         prop = run_placement(dccf_model, p)
         assert prop.deltas
         for uuid, (dx, dy, da) in prop.deltas.items():
@@ -166,26 +156,26 @@ class TestPhysicsRunner:
         assert prop.final_max_disp_mm > 0.0
 
     def test_physics_respects_locked(self, dccf_model):
-        p = PlacementParams(stub=False, max_iterations=10)
+        p = PlacementParams(max_iterations=10)
         prop = run_placement(dccf_model, p)
         for uuid in prop.deltas:
             fp = next(fp for fp in dccf_model.footprints if fp.uuid == uuid)
             assert not fp.locked
 
     def test_selective_movable_uuids(self, dccf_model):
-        p = PlacementParams(stub=False, max_iterations=10)
+        p = PlacementParams(max_iterations=10)
         movable_fp = next(fp for fp in dccf_model.footprints if not fp.locked and fp.uuid)
         prop = run_placement(dccf_model, p, movable_uuids={movable_fp.uuid})
         assert prop.deltas
         assert set(prop.deltas) == {movable_fp.uuid}
 
     def test_selective_movable_uuids_empty(self, dccf_model):
-        p = PlacementParams(stub=False, max_iterations=10)
+        p = PlacementParams(max_iterations=10)
         prop = run_placement(dccf_model, p, movable_uuids=set())
         assert prop.deltas == {}
 
     def test_selective_movable_uuids_excludes_locked(self, dccf_model):
-        p = PlacementParams(stub=False, max_iterations=10)
+        p = PlacementParams(max_iterations=10)
         locked_fps = [fp for fp in dccf_model.footprints if fp.locked]
         if not locked_fps:
             pytest.skip("No locked footprints in DCCF fixture")
@@ -194,12 +184,12 @@ class TestPhysicsRunner:
         assert prop.deltas == {}
 
     def test_convergence_stops_early(self, dccf_model):
-        p = PlacementParams(stub=False, max_iterations=1000, convergence_eps_mm=100.0)
+        p = PlacementParams(max_iterations=1000, convergence_eps_mm=100.0)
         prop = run_placement(dccf_model, p)
         assert prop.iterations < 1000
 
     def test_iterations_param_override(self, dccf_model):
-        p = PlacementParams(stub=False, max_iterations=1000)
+        p = PlacementParams(max_iterations=1000)
         prop = run_placement(dccf_model, p)
         assert prop.iterations <= 1000
 
@@ -207,7 +197,7 @@ class TestPhysicsRunner:
 
     def test_mst_topology_sw6_collinear_5pad(self, dccf_model):
         """SW6 (dbe92a0d) has 5 collinear pads - MST should connect nearest neighbors."""
-        p = PlacementParams(stub=False, max_iterations=10)
+        p = PlacementParams(max_iterations=10)
         prop = run_placement(dccf_model, p)
         # SW6 should move and rotate (even though collinear, net forces differ)
         assert prop.deltas
@@ -220,7 +210,7 @@ class TestPhysicsRunner:
 
     def test_mst_topology_14pad_grid(self, dccf_model):
         """U4 (66d121ca) has 14 pads in grid - MST should form grid connections."""
-        p = PlacementParams(stub=False, max_iterations=10)
+        p = PlacementParams(max_iterations=10)
         prop = run_placement(dccf_model, p)
         u4_uuid = "66d121ca-4b5e-8b5d-3e4f1a2b9c8d"
         if u4_uuid in prop.deltas:
@@ -245,7 +235,7 @@ class TestPhysicsRunner:
         """If all pads of a collinear footprint feel equal force, it should translate without rotation."""
         # This is hard to test deterministically, but we can at least verify
         # the pose extraction doesn't produce NaN
-        p = PlacementParams(stub=False, max_iterations=5)
+        p = PlacementParams(max_iterations=5)
         prop = run_placement(dccf_model, p)
         for uuid, (dx, dy, da) in prop.deltas.items():
             assert not math.isnan(dx) and not math.isnan(dy) and not math.isnan(da)
@@ -258,7 +248,7 @@ class TestPerRegionSimulation:
 
     def test_per_region_simulation(self, dccf_model):
         """DCCF parts don't collapse to middle between boards."""
-        p = PlacementParams(stub=False, max_iterations=10)
+        p = PlacementParams(max_iterations=10)
         prop = run_placement(dccf_model, p)
 
         # Should have deltas for unlocked footprints
@@ -285,7 +275,7 @@ class TestPerRegionSimulation:
         # This test verifies the simulation doesn't create forces between
         # pads in different regions. Hard to test directly, but we can verify
         # the region separation is maintained.
-        p = PlacementParams(stub=False, max_iterations=10)
+        p = PlacementParams(max_iterations=10)
         prop = run_placement(dccf_model, p)
 
         # Just verify it runs without error and produces reasonable results
@@ -296,14 +286,14 @@ class TestPerRegionSimulation:
         """Region with no movable footprints is skipped gracefully."""
         # In DCCF, both regions have movable footprints, so this test
         # just verifies the logic path exists
-        p = PlacementParams(stub=False, max_iterations=10)
+        p = PlacementParams(max_iterations=10)
         prop = run_placement(dccf_model, p)
         assert prop.iterations >= 0
 
     def test_tube111_three_regions(self):
         """tube111 with 3 regions runs without error."""
         tube111_model = board_model(parse_file(TUBE111_PCB))
-        p = PlacementParams(stub=False, max_iterations=10)
+        p = PlacementParams(max_iterations=10)
         prop = run_placement(tube111_model, p)
 
         assert len(tube111_model.board_regions) == 3
@@ -317,7 +307,7 @@ class TestCourtyardCollision:
 
     def test_courtyard_polygon_collision(self, dccf_model):
         """Overlapping courtyard polygons should generate repulsion forces."""
-        p = PlacementParams(stub=False, max_iterations=5, courtyard_repulsion_kc=2000.0)
+        p = PlacementParams(max_iterations=5, courtyard_repulsion_kc=2000.0)
         prop = run_placement(dccf_model, p)
 
         # Verify the simulation runs and produces forces
@@ -333,7 +323,7 @@ class TestCourtyardCollision:
 
     def test_courtyard_forces_are_zero_when_disabled(self, dccf_model):
         """With courtyard_repulsion_kc=0, collision forces should be zero."""
-        p = PlacementParams(stub=False, max_iterations=5, courtyard_repulsion_kc=0.0)
+        p = PlacementParams(max_iterations=5, courtyard_repulsion_kc=0.0)
         prop = run_placement(dccf_model, p)
 
         # Only repulsion, attraction, rigid forces remain
@@ -351,9 +341,10 @@ class TestGhostComponents:
         """Ghost footprint with courtyard should repel real footprints via collision."""
         # Run placement with strong courtyard repulsion
         p = PlacementParams(
-            stub=False,
             max_iterations=50,
             courtyard_repulsion_kc=5000.0,
+            # Ghost rail (~y=15) sits ~35mm from R1/R2: halo must reach it.
+            courtyard_halo_mm=40.0,
             repulsion_kr=10.0,  # Low Coulomb repulsion to isolate courtyard effect
         )
         prop = run_placement(ghost_test_model, p)
@@ -371,7 +362,7 @@ class TestGhostComponents:
 
     def test_ghost_no_deltas_in_proposal(self, ghost_test_model):
         """Ghost footprints never appear in placement proposal deltas."""
-        p = PlacementParams(stub=False, max_iterations=10)
+        p = PlacementParams(max_iterations=10)
         prop = run_placement(ghost_test_model, p)
 
         ghost_uuid = "ghost-rail-top-001"
@@ -384,7 +375,12 @@ class TestGhostComponents:
 
     def test_ghost_courtyard_collision_force(self, ghost_test_model):
         """Ghost courtyard collision generates forces on real footprints."""
-        p = PlacementParams(stub=False, max_iterations=5, courtyard_repulsion_kc=2000.0)
+        p = PlacementParams(
+            max_iterations=5,
+            courtyard_repulsion_kc=2000.0,
+            # ~35mm ghost-to-part gap: halo must reach it (bounded regime).
+            courtyard_halo_mm=40.0,
+        )
         prop = run_placement(ghost_test_model, p)
 
         # Forces should be non-zero for real footprints near ghost
@@ -409,7 +405,6 @@ class TestGhostComponents:
         """Ghost with attraction pulls target footprint toward it."""
         # Ghost at y=20, U1 at y=50. Attraction should pull U1 up (negative dy).
         p = PlacementParams(
-            stub=False,
             max_iterations=30,
             courtyard_repulsion_kc=0.0,  # Disable courtyard to isolate attraction
             repulsion_kr=10.0,  # Low Coulomb repulsion
@@ -431,7 +426,7 @@ class TestGhostComponents:
 
     def test_ghost_attraction_force_distribution(self, ghost_test_model):
         """Attraction force is distributed equally to all target pads."""
-        p = PlacementParams(stub=False, max_iterations=5, courtyard_repulsion_kc=0.0)
+        p = PlacementParams(max_iterations=5, courtyard_repulsion_kc=0.0)
         prop = run_placement(ghost_test_model, p)
 
         u1_uuid = "aaaaaaaa-1111-2222-3333-444444444444"
@@ -442,7 +437,7 @@ class TestGhostComponents:
 
     def test_ghost_attraction_only_affects_target(self, ghost_test_model):
         """Only the target footprint feels attraction force."""
-        p = PlacementParams(stub=False, max_iterations=10, courtyard_repulsion_kc=0.0, repulsion_kr=1.0)
+        p = PlacementParams(max_iterations=10, courtyard_repulsion_kc=0.0, repulsion_kr=1.0)
         prop = run_placement(ghost_test_model, p)
 
         u1_uuid = "aaaaaaaa-1111-2222-3333-444444444444"
@@ -456,3 +451,147 @@ class TestGhostComponents:
 
         # R2 should have minimal force (only weak Coulomb repulsion)
         assert abs(r2_force[1]) < 1.0, f"R2 should have minimal force, got {r2_force}"
+
+
+@pytest.mark.physics
+class TestForceComponents:
+    """Per-cause force breakdown for the tuning overlay."""
+
+    def test_components_sum_to_totals(self, ghost_test_model):
+        p = PlacementParams(max_iterations=5, courtyard_repulsion_kc=0.0)
+        prop = run_placement(ghost_test_model, p)
+        assert prop.forces
+        for uuid, (fx, fy) in prop.forces.items():
+            comps = prop.force_components.get(uuid)
+            assert comps, f"no components for {uuid}"
+            sx = sum(v[0] for v in comps.values())
+            sy = sum(v[1] for v in comps.values())
+            assert sx == pytest.approx(fx)
+            assert sy == pytest.approx(fy)
+
+    def test_ghost_component_visible_on_target(self, ghost_test_model):
+        p = PlacementParams(max_iterations=5, courtyard_repulsion_kc=0.0)
+        prop = run_placement(ghost_test_model, p)
+        u1_uuid = "aaaaaaaa-1111-2222-3333-444444444444"
+        comps = prop.force_components.get(u1_uuid, {})
+        assert "ghost" in comps
+        assert comps["ghost"][1] < 0, "ghost pull on U1 should point up"
+
+    def test_expected_causes_present(self, ghost_test_model):
+        p = PlacementParams(max_iterations=5)
+        prop = run_placement(ghost_test_model, p)
+        for comps in prop.force_components.values():
+            assert set(comps) == {
+                "repulsion", "attraction", "rigid",
+                "ghost", "courtyard", "boundary",
+            }
+
+
+def _two_squares_model(gap_mm: float) -> BoardModel:
+    """Two 1-pad footprints with 2x2mm square courtyards, `gap_mm` apart edge-to-edge."""
+
+    def make_fp(ref: str, uuid: str, net: str, x: float) -> Footprint:
+        pad = Pad(number="1", net_name=net, position=Point(x, 0.0))
+        corners = [
+            Point(x - 1.0, -1.0), Point(x + 1.0, -1.0),
+            Point(x + 1.0, 1.0), Point(x - 1.0, 1.0),
+            Point(x - 1.0, -1.0),
+        ]
+        courtyard = tuple((corners[i], corners[i + 1]) for i in range(4))
+        return Footprint(
+            ref=ref, footprint_id="T:R_0805", layer="F.Cu",
+            x_mm=x, y_mm=0.0, angle_deg=0.0,
+            pads=(pad,), courtyard=courtyard, uuid=uuid,
+        )
+
+    fpa = make_fp("A1", "aaaaaaaa-0000-0000-0000-000000000001", "N1", 0.0)
+    fpb = make_fp("B1", "bbbbbbbb-0000-0000-0000-000000000002", "N2", 2.0 + gap_mm)
+    region = BoardRegion(uuid="r0", polygon=(), bbox=(-10.0, 20.0, -10.0, 10.0))
+    return BoardModel(
+        footprints=(fpa, fpb),
+        keepout_zones=(),
+        nets={},
+        by_ref={"A1": fpa, "B1": fpb},
+        board_regions=(region,),
+        footprint_region={fpa.uuid: 0, fpb.uuid: 0},
+    )
+
+
+def _courtyard_of(prop, uuid: str):
+    return prop.force_components[uuid]["courtyard"]
+
+
+@pytest.mark.unit
+class TestCourtyardHalo:
+    """Bounded halo: only close approaches push; strength saturates at kc."""
+
+    def test_inside_halo_pushes(self):
+        m = _two_squares_model(gap_mm=2.0)
+        p = PlacementParams(
+            max_iterations=0, repulsion_kr=1.0,
+            courtyard_repulsion_kc=100.0, courtyard_halo_mm=3.0,
+        )
+        prop = run_placement(m, p)
+        fx, fy = _courtyard_of(prop, "aaaaaaaa-0000-0000-0000-000000000001")
+        assert fx < 0, f"A1 should be pushed left, got {(fx, fy)}"
+        assert abs(fx) > 0.0
+
+    def test_outside_halo_silent(self):
+        m = _two_squares_model(gap_mm=4.0)
+        p = PlacementParams(
+            max_iterations=0, repulsion_kr=1.0,
+            courtyard_repulsion_kc=100.0, courtyard_halo_mm=3.0,
+        )
+        prop = run_placement(m, p)
+        for uuid in (
+            "aaaaaaaa-0000-0000-0000-000000000001",
+            "bbbbbbbb-0000-0000-0000-000000000002",
+        ):
+            fx, fy = _courtyard_of(prop, uuid)
+            assert (fx, fy) == pytest.approx((0.0, 0.0))
+
+    def test_falloff_capped_and_monotonic(self):
+        kc = 100.0
+        mags = []
+        for gap in (0.1, 1.5, 2.9):
+            m = _two_squares_model(gap_mm=gap)
+            p = PlacementParams(
+                max_iterations=0, repulsion_kr=1.0,
+                courtyard_repulsion_kc=kc, courtyard_halo_mm=3.0,
+            )
+            prop = run_placement(m, p)
+            fx, fy = _courtyard_of(prop, "aaaaaaaa-0000-0000-0000-000000000001")
+            mags.append(math.hypot(fx, fy))
+        assert all(mag < kc for mag in mags), f"strength must saturate at kc: {mags}"
+        assert mags[0] > mags[1] > mags[2] > 0.0, f"must fall with gap: {mags}"
+
+    def test_halo_param_defaults_and_parses(self):
+        assert PlacementParams().courtyard_halo_mm == 3.0
+        assert PlacementParams.from_dict({"courtyard_halo_mm": 7.5}).courtyard_halo_mm == 7.5
+        with pytest.raises(ValueError):
+            PlacementParams.from_dict({"courtyard_halo_mm": 0.0})
+
+    @pytest.mark.dccf
+    def test_c11_quarter_inch_clearance_is_quiet(self, dccf_model):
+        """C11 (4mm+ from neighbors) feels no courtyard force at new scale.
+
+        Regression for the report: old size-scaled halo had RV sockets
+        pushing C11 from 20-30mm away with ~3800 units.
+        """
+        p = PlacementParams(
+            max_iterations=5,
+            courtyard_repulsion_kc=20.0,
+            courtyard_halo_mm=3.0,
+        )
+        prop = run_placement(
+            dccf_model, p,
+            movable_uuids={"883e9176-8fb8-4697-9a2d-1a656ba552fe"},
+        )
+        uuid = "883e9176-8fb8-4697-9a2d-1a656ba552fe"
+        comps = prop.force_components[uuid]
+        courtyard = math.hypot(*comps["courtyard"])
+        pads = max(math.hypot(*comps["repulsion"]), math.hypot(*comps["attraction"]))
+        # Was ~3800 (courtyard) vs ~3 (pads) under the old size-scaled halo;
+        # pad forces must dominate now that distant halos are silent.
+        assert courtyard < 1.0
+        assert pads > courtyard

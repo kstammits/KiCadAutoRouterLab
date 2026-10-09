@@ -29,6 +29,10 @@ class CostMap:
     high_cost_penalty: int = 20     # additional cost for HIGH_COST cells
     edge_keepout_penalty: int = 40  # additional cost for EDGE_KEEPOUT cells
     blocked_threshold: int = 100    # cells >= this are impassable
+    # Weighted-A* greediness: f = g + weight * h. Old default 200 made
+    # penalties invisible (200/cell gradient vs +20/+40 penalties); 3 keeps
+    # the search penalty-respecting while still guided.
+    heuristic_weight: float = 3.0
 
 
 class SingleNetRouter:
@@ -53,10 +57,15 @@ class SingleNetRouter:
     def route(
         self,
         terminals: List[Tuple[int, int, int]],  # [(col, row, layer_idx)]
+        secondary: Optional[np.ndarray] = None,  # per-net fanout halo, same shape as cost_grid
     ) -> RouteResult:
         """Route a net connecting all terminals.
 
         Uses MST approximation: pairwise A* distances -> MST -> route edges sequentially.
+
+        ``secondary`` is an optional per-net cost overlay (e.g. fanout halos
+        over other nets' pads). It is ADDED to entry costs but never blocks,
+        so it steers around foreign copper without trapping terminals.
         """
         if len(terminals) < 2:
             return RouteResult([], 0.0, 0, 0.0, False)
@@ -69,7 +78,7 @@ class SingleNetRouter:
 
         for i in range(n):
             for j in range(i + 1, n):
-                result = self._a_star(terminals[i], terminals[j])
+                result = self._a_star(terminals[i], terminals[j], secondary)
                 if result.success:
                     dist_matrix[i, j] = dist_matrix[j, i] = result.cost
                     path_matrix[i][j] = path_matrix[j][i] = result.path
@@ -134,7 +143,26 @@ class SingleNetRouter:
             success=True,
         )
 
-    def _a_star(self, start: Tuple[int, int, int], goal: Tuple[int, int, int]) -> RouteResult:
+    def _secondary_at(
+        self,
+        secondary: Optional[np.ndarray],
+        row: int,
+        col: int,
+        layer: int,
+    ) -> int:
+        """Per-net halo value at a cell (0 when no secondary grid)."""
+        if secondary is None:
+            return 0
+        if not (0 <= row < self.H and 0 <= col < self.W and 0 <= layer < self.n_layers):
+            return 0
+        return int(secondary[layer, row, col])
+
+    def _a_star(
+        self,
+        start: Tuple[int, int, int],
+        goal: Tuple[int, int, int],
+        secondary: Optional[np.ndarray] = None,
+    ) -> RouteResult:
         """A* search on 3D grid with via transitions."""
         sc, sr, sl = start
         gc, gr, gl = goal
@@ -150,12 +178,11 @@ class SingleNetRouter:
         if not (0 <= gr < self.H and 0 <= gc < self.W and 0 <= gl < self.n_layers):
             return RouteResult([], 0.0, 0, 0.0, False)
 
-        # Heuristic: Weighted A* with weight > 1 for faster search
-        # Admissible heuristic is Manhattan * base_cost (min step cost = 1)
-        # Weighted A*: f = g + W * h, where W > 1 makes search more greedy
-        heuristic_weight = 200  # Very high = essentially greedy best-first
+        # Heuristic: Weighted A* (weight from CostMap; must stay small
+        # enough that cell penalties still steer the search).
+        # Admissible heuristic is Manhattan * base_cost (min step cost = 1).
         def heuristic(c, r, l):
-            return (abs(c - gc) + abs(r - gr) + abs(l - gl)) * self.cost_map.base_cost * heuristic_weight
+            return (abs(c - gc) + abs(r - gr) + abs(l - gl)) * self.cost_map.base_cost * self.cost_map.heuristic_weight
 
         # A* with (f, g, col, row, layer, parent)
         # f = g + h
@@ -194,10 +221,11 @@ class SingleNetRouter:
                     continue
                 if self._is_blocked(nr, nc, l):
                     continue
-                cell_cost = self._cell_cost(nr, nc, l)
+                cell_cost = self._cell_cost(nr, nc, l) + self._secondary_at(secondary, nr, nc, l)
                 ng = g + cell_cost
                 if ng < g_score[l, nr, nc]:
                     g_score[l, nr, nc] = ng
+                    parent[(nc, nr, l)] = (c, r, l)
                     nf = ng + heuristic(nc, nr, l)
                     heapq.heappush(open_set, (nf, ng, nc, nr, l, (c, r, l)))
 
@@ -212,9 +240,11 @@ class SingleNetRouter:
                         cell_cost = 0
                     else:
                         cell_cost = self.cost_map.via_cost
+                    cell_cost += self._secondary_at(secondary, r, c, nl)
                     ng = g + cell_cost
                     if ng < g_score[nl, r, c]:
                         g_score[nl, r, c] = ng
+                        parent[(c, r, nl)] = (c, r, l)
                         nf = ng + heuristic(c, r, nl)
                         heapq.heappush(open_set, (nf, ng, c, r, nl, (c, r, l)))
 

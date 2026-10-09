@@ -86,7 +86,7 @@ def test_params_roundtrip():
         with urllib.request.urlopen(f"{base}/api/placement/params") as r:
             defaults = json.load(r)
         assert defaults["repulsion_kr"] == 100.0
-        custom = dict(defaults, repulsion_kr=42.5, demo_jitter_mm=3.0)
+        custom = dict(defaults, repulsion_kr=42.5, ideal_length_mm=33.0)
         req = urllib.request.Request(
             f"{base}/api/placement/params",
             data=json.dumps(custom).encode(),
@@ -94,7 +94,7 @@ def test_params_roundtrip():
         )
         with urllib.request.urlopen(req) as r:
             saved = json.load(r)
-        assert saved["repulsion_kr"] == 42.5 and saved["demo_jitter_mm"] == 3.0
+        assert saved["repulsion_kr"] == 42.5 and saved["ideal_length_mm"] == 33.0
         with urllib.request.urlopen(f"{base}/api/placement/params") as r:
             reloaded = json.load(r)
         assert reloaded["repulsion_kr"] == 42.5
@@ -129,7 +129,6 @@ def _load_minimal(base):
 
 
 @pytest.mark.server
-@pytest.mark.stub
 @pytest.mark.minimal
 def test_run_and_clear_proposal():
     httpd, base = _client()
@@ -232,7 +231,8 @@ def test_run_with_movable_uuids():
         req = urllib.request.Request(f"{base}/api/placement/run", method="POST")
         with urllib.request.urlopen(req) as r:
             run = json.load(r)
-        # In stub mode, no deltas, but we can test the endpoint accepts the param
+        # No nets on the minimal fixture, so the proposal is empty — but the
+        # endpoint still accepts the movable_uuids param.
         req = urllib.request.Request(
             f"{base}/api/placement/run",
             data=json.dumps({"movable_uuids": ["fake-uuid"]}).encode(),
@@ -248,24 +248,80 @@ def test_run_with_movable_uuids():
 
 
 @pytest.mark.server
-@pytest.mark.stub
 @pytest.mark.minimal
-def test_accept_proposal():
-    """Test /api/placement/accept applies proposal to model."""
+def test_accept_empty_proposal_rejected():
+    """Accepting a no-movement proposal (net-free minimal board) is a 400."""
     httpd, base = _client()
     try:
         _load_minimal(base)
-        # First run a proposal with demo jitter (works on any fixture)
         req = urllib.request.Request(
-            f"{base}/api/placement/params",
-            data=json.dumps({"stub": False, "demo_jitter_mm": 5.0}).encode(),
+            f"{base}/api/placement/run",
+            data=json.dumps({"iterations": 5}).encode(),
             headers={"Content-Type": "application/json"},
             method="POST",
         )
         with urllib.request.urlopen(req) as r:
-            json.load(r)
+            run = json.load(r)
+        assert run["moved"] == 0
+        req = urllib.request.Request(f"{base}/api/placement/accept", method="POST")
+        with pytest.raises(urllib.error.HTTPError) as ei:
+            urllib.request.urlopen(req)
+        assert ei.value.code == 400
+    finally:
+        httpd.shutdown()
+
+
+@pytest.mark.server
+def test_forces_include_components():
+    """POST /api/placement/forces returns per-cause breakdown summing to totals."""
+    httpd, base = _client()
+    try:
+        data = (Path(__file__).parent / "fixtures" / "DCCF.sved.kicad_pcb").read_bytes()
+        req = urllib.request.Request(f"{base}/api/load?name=dccf", data=data, method="POST")
+        with urllib.request.urlopen(req) as r:
+            assert json.load(r)["ok"] is True
+        req = urllib.request.Request(
+            f"{base}/api/placement/forces",
+            data=json.dumps({}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req) as r:
+            body = json.load(r)
+        assert body["ok"] is True
+        assert body["forces"]
+        assert set(body["force_components"]) == set(body["forces"])
+        for uuid, total in body["forces"].items():
+            comps = body["force_components"][uuid]
+            assert set(comps) == {
+                "repulsion", "attraction", "rigid",
+                "ghost", "courtyard", "boundary",
+            }
+            sx = sum(v[0] for v in comps.values())
+            sy = sum(v[1] for v in comps.values())
+            assert sx == pytest.approx(total[0])
+            assert sy == pytest.approx(total[1])
+        # SVG with forces on must contain per-cause arrows + markers.
+        with urllib.request.urlopen(f"{base}/api/board.svg?forces=1") as r:
+            svg = r.read().decode()
+        assert "url(#force-" in svg
+    finally:
+        httpd.shutdown()
+
+
+@pytest.mark.server
+def test_accept_proposal():
+    """Test /api/placement/accept applies a physics proposal to the model."""
+    httpd, base = _client()
+    try:
+        data = (Path(__file__).parent / "fixtures" / "DCCF.sved.kicad_pcb").read_bytes()
+        req = urllib.request.Request(f"{base}/api/load?name=dccf", data=data, method="POST")
+        with urllib.request.urlopen(req) as r:
+            assert json.load(r)["ok"] is True
         req = urllib.request.Request(
             f"{base}/api/placement/run",
+            data=json.dumps({"iterations": 5}).encode(),
+            headers={"Content-Type": "application/json"},
             method="POST",
         )
         with urllib.request.urlopen(req) as r:

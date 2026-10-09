@@ -93,11 +93,23 @@ def routes_to_tracks_vias(
                 via_y = (y1 + y2) / 2
                 vias.append(Via(
                     position=(via_x, via_y),
-                    size_mm=0.8,
-                    drill_mm=0.4,
+                    size_mm=via_size_mm,
+                    drill_mm=via_drill_mm,
                     layers=("F.Cu", "B.Cu"),
                     net_name=net_name,
                 ))
+
+    # Dedupe exact-duplicate vias per net (MST-merge revisit artifacts can
+    # emit two layer changes at the same cell → drill-on-drill DRC).
+    seen_via = set()
+    unique_vias = []
+    for via in vias:
+        key = (via.net_name, round(via.position[0], 6), round(via.position[1], 6))
+        if key in seen_via:
+            continue
+        seen_via.add(key)
+        unique_vias.append(via)
+    vias = unique_vias
     
     # Merge collinear track segments
     tracks = _merge_collinear_tracks(tracks)

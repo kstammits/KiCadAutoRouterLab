@@ -13,7 +13,7 @@ import html
 import math
 from typing import Dict, List, Optional, Set, Tuple
 
-from .board_model import BoardModel, Point
+from .board_model import BoardModel, Point, apply_deltas
 from .drc import DEFAULT_IGNORED_TYPES
 from .placement import PlacementProposal
 
@@ -44,13 +44,6 @@ FP_GHOST_COLOR = GHOST_FOOTPRINT  # Ghost components - purple
 
 def _fmt(v: float) -> str:
     return f"{v:.3f}"
-
-
-def _shift(offsets, uuid):
-    """Proposed ``(dx_mm, dy_mm)`` offset for a footprint UUID (zero if none)."""
-    val = offsets.get(uuid, (0.0, 0.0)) if offsets else (0.0, 0.0)
-    # Handle both (dx, dy) and (dx, dy, dangle) tuples
-    return val[0], val[1]
 
 
 def net_colors(model: BoardModel) -> Dict[str, str]:
@@ -234,23 +227,12 @@ def _courtyard_centroid(fp) -> tuple[float, float]:
     return sum(xs) / len(xs), sum(ys) / len(ys)
 
 
-def _shift_with_angle(offsets, uuid):
-    """Proposed ``(dx_mm, dy_mm, dangle_deg)`` offset for a footprint UUID (zero if none)."""
-    val = offsets.get(uuid, (0.0, 0.0, 0.0)) if offsets else (0.0, 0.0, 0.0)
-    # Handle both (dx, dy) and (dx, dy, dangle) tuples
-    dx = val[0] if len(val) > 0 else 0.0
-    dy = val[1] if len(val) > 1 else 0.0
-    da = val[2] if len(val) > 2 else 0.0
-    return dx, dy, da
-
-
-def _footprint_ref_svg(fp, dx: float, dy: float, da: float = 0.0) -> str:
+def _footprint_ref_svg(fp) -> str:
     """Generate reference text for a single footprint at courtyard centroid."""
     label = fp.ref or (fp.uuid[:8] if fp.uuid else "")
     if not label:
         return ""
     cx, cy = _courtyard_centroid(fp)
-    # Text is positioned at centroid; group transform handles translation/rotation
     return (
         f'<text x="{_fmt(cx)}" y="{_fmt(cy - 0.5)}" '
         f'fill="{REF_TEXT}" font-family="monospace" font-size="1">'
@@ -261,12 +243,18 @@ def _footprint_ref_svg(fp, dx: float, dy: float, da: float = 0.0) -> str:
 def _footprints_svg(
     model: BoardModel,
     colors: Dict[str, str],
-    offsets,
     locked_uuids: Set[str],
     pinned_uuids: Set[str],
     selected_uuids: Set[str],
 ) -> List[str]:
-    """Generate all footprint elements (courtyards, pads, refs) grouped by footprint."""
+    """Generate all footprint elements (courtyards, pads, refs) grouped by footprint.
+
+    Footprints are always drawn at their model coordinates. When a placement
+    proposal is active the caller passes ``apply_deltas(model, deltas)`` as
+    ``model``, so the preview shows the exact post-Accept positions (same
+    pivot and rotation direction as the writeback in ``io``) instead of a
+    group-transform approximation.
+    """
     out = []
     for fp in model.footprints:
         is_locked = fp.uuid in locked_uuids
@@ -274,7 +262,6 @@ def _footprints_svg(
         is_selected = fp.uuid in selected_uuids
         is_movable = fp.uuid and not fp.locked and fp.uuid not in pinned_uuids
 
-        dx, dy, da = _shift_with_angle(offsets, fp.uuid)
         flip = fp.layer.startswith("B")
 
         # Build footprint group with state classes and data attribute
@@ -289,19 +276,11 @@ def _footprints_svg(
             cls_parts.append("fp-movable")
         cls = " ".join(cls_parts)
 
-        # Compute centroid for rotation pivot
-        cx, cy = _courtyard_centroid(fp)
-        # Transform: translate to new position, then rotate around centroid
-        if dx != 0.0 or dy != 0.0 or da != 0.0:
-            transform = f' transform="translate({_fmt(dx)} {_fmt(dy)}) rotate({_fmt(da)} {_fmt(cx)} {_fmt(cy)})"'
-        else:
-            transform = ""
-
         fp_group = [
-            f'<g class="{cls}" data-fp-uuid="{fp.uuid}"{transform}>',
+            f'<g class="{cls}" data-fp-uuid="{fp.uuid}">',
             _footprint_courtyard_svg(fp, is_locked, is_pinned, is_selected, is_movable),
             _footprint_pads_svg(fp, colors, flip, fp.angle_deg),
-            _footprint_ref_svg(fp, dx, dy, da),
+            _footprint_ref_svg(fp),
             "</g>",
         ]
         out.append("\n".join(fp_group))
@@ -427,13 +406,113 @@ def _arrow_marker() -> str:
     )
 
 
-def _forces_overlay(model: BoardModel, proposal: PlacementProposal, 
-                    scale: float = 0.1, max_len: float = 5.0) -> List[str]:
-    """Draw force vectors at footprint centroids.
-    
-    scale: mm per force unit (tune visually)
-    max_len: cap arrow length in mm
+# Per-cause force colors. Deliberately avoids the semantic palette (locked
+# red, selected green, pinned/move orange, ghost purple, DRC red/orange) as
+# far as a dark board with rainbow net tracks allows; the static HTML legend
+# next to the forces toggle is the authority. Boundary/ghost additionally
+# differ by dash pattern so they survive hue collisions with net tracks.
+FORCE_CAUSE_COLORS = {
+    "repulsion": "#22d3ee",  # cyan
+    "attraction": "#a3e635",  # lime
+    "courtyard": "#f472b6",  # pink
+    "boundary": "#e2e8f0",  # near-white, dashed
+    "ghost": "#c4b5fd",  # pale lavender, dotted
+}
+FORCE_CAUSE_ORDER = ("repulsion", "attraction", "courtyard", "boundary", "ghost")
+FORCE_CAUSE_DASH = {
+    "boundary": ' stroke-dasharray="2.5 1.5"',
+    "ghost": ' stroke-dasharray="1 1.2"',
+}
+
+
+def _force_markers() -> str:
+    """SVG marker definitions (arrowheads) for each force cause."""
+    parts = ["<defs>"]
+    for cause, color in FORCE_CAUSE_COLORS.items():
+        parts.append(
+            f'<marker id="force-{cause}" viewBox="0 0 10 10" refX="8" refY="5" '
+            f'markerWidth="4" markerHeight="4" orient="auto-start-reverse">'
+            f'<path d="M 0 0 L 10 5 L 0 10 z" fill="{color}"/>'
+            "</marker>"
+        )
+    parts.append("</defs>")
+    return "".join(parts)
+
+
+def _forces_overlay(model: BoardModel, proposal: PlacementProposal,
+                    max_len: float = 5.0) -> List[str]:
+    """Draw per-cause force vectors at footprint centroids.
+
+    One arrow per force cause (repulsion/attraction/courtyard/boundary/
+    ghost) so parameter tuning can see which knob is doing the pushing.
+    Lengths use a log scale normalized to the largest visible magnitude —
+    raw forces span orders of magnitude (e.g. repulsion ~3 vs courtyard
+    ~3800), which pegged the old linear scale at its cap for every part.
+    Causes under 1% of their footprint's strongest cause are hidden to cut
+    clutter. Falls back to a single total-force arrow when the proposal
+    carries no per-cause breakdown.
     """
+    components = getattr(proposal, "force_components", None) or {}
+    if not components:
+        return _total_forces_overlay(model, proposal, max_len=max_len)
+
+    per_fp: Dict[str, list] = {}
+    max_mag = 0.0
+    for fp in model.footprints:
+        comps = components.get(fp.uuid)
+        if not comps:
+            continue
+        vecs = []
+        for cause in FORCE_CAUSE_ORDER:
+            v = comps.get(cause)
+            if not v:
+                continue
+            mag = math.hypot(v[0], v[1])
+            if mag > 1e-9:
+                vecs.append((cause, v[0], v[1], mag))
+                max_mag = max(max_mag, mag)
+        if vecs:
+            # Hide negligible causes relative to this footprint's strongest.
+            strongest = max(m for _, _, _, m in vecs)
+            per_fp[fp.uuid] = [
+                (cause, fx, fy, mag) for cause, fx, fy, mag in vecs
+                if mag >= 0.01 * strongest
+            ]
+    if max_mag <= 0.0 or not per_fp:
+        return []
+
+    denom = math.log1p(max_mag)
+    by_cause: Dict[str, List[str]] = {c: [] for c in FORCE_CAUSE_ORDER}
+    for fp in model.footprints:
+        vecs = per_fp.get(fp.uuid)
+        if not vecs:
+            continue
+        cx, cy = _courtyard_centroid(fp)
+        # Longest first so shorter same-direction arrows stay visible on top.
+        for cause, fx, fy, mag in sorted(vecs, key=lambda t: -t[3]):
+            length = max(max_len * math.log1p(mag) / denom, 0.5)
+            ux, uy = fx / mag, fy / mag
+            color = FORCE_CAUSE_COLORS[cause]
+            dash = FORCE_CAUSE_DASH.get(cause, "")
+            by_cause[cause].append(
+                f'<line x1="{_fmt(cx)}" y1="{_fmt(cy)}" '
+                f'x2="{_fmt(cx + ux * length)}" y2="{_fmt(cy + uy * length)}" '
+                f'stroke="{color}" stroke-width="0.18"{dash} '
+                f'marker-end="url(#force-{cause})"/>'
+            )
+    out = []
+    for cause in FORCE_CAUSE_ORDER:
+        lines = by_cause[cause]
+        if lines:
+            out.append(f'<g class="forces-{cause}" opacity="0.9">')
+            out.extend(lines)
+            out.append("</g>")
+    return out
+
+
+def _total_forces_overlay(model: BoardModel, proposal: PlacementProposal,
+                          max_len: float = 5.0) -> List[str]:
+    """Legacy single-arrow fallback when no per-cause breakdown is present."""
     if not proposal.forces:
         return []
     out = [f'<g stroke="{MOVE_ARROW}" stroke-width="0.15" fill="{MOVE_ARROW}" opacity="0.8">']
@@ -446,7 +525,7 @@ def _forces_overlay(model: BoardModel, proposal: PlacementProposal,
         if mag < 1e-6:
             continue
         # Scale and cap
-        length = min(mag * scale, max_len)
+        length = min(mag * 0.1, max_len)
         ux, uy = fx / mag, fy / mag
         cx, cy = _courtyard_centroid(fp)
         # Arrow from centroid in force direction
@@ -579,9 +658,22 @@ def render_board_svg(
         drc_stale: If True, the violations are from an older board version; draw dimmed.
     """
     colors = net_colors(model)
-    min_x, min_y, width, height = _bounds(model)
     moved = bool(proposal is not None and proposal.deltas)
-    # Grow the margin by the largest proposed move so nothing clips.
+    # Preview footprints at their exact post-Accept positions: apply_deltas is
+    # the same code path commit_placement uses, and nudge_footprint_by_uuid
+    # writes the same transform to the file (verified to fp noise), so what
+    # you see is what Accept writes. Ghost courtyards below still mark where
+    # each part came from.
+    if moved:
+        deltas = {
+            u: (d[0], d[1], d[2] if len(d) > 2 else 0.0)
+            for u, d in proposal.deltas.items()
+        }
+        view = apply_deltas(model, deltas)
+    else:
+        view = model
+    min_x, min_y, width, height = _bounds(view)
+    # Grow the margin by the largest proposed move so ghosts don't clip.
     extra = 0.0
     if moved:
         for delta in proposal.deltas.values():
@@ -599,9 +691,10 @@ def render_board_svg(
     ]
     if title:
         parts.append(f"<title>{html.escape(title)}</title>")
-    offsets = proposal.deltas if moved else None
     if moved or (proposal is not None and show_forces):
         parts.append(_arrow_marker())
+    if proposal is not None and show_forces:
+        parts.append(_force_markers())
 
     locked_uuids = {fp.uuid for fp in model.footprints if fp.locked and fp.uuid}
     pinned = pinned_uuids or set()
@@ -609,14 +702,14 @@ def render_board_svg(
 
     parts.extend(_edge_cuts_svg(model))
     parts.extend(_zones_svg(model))
-    parts.extend(_footprints_svg(model, colors, offsets, locked_uuids, pinned, selected))
-    parts.extend(_ghost_footprints_svg(model, colors))
+    parts.extend(_footprints_svg(view, colors, locked_uuids, pinned, selected))
+    parts.extend(_ghost_footprints_svg(view, colors))
     parts.extend(_tracks_svg(model, colors))
     parts.extend(_vias_svg(model, colors))
     if moved:
         parts.extend(_proposal_overlay(model, proposal))
     if proposal is not None and show_forces:
-        parts.extend(_forces_overlay(model, proposal))
+        parts.extend(_forces_overlay(view, proposal))
     if drc_violations:
         parts.extend(_drc_violations_overlay(drc_violations, drc_ignored_types, stale=drc_stale))
     parts.append("</svg>")

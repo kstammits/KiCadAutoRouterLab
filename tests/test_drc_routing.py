@@ -34,10 +34,9 @@ from kicad_autorouter.validate import find_kicad_cli, validate_pcb, KicadCliNotF
 
 
 # ---------------------------------------------------------------------------
-# Magnet test parameters - use demo jitter for fast, simple placement
+# Magnet test parameters - physics placement on the shared-net test resistors
 # ---------------------------------------------------------------------------
 MAGNET_PARAMS = PlacementParams(
-    stub=False,
     max_iterations=10,
     repulsion_kr=2.0,
     attraction_ka=2.0,
@@ -46,7 +45,6 @@ MAGNET_PARAMS = PlacementParams(
     boundary_repulsion_kb=500000.0,
     convergence_eps_mm=0.1,
     rigid_stiffness=5e5,
-    demo_jitter_mm=5.0,  # Use demo jitter for simple placement
 )
 
 
@@ -77,13 +75,17 @@ def _make_pad(number: str, net_name: str, local_x: float, local_y: float) -> Pad
     )
 
 
-def _make_courtyard():
-    """Return courtyard segments for 3x2mm rectangle centered at origin."""
+def _make_courtyard(x_mm: float = 0.0, y_mm: float = 0.0):
+    """Return courtyard segments for 3x2mm rectangle centered at (x_mm, y_mm).
+
+    Courtyards are stored in board coordinates (matching the parser output
+    and the Footprint dataclass contract expected by footprint_to_sexpr).
+    """
     hw, hh = COURTYARD_HALF_W, COURTYARD_HALF_H
     corners = [
-        Point(-hw, -hh), Point(hw, -hh),
-        Point(hw, hh), Point(-hw, hh),
-        Point(-hw, -hh),
+        Point(x_mm - hw, y_mm - hh), Point(x_mm + hw, y_mm - hh),
+        Point(x_mm + hw, y_mm + hh), Point(x_mm - hw, y_mm + hh),
+        Point(x_mm - hw, y_mm - hh),
     ]
     return tuple((corners[i], corners[i + 1]) for i in range(4))
 
@@ -108,7 +110,7 @@ def _create_resistor(
         replace(pad2, position=to_board(pad2.position.x_mm, pad2.position.y_mm)),
     )
 
-    courtyard = _make_courtyard()
+    courtyard = _make_courtyard(x_mm, y_mm)
 
     return Footprint(
         ref=ref,

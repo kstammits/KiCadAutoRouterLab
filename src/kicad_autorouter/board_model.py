@@ -169,6 +169,16 @@ class NetConnection:
 
 
 @dataclass(frozen=True)
+class NetClass:
+    """A KiCad net class: clearance + trace width with member net names."""
+
+    name: str
+    clearance_mm: float = 0.2
+    trace_width_mm: float = 0.25
+    nets: Tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class BoardRegion:
     """A single board outline region with its boundary polygon and bounding box."""
 
@@ -201,6 +211,8 @@ class BoardModel:
     footprint_region: Dict[str, int] = field(default_factory=dict)  # uuid -> region_idx
     version: str = ""  # KiCad generator_version (e.g., "10.0", "9.0", "11.0")
     version_warning: Optional[str] = None  # Warning for v11+ boards
+    net_classes: Tuple[NetClass, ...] = ()  # (net_class ...) declarations
+    net_netclass: Dict[str, str] = field(default_factory=dict)  # net name -> netclass name
 
 
 def _to_board(
@@ -853,6 +865,72 @@ def _assign_board_regions(
     return assignment
 
 
+def netclasses(tree: SExpr) -> Tuple[Tuple[NetClass, ...], Dict[str, str]]:
+    """Parse ``(net_class ...)`` declarations: (classes, net->class map).
+
+    KiCad form: ``(net_class "Name" (clearance mm) (trace_width mm)
+    (via_dia ..) (via_drill ..) ... (add_net "NET") ...)``. Missing numeric
+    fields take KiCad-ish defaults; boards without netclasses (e.g. our
+    tube111 fixture) yield empty results.
+    """
+    classes: List[NetClass] = []
+    net_to_class: Dict[str, str] = {}
+    for node in tree.children("net_class"):
+        name = str(node.args[0]) if node.args else ""
+        clearance_mm = 0.2
+        trace_width_mm = 0.25
+        clear_node = node.find("clearance")
+        if clear_node is not None and clear_node.args:
+            try:
+                clearance_mm = float(clear_node.args[0])
+            except (TypeError, ValueError):
+                pass
+        width_node = node.find("trace_width")
+        if width_node is not None and width_node.args:
+            try:
+                trace_width_mm = float(width_node.args[0])
+            except (TypeError, ValueError):
+                pass
+        members: List[str] = []
+        for add in node.children("add_net"):
+            if add.args and isinstance(add.args[0], str) and add.args[0]:
+                members.append(add.args[0])
+                net_to_class.setdefault(add.args[0], name or "Default")
+        classes.append(NetClass(
+            name=name or "Default",
+            clearance_mm=clearance_mm,
+            trace_width_mm=trace_width_mm,
+            nets=tuple(members),
+        ))
+    return tuple(classes), net_to_class
+
+
+def netclass_trace_width(
+    model: BoardModel, net_name: Optional[str], default_mm: float = 0.25
+) -> float:
+    """Trace width for a net from the board's netclass declarations."""
+    if net_name:
+        class_name = model.net_netclass.get(net_name)
+        if class_name:
+            for cls in model.net_classes:
+                if cls.name == class_name and cls.trace_width_mm > 0:
+                    return cls.trace_width_mm
+    return default_mm
+
+
+def netclass_clearance(
+    model: BoardModel, net_name: Optional[str], default_mm: float = 0.2
+) -> float:
+    """Clearance for a net from the board's netclass declarations."""
+    if net_name:
+        class_name = model.net_netclass.get(net_name)
+        if class_name:
+            for cls in model.net_classes:
+                if cls.name == class_name and cls.clearance_mm > 0:
+                    return cls.clearance_mm
+    return default_mm
+
+
 def netlist(tree: SExpr) -> Dict[str, Tuple[NetConnection, ...]]:
     """Map net name -> its pad connections, from pad-level ``(net ...)`` refs.
 
@@ -878,23 +956,23 @@ def _to_local(
 ) -> Point:
     """Map a board-space point to footprint-local coordinates.
 
+    Exact inverse of :func:`_to_board` (transpose of ``R(-angle)``), so
+    ``_to_board(_to_local(p)) == p`` round-trips for every angle.
     No mirroring on either layer (see module docstring); ``layer`` is
     accepted for API compatibility and ignored.
 
-    Note on the rotation convention: this applies the same ``R(-angle)``
-    rotation as :func:`_to_board` (not its transpose), matching the frame
-    that ``placement._compute_footprint_pose_from_pads`` builds its Kabsch
-    fit around (no-move yields ``da == 0``). For footprints rotated by a
-    multiple of 180 degrees (e.g. D6 at 0, D7 at 180) this is the exact
-    inverse; for 90/270-degree footprints the round trip is approximate —
-    a pre-existing limitation, out of scope for the B.Cu mirror fix.
+    Note: :func:`placement._compute_footprint_pose_from_pads` uses its own
+    inline frame (same ``R(-angle)`` as :func:`_to_board`, not this
+    transpose). That is load-bearing for its Kabsch angle extraction and
+    still yields the correct delta because 2D rotations commute; do not
+    "unify" the two without re-verifying no-move ``da == 0`` at 90/270°.
     """
     rad = math.radians(-angle_deg)
     cos_a, sin_a = math.cos(rad), math.sin(rad)
     bx = board_x_mm - x_mm
     by = board_y_mm - y_mm
-    lx = bx * cos_a - by * sin_a
-    ly = bx * sin_a + by * cos_a
+    lx = bx * cos_a + by * sin_a
+    ly = -bx * sin_a + by * cos_a
     return Point(lx, ly)
 
 
@@ -1078,6 +1156,9 @@ def board_model(tree: SExpr) -> BoardModel:
     all_fps_for_region = real_fps + ghost_fps
     footprint_region = _assign_board_regions(all_fps_for_region, board_polygons)
 
+    # Net class declarations (may be absent — callers fall back to params)
+    parsed_net_classes, parsed_net_netclass = netclasses(tree)
+
     # Parse version and warning
     gen_version = get_generator_version(tree)
     version, version_warning = _parse_version(gen_version)
@@ -1097,4 +1178,6 @@ def board_model(tree: SExpr) -> BoardModel:
         footprint_region=footprint_region,
         version=version,
         version_warning=version_warning,
+        net_classes=parsed_net_classes,
+        net_netclass=parsed_net_netclass,
     )

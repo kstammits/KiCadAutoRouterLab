@@ -30,6 +30,11 @@ Plus this session: move-preservation fix (`apply_deltas`/`commit_placement` via 
   - Integration test: route tube111 (pre-routed) → verify connectivity, THT free vias, no DRC violations
   - Parity test: our routes vs existing tube111 routes
   - DRC gate: route → writeback → `kicad-cli drc` → iterate
+  - Router fixes landed 2026-10-09 (found while removing demo jitter):
+    - `obstacles._mark_zone` passed (col,row) to `_fill_polygon` which takes (row,col) → phantom full-height blocked bars; fixed + orientation regression test
+    - Courtyard outlines were BLOCKED, trapping every enclosed SMD pad; now HIGH_COST (placement guides, not copper keepouts) + escapability regression test
+    - `router._a_star` never recorded parent pointers → every route collapsed to its final step; fixed + full-chain regression test
+  - Scores/widths landed 2026-10-09: `CostMap.heuristic_weight` 200→3 (penalties steer again), graded per-net fanout halo (+500/+100 secondary grid, own-net excluded, steers without trapping), `(net_class trace_width/clearance)` parsing + `RoutingParams.net_widths` override (params → file → heuristic → default), width-aware pad rings + emitted-width corridor reservation, `run_routing` hardcoded 0.25 + hardcoded via sizes fixed, duplicate-via dedupe. `test_drc_routing` DRC gate passes un-xfailed (3/3 nets, only lib/synthetic + single-pad-unconnected violations remain, both ignored).
 
 ### Iterative Place/Route Cycle
 - [ ] `run_iterative_pipeline(model, params, max_cycles=5)`
@@ -113,6 +118,7 @@ Plus this session: move-preservation fix (`apply_deltas`/`commit_placement` via 
 - `tests/test_magnet.py` - `TestMovePreservation` regression (2026-10-08)
 - `tests/test_board_model.py`, `tests/test_placement.py` - tube111 3-region asserts (2026-10-08)
 - `pyproject.toml`, `src/kicad_autorouter/__init__.py` - version 0.3.0 sync (2026-10-08)
+- 2026-10-09 (jitter/stub removal + step/run UX): `placement.py` (drop `demo_jitter_mm`/`stub`/`_jitter_for`, 1e-9 delta filter), `scripts/run_autoroute.py` (drop `--stub`/`--demo-jitter-mm`, step default 5), `ui/server.py` (replace-based iter override, reject empty accepts), `ui/index.html` (drop Physics/Preview/stub UI, step default 5, Run Selected/All), `placement.json` (drop jitter/stub keys), `routing/obstacles.py` (zone (row,col) fix, courtyard HIGH_COST), `routing/router.py` (A* parent pointers), `tests/test_drc_routing.py` (board-space courtyards, strict-xfail DRC gate)
 
 ### Protected Nets Logic
 Auto-detected via `identify_power_nets()` + hardcoded fallbacks:
@@ -121,9 +127,14 @@ protected = power_nets | ground_nets | {"GND", "GND_PWR", "VCC", "VDD", "VSS", "
 ```
 
 ### Accept Flow
-1. Push undo state
+1. Push undo state (skipped when the proposal is empty — server rejects it with 400)
 2. Compute affected nets from moved footprints' pads
 3. `commit_placement(model, deltas, protected)` → BoardModel with pruned tracks
 4. `rip_up_nets(pcb_tree, affected, protected)` → S-expression without segments/vias
 5. `nudge_footprint_by_uuid()` for each moved footprint
 6. Clear proposal, increment version
+
+### Placement Run Flow (2026-10-09)
+- Demo jitter + stub mode removed entirely (they let net-free boards drift forever past Edge.Cuts). Physics is the only mode; net-free boards correctly propose no movement.
+- UI: Step (default 5 iters) for previews, Run (saved max_iterations) to convergence; Accept stays disabled on empty proposals with a "no movement" message.
+- Sub-mm float noise filtered (`1e-9`) so converged boards propose `{}`.

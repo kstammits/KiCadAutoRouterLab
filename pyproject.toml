@@ -27,7 +27,6 @@ pythonpath = ["src"]
 markers = [
     "unit: Pure unit tests - no fixtures, no I/O",
     "params: PlacementParams validation/serialization",
-    "stub: Demo jitter mode (works without nets)",
     "physics: MST force-spring simulation (requires nets)",
     "cli: CLI entry point tests",
     "server: HTTP API endpoint tests",

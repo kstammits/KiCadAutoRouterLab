@@ -36,16 +36,17 @@ from kicad_autorouter.svg_render import render_board_svg
 # Magnet test parameters (tune these for desired behavior)
 # ---------------------------------------------------------------------------
 MAGNET_PARAMS = PlacementParams(
-    stub=False,
     max_iterations=200,
     repulsion_kr=2.0,
     attraction_ka=2.0,
     ideal_length_mm=2.0,
     courtyard_repulsion_kc=30000.0,
+    # 3x2mm parts: 6mm halo preserves this test's original ~5.4mm
+    # (1.5x radii sum) near-miss reach under the bounded-halo regime.
+    courtyard_halo_mm=6.0,
     boundary_repulsion_kb=500000.0,
     convergence_eps_mm=0.1,
     rigid_stiffness=5e5,
-    demo_jitter_mm=0.0,
 )
 
 
@@ -308,7 +309,6 @@ class TestNetMagnet:
     def test_boundary_repulsion_keeps_within_outline(self, magnet_model: BoardModel):
         """With high repulsion, all components should stay within board boundaries."""
         boundary_params = PlacementParams(
-            stub=False,
             max_iterations=200,
             repulsion_kr=50.0,
             attraction_ka=0.5,
@@ -317,7 +317,6 @@ class TestNetMagnet:
             boundary_repulsion_kb=500000.0,
             convergence_eps_mm=0.1,
             rigid_stiffness=5e5,
-            demo_jitter_mm=0.0,
         )
         prop = run_placement(magnet_model, boundary_params)
 

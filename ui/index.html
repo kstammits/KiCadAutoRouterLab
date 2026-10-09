@@ -281,6 +281,13 @@
       <span id="app-version" class="chip" style="margin-left:0.5rem; font-size:0.6rem;">v?</span>
       <label class="chk"><input type="checkbox" id="overlay-toggle" checked> proposal</label>
       <label class="chk"><input type="checkbox" id="forces-toggle"> forces</label>
+      <span id="forces-legend" class="chip" style="font-size:0.6rem; display:none; gap:0.5rem; align-items:center;">
+        <span><i style="display:inline-block; width:1.2rem; border-top:2px solid #22d3ee;"></i> repulsion</span>
+        <span><i style="display:inline-block; width:1.2rem; border-top:2px solid #a3e635;"></i> attraction</span>
+        <span><i style="display:inline-block; width:1.2rem; border-top:2px solid #f472b6;"></i> courtyard</span>
+        <span><i style="display:inline-block; width:1.2rem; border-top:2px dashed #e2e8f0;"></i> boundary</span>
+        <span><i style="display:inline-block; width:1.2rem; border-top:2px dotted #c4b5fd;"></i> ghost</span>
+      </span>
       <label class="chk"><input type="checkbox" id="drc-toggle"> DRC</label>
       <button id="drc-run-btn" title="Run kicad-cli DRC on the current board">Run DRC</button>
       <span class="zoom-info" id="drc-info"></span>
@@ -338,11 +345,11 @@
         <div id="placement-panel">
           <div class="bar">
             <span class="num">Place</span>
-            <label class="chk" style="margin-left:.5rem;"><input type="number" id="step-iters" value="50" min="1" max="5000" step="10" style="width:5rem;"> iters</label>
-            <label class="chk" style="margin-left:.5rem;"><input type="checkbox" id="physics-mode" checked> Physics</label>
-            <button id="step-selected-btn" class="primary" title="Run placement on selected footprints only">Step Selected</button>
-            <button id="step-all-btn" title="Run placement on all movable footprints">Step All Movable</button>
-            <button id="preview-btn" title="Quick preview of where selected would move">Preview</button>
+            <label class="chk" style="margin-left:.5rem;"><input type="number" id="step-iters" value="5" min="1" max="5000" step="1" style="width:5rem;"> iters</label>
+            <button id="step-selected-btn" class="primary" title="Run a few placement iterations on selected footprints only">Step Selected</button>
+            <button id="step-all-btn" title="Run a few placement iterations on all movable footprints">Step All Movable</button>
+            <button id="run-selected-btn" class="primary" title="Run placement to convergence (max iterations) on selected footprints only">Run Selected</button>
+            <button id="run-all-btn" title="Run placement to convergence (max iterations) on all movable footprints">Run All Movable</button>
             <button id="refresh-forces-btn" title="Recompute forces with current parameters">↻ Forces</button>
             <button id="accept-btn" disabled>Accept</button>
             <button id="clear-btn">Clear</button>
@@ -512,8 +519,8 @@ const PARAM_DEFS = [
   { key: "convergence_eps_mm", label: "Convergence eps (mm)", min: 0.0001, max: 1, step: 0.001, log: true },
   { key: "rigid_stiffness", label: "Rigid stiffness", min: 1000, max: 1e9, step: 1, log: true },
   { key: "courtyard_repulsion_kc", label: "Courtyard repulsion k_c", min: 0, max: 20000, step: 10 },
+  { key: "courtyard_halo_mm", label: "Courtyard halo (mm)", min: 0, max: 20, step: 0.5 },
   { key: "boundary_repulsion_kb", label: "Boundary repulsion k_b", min: 100, max: 1e6, step: 1, log: true },
-  { key: "demo_jitter_mm", label: "Demo jitter (mm)", min: 0, max: 5, step: 0.1 },
 ];
 
 const PARAM_DESC = {
@@ -523,10 +530,9 @@ const PARAM_DESC = {
   max_iterations: "Hard limit on simulation steps.",
   convergence_eps_mm: "Stop when max pad displacement < this per iteration. Log scale.",
   rigid_stiffness: "Internal spring stiffness keeping footprint pads rigid. Very high = rigid body. Log scale (1e3–1e9).",
-  courtyard_repulsion_kc: "Footprint-level repulsion when courtyards overlap/approach.",
+  courtyard_repulsion_kc: "Footprint-level repulsion when courtyards overlap/approach. Max strength at contact; falls linearly to zero at the halo edge.",
+  courtyard_halo_mm: "Near-miss reach past part outlines (mm). Caps the size-scaled halo so big parts don't push across the board. E.g. 3mm means a quarter inch of clearance feels nothing.",
   boundary_repulsion_kb: "Repulsion from board region edges. Higher = stronger push away from boundaries. Log scale (100–1e6).",
-  demo_jitter_mm: "Random jitter for stub/preview mode. 0 = deterministic.",
-  stub: "Use stub mode (no physics). Preview only.",
 };
 
 const paramsGrid = document.getElementById("params-grid");
@@ -535,16 +541,8 @@ for (const def of PARAM_DEFS) {
   el.className = "param";
   const desc = PARAM_DESC[def.key] || "";
   const isLog = def.log === true;
-  
-  if (def.key === "stub") {
-    // Boolean parameter - checkbox
-    el.innerHTML = `<span title="${desc}">${def.label}</span>
-      <div class="row">
-        <label class="chk" style="margin:0;">
-          <input type="checkbox" data-key="${def.key}"> Enabled
-        </label>
-      </div>`;
-  } else if (isLog) {
+
+  if (isLog) {
     // Log-scale parameter
     const logMin = Math.log10(def.min);
     const logMax = Math.log10(def.max);
@@ -563,19 +561,6 @@ for (const def of PARAM_DEFS) {
   }
   paramsGrid.appendChild(el);
 }
-
-// Add stub checkbox after params grid
-const stubParam = { key: "stub", label: "Stub mode (no physics)", log: false };
-const stubEl = document.createElement("div");
-stubEl.className = "param";
-const stubDesc = PARAM_DESC["stub"] || "";
-stubEl.innerHTML = `<span title="${stubDesc}">${stubParam.label}</span>
-  <div class="row">
-    <label class="chk" style="margin:0;">
-      <input type="checkbox" data-key="stub"> Enabled
-    </label>
-  </div>`;
-paramsGrid.appendChild(stubEl);
 
 // Parameter description table
 const descTable = document.createElement("table");
@@ -599,13 +584,7 @@ paramsGrid.addEventListener("input", e => {
   const isLog = def?.log === true;
   const range = paramsGrid.querySelector(`input[type=range][data-key=${key}]`);
   const num = paramsGrid.querySelector(`input[type=number][data-key=${key}]`);
-  const checkbox = paramsGrid.querySelector(`input[type=checkbox][data-key=${key}]`);
-  
-  if (checkbox) {
-    // Boolean parameter
-    return; // checkbox handled separately in readParams
-  }
-  
+
   if (e.target.type === "range") {
     if (isLog) {
       num.value = logToValue(Number(range.value), def).toFixed(def.step >= 1 ? 0 : 4);
@@ -631,9 +610,6 @@ function readParams() {
     const num = paramsGrid.querySelector(`input[type=number][data-key=${def.key}]`);
     if (num) out[def.key] = Number(num.value);
   }
-  // Stub checkbox
-  const stubCb = paramsGrid.querySelector(`input[type=checkbox][data-key=stub]`);
-  if (stubCb) out["stub"] = stubCb.checked;
   return out;
 }
 
@@ -652,9 +628,6 @@ async function loadParams(defaultsOnly = false) {
     }
     if (num) num.value = p[def.key];
   }
-  // Stub checkbox
-  const stubCb = paramsGrid.querySelector(`input[type=checkbox][data-key=stub]`);
-  if (stubCb && "stub" in p) stubCb.checked = p.stub;
 }
 
 const boardEl = document.getElementById("board");
@@ -878,6 +851,7 @@ async function refreshForces() {
   } catch (err) {
     console.error("Failed to fetch forces:", err);
     forcesToggle.checked = false;
+    document.getElementById("forces-legend").style.display = "none";
     diagEl.textContent = `forces failed: ${err.message}`;
   } finally {
     btn.textContent = originalText;
@@ -889,6 +863,7 @@ async function refreshForces() {
 
 forcesToggle.addEventListener("change", async () => {
   if (!lastVersion) return;
+  document.getElementById("forces-legend").style.display = forcesToggle.checked ? "inline-flex" : "none";
   if (forcesToggle.checked) {
     await refreshForces();
   } else {
@@ -1693,57 +1668,69 @@ document.getElementById("fp-select-all").addEventListener("change", e => {
 
 document.getElementById("refresh-forces-btn").addEventListener("click", refreshForces);
 
-// Common function to run placement
-async function runPlacement(movableUuids, iterations, isPreview = false) {
+// Common function to run placement.
+// iterations == null → omit the key so the server runs to convergence
+// (saved max_iterations); otherwise a small step budget is used.
+async function runPlacement(movableUuids, iterations) {
   try {
     const saveRes = await fetch("/api/placement/params", { method: "POST", body: JSON.stringify(readParams()) });
     if (!saveRes.ok) throw new Error(await saveRes.text());
-    
+
+    const body = { movable_uuids: movableUuids };
+    if (iterations != null) body.iterations = iterations;
     const res = await fetch("/api/placement/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ 
-        iterations: isPreview ? 1 : iterations,  // Preview uses 1 physics iteration
-        movable_uuids: movableUuids,
-        stub: false  // Always use physics mode; preview just runs fewer iterations
-      })
+      body: JSON.stringify(body)
     });
     if (!res.ok) throw new Error(await res.text());
     const r = await res.json();
-    diagEl.textContent = `v${r.version} — ${r.moved} moved, max Δ ${r.final_max_disp_mm.toFixed(2)} mm, ${r.elapsed_s.toPrecision(2)} s`;
-    document.getElementById("accept-btn").disabled = false;
-    if (!isPreview) {
-      document.getElementById("step-selected-btn").textContent = "Step Selected Again";
-      document.getElementById("step-all-btn").textContent = "Step All Again";
+    if (r.moved > 0) {
+      diagEl.textContent = `v${r.version} — ${r.moved} moved, max Δ ${r.final_max_disp_mm.toFixed(2)} mm, ${r.iterations} iters, ${r.elapsed_s.toPrecision(2)} s`;
+      document.getElementById("accept-btn").disabled = false;
+    } else {
+      diagEl.textContent = `v${r.version} — no movement (nothing movable, no nets, or already converged)`;
+      document.getElementById("accept-btn").disabled = true;
     }
+    document.getElementById("step-selected-btn").textContent = "Step Selected Again";
+    document.getElementById("step-all-btn").textContent = "Step All Again";
   } catch (err) {
     diagEl.textContent = `run failed: ${err.message}`;
   }
 }
 
-// Step Selected: only moves currently selected footprints
+// Step Selected: a few iterations on currently selected footprints
 document.getElementById("step-selected-btn").addEventListener("click", async () => {
   const iters = parseInt(document.getElementById("step-iters").value, 10);
   const movableUuids = selectedUuids.size > 0 ? Array.from(selectedUuids) : undefined;
-  await runPlacement(movableUuids, iters, false);
+  await runPlacement(movableUuids, iters);
 });
 
-// Step All Movable: moves all unlocked, not pinned footprints
+// Step All Movable: a few iterations on all unlocked, not pinned footprints
 document.getElementById("step-all-btn").addEventListener("click", async () => {
   const iters = parseInt(document.getElementById("step-iters").value, 10);
   const modelRes = await fetch("/api/state");
   const st = await modelRes.json();
   if (!st.loaded) return;
-  
-  // We need to get all movable footprints from the server
-  // For now, pass undefined to let server compute all movable (unlocked, not pinned)
-  await runPlacement(undefined, iters, false);
+
+  // Pass undefined to let server compute all movable (unlocked, not pinned)
+  await runPlacement(undefined, iters);
 });
 
-// Preview: quick ghost positions without physics (stub mode, 1 iteration)
-document.getElementById("preview-btn").addEventListener("click", async () => {
+// Run Selected: to convergence (saved max_iterations) on selected footprints
+document.getElementById("run-selected-btn").addEventListener("click", async () => {
   const movableUuids = selectedUuids.size > 0 ? Array.from(selectedUuids) : undefined;
-  await runPlacement(movableUuids, 1, true);
+  await runPlacement(movableUuids, null);
+});
+
+// Run All Movable: to convergence (saved max_iterations) on all movable footprints
+document.getElementById("run-all-btn").addEventListener("click", async () => {
+  const modelRes = await fetch("/api/state");
+  const st = await modelRes.json();
+  if (!st.loaded) return;
+
+  // Pass undefined to let server compute all movable (unlocked, not pinned)
+  await runPlacement(undefined, null);
 });
 
 document.getElementById("accept-btn").addEventListener("click", async () => {

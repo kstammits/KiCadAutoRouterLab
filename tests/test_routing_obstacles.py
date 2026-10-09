@@ -8,7 +8,9 @@ from kicad_autorouter.board_model import board_model
 from kicad_autorouter.routing.grid import create_grid_from_model, board_to_grid
 from kicad_autorouter.routing.obstacles import (
     build_occupancy_grid,
+    build_fanout_cost,
     FREE, BLOCKED, HIGH_COST, EDGE_KEEPOUT,
+    FANOUT_HALO_INNER, FANOUT_HALO_OUTER,
     _block_courtyard,
     _mark_pad,
     _mark_track,
@@ -67,15 +69,21 @@ class TestCourtyardBlocking:
     """Tests for _block_courtyard."""
 
     def test_block_courtyard_marks_both_layers(self, grid, minimal_model):
-        """Courtyard marks F.Cu and B.Cu as BLOCKED."""
+        """Courtyard outlines mark F.Cu and B.Cu as HIGH_COST (not BLOCKED).
+
+        Courtyards are placement guides: pads sit inside the outline and
+        must remain able to route out, so crossing is discouraged, never
+        forbidden.
+        """
         fp = next(fp for fp in minimal_model.footprints if fp.ref == "MH1")
         cost_grid = np.full((2, grid.height_cells, grid.width_cells), FREE, dtype=np.int16)
 
         _block_courtyard(cost_grid, grid, fp)
 
-        # Both layers should have BLOCKED cells
-        assert np.any(cost_grid[0] == BLOCKED)
-        assert np.any(cost_grid[1] == BLOCKED)
+        # Both layers should have HIGH_COST cells, none BLOCKED
+        assert np.any(cost_grid[0] == HIGH_COST)
+        assert np.any(cost_grid[1] == HIGH_COST)
+        assert not np.any(cost_grid >= BLOCKED)
 
     def test_block_courtyard_handles_empty(self, grid):
         """No courtyard = no-op."""
@@ -85,8 +93,63 @@ class TestCourtyardBlocking:
 
         _block_courtyard(cost_grid, grid, fp)
 
-        # No BLOCKED cells added
-        assert not np.any(cost_grid == BLOCKED)
+        # Grid untouched
+        assert not np.any(cost_grid >= HIGH_COST)
+
+
+class TestFanoutCost:
+    """Tests for build_fanout_cost (per-net secondary halo grid)."""
+
+    def _two_pad_model(self, grid):
+        from kicad_autorouter.board_model import BoardModel, Footprint, Pad, Point
+        x0, y0 = grid.origin_mm[0] + 50, grid.origin_mm[1] + 50
+        return BoardModel(
+            footprints=(
+                Footprint(ref="R1", footprint_id="", layer="F.Cu", x_mm=x0, y_mm=y0,
+                          angle_deg=0,
+                          pads=(Pad(number="1", net_name="A", position=Point(x0, y0),
+                                    size_mm=(1, 1), pad_type="smd", drill_mm=0,
+                                    layers=("F.Cu",)),),
+                          courtyard=()),
+                Footprint(ref="R2", footprint_id="", layer="F.Cu", x_mm=x0 + 10, y_mm=y0,
+                          angle_deg=0,
+                          pads=(Pad(number="1", net_name="B",
+                                    position=Point(x0 + 10, y0),
+                                    size_mm=(1, 1), pad_type="smd", drill_mm=0,
+                                    layers=("F.Cu",)),),
+                          courtyard=()),
+            ),
+            keepout_zones=(),
+            nets={},
+            by_ref={},
+        ), x0, y0
+
+    def test_own_net_excluded_others_penalized(self, grid):
+        """Current net's pads stay 0; other nets get inner+outer halo."""
+        from kicad_autorouter.routing.grid import board_to_grid
+        model, x0, y0 = self._two_pad_model(grid)
+        secondary = build_fanout_cost(model, grid, "A",
+                                      clearance_mm=0.2, track_half_mm=0.125)
+        assert secondary.shape == (2, grid.height_cells, grid.width_cells)
+        assert secondary.dtype.name == "int16"
+        # Own pad (R1, net A): no halo
+        c1, r1 = board_to_grid(grid, x0, y0)
+        assert secondary[0, r1, c1] == 0
+        # Other pad (R2, net B): inner halo at center
+        c2, r2 = board_to_grid(grid, x0 + 10, y0)
+        assert secondary[0, r2, c2] == FANOUT_HALO_INNER
+        # SMD pad on F.Cu only: B.Cu untouched
+        assert secondary[1, r2, c2] == 0
+        # Outer ring present beyond inner (soft shoulder, strictly weaker)
+        assert secondary[0].max() == FANOUT_HALO_INNER
+        assert FANOUT_HALO_OUTER in secondary[0]
+
+    def test_halo_never_blocks(self, grid):
+        """Secondary values steer (added to cost) but blockage stays base-only."""
+        model, _, _ = self._two_pad_model(grid)
+        secondary = build_fanout_cost(model, grid, "A")
+        # No cell may reach BLOCKED from halo alone (handled at cost time)
+        assert secondary.max() == FANOUT_HALO_INNER
 
 
 class TestPadMarking:
@@ -300,6 +363,62 @@ class TestPolygonFill:
 
         assert np.any(layer_grid == BLOCKED)
 
+    def test_fill_polygon_respects_row_col_orientation(self, grid):
+        """Regression: points are (row, col) — a wide-thin rect must fill
+        a wide-thin cell block, not a transposed tall-thin one."""
+        layer_grid = np.full((grid.height_cells, grid.width_cells), FREE, dtype=np.int16)
+        center_r, center_c = grid.height_cells // 2, grid.width_cells // 2
+        # 4 rows tall x 40 cols wide, in (row, col) order
+        points = [(center_r-2, center_c-20), (center_r-2, center_c+20),
+                  (center_r+2, center_c+20), (center_r+2, center_c-20)]
+
+        _fill_polygon(layer_grid, points, BLOCKED)
+
+        marked_rows = np.where(np.any(layer_grid == BLOCKED, axis=1))[0]
+        marked_cols = np.where(np.any(layer_grid == BLOCKED, axis=0))[0]
+        assert len(marked_rows) > 0 and len(marked_cols) > 0
+        assert marked_rows.max() - marked_rows.min() <= 6
+        assert marked_cols.max() - marked_cols.min() >= 30
+
+    def test_zone_marking_keeps_thin_strips_thin(self, grid, minimal_model):
+        """Regression: minimal's full-width keepout strips must not become
+        full-height blocked bars (board_to_grid returns (col, row))."""
+        cost_grid = build_occupancy_grid(minimal_model, grid, default_clearance_mm=0.2)
+        H, W = cost_grid.shape[1], cost_grid.shape[2]
+        for layer_idx in range(cost_grid.shape[0]):
+            full_height_cols = np.where(
+                (cost_grid[layer_idx] >= BLOCKED).sum(axis=0) >= H - 2
+            )[0]
+            assert len(full_height_cols) == 0
+
+    def test_pad_inside_own_courtyard_can_route_out(self, grid):
+        """Regression: an SMD pad enclosed by its own courtyard outline
+        must still reach a cell outside it (outlines are HIGH_COST)."""
+        from kicad_autorouter.board_model import Footprint, Pad, Point
+        from kicad_autorouter.routing.router import SingleNetRouter, CostMap
+
+        x_mm = grid.origin_mm[0] + 50
+        y_mm = grid.origin_mm[1] + 50
+        hw, hh = 1.5, 1.0
+        corners = [Point(x_mm - hw, y_mm - hh), Point(x_mm + hw, y_mm - hh),
+                   Point(x_mm + hw, y_mm + hh), Point(x_mm - hw, y_mm + hh),
+                   Point(x_mm - hw, y_mm - hh)]
+        fp = Footprint(ref="T1", footprint_id="", layer="F.Cu", x_mm=x_mm, y_mm=y_mm,
+                       angle_deg=0,
+                       pads=(Pad(number="1", net_name="N1", position=Point(x_mm, y_mm),
+                                 size_mm=(1, 1), pad_type="smd", drill_mm=0,
+                                 layers=("F.Cu",)),),
+                       courtyard=tuple((corners[i], corners[i + 1]) for i in range(4)))
+        cost_grid = np.full((2, grid.height_cells, grid.width_cells), FREE, dtype=np.int16)
+        _block_courtyard(cost_grid, grid, fp)
+
+        sc, sr = board_to_grid(grid, x_mm, y_mm)
+        gc, gr = board_to_grid(grid, x_mm + 10, y_mm)
+        router = SingleNetRouter(grid, cost_grid, CostMap(),
+                                 np.zeros((grid.height_cells, grid.width_cells), dtype=bool))
+        result = router._a_star((sc, sr, 0), (gc, gr, 0))
+        assert result.success
+
 
 class TestBuildOccupancyGridIntegration:
     """Integration tests for full build_occupancy_grid."""
@@ -312,10 +431,10 @@ class TestBuildOccupancyGridIntegration:
         assert cost_grid.dtype == np.int16
         assert cost_grid.min() >= 0
 
-    def test_courtyard_blocked_on_both_layers(self, cost_grid):
-        """Footprint courtyards are BLOCKED on both layers."""
-        assert np.any(cost_grid[0] == BLOCKED)
-        assert np.any(cost_grid[1] == BLOCKED)
+    def test_courtyard_high_cost_on_both_layers(self, cost_grid):
+        """Footprint courtyard outlines are HIGH_COST (escapable) on both layers."""
+        assert np.any(cost_grid[0] == HIGH_COST)
+        assert np.any(cost_grid[1] == HIGH_COST)
 
     def test_pads_high_cost_with_clearance(self, cost_grid):
         """Pad centers and clearance are HIGH_COST."""

@@ -104,10 +104,14 @@ def test_overlay_draws_ghost_and_arrow():
     # Ghost courtyard at original position (dashed, gray)
     assert ghost in s
 
-    # Shifted courtyard at proposed position - now rendered inside footprint group
-    # with state-based styling. Check that the transform is applied to the group.
-    assert f'translate({dx:.3f} {dy:.3f})' in s
-    assert f'rotate(0.000' in s  # no rotation in this test
+    # Moved courtyard baked at the proposed position inside the footprint
+    # group (no group transform): what you see is what Accept writes.
+    assert "translate(" not in s
+    shifted = (
+        f'<line x1="{(a.x_mm + dx):.3f}" y1="{(a.y_mm + dy):.3f}" '
+        f'x2="{(b.x_mm + dx):.3f}" y2="{(b.y_mm + dy):.3f}"'
+    )
+    assert shifted in s
 
 
 def test_viewbox_grows_with_max_move():
@@ -124,6 +128,45 @@ def test_viewbox_grows_with_max_move():
 
 def _tube111_model():
     return board_model(parse_file(FIXTURES / "tube111.kicad_pcb"))
+
+
+def test_preview_matches_accept_with_rotation():
+    """Preview footprint groups must equal the post-Accept render.
+
+    Regression for the C11-on-DCCF bug: Step showed the part in one spot
+    (group transform rotating about the courtyard centroid, SVG-clockwise)
+    while Accept wrote it elsewhere (rotation about the footprint origin,
+    board-CCW). Preview now renders apply_deltas() output, so every
+    footprint group is byte-identical to rendering the accepted model.
+    """
+    import re
+
+    from kicad_autorouter.board_model import apply_deltas
+
+    m = board_model(parse_file(FIXTURES / "DCCF.sved.kicad_pcb"))
+    c11 = next(f for f in m.footprints if f.ref == "C11")
+    sw6 = next(f for f in m.footprints if f.ref == "SW6")  # 90-degree part
+    deltas = {c11.uuid: (-1.58, -2.42, 25.45), sw6.uuid: (0.5, 1.0, -30.0)}
+    prop = PlacementProposal(
+        deltas=deltas, iterations=5, final_max_disp_mm=2.9,
+        elapsed_s=0.0, params={},
+    )
+    preview = render_board_svg(m, proposal=prop)
+    accepted = render_board_svg(apply_deltas(m, deltas))
+
+    def groups(svg):
+        return {
+            mm[1]: mm[0] + mm[2]
+            for mm in re.findall(
+                r'<g class="([^"]*)" data-fp-uuid="([^"]+)"(.*?)</g>',
+                svg, re.DOTALL,
+            )
+        }
+
+    g_preview, g_accepted = groups(preview), groups(accepted)
+    assert len(g_preview) == len(g_accepted) == len(m.footprints)
+    assert [u for u in g_preview if g_preview[u] != g_accepted.get(u)] == []
+    assert "translate(" not in preview
 
 
 def test_tube111_back_footprints_inside_region_in_svg():
@@ -182,3 +225,48 @@ def test_tube111_back_pad_rect_uses_effective_angle():
     # Pad 1 is a 1.05 x 0.8 rect at board (130.63, 94.345); effective
     # orientation 90 must appear as rotate(90 ...) in the SVG.
     assert 'rotate(90.000 130.630 94.345)' in grp.group(0)
+
+
+def _c11_uuid(m):
+    return next(f.uuid for f in m.footprints if f.ref == "C11")
+
+
+def test_forces_overlay_per_cause_arrows():
+    """Each force cause gets its own colored arrow + marker."""
+    m = board_model(parse_file(FIXTURES / "DCCF.sved.kicad_pcb"))
+    uuid = _c11_uuid(m)
+    prop = PlacementProposal(
+        deltas={}, iterations=0, final_max_disp_mm=0.0, elapsed_s=0.0,
+        params={},
+        forces={uuid: (6.0, 0.0)},
+        force_components={uuid: {
+            "repulsion": (10.0, 0.0),
+            "attraction": (-4.0, 0.0),
+            "rigid": (0.0, 0.0),
+            "ghost": (0.0, 0.0),
+            "courtyard": (0.0, 3.0),
+            "boundary": (0.0, 0.0),
+        }},
+    )
+    s = render_board_svg(m, proposal=prop, show_forces=True)
+    for cause in ("repulsion", "attraction", "courtyard"):
+        assert f"url(#force-{cause})" in s
+        assert f'id="force-{cause}"' in s
+    # Negligible rigid/ghost/boundary contributions are hidden.
+    assert "url(#force-rigid)" not in s
+    assert "url(#force-ghost)" not in s
+    assert "url(#force-boundary)" not in s
+
+
+def test_forces_overlay_falls_back_to_total():
+    """Proposals without a breakdown keep the legacy single arrow."""
+    m = board_model(parse_file(FIXTURES / "DCCF.sved.kicad_pcb"))
+    uuid = _c11_uuid(m)
+    prop = PlacementProposal(
+        deltas={}, iterations=0, final_max_disp_mm=0.0, elapsed_s=0.0,
+        params={},
+        forces={uuid: (10.0, 0.0)},
+    )
+    s = render_board_svg(m, proposal=prop, show_forces=True)
+    assert "url(#move-arrow)" in s
+    assert "url(#force-" not in s

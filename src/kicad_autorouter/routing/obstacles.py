@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import List, Tuple
 
 import numpy as np
@@ -16,6 +17,13 @@ BLOCKED = 100      # impassable (tracks, vias, courtyards, zones)
 HIGH_COST = 50     # near pads, clearance zones
 EDGE_KEEPOUT = 80  # near board edge
 VIA_COST = 50      # per via (5mm equivalent at 0.1mm resolution = 50 cells)
+
+# Per-net fanout halo values (live on the SECONDARY cost grid, added to the
+# entry cost at search time — never baked into cell values, so they cannot
+# push cells over BLOCKED or trap terminals). Soft shoulder: strong inner
+# ring, weaker outer ring.
+FANOUT_HALO_INNER = 500  # within pad extent + clearance + half track width
+FANOUT_HALO_OUTER = 100  # one further clearance-width ring beyond inner
 
 
 def build_occupancy_grid(
@@ -73,13 +81,76 @@ def build_occupancy_grid(
     return cost_grid
 
 
+def build_fanout_cost(
+    model,
+    grid,
+    current_net: str,
+    clearance_mm: float = 0.2,
+    track_half_mm: float = 0.125,
+) -> np.ndarray:
+    """Build the per-net secondary (fanout) cost grid for ``current_net``.
+
+    Returns a ``(n_layers, H, W)`` int16 grid of soft-shoulder halos over
+    every *other* net's pads: ``FANOUT_HALO_INNER`` within pad extent +
+    clearance + half track width, ``FANOUT_HALO_OUTER`` for one further
+    clearance-width ring. The current net's own pads are excluded so its
+    terminals can still escape. All other cells are 0.
+
+    The router adds these values to the entry cost (never to blockage),
+    so halos steer around foreign copper without ever trapping a route.
+    """
+    n_layers = len(grid.layers)
+    H, W = grid.height_cells, grid.width_cells
+    secondary = np.zeros((n_layers, H, W), dtype=np.int16)
+    res_mm = grid.resolution_mm
+    if res_mm <= 0:
+        return secondary
+
+    outer_extra = max(1, int(math.ceil(clearance_mm / res_mm)))
+    for fp in model.footprints:
+        for pad in fp.pads:
+            if not pad.net_name or pad.net_name == current_net:
+                continue
+            col, row = board_to_grid(grid, pad.position.x_mm, pad.position.y_mm)
+            layers = (0, 1) if pad.is_through_hole else (0 if fp.layer == "F.Cu" else 1,)
+            inner = max(1, int(math.ceil(
+                (_pad_half_extent_mm(pad) + clearance_mm + track_half_mm) / res_mm
+            )))
+            for layer_idx in layers:
+                if layer_idx >= n_layers:
+                    continue
+                _mark_circular_zone(
+                    secondary[layer_idx], row, col, inner + outer_extra,
+                    FANOUT_HALO_OUTER,
+                )
+                _mark_circular_zone(
+                    secondary[layer_idx], row, col, inner, FANOUT_HALO_INNER
+                )
+    return secondary
+
+
 def _block_courtyard(cost_grid: np.ndarray, grid, fp):
-    """Mark footprint courtyard as blocked on both layers."""
+    """Mark footprint courtyard outline as high cost on both layers.
+
+    Courtyards are placement guides, not copper keepouts: tracks must be
+    able to escape a footprint's own pads (which sit inside the outline),
+    so the outline discourages crossing (HIGH_COST) instead of forbidding
+    it (BLOCKED, which would trap every enclosed SMD pad).
+    """
     if not fp.courtyard:
         return
     for layer_idx in range(cost_grid.shape[0]):
         for a, b in fp.courtyard:
-            _draw_line_blocked(cost_grid[layer_idx], grid, a.x_mm, a.y_mm, b.x_mm, b.y_mm)
+            _draw_line_blocked(cost_grid[layer_idx], grid, a.x_mm, a.y_mm, b.x_mm, b.y_mm,
+                               value=HIGH_COST)
+
+
+def _pad_half_extent_mm(pad: Pad) -> float:
+    """Largest half-extent of a pad (covers rect/circle/trapezoid footprints)."""
+    try:
+        return max(float(s) for s in pad.size_mm) / 2.0
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _mark_pad(
@@ -89,25 +160,37 @@ def _mark_pad(
     pad: Pad,
     clearance_cells: dict,
     default_clearance: int,
+    track_half_mm: float = 0.0,
 ):
     """Mark pad center and clearance zone as high cost.
-    
+
+    The ring covers the pad's own extent plus clearance (plus half the
+    routing track width when known), so coarse grids cannot leave FREE
+    cells inside a pad's copper.
+
     Through-hole pads: mark on BOTH layers (free via).
     """
     x_mm, y_mm = pad.position.x_mm, pad.position.y_mm
     col, row = board_to_grid(grid, x_mm, y_mm)
-    
+
     # Determine which layers this pad occupies
     is_through_hole = pad.is_through_hole
     pad_layers = [0, 1] if is_through_hole else [0 if fp.layer == "F.Cu" else 1]
-    
+
     # Get clearance for this pad's net
     net_name = pad.net_name
     clearance = clearance_cells.get(net_name, default_clearance) if net_name else default_clearance
-    
+
+    # Widen the ring to cover the pad copper itself (+ track half width).
+    res_mm = grid.resolution_mm
+    extra_cells = int(math.ceil(
+        (_pad_half_extent_mm(pad) + track_half_mm) / res_mm
+    )) if res_mm > 0 else 0
+    radius = max(1, clearance + extra_cells)
+
     for layer_idx in pad_layers:
         if layer_idx < cost_grid.shape[0]:
-            _mark_circular_zone(cost_grid[layer_idx], row, col, clearance, HIGH_COST)
+            _mark_circular_zone(cost_grid[layer_idx], row, col, radius, HIGH_COST)
 
 
 def _mark_track(cost_grid: np.ndarray, grid, track):
@@ -135,8 +218,12 @@ def _mark_zone(cost_grid: np.ndarray, grid, zone):
         layer_idx = 0 if layer_name == "F.Cu" else (1 if layer_name == "B.Cu" else None)
         if layer_idx is None or layer_idx >= cost_grid.shape[0]:
             continue
-        # Convert polygon to grid and fill
-        points = [(board_to_grid(grid, p.x_mm, p.y_mm)) for p in zone.polygon]
+        # Convert polygon to grid. board_to_grid returns (col, row) but
+        # _fill_polygon takes (row, col) points — swap here.
+        points = [
+            (row, col)
+            for (col, row) in (board_to_grid(grid, p.x_mm, p.y_mm) for p in zone.polygon)
+        ]
         _fill_polygon(cost_grid[layer_idx], points, BLOCKED)
 
 
@@ -241,21 +328,25 @@ def _draw_arc_keepout(grid: np.ndarray, grid_obj, sx_mm, sy_mm, mx_mm, my_mm, ex
 
 # --- Drawing primitives ---
 
-def _draw_line_blocked(grid: np.ndarray, grid_obj, x1_mm, y1_mm, x2_mm, y2_mm):
-    """Draw a line on the grid using Bresenham, marking as blocked."""
+def _draw_line_blocked(grid: np.ndarray, grid_obj, x1_mm, y1_mm, x2_mm, y2_mm, value: int = BLOCKED):
+    """Draw a line on the grid using Bresenham, marking cells with ``value``.
+
+    Defaults to BLOCKED (tracks); pass HIGH_COST for soft discouragement
+    (e.g. courtyard outlines that pads must remain able to cross).
+    """
     c1, r1 = board_to_grid(grid_obj, x1_mm, y1_mm)
     c2, r2 = board_to_grid(grid_obj, x2_mm, y2_mm)
-    
+
     dx = abs(c2 - c1)
     dy = abs(r2 - r1)
     sx = 1 if c1 < c2 else -1
     sy = 1 if r1 < r2 else -1
     err = dx - dy
-    
+
     c, r = c1, r1
     while True:
         if 0 <= r < grid.shape[0] and 0 <= c < grid.shape[1]:
-            grid[r, c] = max(grid[r, c], BLOCKED)
+            grid[r, c] = max(grid[r, c], value)
         if c == c2 and r == r2:
             break
         e2 = 2 * err
@@ -285,7 +376,11 @@ def _mark_circular_zone(grid: np.ndarray, center_row: int, center_col: int, radi
 
 
 def _fill_polygon(grid: np.ndarray, points: List[Tuple[int, int]], value: int):
-    """Fill polygon using scanline fill."""
+    """Fill polygon using scanline fill.
+
+    ``points`` are (row, col) cell coordinates (note: ``board_to_grid``
+    returns (col, row), so callers must swap).
+    """
     if len(points) < 3:
         return
     H, W = grid.shape

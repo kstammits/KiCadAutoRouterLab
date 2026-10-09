@@ -35,8 +35,6 @@ PARAM_FIELDS = (
     "ideal_length_mm",
     "max_iterations",
     "convergence_eps_mm",
-    "demo_jitter_mm",
-    "stub",
 )
 
 
@@ -48,19 +46,12 @@ def main(argv=None) -> int:
     )
     p.add_argument("-o", "--output", help="where to save the placed board")
     for name in PARAM_FIELDS:
-        if name == "stub":
-            g = p.add_mutually_exclusive_group()
-            g.add_argument("--stub", dest="stub", action="store_true", default=False,
-                           help="use stub mode (identity deltas, no physics)")
-            g.add_argument("--no-stub", dest="stub", action="store_false",
-                           help="run vectorized numpy force-spring simulation (default)")
-        else:
-            p.add_argument(
-                f"--{name.replace('_', '-')}",
-                type=int if name == "max_iterations" else float,
-                dest=name,
-                default=None,
-            )
+        p.add_argument(
+            f"--{name.replace('_', '-')}",
+            type=int if name == "max_iterations" else float,
+            dest=name,
+            default=None,
+        )
     p.add_argument("--step-iterations", type=int, default=None,
                    help="iterations per step (iterative mode)")
     p.add_argument("--max-total-iterations", type=int, default=None,
@@ -91,7 +82,7 @@ def main(argv=None) -> int:
         iterative = step_iters is not None or total_iters is not None
 
         if iterative:
-            step_iters = step_iters or 50
+            step_iters = step_iters or 5
             total_iters = total_iters or 1000
             if step_iters < 1:
                 raise ValueError("--step-iterations must be >= 1")
@@ -114,8 +105,6 @@ def main(argv=None) -> int:
                     ideal_length_mm=base_params.ideal_length_mm,
                     max_iterations=step_iters,
                     convergence_eps_mm=base_params.convergence_eps_mm,
-                    demo_jitter_mm=base_params.demo_jitter_mm,
-                    stub=base_params.stub,
                 )
             else:
                 step_params = base_params
@@ -142,20 +131,6 @@ def main(argv=None) -> int:
             )
             for uuid_, (dx, dy, *_) in proposal.deltas.items():
                 fp = by_uuid[uuid_]
-
-            # Demo jitter mode (iterations=0) should not iterate further
-            if proposal.iterations == 0:
-                break
-
-            # Check convergence / budget
-            if proposal.final_max_disp_mm < base_params.convergence_eps_mm:
-                print("converged (max displacement < convergence_eps_mm)")
-                break
-            if iterative and total_iterations_used >= total_iters:
-                print(f"reached max total iterations ({total_iterations_used}/{total_iters})")
-                break
-            if not iterative:
-                break
                 label = fp.ref or uuid_[:8]
                 print(
                     f"  {label}: ({fp.x_mm:.2f},{fp.y_mm:.2f}) -> "
