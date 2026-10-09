@@ -424,7 +424,7 @@ FORCE_CAUSE_COLORS = {
 }
 FORCE_CAUSE_ORDER = ("repulsion", "attraction", "courtyard", "boundary", "ghost")
 FORCE_CAUSE_DASH = {
-    "boundary": ' stroke-dasharray="2.5 1.5"',
+    "boundary": ' stroke-dasharray="1.5 1.0"',
     "ghost": ' stroke-dasharray="1 1.2"',
 }
 

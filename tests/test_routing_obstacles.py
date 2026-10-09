@@ -10,7 +10,7 @@ from kicad_autorouter.routing.obstacles import (
     build_occupancy_grid,
     build_fanout_cost,
     build_via_block_mask,
-    FREE, BLOCKED, HIGH_COST, EDGE_KEEPOUT,
+    FREE, COURTYARD, BLOCKED, HIGH_COST, EDGE_KEEPOUT,
     FANOUT_HALO_INNER, FANOUT_HALO_OUTER,
     _block_courtyard,
     _mark_pad,
@@ -70,20 +70,20 @@ class TestCourtyardBlocking:
     """Tests for _block_courtyard."""
 
     def test_block_courtyard_marks_both_layers(self, grid, minimal_model):
-        """Courtyard outlines mark F.Cu and B.Cu as HIGH_COST (not BLOCKED).
+        """Courtyard outlines mark F.Cu and B.Cu as COURTYARD (not BLOCKED).
 
-        Courtyards are placement guides: pads sit inside the outline and
-        must remain able to route out, so crossing is discouraged, never
-        forbidden.
+        Courtyards are placement guides, not copper keepouts: tracks route
+        through them freely. COURTYARD (25) is below SOFT_THRESHOLD (50) so
+        the smoother can shortcut through courtyard outlines.
         """
         fp = next(fp for fp in minimal_model.footprints if fp.ref == "MH1")
         cost_grid = np.full((2, grid.height_cells, grid.width_cells), FREE, dtype=np.int16)
 
         _block_courtyard(cost_grid, grid, fp)
 
-        # Both layers should have HIGH_COST cells, none BLOCKED
-        assert np.any(cost_grid[0] == HIGH_COST)
-        assert np.any(cost_grid[1] == HIGH_COST)
+        # Both layers should have COURTYARD cells, none BLOCKED
+        assert np.any(cost_grid[0] == COURTYARD)
+        assert np.any(cost_grid[1] == COURTYARD)
         assert not np.any(cost_grid >= BLOCKED)
 
     def test_block_courtyard_handles_empty(self, grid):

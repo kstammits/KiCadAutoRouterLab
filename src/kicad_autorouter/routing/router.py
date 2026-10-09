@@ -26,6 +26,7 @@ class CostMap:
     """Routing cost parameters."""
     base_cost: int = 1              # per cell (wire length)
     via_cost: int = 50              # per via transition (5mm at 0.1mm)
+    courtyard_penalty: int = 5      # additional cost for COURTYARD cells
     high_cost_penalty: int = 20     # additional cost for HIGH_COST cells
     edge_keepout_penalty: int = 40  # additional cost for EDGE_KEEPOUT cells
     blocked_threshold: int = 100    # cells >= this are impassable
@@ -280,6 +281,8 @@ class SingleNetRouter:
             base += self.cost_map.edge_keepout_penalty
         elif cell_val >= 50:  # HIGH_COST
             base += self.cost_map.high_cost_penalty
+        elif cell_val >= 25:  # COURTYARD
+            base += self.cost_map.courtyard_penalty
         return base
 
     def _prim_mst(self, dist_matrix: np.ndarray) -> List[Tuple[int, int]]:

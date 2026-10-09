@@ -28,8 +28,9 @@ from typing import List, Optional, Set, Tuple
 import numpy as np
 
 # Cost bands (mirrors routing/obstacles.py + router.CostMap).
-BLOCKED_THRESHOLD = 100  # impassable: tracks, vias, zones, courtyards
+BLOCKED_THRESHOLD = 100  # impassable: tracks, vias, zones
 SOFT_THRESHOLD = 50  # HIGH_COST pad rings / EDGE_KEEPOUT: no shortcut through
+                         # COURTYARD (25) is below this — shortcuts allowed
 
 
 def own_net_soft_mask(model, grid, net_name: str, clearance_mm: float, track_half_mm: float):

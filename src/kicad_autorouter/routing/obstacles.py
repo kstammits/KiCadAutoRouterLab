@@ -13,7 +13,8 @@ from .grid import RoutingGrid, board_to_grid
 
 # Cell cost values (int8)
 FREE = 0
-BLOCKED = 100      # impassable (tracks, vias, courtyards, zones)
+COURTYARD = 25     # placement guide only — not a copper keepout
+BLOCKED = 100      # impassable (tracks, vias, zones)
 HIGH_COST = 50     # near pads, clearance zones
 EDGE_KEEPOUT = 80  # near board edge
 VIA_COST = 50      # per via (5mm equivalent at 0.1mm resolution = 50 cells)
@@ -172,19 +173,18 @@ def build_via_block_mask(
 
 
 def _block_courtyard(cost_grid: np.ndarray, grid, fp):
-    """Mark footprint courtyard outline as high cost on both layers.
-
-    Courtyards are placement guides, not copper keepouts: tracks must be
-    able to escape a footprint's own pads (which sit inside the outline),
-    so the outline discourages crossing (HIGH_COST) instead of forbidding
-    it (BLOCKED, which would trap every enclosed SMD pad).
+    """Mark footprint courtyard outline as COURTYARD on both layers.
+    Courtyards are placement guides, not copper keepouts: tracks route
+    through them freely. COURTYARD (25) is below SOFT_THRESHOLD (50) so the
+    smoother can shortcut through courtyard outlines, and below HIGH_COST
+    so the A* router gives pad clearance priority over courtyard avoidance.
     """
     if not fp.courtyard:
         return
     for layer_idx in range(cost_grid.shape[0]):
         for a, b in fp.courtyard:
             _draw_line_blocked(cost_grid[layer_idx], grid, a.x_mm, a.y_mm, b.x_mm, b.y_mm,
-                               value=HIGH_COST)
+                               value=COURTYARD)
 
 
 def _pad_half_extent_mm(pad: Pad) -> float:

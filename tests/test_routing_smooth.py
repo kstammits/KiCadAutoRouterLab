@@ -117,3 +117,57 @@ def test_smoothed_wire_mm_shorter_than_staircase():
     smooth_len = smoothed_wire_mm(smoothed, 0.1)
     assert smooth_len < raw
     assert smooth_len > 0
+
+
+def test_courtyard_outline_allows_shortcut():
+    """COURTYARD (25) cells must not block smoothing shortcuts.
+
+    A 45-degree rotated SOT-23 courtyard appears as a diamond in the grid.
+    The smoother should shortcut through it (COURTYARD < SOFT_THRESHOLD).
+    """
+    grid = _open()
+    # Diamond-shaped courtyard outline (45-degree rotated square)
+    diamond = [(15, 10), (20, 15), (15, 20), (10, 15), (15, 10)]
+    for i in range(len(diamond) - 1):
+        c1, r1 = diamond[i]
+        c2, r2 = diamond[i + 1]
+        dc = abs(c2 - c1)
+        dr = abs(r2 - r1)
+        steps = max(dc, dr)
+        for s in range(steps + 1):
+            t = s / steps if steps else 0
+            c = round(c1 + (c2 - c1) * t)
+            r = round(r1 + (r2 - r1) * t)
+            grid[0, r, c] = 25  # COURTYARD
+
+    # Horizontal path through the diamond center — crosses outline at (10,15) and (20,15)
+    path = [(5, 15, 0), (10, 15, 0), (15, 15, 0), (20, 15, 0), (25, 15, 0)]
+    smoothed = smooth_grid_path(path, grid)
+    assert len(smoothed) < len(path)
+    assert smoothed[0] == path[0]
+    assert smoothed[-1] == path[-1]
+
+
+def test_courtyard_blocks_shortcut_when_high_cost():
+    """HIGH_COST (50) courtyard cells must still block shortcuts.
+
+    If someone marks a courtyard as HIGH_COST (e.g. legacy behavior),
+    the smoother must not shortcut through it.
+    """
+    grid = _open()
+    diamond = [(15, 10), (20, 15), (15, 20), (10, 15), (15, 10)]
+    for i in range(len(diamond) - 1):
+        c1, r1 = diamond[i]
+        c2, r2 = diamond[i + 1]
+        dc = abs(c2 - c1)
+        dr = abs(r2 - r1)
+        steps = max(dc, dr)
+        for s in range(steps + 1):
+            t = s / steps if steps else 0
+            c = round(c1 + (c2 - c1) * t)
+            r = round(r1 + (r2 - r1) * t)
+            grid[0, r, c] = 50  # HIGH_COST
+
+    path = [(5, 15, 0), (10, 15, 0), (15, 15, 0), (20, 15, 0), (25, 15, 0)]
+    smoothed = smooth_grid_path(path, grid)
+    assert len(smoothed) > 2  # no direct shortcut through HIGH_COST
