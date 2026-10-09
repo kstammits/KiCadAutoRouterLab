@@ -58,6 +58,12 @@ Plus this session: move-preservation fix (`apply_deltas`/`commit_placement` via 
 - [ ] Benchmark rip_up_nets on large boards (5000+ segments)
 - [ ] Profile commit_placement on 200+ footprints
 
+### Placement Progress + Benchmark (Stage 1 done 2026-10-09; Stage 2 planned)
+- [x] `scripts/benchmark_placement.py`: fixture ladder (minimal/tube111/DCCF) + synthetic 8–64fp boards; per-iter ms, convergence iters, cProfile top, fitted `ms/iter = a*pads^2 + b*fps^2 + c`. Timings captured in `docs/benchmarks/placement_2026-10-09.json`.
+  - Findings: shapely courtyard loop dominates (~70% of force time on tube111); vectorized repulsion is the rest. DCCF/tube111 run all 1000 default iters without converging (34–54s worst case). Fit: a=3.3e-4, b=2.2e-3, c=0.94 (max err 4.3ms — real boards deviate with courtyard complexity).
+- [x] UI estimate-first: `runPlacement` shows fitted pre-flight estimate + elapsed ticker + scaled client timeout (60s–10min); `/api/footprints` gained `pad_count` for the estimate. No server changes; synchronous flow preserved.
+- [ ] Stage 2 — server job model: `on_progress`/`cancelled` hooks in sim loop, job store + poll/cancel endpoints, progress bar + Cancel in UI (estimate-first was chosen deliberately; chunking like routing is impossible — pads interact every iteration, so repeated small POSTs would restart the sim from scratch).
+
 ### Pad Model Enhancement ✅ (done 2026-10-08 — verified in tree, guarded by `TestMovePreservation`)
 - [x] Add `pad_type`, `drill_mm`, `layers` fields to `Pad` dataclass
 - [x] Parse `thru_hole`/`smd` from S-expression in `_pad()`

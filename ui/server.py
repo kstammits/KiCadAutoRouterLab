@@ -885,6 +885,10 @@ class Handler(BaseHTTPRequestHandler):
                     "nets": nets,
                     "bbox": [minx, miny, maxx, maxy],
                     "ghost": False,
+                    # Pads with nets drive placement cost (all-pairs repulsion
+                    # is O(pads^2)); the UI pre-flight estimate uses this.
+                    # Matches _collect_pad_nodes (pad.net_name is not None).
+                    "pad_count": sum(1 for pad in fp.pads if pad.net_name is not None),
                 })
             # Ghost footprints
             for fp in model.ghost_footprints:
@@ -914,6 +918,7 @@ class Handler(BaseHTTPRequestHandler):
                     "nets": nets,
                     "bbox": [minx, miny, maxx, maxy],
                     "ghost": True,
+                    "pad_count": sum(1 for pad in fp.pads if pad.net_name is not None),
                 })
             self._send(200, json.dumps({"ok": True, "footprints": footprints_data}).encode(), "application/json")
             return

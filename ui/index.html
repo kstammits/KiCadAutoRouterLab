@@ -1676,9 +1676,57 @@ document.getElementById("refresh-forces-btn").addEventListener("click", refreshF
 // Common function to run placement.
 // iterations == null → omit the key so the server runs to convergence
 // (saved max_iterations); otherwise a small step budget is used.
+//
+// UX STAGE 1 — estimate-first (2026-10-09): the POST is still synchronous
+// (no progress/cancel yet — that needs the server job model, Stage 2), so
+// we show a benchmark-fitted pre-flight estimate + an elapsed ticker + a
+// client-side timeout backstop. Coefficients from
+// scripts/benchmark_placement.py (docs/benchmarks/placement_2026-10-09.json):
+// ms/iter ≈ 3.3e-4*pads^2 + 2.2e-3*fps^2 + 0.94. Order-of-magnitude only —
+// real boards deviate with courtyard complexity — and worst-case (runs often
+// converge early), so the line reads "up to".
+function estimatePlacementMs(movableUuids, iters) {
+  const isMovable = (fp) => !fp.locked && !fp.pinned && !fp.ghost &&
+    (movableUuids === undefined || movableUuids.includes(fp.uuid));
+  const fps = allFootprints.filter(isMovable);
+  // Approximation: ghost pads also enter the sim but aren't movable, so
+  // they only add repulsion cost — ignored here (estimate stays conservative
+  // in the common no-ghost case).
+  const pads = fps.reduce((s, fp) => s + (fp.pad_count ?? 0), 0);
+  const msPerIter = 3.3e-4 * pads * pads + 2.2e-3 * fps.length * fps.length + 0.94;
+  return { ms: msPerIter * iters, msPerIter, fps: fps.length, pads };
+}
+
+function fmtDuration(ms) {
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `≈${s}s`;
+  return `≈${Math.floor(s / 60)}min${s % 60 ? ` ${s % 60}s` : ""}`;
+}
+
 async function runPlacement(movableUuids, iterations) {
+  const params = readParams();
+  const budget = iterations ?? params.max_iterations ?? 1000;
+  const est = estimatePlacementMs(movableUuids, budget);
+  // Timeout scales with the estimate (worst case can legitimately take
+  // minutes on 100-footprint boards), clamped to [60s, 10min]. Aborting is
+  // client-side only — the server thread runs to completion regardless.
+  const timeoutMs = Math.min(600000, Math.max(60000, est.ms * 4));
+  const t0 = performance.now();
+  const estKnown = allFootprints.length > 0;
+  const ticker = setInterval(() => {
+    const el = Math.round((performance.now() - t0) / 1000);
+    diagEl.textContent = estKnown
+      ? `placing… ${el}s elapsed (est. up to ${fmtDuration(est.ms)})`
+      : `placing… ${el}s elapsed`;
+  }, 1000);
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const saveRes = await fetch("/api/placement/params", { method: "POST", body: JSON.stringify(readParams()) });
+    diagEl.textContent = estKnown
+      ? `placing… (est. up to ${fmtDuration(est.ms)} at ${est.msPerIter.toFixed(1)}ms/iter, ` +
+        `${est.fps} fps / ${est.pads} pads, budget ${budget} iters)`
+      : `placing… (budget ${budget} iters)`;
+    const saveRes = await fetch("/api/placement/params", { method: "POST", body: JSON.stringify(params) });
     if (!saveRes.ok) throw new Error(await saveRes.text());
 
     const body = { movable_uuids: movableUuids };
@@ -1686,7 +1734,8 @@ async function runPlacement(movableUuids, iterations) {
     const res = await fetch("/api/placement/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
     });
     if (!res.ok) throw new Error(await res.text());
     const r = await res.json();
@@ -1700,7 +1749,12 @@ async function runPlacement(movableUuids, iterations) {
     document.getElementById("step-selected-btn").textContent = "Step Selected Again";
     document.getElementById("step-all-btn").textContent = "Step All Again";
   } catch (err) {
-    diagEl.textContent = `run failed: ${err.message}`;
+    diagEl.textContent = err?.name === "AbortError"
+      ? `run timed out after ${fmtDuration(timeoutMs)} — try fewer footprints or a smaller iteration budget`
+      : `run failed: ${err.message}`;
+  } finally {
+    clearInterval(ticker);
+    clearTimeout(timer);
   }
 }
 

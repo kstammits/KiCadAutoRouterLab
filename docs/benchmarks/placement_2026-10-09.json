@@ -1,0 +1,211 @@
+{
+  "cases": [
+    {
+      "board": "minimal",
+      "footprints": 4,
+      "pads": 4,
+      "fixed_budget_iters": 0,
+      "fixed_s": 0.0,
+      "ms_per_iter": 0.039,
+      "converged_iters": 0,
+      "converged_s": 0.0,
+      "moved": 0
+    },
+    {
+      "board": "tube111",
+      "footprints": 105,
+      "pads": 272,
+      "fixed_budget_iters": 50,
+      "fixed_s": 2.322,
+      "ms_per_iter": 46.438,
+      "converged_iters": 1000,
+      "converged_s": 35.039,
+      "moved": 95
+    },
+    {
+      "board": "synthetic_8fp",
+      "footprints": 8,
+      "pads": 32,
+      "fixed_budget_iters": 50,
+      "fixed_s": 0.065,
+      "ms_per_iter": 1.303,
+      "converged_iters": 1000,
+      "converged_s": 1.226,
+      "moved": 8
+    },
+    {
+      "board": "synthetic_16fp",
+      "footprints": 16,
+      "pads": 64,
+      "fixed_budget_iters": 50,
+      "fixed_s": 0.174,
+      "ms_per_iter": 3.489,
+      "converged_iters": 1000,
+      "converged_s": 3.683,
+      "moved": 16
+    },
+    {
+      "board": "synthetic_32fp",
+      "footprints": 32,
+      "pads": 128,
+      "fixed_budget_iters": 50,
+      "fixed_s": 0.472,
+      "ms_per_iter": 9.435,
+      "converged_iters": 1000,
+      "converged_s": 9.469,
+      "moved": 32
+    },
+    {
+      "board": "synthetic_64fp",
+      "footprints": 64,
+      "pads": 256,
+      "fixed_budget_iters": 50,
+      "fixed_s": 1.51,
+      "ms_per_iter": 30.194,
+      "converged_iters": 1000,
+      "converged_s": 33.281,
+      "moved": 64
+    },
+    {
+      "board": "DCCF",
+      "footprints": 97,
+      "pads": 272,
+      "fixed_budget_iters": 50,
+      "fixed_s": 2.517,
+      "ms_per_iter": 50.331,
+      "converged_iters": 1000,
+      "converged_s": 54.024,
+      "moved": 87
+    }
+  ],
+  "formula": {
+    "ms_per_iter = a*pads^2 + b*fps^2 + c": {
+      "a": 0.00033178634643669415,
+      "b": 0.00218823105433344,
+      "c": 0.9425633883385249
+    },
+    "max_abs_err_ms": 4.2524895666657585
+  },
+  "profile_top": [
+    {
+      "func": "placement.py:1134:run_placement",
+      "calls": 1,
+      "tottime": 0.0005,
+      "cumtime": 1.6102
+    },
+    {
+      "func": "placement.py:518:_run_region_simulation",
+      "calls": 3,
+      "tottime": 0.0089,
+      "cumtime": 1.6092
+    },
+    {
+      "func": "placement.py:724:_compute_total_force",
+      "calls": 63,
+      "tottime": 0.131,
+      "cumtime": 1.5884
+    },
+    {
+      "func": "decorators.py:73:wrapped",
+      "calls": 374170,
+      "tottime": 0.4175,
+      "cumtime": 1.1212
+    },
+    {
+      "func": "base.py:721:is_empty",
+      "calls": 161366,
+      "tottime": 0.0399,
+      "cumtime": 0.4259
+    },
+    {
+      "func": "placement.py:400:_footprint_courtyard_polygon",
+      "calls": 2205,
+      "tottime": 0.0154,
+      "cumtime": 0.198
+    },
+    {
+      "func": "base.py:817:intersects",
+      "calls": 44121,
+      "tottime": 0.0169,
+      "cumtime": 0.1701
+    },
+    {
+      "func": "decorators.py:171:wrapper",
+      "calls": 17408,
+      "tottime": 0.0117,
+      "cumtime": 0.1695
+    },
+    {
+      "func": "base.py:343:distance",
+      "calls": 36562,
+      "tottime": 0.0142,
+      "cumtime": 0.1665
+    },
+    {
+      "func": "predicates.py:181:is_empty",
+      "calls": 161366,
+      "tottime": 0.1417,
+      "cumtime": 0.1417
+    },
+    {
+      "func": "base.py:668:intersection",
+      "calls": 7559,
+      "tottime": 0.0024,
+      "cumtime": 0.1126
+    },
+    {
+      "func": "decorators.py:75:<listcomp>",
+      "calls": 374170,
+      "tottime": 0.089,
+      "cumtime": 0.112
+    },
+    {
+      "func": "point.py:88:x",
+      "calls": 36853,
+      "tottime": 0.0101,
+      "cumtime": 0.1023
+    },
+    {
+      "func": "point.py:93:y",
+      "calls": 36853,
+      "tottime": 0.0094,
+      "cumtime": 0.0986
+    },
+    {
+      "func": "polygon.py:227:__new__",
+      "calls": 3822,
+      "tottime": 0.0035,
+      "cumtime": 0.0953
+    },
+    {
+      "func": "set_operations.py:112:intersection",
+      "calls": 7559,
+      "tottime": 0.0897,
+      "cumtime": 0.0897
+    },
+    {
+      "func": "measurement.py:53:distance",
+      "calls": 36562,
+      "tottime": 0.0718,
+      "cumtime": 0.0718
+    },
+    {
+      "func": "polygon.py:61:__new__",
+      "calls": 3822,
+      "tottime": 0.0081,
+      "cumtime": 0.0641
+    },
+    {
+      "func": "predicates.py:844:intersects",
+      "calls": 44121,
+      "tottime": 0.0582,
+      "cumtime": 0.0582
+    },
+    {
+      "func": "base.py:379:centroid",
+      "calls": 17323,
+      "tottime": 0.0043,
+      "cumtime": 0.0557
+    }
+  ]
+}
