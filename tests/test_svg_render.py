@@ -210,7 +210,10 @@ def test_tube111_back_pad_rect_uses_effective_angle():
 
     The file stores each pad's effective board orientation, so the renderer
     must use it directly instead of combining it with the footprint angle
-    (which double-counts and draws the rect unrotated).
+    (which double-counts and draws the rect unrotated). Board geometry is
+    R(-angle) numerically while SVG rotate() is R(+angle), so the file
+    angle is negated for display: 90 -> 270, visually identical for these
+    180-symmetric rects.
     """
     import re
 
@@ -223,8 +226,8 @@ def test_tube111_back_pad_rect_uses_effective_angle():
     )
     assert grp
     # Pad 1 is a 1.05 x 0.8 rect at board (130.63, 94.345); effective
-    # orientation 90 must appear as rotate(90 ...) in the SVG.
-    assert 'rotate(90.000 130.630 94.345)' in grp.group(0)
+    # orientation 90 must appear as rotate(270 ...) in the SVG.
+    assert 'rotate(270.000 130.630 94.345)' in grp.group(0)
 
 
 def test_preview_rotates_square_pads_with_part():
@@ -232,7 +235,11 @@ def test_preview_rotates_square_pads_with_part():
 
     Regression: apply_deltas used to keep pad angles stale, so Step showed
     the courtyard/positions rotated while square pads stayed unrotated.
+    Follow-up: the copper must rotate the SAME way as the pad row — board
+    geometry is R(-angle) while SVG rotate() is R(+angle), so the file
+    angle is negated for display (270 -> 90 idle, 295 -> 65 after da=25).
     """
+    import math
     import re
 
     from kicad_autorouter.board_model import apply_deltas
@@ -254,10 +261,22 @@ def test_preview_rotates_square_pads_with_part():
         rf'<g class="[^"]*" data-fp-uuid="{re.escape(q1.uuid)}".*?</g>',
         accepted, re.DOTALL,
     ).group(0)
-    # 270 + 25 = 295 must appear (not stale 270), identically in both.
-    assert "rotate(295.000" in grp_preview
-    assert "rotate(270.000" not in grp_preview
+    # File 270 + 25 = 295 -> SVG (-295) % 360 = 65 must appear identically
+    # in both (not stale idle-orientation 90).
+    assert "rotate(65.000" in grp_preview
+    assert "rotate(90.000" not in grp_preview
     assert grp_preview == grp_accepted
+    # Rigid body: pad row and copper tilt together (both -25 for da=+25).
+    moved = apply_deltas(m, prop.deltas).by_ref["Q1"]
+    p1o, p2o = q1.pads[0].position, q1.pads[1].position
+    p1n, p2n = moved.pads[0].position, moved.pads[1].position
+    row_da = (
+        math.degrees(math.atan2(p2n.y_mm - p1n.y_mm, p2n.x_mm - p1n.x_mm))
+        - math.degrees(math.atan2(p2o.y_mm - p1o.y_mm, p2o.x_mm - p1o.x_mm))
+    )
+    assert row_da == pytest.approx(-25.0)
+    copper_da = 65.0 - 90.0
+    assert copper_da == pytest.approx(row_da)
 
 
 def _c11_uuid(m):

@@ -182,16 +182,17 @@ def _footprint_pads_svg(
         x, y = _fmt(px), _fmt(py)
         w, h = pad.size_mm
 
-        # Pad angle is used directly: the `.kicad_pcb` file stores each pad's
-        # `(at ...)` angle at its effective board orientation (pcbnew rewrites
-        # pad angles when the footprint rotates — verified 2026-10-08: Q1/R3
-        # on B.Cu store 90 with fp angle 90 and pcbnew reports effective 90;
-        # rotating the footprint to 0 rewrites the pads to 0). Combining it
-        # with fp_angle again would double-count the rotation. (Symmetric
-        # square/circular pads may store a stale 0, e.g. D7, which is
-        # visually identical.)
+        # Pad angle is the file's effective board orientation (pcbnew rewrites
+        # pad angles when the footprint rotates — verified 2026-10-08 — so it
+        # is used directly without combining with fp_angle (that would
+        # double-count). Board geometry rotates by R(-angle) numerically
+        # (`_to_board` uses -angle: local Y-DOWN to board), while SVG
+        # `rotate(a)` applies R(+a) numerically, so the sign must flip or the
+        # copper counter-rotates against its own pad row (Q1 DCCF: centres
+        # orbit R(-da) while rects tilted R(+da) — 50 deg off for da=25).
+        # Normalized to [0, 360) to match the file convention.
         # `flip`/`fp_angle_deg` are retained in the signature for callers.
-        angle = pad.angle_deg
+        angle = (-pad.angle_deg) % 360.0 if pad.angle_deg else 0.0
         rot = f' transform="rotate({_fmt(angle)} {x} {y})"' if angle else ""
         if pad.shape == "circle":
             out.append(
@@ -316,21 +317,24 @@ def _ghost_footprints_svg(
             px, py = pad.position.x_mm, pad.position.y_mm
             x, y = _fmt(px), _fmt(py)
             w, h = pad.size_mm
-            # Pad angle used directly (same semantics as real footprints:
-            # file stores the effective board orientation).
-            angle = pad.angle_deg
+            # Pad angle: same negated convention as real footprints (file
+            # stores effective board orientation; SVG rotate is R(+a) while
+            # board geometry is R(-a)). Ghost rects are 0.7-scale and stay
+            # centred on the pad position.
+            angle = (-pad.angle_deg) % 360.0 if pad.angle_deg else 0.0
             rot = f' transform="rotate({_fmt(angle)} {x} {y})"' if angle else ""
             if pad.shape == "circle":
                 r = w / 2.0
                 out.append(
                     f'<circle cx="{x}" cy="{y}" r="{_fmt(r * 0.7)}" '
                     f'fill="{GHOST_FOOTPRINT}" fill-opacity="0.4" '
-                    f'stroke="{GHOST_FOOTPRINT}" stroke-width="0.1"{rot}/>'
+                    f'stroke="{GHOST_FOOTPRINT}" stroke-width="0.1"/>'
                 )
             else:
+                gw, gh = w * 0.7, h * 0.7
                 out.append(
-                    f'<rect x="{_fmt(px - w / 2.0)}" y="{_fmt(py - h / 2.0)}" '
-                    f'width="{_fmt(w * 0.7)}" height="{_fmt(h * 0.7)}" '
+                    f'<rect x="{_fmt(px - gw / 2.0)}" y="{_fmt(py - gh / 2.0)}" '
+                    f'width="{_fmt(gw)}" height="{_fmt(gh)}" '
                     f'fill="{GHOST_FOOTPRINT}" fill-opacity="0.4" '
                     f'stroke="{GHOST_FOOTPRINT}" stroke-width="0.1"{rot}/>'
                 )
