@@ -767,7 +767,6 @@ class Handler(BaseHTTPRequestHandler):
             
             # Create a minimal proposal for forces display if needed
             if forces_on and proposal is None:
-                from kicad_autorouter.placement import PlacementProposal
                 proposal = PlacementProposal(
                     deltas={},
                     iterations=0,
