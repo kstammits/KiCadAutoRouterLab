@@ -329,6 +329,16 @@ def route_nets(
     # prior unrelated routes (still present as tracks in the model) blocked.
     # Rebuilding is cheap (~0.1s on DCCF); reusing a stale grid is what made
     # re-routes search around their own old copper until they hung.
+    #
+    # KNOWN TRADEOFF (2026-10-09): a rebuilt grid marks pre-existing tracks
+    # centerline-only (obstacles._mark_track has no width inflation), while
+    # in-batch _apply_route_to_grid reserves the full emitted-width
+    # corridor. So one-net-at-a-time callers (the chunked UI) let later nets
+    # run slightly tighter to earlier copper than a single batched call
+    # would (measured ~5% fewer tracks on 3 DCCF nets; routed/failed sets
+    # identical). Deliberately left as-is: making rebuilds width-aware is a
+    # broader behavior change that belongs with the GND-continuity work
+    # (see TODO.md). Revisit if DRC ever flags chunked-vs-batched adjacency.
     if cost_grid is None or cost_grid.shape != (
         len(routing_grid.layers), routing_grid.height_cells, routing_grid.width_cells
     ):

@@ -83,9 +83,26 @@ Plus this session: move-preservation fix (`apply_deltas`/`commit_placement` via 
 
 ### Routing Integration
 - [x] "Route" button in UI (done: Route Selected / Route All in routing panel)
-- [x] Show routing progress (done: loading spinner on buttons)
+- [x] Show routing progress (done 2026-10-08: loading spinner; upgraded 2026-10-09 to per-net chunked loop — see below)
 - [x] DRC violations overlay (done 2026-10-08: Run button + toggle auto-run + svg overlay)
 - [ ] Writeback/download with routed tracks
+
+### Chunked Routing UI (done 2026-10-09)
+- UI routes ONE NET PER REQUEST (`routeSelectedNets` loop in `ui/index.html`) instead of a single batch POST: per-net progress bar (`#route-progress`), Cancel button (`#route-cancel-btn`, cooperative — stops after the in-flight net, routed nets kept), pre-flight pair-search estimate (`estimateRoutingWork`, `k*(k-1)/2` per net), per-net failure continuation (HTTP 400 aborts the batch — bad params would fail every net; other failures continue), incremental SVG refresh per net.
+- DECISION: chunking over a server job model (background thread + poll + cancel) — chunking needs no server threading changes because each one-net call rebuilds grids from the current model, which already holds prior nets' copper. Server job model deferred until per-pair progress proves necessary.
+- Equivalence: `tests/test_routing_chunked.py` — chunked sequential == batched (routed/failed sets identical; track totals within ±20% — see known rebuild tradeoff noted in `pipeline.route_nets` step 2 comment).
+- KNOWN FOLLOW-UP: width-aware rebuilds — `obstacles._mark_track` marks centerline-only while `_apply_route_to_grid` reserves full corridor; chunked later nets run slightly tighter. Left as-is; belongs with GND-continuity work below.
+
+### Routing Benchmarks (agreed 2026-10-09, not yet implemented)
+- [ ] `scripts/benchmark_routing.py`: DCCF ladder (2/3/8-terminal nets + synthetic 20-terminal net), per-stage wall times + cProfile top-20 for one A*; anchors: occupancy ≈0.1s, 3-pad route ≈1s.
+- [ ] Trivial cleanup only if profiling confirms free: drop redundant `cost_matrix` in `SingleNetRouter.route()` (byte-identical to `dist_matrix`), hoist `heapq` import.
+- [ ] Structural scaling (heuristic-MST → A* on tree edges only) deferred; GND excluded from trace-speed investment (copper pours later).
+
+### GND Continuity / Copper Pours (agreed 2026-10-09, phased)
+- Current state: `Zone` parsed + drawn, but routing treats pours as pure `BLOCKED` obstacles (`obstacles._mark_zone`); `route_ground_stitching` only handles ≥2 same-layer zones via centroid routing — real fragmentation (signal tracks carving one pour into islands) is undetected.
+- [ ] Phase 1 — fragmentation diagnostics: `routing/pour.py` `gnd_islands()` (connected components of GND copper per layer: zones + pads + tracks on the grid), `GET /api/routing/debug/gnd-islands`, UI overlay. No routing changes.
+- [ ] Phase 2 — stitching-via suggestions (preview list, accept per-via/all; no auto track-moving).
+- [ ] Phase 3 — auto-stitch + continuity-aware routing (research-grade; settle GND-as-traces vs pours first).
 
 ### Performance
 - [ ] Virtual scrolling for large footprint lists (500+)

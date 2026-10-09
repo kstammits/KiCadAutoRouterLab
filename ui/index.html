@@ -365,6 +365,8 @@
             <span class="num">Route</span>
             <button id="route-selected-btn" class="primary" title="Route selected nets">Route Selected Nets</button>
             <button id="route-all-btn" title="Route all unprotected nets">Route All Unprotected</button>
+            <button id="route-cancel-btn" hidden title="Stop after the current net (already-routed nets are kept)">Cancel</button>
+            <progress id="route-progress" hidden max="1" value="0" style="width:8rem;" title="Per-net routing progress"></progress>
             <span id="route-diag"></span>
           </div>
           <div class="params" id="routing-params-grid"></div>
@@ -1837,12 +1839,16 @@ function netColor(net, idx) {
 }
 
 // Fetch all nets from server and render net table
+// lastNetsByName caches the most recent /api/nets rows (pad counts) so the
+// routing pre-flight estimate can size the work without an extra fetch.
+let lastNetsByName = new Map();
 async function fetchNets() {
   if (!lastVersion) return;
   try {
     const res = await fetch("/api/nets");
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
+    lastNetsByName = new Map((data.nets || []).map(n => [n.name, n]));
     renderNetsTable(data.nets || []);
   } catch (err) {
     console.error("Failed to fetch nets:", err);
@@ -2053,73 +2059,150 @@ async function saveRoutingParams() {
   }
 }
 
-// Route selected nets
+// Route selected nets — ONE NET PER REQUEST ("chunked").
+//
+// DESIGN DECISION (2026-10-09): /api/routing/run is synchronous and takes
+// 1s–30min, during which the UI showed only a static "Routing...". The
+// alternatives were (a) chunk here in the UI, or (b) a server job model
+// (background thread + poll + cancel endpoints). Chunking was chosen: each
+// one-net call rebuilds grids from the current model, which already holds
+// prior nets' copper, so cross-net blocking is preserved with NO server
+// threading changes (equivalence covered by tests/test_routing_chunked.py).
+// Tradeoffs accepted: N HTTP round trips + N grid rebuilds (~0.1s each),
+// negligible next to A* time; cancel keeps already-routed nets (no
+// rollback — surfaced in the summary line); per-net failures don't abort
+// the batch, except HTTP 400 (bad params, e.g. oversize grid) which would
+// fail every net identically.
+let routeCancelRequested = false;
+
+// Pre-flight cost estimate: pairwise A* searches per net = k*(k-1)/2 over
+// pad counts (upper bound on terminals). Shown before the run so a 66-pad
+// GND (~2k searches, minutes) never surprises.
+function estimateRoutingWork(netNames) {
+  let pairs = 0;
+  let worst = { net: null, pairs: 0 };
+  for (const name of netNames) {
+    const row = lastNetsByName.get(name);
+    const k = row?.pad_count ?? 2;
+    const p = k * (k - 1) / 2;
+    pairs += p;
+    if (p > worst.pairs) worst = { net: name, pairs: p };
+  }
+  return { pairs, worst };
+}
+
 async function routeSelectedNets() {
   if (selectedNets.size === 0) return;
   const diag = document.getElementById("route-diag");
   const routeBtn = document.getElementById("route-selected-btn");
   const routeAllBtn = document.getElementById("route-all-btn");
-  
+  const cancelBtn = document.getElementById("route-cancel-btn");
+  const progress = document.getElementById("route-progress");
+
+  const nets = Array.from(selectedNets);
+  const params = readRoutingParams();
+  const est = estimateRoutingWork(nets);
+  const estNote = `~${est.pairs} pair-searches across ${nets.length} net${nets.length > 1 ? "s" : ""}` +
+    (est.worst.pairs > 100 ? ` — worst: ${est.worst.net} (~${est.worst.pairs}; expect minutes)` : "");
+
   routeBtn.disabled = true;
   routeAllBtn.disabled = true;
   routeBtn.classList.add("loading");
   routeAllBtn.classList.add("loading");
-  diag.textContent = "Routing...";
-  
-  try {
-    const params = readRoutingParams();
-    // Bound the wait: the server has no per-request cancel, so abort the
-    // fetch client-side rather than spinning "Routing..." forever on a hard
-    // net. The server-side A* expansion cap + grid-size guard should trigger
-    // first; this is the backstop.
+  cancelBtn.hidden = false;
+  progress.hidden = false;
+  progress.value = 0;
+  routeCancelRequested = false;
+
+  const totals = { tracks: 0, vias: 0, routed: 0, failed: 0 };
+  const failures = [];
+  let doneCount = 0;
+  let lastBoardVersion = lastVersion;
+  const t0 = performance.now();
+  const elapsed = () => `${Math.round((performance.now() - t0) / 1000)}s`;
+
+  for (let i = 0; i < nets.length; i++) {
+    if (routeCancelRequested) break;
+    const net = nets[i];
+    diag.textContent = `net ${i + 1}/${nets.length} (${net}) — ${elapsed()} — ${estNote}`;
+    progress.value = i / nets.length;
+
+    // Per-request backstop: the server has no cancel, so abort the fetch
+    // client-side rather than spinning forever on a hard net. The failed
+    // net is recorded and the batch continues with the next net.
     const ctrl = new AbortController();
     const timeoutMs = 150000;
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-    let res;
     try {
-      res = await fetch("/api/routing/run", {
+      const res = await fetch("/api/routing/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          net_names: Array.from(selectedNets),
-          params
-        }),
+        body: JSON.stringify({ net_names: [net], params }),
         signal: ctrl.signal,
       });
-    } catch (fetchErr) {
-      if (fetchErr?.name === "AbortError") {
-        throw new Error(`timed out after ${timeoutMs / 1000}s — try a coarser grid (0.1mm) or fewer nets at once`);
+      if (!res.ok) {
+        const msg = await res.text();
+        if (res.status === 400) {
+          // Bad params (e.g. oversize grid): every remaining net would fail
+          // the same way — abort the whole batch, keep what's routed.
+          failures.push(`${net}: ${msg}`);
+          totals.failed += nets.length - i;
+          doneCount = nets.length;
+          diag.textContent = `aborted: ${msg} — kept ${totals.routed}/${nets.length} nets`;
+          break;
+        }
+        throw new Error(msg);
       }
-      throw fetchErr;
+      const r = await res.json();
+      totals.tracks += r.tracks_added || 0;
+      totals.vias += r.vias_added || 0;
+      totals.routed += r.nets_routed || 0;
+      totals.failed += r.nets_failed || 0;
+      if (r.debug) showCostGridDebug(r.debug);
+      // Incremental refresh: show each net's copper as it lands.
+      if (r.version) {
+        lastBoardVersion = r.version;
+        lastVersion = r.version;
+        await fetchAndInjectSVG(r.version);
+      }
+    } catch (err) {
+      const why = err?.name === "AbortError" ? `timed out after ${timeoutMs / 1000}s` : err.message;
+      failures.push(`${net}: ${why}`);
+      totals.failed += 1;
     } finally {
       clearTimeout(timer);
+      doneCount = i + 1;
+      progress.value = doneCount / nets.length;
     }
-    if (!res.ok) throw new Error(await res.text());
-    const r = await res.json();
-    diag.textContent = `v${r.version} — ${r.tracks_added} tracks, ${r.vias_added} vias, ${r.nets_routed} routed, ${r.nets_failed} failed`;
-    // Server bumps the board version and stores the new copper in STATE.model;
-    // refresh the SVG immediately (poll would also pick it up within ~2s).
-    // NOTE: the server does not return pcb_tree, so gate on version instead.
-    if (r.version) {
-      lastVersion = r.version;
-      await fetchAndInjectSVG(r.version);
-    }
-    // Handle debug response
-    if (r.debug) {
-      showCostGridDebug(r.debug);
-    }
-    // Re-fetch nets to update track/via counts
-    await fetchNets();
-  } catch (err) {
-    diag.textContent = `routing failed: ${err.message}`;
-  } finally {
-    routeBtn.disabled = false;
-    routeAllBtn.disabled = false;
-    routeBtn.classList.remove("loading");
-    routeAllBtn.classList.remove("loading");
-    updateNetSelectionUI();
   }
+
+  // Re-fetch nets to update track/via counts.
+  await fetchNets();
+
+  const kept = `v${lastBoardVersion} — ${totals.tracks} tracks, ${totals.vias} vias, ` +
+    `${totals.routed} routed, ${totals.failed} failed (${elapsed()})`;
+  if (routeCancelRequested) {
+    diag.textContent = `cancelled after ${doneCount}/${nets.length} nets — kept ${totals.routed} — ${kept}`;
+  } else if (failures.length) {
+    diag.textContent = `${kept} — failures: ${failures.join("; ")}`;
+  } else {
+    diag.textContent = kept;
+  }
+
+  routeBtn.disabled = false;
+  routeAllBtn.disabled = false;
+  routeBtn.classList.remove("loading");
+  routeAllBtn.classList.remove("loading");
+  cancelBtn.hidden = true;
+  progress.hidden = true;
+  updateNetSelectionUI();
 }
+
+document.getElementById("route-cancel-btn").addEventListener("click", () => {
+  // Cooperative cancel: the in-flight request finishes (the server can't be
+  // interrupted mid-search), then the loop stops. Routed nets are kept.
+  routeCancelRequested = true;
+});
 
 // Route all unprotected nets
 async function routeAllNets() {
