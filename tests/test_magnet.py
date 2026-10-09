@@ -28,7 +28,12 @@ from kicad_autorouter.board_model import (
     apply_deltas,
     commit_placement,
 )
-from kicad_autorouter.placement import PlacementParams, run_placement
+from kicad_autorouter.placement import (
+    PlacementParams,
+    _collect_pad_nodes,
+    _footprint_courtyard_polygon,
+    run_placement,
+)
 from kicad_autorouter.svg_render import render_board_svg
 
 
@@ -135,19 +140,15 @@ def _random_position(rng: random.Random) -> Tuple[float, float]:
     )
 
 
-def _get_rng() -> random.Random:
-    """Get RNG for test fixture. Uses fixed seed for CI, true random if env var set."""
-    if os.environ.get("MAGNET_TRUE_RANDOM") == "1":
-        return random.Random()
-    return random.Random(42)
-
-
 # ---------------------------------------------------------------------------
 # Fixture: builds the magnet test board programmatically
 # ---------------------------------------------------------------------------
-@pytest.fixture(scope="module")
-def magnet_model() -> BoardModel:
-    """Build board with minimal fixture + 7 magnet test resistors."""
+def _build_magnet_board(seed) -> BoardModel:
+    """Build the 7-resistor scatter board with the given RNG seed.
+
+    Factored out of the fixture so sweep tests can try several layouts:
+    the heuristics must work generally, not just on seed 42.
+    """
     FIXTURES = Path("tests/fixtures")
     minimal_model = __import__("kicad_autorouter.board_model", fromlist=["board_model"]).board_model(
         parse_file(FIXTURES / "minimal.kicad_pcb")
@@ -157,7 +158,7 @@ def magnet_model() -> BoardModel:
         replace(fp, locked=True) for fp in minimal_model.footprints
     )
 
-    rng = _get_rng()
+    rng = random.Random(seed) if seed is not None else random.Random()
 
     resistor_specs = [
         ("R1", "mag-r1-uuid-0001", "NET_A", "NET_D"),
@@ -204,6 +205,14 @@ def magnet_model() -> BoardModel:
         version=minimal_model.version,
         version_warning=minimal_model.version_warning,
     )
+
+
+@pytest.fixture(scope="module")
+def magnet_model() -> BoardModel:
+    """Build board with minimal fixture + 7 magnet test resistors."""
+    if os.environ.get("MAGNET_TRUE_RANDOM") == "1":
+        return _build_magnet_board(None)
+    return _build_magnet_board(42)
 
 
 # ---------------------------------------------------------------------------
@@ -367,6 +376,147 @@ class TestNetMagnet:
         print(f"SVG: {svg_path}")
 
         assert svg_path.exists() and svg_path.stat().st_size > 1000
+
+
+HEURISTIC_REFS = ["R1", "R2", "R3", "R4", "R5", "R6", "R7"]
+HEURISTIC_GROUPS = {
+    "A": ["R1", "R2", "R3"],
+    "B": ["R4", "R5"],
+    "C": ["R6", "R7"],
+}
+# Layouts for seed robustness. Fixed seeds keep CI deterministic; the physics
+# must cluster on all of them, not just seed 42. (MAGNET_TRUE_RANDOM=1 on the
+# module fixture remains the manual stress lever, not CI.)
+HEURISTIC_SEEDS = (42, 7, 123)
+
+
+def _final_centroids(model: BoardModel, prop) -> dict:
+    out = {}
+    for ref in HEURISTIC_REFS:
+        fp = model.by_ref[ref]
+        dx, dy, da = prop.deltas.get(fp.uuid, (0.0, 0.0, 0.0))
+        out[ref] = (fp.x_mm + dx, fp.y_mm + dy)
+    return out
+
+
+def _pooled_intra(centroids: dict) -> float:
+    """Mean pairwise distance within groups, pooled over all groups."""
+    ds = []
+    for refs in HEURISTIC_GROUPS.values():
+        ds += [
+            math.hypot(centroids[a][0] - centroids[b][0], centroids[a][1] - centroids[b][1])
+            for i, a in enumerate(refs)
+            for b in refs[i + 1 :]
+        ]
+    return sum(ds) / len(ds)
+
+
+def _final_courtyard_polys(model: BoardModel, prop) -> dict:
+    """Courtyard polygons at final poses via the sim's own geometry.
+
+    Rotations here are large (resistors flip ~180°), so translate-only
+    courtyard math would be wrong. _footprint_courtyard_polygon on the
+    apply_deltas-moved model derives the pose from moved pads exactly as
+    the simulation does.
+    """
+    moved = apply_deltas(model, prop.deltas)
+    pads, _, uuid_to_idx, _, _ = _collect_pad_nodes(moved)
+    pos = np.array([(p.position.x_mm, p.position.y_mm) for p in pads])
+    polys = {}
+    for ref in HEURISTIC_REFS:
+        fp = moved.by_ref[ref]
+        polys[ref] = _footprint_courtyard_polygon(
+            fp, pad_positions=pos, pad_indices=uuid_to_idx.get(fp.uuid, [])
+        )
+    return polys
+
+
+class TestMagnetHeuristics:
+    """Behavioral bar for the magnet-spring-repulsion heuristics.
+
+    Unlike the golden-trajectory parity test (which pins an implementation),
+    these assert qualitative physics across parameter values and layouts:
+    attraction must pull groups together, repulsion must keep parts separate,
+    results must be deterministic and finite. Thresholds are relational
+    (ordering, ratios vs own start) with wide margins — never exact
+    distances — because the dynamics are layout-sensitive (e.g. seed 7
+    starts half-clustered; ka=20 overdrive jams instead of tightening).
+    """
+
+    def test_attraction_pulls_groups_together(self):
+        """ka=6 tightens each layout vs its own scattered start."""
+        for seed in HEURISTIC_SEEDS:
+            model = _build_magnet_board(seed)
+            before = _pooled_intra(
+                {r: (model.by_ref[r].x_mm, model.by_ref[r].y_mm) for r in HEURISTIC_REFS}
+            )
+            prop = run_placement(model, MAGNET_PARAMS)
+            after = _pooled_intra(_final_centroids(model, prop))
+            assert after <= before * 0.9, (
+                f"seed {seed}: groups did not tighten ({before:.1f} -> {after:.1f}mm)"
+            )
+
+    def test_no_attraction_no_tight_grouping(self):
+        """Control (ka=0): repulsion-only equilibrium stays loose and converges.
+
+        Scoped to the seed-42 layout by design — on other scatters the start
+        may already be grouped. The point is the tuned run must beat THIS
+        layout's control by a wide margin, proving the test measures
+        attraction rather than layout luck.
+        """
+        model = _build_magnet_board(42)
+        params = replace(MAGNET_PARAMS, attraction_ka=0.0)
+        control = run_placement(model, params)
+        tuned = run_placement(model, MAGNET_PARAMS)
+        intra_control = _pooled_intra(_final_centroids(model, control))
+        intra_tuned = _pooled_intra(_final_centroids(model, tuned))
+        assert intra_control > intra_tuned * 1.5, (
+            f"control ({intra_control:.1f}mm) not clearly looser than "
+            f"tuned ({intra_tuned:.1f}mm)"
+        )
+        assert control.iterations < params.max_iterations, (
+            "repulsion-only run should settle to equilibrium, not hit the cap"
+        )
+
+    def test_repulsion_keeps_parts_separate(self):
+        """Final courtyards must not overlap — at default AND high gain.
+
+        This is the assembly/silkscreen-spacing intent: courtyard repulsion's
+        job is separation. Mean-spread ordering is deliberately NOT asserted
+        (measured: high kr can pack parts along edges instead of spreading
+        them — a dynamics quirk, not a separation failure).
+        """
+        for seed in HEURISTIC_SEEDS:
+            model = _build_magnet_board(seed)
+            for kr in (MAGNET_PARAMS.repulsion_kr, 30.0):
+                prop = run_placement(
+                    model, replace(MAGNET_PARAMS, repulsion_kr=kr)
+                )
+                polys = _final_courtyard_polys(model, prop)
+                for i, a in enumerate(HEURISTIC_REFS):
+                    for b in HEURISTIC_REFS[i + 1 :]:
+                        pa, pb = polys[a], polys[b]
+                        area = (
+                            pa.intersection(pb).area
+                            if not pa.is_empty and not pb.is_empty
+                            else 0.0
+                        )
+                        assert area <= 1e-6, (
+                            f"seed {seed} kr={kr}: {a}/{b} overlap "
+                            f"{area:.4f}mm^2"
+                        )
+
+    def test_deterministic_and_finite(self):
+        """Same seed twice → identical deltas; no NaN anywhere."""
+        model = _build_magnet_board(42)
+        first = run_placement(model, MAGNET_PARAMS)
+        second = run_placement(model, MAGNET_PARAMS)
+        assert set(first.deltas) == set(second.deltas)
+        for uuid, delta in first.deltas.items():
+            assert all(math.isfinite(v) for v in delta), uuid
+            assert tuple(delta) == tuple(second.deltas[uuid]), uuid
+        for uuid, force in first.forces.items():
+            assert all(math.isfinite(v) for v in force), uuid
 
 
 @pytest.mark.regression

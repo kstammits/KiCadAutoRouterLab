@@ -1,10 +1,18 @@
 """Parity: courtyard shape-cache + broadphase must not change physics.
 
-The per-iteration courtyard code was restructured for speed (cached local
-shapes, numpy rigid poses, bounding-circle broadphase culling far pairs).
+SCOPE — READ BEFORE EXTENDING: this is a refactor tripwire, NOT a physics
+correctness bar. It pins the implementation against its own past outputs;
+the pre-optimization physics was never independently validated ("golden"
+means historical, not correct). Behavioral correctness lives in
+tests/test_magnet.py::TestMagnetHeuristics (clustering across gains and
+layouts, separation, determinism). If a deliberate physics change moves
+trajectories, update the golden file AND justify the change against the
+magnet behaviors — never regenerate golden from the new code alone to make
+red go green.
+
 Because contact forces are stiff (1/d singularities), even 1-ulp input
 differences compound over dozens of iterations — verified during
-development: an early version with a subtly wrong cull bound diverged by
+development: an early version with a too-tight cull bound diverged by
 millimeters. So this test pins trajectories against golden values captured
 from the pre-optimization code (30 fixed-budget iterations, tight eps so
 the full budget runs).
