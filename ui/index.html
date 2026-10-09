@@ -1681,10 +1681,11 @@ document.getElementById("refresh-forces-btn").addEventListener("click", refreshF
 // (no progress/cancel yet — that needs the server job model, Stage 2), so
 // we show a benchmark-fitted pre-flight estimate + an elapsed ticker + a
 // client-side timeout backstop. Coefficients from
-// scripts/benchmark_placement.py (docs/benchmarks/placement_2026-10-09.json):
-// ms/iter ≈ 3.3e-4*pads^2 + 2.2e-3*fps^2 + 0.94. Order-of-magnitude only —
-// real boards deviate with courtyard complexity — and worst-case (runs often
-// converge early), so the line reads "up to".
+// scripts/benchmark_placement.py (docs/benchmarks/placement_2026-10-09.json,
+// post courtyard-broadphase run): ms/iter ≈ -3.2e-5*pads^2 + 3.0e-3*fps^2
+// + 1.31 (footprint-pair shapely work dominates; pads^2 term ~0).
+// Order-of-magnitude only — real boards deviate with courtyard complexity —
+// and worst-case (runs often converge early), so the line reads "up to".
 function estimatePlacementMs(movableUuids, iters) {
   const isMovable = (fp) => !fp.locked && !fp.pinned && !fp.ghost &&
     (movableUuids === undefined || movableUuids.includes(fp.uuid));
@@ -1693,8 +1694,8 @@ function estimatePlacementMs(movableUuids, iters) {
   // they only add repulsion cost — ignored here (estimate stays conservative
   // in the common no-ghost case).
   const pads = fps.reduce((s, fp) => s + (fp.pad_count ?? 0), 0);
-  const msPerIter = 3.3e-4 * pads * pads + 2.2e-3 * fps.length * fps.length + 0.94;
-  return { ms: msPerIter * iters, msPerIter, fps: fps.length, pads };
+  const msPerIter = -3.2e-5 * pads * pads + 3.0e-3 * fps.length * fps.length + 1.31;
+  return { ms: Math.max(msPerIter, 0.05) * iters, msPerIter, fps: fps.length, pads };
 }
 
 function fmtDuration(ms) {

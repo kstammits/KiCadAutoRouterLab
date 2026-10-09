@@ -16,10 +16,10 @@
       "footprints": 105,
       "pads": 272,
       "fixed_budget_iters": 50,
-      "fixed_s": 2.322,
-      "ms_per_iter": 46.438,
+      "fixed_s": 1.714,
+      "ms_per_iter": 34.29,
       "converged_iters": 1000,
-      "converged_s": 35.039,
+      "converged_s": 28.686,
       "moved": 95
     },
     {
@@ -27,10 +27,10 @@
       "footprints": 8,
       "pads": 32,
       "fixed_budget_iters": 50,
-      "fixed_s": 0.065,
-      "ms_per_iter": 1.303,
+      "fixed_s": 0.058,
+      "ms_per_iter": 1.154,
       "converged_iters": 1000,
-      "converged_s": 1.226,
+      "converged_s": 1.061,
       "moved": 8
     },
     {
@@ -38,10 +38,10 @@
       "footprints": 16,
       "pads": 64,
       "fixed_budget_iters": 50,
-      "fixed_s": 0.174,
-      "ms_per_iter": 3.489,
+      "fixed_s": 0.119,
+      "ms_per_iter": 2.384,
       "converged_iters": 1000,
-      "converged_s": 3.683,
+      "converged_s": 3.018,
       "moved": 16
     },
     {
@@ -49,10 +49,10 @@
       "footprints": 32,
       "pads": 128,
       "fixed_budget_iters": 50,
-      "fixed_s": 0.472,
-      "ms_per_iter": 9.435,
+      "fixed_s": 0.273,
+      "ms_per_iter": 5.455,
       "converged_iters": 1000,
-      "converged_s": 9.469,
+      "converged_s": 5.78,
       "moved": 32
     },
     {
@@ -60,10 +60,10 @@
       "footprints": 64,
       "pads": 256,
       "fixed_budget_iters": 50,
-      "fixed_s": 1.51,
-      "ms_per_iter": 30.194,
+      "fixed_s": 0.598,
+      "ms_per_iter": 11.965,
       "converged_iters": 1000,
-      "converged_s": 33.281,
+      "converged_s": 15.957,
       "moved": 64
     },
     {
@@ -71,141 +71,141 @@
       "footprints": 97,
       "pads": 272,
       "fixed_budget_iters": 50,
-      "fixed_s": 2.517,
-      "ms_per_iter": 50.331,
+      "fixed_s": 1.256,
+      "ms_per_iter": 25.11,
       "converged_iters": 1000,
-      "converged_s": 54.024,
+      "converged_s": 36.296,
       "moved": 87
     }
   ],
   "formula": {
     "ms_per_iter = a*pads^2 + b*fps^2 + c": {
-      "a": 0.00033178634643669415,
-      "b": 0.00218823105433344,
-      "c": 0.9425633883385249
+      "a": -3.164883488439922e-05,
+      "b": 0.003037598479390701,
+      "c": 1.3131158769208247
     },
-    "max_abs_err_ms": 4.2524895666657585
+    "max_abs_err_ms": 2.4423725694205416
   },
   "profile_top": [
     {
-      "func": "placement.py:1134:run_placement",
+      "func": "placement.py:1252:run_placement",
       "calls": 1,
       "tottime": 0.0005,
-      "cumtime": 1.6102
+      "cumtime": 0.8476
     },
     {
-      "func": "placement.py:518:_run_region_simulation",
+      "func": "placement.py:510:_run_region_simulation",
       "calls": 3,
-      "tottime": 0.0089,
-      "cumtime": 1.6092
+      "tottime": 0.0082,
+      "cumtime": 0.8467
     },
     {
-      "func": "placement.py:724:_compute_total_force",
+      "func": "placement.py:798:_compute_total_force",
       "calls": 63,
-      "tottime": 0.131,
-      "cumtime": 1.5884
+      "tottime": 0.1003,
+      "cumtime": 0.8238
     },
     {
       "func": "decorators.py:73:wrapped",
-      "calls": 374170,
-      "tottime": 0.4175,
-      "cumtime": 1.1212
-    },
-    {
-      "func": "base.py:721:is_empty",
-      "calls": 161366,
-      "tottime": 0.0399,
-      "cumtime": 0.4259
-    },
-    {
-      "func": "placement.py:400:_footprint_courtyard_polygon",
-      "calls": 2205,
-      "tottime": 0.0154,
-      "cumtime": 0.198
-    },
-    {
-      "func": "base.py:817:intersects",
-      "calls": 44121,
-      "tottime": 0.0169,
-      "cumtime": 0.1701
+      "calls": 188300,
+      "tottime": 0.2076,
+      "cumtime": 0.5804
     },
     {
       "func": "decorators.py:171:wrapper",
-      "calls": 17408,
-      "tottime": 0.0117,
-      "cumtime": 0.1695
-    },
-    {
-      "func": "base.py:343:distance",
-      "calls": 36562,
-      "tottime": 0.0142,
-      "cumtime": 0.1665
-    },
-    {
-      "func": "predicates.py:181:is_empty",
-      "calls": 161366,
-      "tottime": 0.1417,
-      "cumtime": 0.1417
+      "calls": 14358,
+      "tottime": 0.0094,
+      "cumtime": 0.1405
     },
     {
       "func": "base.py:668:intersection",
       "calls": 7559,
       "tottime": 0.0024,
-      "cumtime": 0.1126
-    },
-    {
-      "func": "decorators.py:75:<listcomp>",
-      "calls": 374170,
-      "tottime": 0.089,
-      "cumtime": 0.112
+      "cumtime": 0.1053
     },
     {
       "func": "point.py:88:x",
       "calls": 36853,
-      "tottime": 0.0101,
-      "cumtime": 0.1023
+      "tottime": 0.0099,
+      "cumtime": 0.0992
     },
     {
       "func": "point.py:93:y",
       "calls": 36853,
-      "tottime": 0.0094,
-      "cumtime": 0.0986
+      "tottime": 0.0092,
+      "cumtime": 0.0961
     },
     {
-      "func": "polygon.py:227:__new__",
-      "calls": 3822,
-      "tottime": 0.0035,
-      "cumtime": 0.0953
+      "func": "base.py:721:is_empty",
+      "calls": 34464,
+      "tottime": 0.0092,
+      "cumtime": 0.091
     },
     {
       "func": "set_operations.py:112:intersection",
       "calls": 7559,
-      "tottime": 0.0897,
-      "cumtime": 0.0897
+      "tottime": 0.0833,
+      "cumtime": 0.0833
     },
     {
-      "func": "measurement.py:53:distance",
-      "calls": 36562,
-      "tottime": 0.0718,
-      "cumtime": 0.0718
-    },
-    {
-      "func": "polygon.py:61:__new__",
-      "calls": 3822,
-      "tottime": 0.0081,
-      "cumtime": 0.0641
-    },
-    {
-      "func": "predicates.py:844:intersects",
-      "calls": 44121,
-      "tottime": 0.0582,
-      "cumtime": 0.0582
+      "func": "base.py:817:intersects",
+      "calls": 17232,
+      "tottime": 0.0068,
+      "cumtime": 0.0671
     },
     {
       "func": "base.py:379:centroid",
       "calls": 17323,
-      "tottime": 0.0043,
-      "cumtime": 0.0557
+      "tottime": 0.0041,
+      "cumtime": 0.0541
+    },
+    {
+      "func": "decorators.py:75:<listcomp>",
+      "calls": 188300,
+      "tottime": 0.0417,
+      "cumtime": 0.0521
+    },
+    {
+      "func": "base.py:338:area",
+      "calls": 17042,
+      "tottime": 0.0054,
+      "cumtime": 0.0484
+    },
+    {
+      "func": "polygon.py:227:__new__",
+      "calls": 2297,
+      "tottime": 0.002,
+      "cumtime": 0.0455
+    },
+    {
+      "func": "base.py:343:distance",
+      "calls": 9673,
+      "tottime": 0.004,
+      "cumtime": 0.0433
+    },
+    {
+      "func": "_geometry.py:273:get_x",
+      "calls": 36853,
+      "tottime": 0.0337,
+      "cumtime": 0.0337
+    },
+    {
+      "func": "_geometry.py:301:get_y",
+      "calls": 36853,
+      "tottime": 0.0323,
+      "cumtime": 0.0323
+    },
+    {
+      "func": "predicates.py:181:is_empty",
+      "calls": 34464,
+      "tottime": 0.0305,
+      "cumtime": 0.0305
+    },
+    {
+      "func": "polygon.py:61:__new__",
+      "calls": 2297,
+      "tottime": 0.0041,
+      "cumtime": 0.0276
     }
   ]
 }

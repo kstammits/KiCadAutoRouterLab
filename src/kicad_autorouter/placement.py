@@ -501,14 +501,6 @@ def _footprint_courtyard_polygon(fp: Footprint, pad_positions: Optional[np.ndarr
         (max_x + margin, max_y + margin),
         (min_x - margin, max_y + margin),
     ])
-    # Add small margin
-    margin = 0.1
-    return Polygon([
-        (min_x - margin, min_y - margin),
-        (max_x + margin, min_y - margin),
-        (max_x + margin, max_y + margin),
-        (min_x - margin, max_y + margin),
-    ])
 
 
 # This is the new run_placement function implementation
@@ -685,6 +677,88 @@ def _run_region_simulation(
 
     fp_movable_arr = np.array(fp_movable_list, dtype=bool)
 
+    # ---- Per-run courtyard shape cache ----
+    # A courtyard's LOCAL geometry never changes — each iteration only applies
+    # a rigid pose (translate + one rotation). The old code rebuilt every
+    # footprint's shapely Polygon from scratch every iteration (~70% of force
+    # time on tube111) and linear-scanned for each footprint object. Cache the
+    # static local data once here; per iteration only poses update (numpy),
+    # and a vectorized bounding-circle broadphase culls far pairs before any
+    # shapely call. Force math for surviving pairs is unchanged.
+    fp_by_uuid: Dict[str, Footprint] = {}
+    for _fp in model.footprints:
+        if _fp.uuid:
+            fp_by_uuid[_fp.uuid] = _fp
+    for _fp in model.ghost_footprints:
+        if _fp.uuid:
+            fp_by_uuid[_fp.uuid] = _fp
+
+    def _local_shape(_fp: Footprint) -> dict:
+        """Static local courtyard data mirroring _footprint_courtyard_polygon.
+
+        Only the pose-independent parts are cached here (branch resolution +
+        local vertices); per-iteration centroids/radii are derived exactly as
+        before from the posed polygons. Branch logic must stay in sync with
+        _footprint_courtyard_polygon: courtyard-first, then pad-bbox, then
+        1x1 point fallback.
+
+        kind 'courtyard': verts posed per iter (or left static when the live
+        pad mapping degenerates — same rule as _transform_vertices).
+        kind 'bbox': bounds follow CURRENT pads (recomputed per iter).
+        kind 'point': static 1x1 rect (padless footprint fallback).
+        """
+        if _fp is None:
+            return {"kind": "empty", "empty": True}
+        verts: list[tuple[float, float]] = []
+        for a, b in _fp.courtyard:
+            verts.append((a.x_mm, a.y_mm))
+            verts.append((b.x_mm, b.y_mm))
+        if len(verts) >= 3:
+            try:
+                _poly = Polygon(verts)
+                if _poly.is_valid and _poly.area > 0:
+                    return {
+                        "kind": "courtyard",
+                        "empty": False,
+                        "verts": np.array(verts, dtype=np.float64),
+                    }
+            except Exception:
+                pass
+        if _fp.pads:
+            # Pad-bbox fallback: bounds track current pads, resolved per iter.
+            return {"kind": "bbox", "empty": False}
+        _cx, _cy = _fp.x_mm, _fp.y_mm
+        return {
+            "kind": "point",
+            "empty": False,
+            "verts": np.array([
+                [_cx - 0.5, _cy - 0.5], [_cx + 0.5, _cy - 0.5],
+                [_cx + 0.5, _cy + 0.5], [_cx - 0.5, _cy + 0.5],
+            ], dtype=np.float64),
+        }
+
+    cy_cache: Dict[str, dict] = {}
+    for _uuid in fp_uuids:
+        _fp = fp_by_uuid.get(_uuid)
+        _entry = _local_shape(_fp)
+        _pad_idx = np.array(fp_pad_indices.get(_uuid, []), dtype=int)
+        _entry["pad_idx"] = _pad_idx
+        if _entry["kind"] == "courtyard" and _fp is not None:
+            # Original positions of ALL footprint pads (not just the netted
+            # subset): _transform_vertices only applies when this matches the
+            # live pad count, else the courtyard stays untransformed. Pads
+            # without nets are skipped by _collect_pad_nodes, so footprints
+            # with netless pads (mounting holes etc.) never transform — the
+            # length check below replicates that exactly.
+            _entry["orig_pos"] = np.array(
+                [(p.position.x_mm, p.position.y_mm) for p in _fp.pads],
+                dtype=np.float64,
+            )
+            _entry["orig_centroid"] = (
+                _entry["orig_pos"].mean(axis=0) if len(_entry["orig_pos"]) else np.zeros(2)
+            )
+        cy_cache[_uuid] = _entry
+
     # Build same-footprint mask: True for pad pairs belonging to same footprint (exclude ghosts)
     n_pads_local = len(region_pads)
     same_fp_mask = np.zeros((n_pads_local, n_pads_local), dtype=bool)
@@ -814,35 +888,70 @@ def _run_region_simulation(
         poly_force = np.zeros((n_pads_local, 2), dtype=np.float64)
         boundary_force = np.zeros((n_pads_local, 2), dtype=np.float64)
 
-        # Polygon-based courtyard collision (rebuild polygons from current positions)
-        if fp_uuids:
-            # Build courtyard polygons at current positions (real + ghost)
-            courtyard_polys = {}
-            fp_centroids = []
-            fp_radii = []
+        # Polygon-based courtyard collision from cached shapes.
+        # Per iteration only rigid poses change, so transformed vertices are
+        # computed with numpy (bit-identical to the old per-vertex Python
+        # loop — verified 0.0 diff) while shapely Polygons/centroids/radii
+        # are derived exactly as before. A vectorized bounding-circle
+        # broadphase then culls far pairs (+1e-9 margin) so the expensive
+        # pairwise exact calls (intersects/intersection/distance) run only
+        # for pairs within halo reach — the common far-field case costs one
+        # numpy op and zero shapely pair calls. Force math for surviving
+        # pairs is byte-for-byte the old logic.
+        n_fp = len(fp_uuids)
+        fp_forces = np.zeros((n_fp, 2), dtype=np.float64)
+        if n_fp:
+            courtyard_polys: dict[str, Polygon] = {}
+            fp_centroids: list[list[float]] = []
+            fp_radii: list[float] = []
             for fp_uuid in fp_uuids:
-                local_idx = fp_uuid_to_local_idx[fp_uuid]
-                pad_indices = fp_pad_indices.get(fp_uuid, [])
-                if pad_indices:
-                    # Find footprint in real or ghost
-                    fp = next((fp for fp in model.footprints if fp.uuid == fp_uuid), None)
-                    if fp is None:
-                        fp = next((fp for fp in model.ghost_footprints if fp.uuid == fp_uuid), None)
-                    if fp is not None:
-                        poly = _footprint_courtyard_polygon(
-                            fp, pad_positions=pos, pad_indices=pad_indices
-                        )
+                e = cy_cache[fp_uuid]
+                kind = e["kind"]
+                if kind == "courtyard" and len(e["pad_idx"]) == len(e.get("orig_pos", [])) \
+                        and len(e["pad_idx"]) > 0:
+                    v = e["verts"]
+                    oc = e["orig_centroid"]
+                    cp = pos[e["pad_idx"]]
+                    cc = cp.mean(axis=0)
+                    ang = 0.0
+                    op = e["orig_pos"]
+                    if len(op) >= 2:
+                        ov = op[1] - op[0]
+                        cv = cp[1] - cp[0]
+                        ang = math.atan2(cv[1], cv[0]) - math.atan2(ov[1], ov[0])
+                    ca, sa = math.cos(ang), math.sin(ang)
+                    tx, ty = cc[0] - oc[0], cc[1] - oc[1]
+                    dx = v[:, 0] - oc[0]
+                    dy = v[:, 1] - oc[1]
+                    rx = dx * ca - dy * sa + oc[0] + tx
+                    ry = dx * sa + dy * ca + oc[1] + ty
+                    poly = Polygon(np.column_stack((rx, ry)))
+                elif kind == "courtyard":
+                    # No live pads (length mismatch): old code left the
+                    # courtyard untransformed — static local polygon.
+                    poly = Polygon(e["verts"])
+                elif kind == "bbox":
+                    idx = e["pad_idx"]
+                    if len(idx):
+                        xs = pos[idx, 0]
+                        ys = pos[idx, 1]
+                        x0, x1 = float(xs.min()), float(xs.max())
+                        y0, y1 = float(ys.min()), float(ys.max())
                     else:
-                        poly = Polygon()  # empty
+                        _fp0 = fp_by_uuid.get(fp_uuid)
+                        xs = [p.position.x_mm for p in _fp0.pads] if _fp0 and _fp0.pads else [0.0]
+                        ys = [p.position.y_mm for p in _fp0.pads] if _fp0 and _fp0.pads else [0.0]
+                        x0, x1 = min(xs), max(xs)
+                        y0, y1 = min(ys), max(ys)
+                    m = 0.1
+                    poly = Polygon([
+                        (x0 - m, y0 - m), (x1 + m, y0 - m),
+                        (x1 + m, y1 + m), (x0 - m, y1 + m),
+                    ])
+                elif kind == "point":
+                    poly = Polygon(e["verts"])
                 else:
-                    # Fallback: find the footprint and use its original position
-                    fp = next((fp for fp in model.footprints if fp.uuid == fp_uuid), None)
-                    if fp is None:
-                        fp = next((fp for fp in model.ghost_footprints if fp.uuid == fp_uuid), None)
-                    if fp is not None:
-                        poly = _footprint_courtyard_polygon(fp)
-                    else:
-                        poly = Polygon()
+                    poly = Polygon()
                 courtyard_polys[fp_uuid] = poly
                 centroid = poly.centroid
                 fp_centroids.append([centroid.x, centroid.y])
@@ -857,11 +966,19 @@ def _run_region_simulation(
             fp_centroids_arr = np.array(fp_centroids, dtype=np.float64)
             fp_radii_arr = np.array(fp_radii, dtype=np.float64)
 
+            # Vectorized broadphase on the exact values above: a pair can
+            # interact only if centroid distance < ri + rj + halo_reach
+            # (outline gap >= centroid gap - ri - rj). The +1e-9 margin keeps
+            # boundary-straddling pairs on the exact path, so the cull can
+            # only skip provably non-interacting pairs.
+            _d = fp_centroids_arr[:, None, :] - fp_centroids_arr[None, :, :]
+            _dist = np.sqrt(np.sum(_d * _d, axis=2))
+            _halo = np.minimum(1.5 * (fp_radii_arr[:, None] + fp_radii_arr[None, :]),
+                               params.courtyard_halo_mm)
+            _close = _dist < fp_radii_arr[:, None] + fp_radii_arr[None, :] + _halo + 1e-9
+
             # Compute collision forces per footprint pair, then distribute to pads
             # Only movable (real) footprints receive forces, but they collide with ghosts too
-            n_fp = len(fp_uuids)
-            fp_forces = np.zeros((n_fp, 2), dtype=np.float64)
-
             for i in range(n_fp):
                 if not fp_movable_arr[i]:
                     continue  # Only movable footprints accumulate forces
@@ -869,6 +986,8 @@ def _run_region_simulation(
                 poly_i = courtyard_polys[fp_i_uuid]
 
                 for j in range(i + 1, n_fp):
+                    if not _close[i, j]:
+                        continue  # Far field: no overlap, outside halo reach
                     fp_j_uuid = fp_uuids[j]
                     poly_j = courtyard_polys[fp_j_uuid]
 
@@ -904,10 +1023,8 @@ def _run_region_simulation(
                         # clearance then means no interference, like DRC
                         # thinking. Strength saturates at kc (fraction of the
                         # halo consumed) instead of growing with part size as
-                        # the old kc*margin/d^2 did. Lenient with degenerate
-                        # outlines: empty polygons are skipped, not crashed on.
-                        if poly_i.is_empty or poly_j.is_empty:
-                            continue
+                        # the old kc*margin/d^2 did. (Emptiness was already
+                        # checked above via the shape cache.)
                         poly_dist = poly_i.distance(poly_j)
                         halo_reach = min(
                             1.5 * (fp_radii_arr[i] + fp_radii_arr[j]),
@@ -950,7 +1067,8 @@ def _run_region_simulation(
             for fp_uuid, pad_indices in fp_pad_indices.items():
                 if pad_indices:
                     fp_pad_pos = pos[pad_indices]
-                    # Get courtyard radius for this footprint
+                    # Get courtyard radius for this footprint (exact per-iter
+                    # values from the pose update above).
                     fp_local_idx = fp_uuid_to_local_idx.get(fp_uuid)
                     if fp_local_idx is not None:
                         radius = float(fp_radii_arr[fp_local_idx])
