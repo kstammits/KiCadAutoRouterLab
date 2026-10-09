@@ -952,6 +952,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps({"ok": True, "nets": nets_data}).encode(), "application/json")
             return
         
+        # GET /api/routing/params
+        if parsed.path == "/api/routing/params":
+            params = load_routing_params()
+            self._send(200, json.dumps({"ok": True, "params": params.to_dict()}).encode(), "application/json")
+            return
+
         # GET /api/routing/debug/cost-grid - return cost grid for visualization
         if parsed.path == "/api/routing/debug/cost-grid":
             model, _, _, _, _, _ = STATE.snapshot
@@ -1359,15 +1365,11 @@ class Handler(BaseHTTPRequestHandler):
             return
         
         # ==================== Routing API ====================
-        
-        # GET /api/routing/params
-        if parsed.path == "/api/routing/params":
-            params = load_routing_params()
-            self._send(200, json.dumps({"ok": True, "params": params.to_dict()}).encode(), "application/json")
-            return
-        
+
         # POST /api/routing/params - save routing params
-        if parsed.path == "/api/routing/params" and self.command == "POST":
+        # (Note: inside do_POST, self.command is always "POST", so no method check needed.
+        # GET /api/routing/params lives in do_GET.)
+        if parsed.path == "/api/routing/params":
             length = int(self.headers.get("Content-Length") or 0)
             body_data = self.rfile.read(length) if length > 0 else b"{}"
             try:
@@ -1412,18 +1414,38 @@ class Handler(BaseHTTPRequestHandler):
                     params=route_params,
                     original_pcb_tree=STATE.pcb_tree,
                 )
+            except ValueError as exc:
+                # Client error (e.g. grid too large for the board): 400 with
+                # an actionable message, not a 500.
+                self._send(400, f"routing rejected: {exc}".encode(), "text/plain")
+                return
             except Exception as exc:
                 import traceback
                 traceback.print_exc()
                 self._send(500, f"routing failed: {exc}".encode(), "text/plain")
                 return
             
-            # Update BoardState with new routing state
+            # Update BoardState with new routing state.
+            # NOTE: /api/board.svg and /api/nets render from STATE.model, so the
+            # model must gain the new copper — updating only pcb_tree leaves the
+            # UI showing zero new tracks. Rebuild the model from the updated tree
+            # (footprints are untouched by routing, so a rebuild is equivalent
+            # plus the new tracks/vias).
             with STATE._lock:
                 STATE.cost_grid = cost_grid
                 STATE.routing_grid = routing_grid
-                STATE.routing_model = model
-                STATE.pcb_tree = result.pcb_tree
+                if result.pcb_tree is not None:
+                    STATE.pcb_tree = result.pcb_tree
+                    try:
+                        STATE.model = board_model(result.pcb_tree)
+                    except Exception:
+                        # Tree writeback succeeded but re-parse failed; keep the
+                        # old model rather than dropping the board.
+                        STATE.routing_model = model
+                    else:
+                        STATE.routing_model = STATE.model
+                else:
+                    STATE.routing_model = model
                 STATE.version += 1
                 version = STATE.version
             

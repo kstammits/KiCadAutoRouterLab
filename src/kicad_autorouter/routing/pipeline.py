@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Optional, Tuple, List, Set, Dict
 
@@ -22,6 +22,7 @@ from . import (
     CostMap,
 )
 from .output import routes_to_tracks_vias, apply_routes_to_tree
+from .smooth import own_net_soft_mask, smooth_grid_path, smoothed_wire_mm
 from .power import identify_power_nets, route_power_rails, route_ground_stitching, route_decap_fanout
 from .grid import RoutingGrid, board_to_grid
 from .obstacles import BLOCKED, build_fanout_cost, build_via_block_mask
@@ -57,6 +58,7 @@ class RoutingParams:
     debug: bool = False               # Enable debug output (cost grid, search frontier)
     net_widths: Dict[str, float] = field(default_factory=dict)  # Explicit per-net trace widths (override)
     heuristic_weight: float = 3.0     # Weighted-A* greediness (lower respects penalties)
+    max_expansions: int = 2_000_000   # A* node-expansion cap per search (fail fast, don't hang)
 
     def to_dict(self) -> dict:
         return {
@@ -74,6 +76,7 @@ class RoutingParams:
             "debug": self.debug,
             "net_widths": dict(self.net_widths),
             "heuristic_weight": self.heuristic_weight,
+            "max_expansions": self.max_expansions,
         }
 
     @classmethod
@@ -83,13 +86,18 @@ class RoutingParams:
             "grid_resolution_mm", "margin_mm", "via_cost_mm", "max_via_count",
             "track_width_mm", "power_width_mm", "clearance_mm", "via_size_mm",
             "via_drill_mm", "max_attempts_per_net", "run_drc", "debug",
-            "net_widths", "heuristic_weight"
+            "net_widths", "heuristic_weight", "max_expansions"
         }
         filtered = {k: v for k, v in d.items() if k in valid_keys}
         return cls(**filtered)
 
 
 _POWER_KEYWORDS = ("vcc", "vdd", "v+", "v-", "pwr", "power", "gnd", "ground")
+
+# Upper bound on total routing cells (all layers) per route_nets call.
+# DCCF at 0.1mm ~= 9.6M cells (routes in ~1s); at 0.05mm ~= 38M cells
+# (multi-minute A* + ~150MB g-score arrays). Fail fast above this.
+MAX_GRID_CELLS_TOTAL = 12_000_000
 
 
 def resolve_track_width(model: BoardModel, params: RoutingParams, net_name: Optional[str]) -> float:
@@ -217,6 +225,38 @@ def _mark_line_blocked(layer_grid: np.ndarray, r1: int, c1: int, r2: int, c2: in
             r += sr
 
 
+def _smooth_result(result, cost_grid, routing_grid, corridor: int, blocked_threshold: int = 100,
+                   pinned=None, soft_mask=None, clearance_radius: int = 0):
+    """String-pull a successful route before corridor reservation.
+
+    Smoothing runs against the pre-route grid (which must NOT yet contain
+    this path's own corridor) so shortcuts are clearance-checked against
+    real obstacles. Returns a result with the smoothed path and recomputed
+    wire length; via nodes/layers and ``pinned`` terminals are preserved
+    by ``smooth_grid_path``.
+
+    The shortcut footprint covers ``max(corridor - 1, clearance_radius)``
+    so smoothed copper keeps clearance to neighboring tracks, and
+    penalized cells (other nets' pad rings, edge keepout) block shortcuts
+    except inside ``soft_mask`` (this net's own pads).
+    """
+    smoothed = smooth_grid_path(
+        result.path,
+        cost_grid,
+        blocked_threshold=blocked_threshold,
+        corridor_radius=max(max(0, corridor - 1), max(0, clearance_radius)),
+        pinned=pinned,
+        soft_mask=soft_mask,
+    )
+    if len(smoothed) == len(result.path):
+        return result
+    return replace(
+        result,
+        path=smoothed,
+        wire_mm=smoothed_wire_mm(smoothed, routing_grid.resolution_mm),
+    )
+
+
 def route_nets(
     model: BoardModel,
     net_names: List[str],
@@ -254,13 +294,48 @@ def route_nets(
         if original_pcb_tree is not None:
             original_pcb_tree = rip_up_nets(original_pcb_tree, set(net_names), protected_nets)
     
-    # 1. Create or reuse grid
+    # 1. Create or reuse grid. A reused grid is only valid when it matches
+    # the requested resolution AND covers the same board area: a resolution
+    # or margin change must rebuild, otherwise the new params are silently
+    # ignored (and stale BLOCKED cells from the previous route persist).
     if routing_grid is None:
         routing_grid = create_grid_from_model(model, params.grid_resolution_mm, params.margin_mm)
-    
-    # 2. Build or reuse occupancy grid
-    if cost_grid is None:
+    else:
+        expected = create_grid_from_model(model, params.grid_resolution_mm, params.margin_mm)
+        if (
+            routing_grid.resolution_mm != params.grid_resolution_mm
+            or routing_grid.width_cells != expected.width_cells
+            or routing_grid.height_cells != expected.height_cells
+            or routing_grid.origin_mm != expected.origin_mm
+        ):
+            routing_grid = expected
+
+    # Guard: fine grids on large boards explode (DCCF at 0.05mm = 38M cells
+    # across 2 layers; each A* also allocates a ~4 byte/cell g-score array).
+    # Fail fast with an actionable message instead of hanging for minutes.
+    total_cells = len(routing_grid.layers) * routing_grid.width_cells * routing_grid.height_cells
+    if total_cells > MAX_GRID_CELLS_TOTAL:
+        raise ValueError(
+            f"routing grid too large: {routing_grid.width_cells}x{routing_grid.height_cells}"
+            f"x{len(routing_grid.layers)} ({total_cells / 1e6:.1f}M cells) at"
+            f" {params.grid_resolution_mm}mm resolution (limit"
+            f" {MAX_GRID_CELLS_TOTAL / 1e6:.0f}M). Use a coarser grid_resolution_mm"
+            f" (e.g. 0.1mm) or a smaller margin_mm."
+        )
+
+    # 2. Build or refresh the occupancy grid from the RIPPED model.
+    # Refresh-in-place when shapes match: drops BLOCKED cells of the nets
+    # being re-routed (they were ripped from the model above) while keeping
+    # prior unrelated routes (still present as tracks in the model) blocked.
+    # Rebuilding is cheap (~0.1s on DCCF); reusing a stale grid is what made
+    # re-routes search around their own old copper until they hung.
+    if cost_grid is None or cost_grid.shape != (
+        len(routing_grid.layers), routing_grid.height_cells, routing_grid.width_cells
+    ):
         cost_grid = build_occupancy_grid(model, routing_grid, default_clearance_mm=params.clearance_mm)
+    else:
+        fresh = build_occupancy_grid(model, routing_grid, default_clearance_mm=params.clearance_mm)
+        cost_grid[:] = fresh
     
     # 3. Create THT via mask for free layer transitions at through-hole pads
     tht_via_mask = _build_tht_via_mask(model, routing_grid)
@@ -279,7 +354,10 @@ def route_nets(
         blocked_threshold=100,
         heuristic_weight=params.heuristic_weight,
     )
-    router = SingleNetRouter(routing_grid, cost_grid, cost_map, tht_via_mask, via_block_mask)
+    router = SingleNetRouter(
+        routing_grid, cost_grid, cost_map, tht_via_mask, via_block_mask,
+        max_expansions=params.max_expansions,
+    )
     
     # 5. Identify net classes
     power_nets, ground_nets, signal_nets = identify_power_nets(model)
@@ -317,10 +395,23 @@ def route_nets(
             track_half_mm=width_mm / 2.0,
         )
         corridor = _width_cells(width_mm, params.grid_resolution_mm)
+        clearance_mm = resolve_clearance(model, params, net_name)
+        clearance_radius = max(0, int(math.ceil(clearance_mm / params.grid_resolution_mm))) \
+            if params.grid_resolution_mm > 0 else 0
+        soft_mask = own_net_soft_mask(
+            model, routing_grid, net_name,
+            clearance_mm=clearance_mm, track_half_mm=width_mm / 2.0,
+        )
         success = False
         while ripup.can_retry(net_name):
             result = router.route(terminals, secondary)
             if result.success:
+                pinned = {(c, r) for c, r, _ in terminals}
+                result = _smooth_result(
+                    result, cost_grid, routing_grid, corridor,
+                    pinned=pinned, soft_mask=soft_mask,
+                    clearance_radius=clearance_radius,
+                )
                 _apply_route_to_grid(result, cost_grid, routing_grid, corridor)
                 ripup.record_success(net_name, result.path)
                 all_results[net_name] = result
@@ -467,12 +558,23 @@ def run_routing(
             track_half_mm=width_mm / 2.0,
         )
         corridor = _width_cells(width_mm, grid_resolution_mm)
+        clearance_radius = max(0, int(math.ceil(0.2 / grid_resolution_mm))) \
+            if grid_resolution_mm > 0 else 0
+        soft_mask = own_net_soft_mask(
+            model, grid, net_name,
+            clearance_mm=0.2, track_half_mm=width_mm / 2.0,
+        )
 
         # Try routing with retries
         success = False
         while ripup.can_retry(net_name):
             result = router.route(terminals, secondary)
             if result.success:
+                pinned = {(c, r) for c, r, _ in terminals}
+                result = _smooth_result(
+                    result, cost_grid, grid, corridor, pinned=pinned,
+                    soft_mask=soft_mask, clearance_radius=clearance_radius,
+                )
                 # Apply to cost grid
                 _apply_route_to_grid(result, cost_grid, grid, corridor)
                 ripup.record_success(net_name, result.path)

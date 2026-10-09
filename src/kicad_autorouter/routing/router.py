@@ -45,6 +45,7 @@ class SingleNetRouter:
         cost_map: Optional[CostMap] = None,
         tht_via_mask: Optional[np.ndarray] = None,
         via_block_mask: Optional[np.ndarray] = None,
+        max_expansions: int = 2_000_000,
     ):
         self.grid = grid
         self.cost_grid = cost_grid
@@ -52,6 +53,9 @@ class SingleNetRouter:
         self.n_layers = len(grid.layers)
         self.H = grid.height_cells
         self.W = grid.width_cells
+        # Safety net: bound A* node expansions per search so a hard/blocked
+        # net fails fast instead of hanging the server thread for minutes.
+        self.max_expansions = max_expansions
         # THT via mask: True at (row, col) where through-hole pads allow free layer transition
         self.tht_via_mask = tht_via_mask if tht_via_mask is not None else np.zeros((self.H, self.W), dtype=bool)
         # Via-block mask: True at (row, col) where vias are forbidden (SMD
@@ -203,8 +207,12 @@ class SingleNetRouter:
         # Parent pointers for path reconstruction
         parent = {}
 
+        expansions = 0
         while open_set:
             f, g, c, r, l, p = heapq.heappop(open_set)
+            expansions += 1
+            if expansions > self.max_expansions:
+                return RouteResult([], 0.0, 0, 0.0, False)
 
             if (c, r, l) == (gc, gr, gl):
                 # Reconstruct path
