@@ -743,6 +743,18 @@ def _run_region_simulation(
         _entry = _local_shape(_fp)
         _pad_idx = np.array(fp_pad_indices.get(_uuid, []), dtype=int)
         _entry["pad_idx"] = _pad_idx
+        # Layer model for courtyard collision (2026-10-09): bodies collide on
+        # their placement side; through-hole leads protrude through the board,
+        # so any pair involving THT pads collides conservatively on both
+        # sides. (Refinement to per-pad layer checks is future work — the
+        # conservative rule is safe for THT-heavy boards like DCCF.) No
+        # same-net exemption: soldering/silkscreen spacing is net-agnostic;
+        # cross-layer electrical nearness keeps working via layer-blind
+        # attraction springs.
+        _entry["layer"] = _fp.layer if _fp is not None else ""
+        _entry["has_tht"] = bool(
+            _fp is not None and any(p.is_through_hole for p in _fp.pads)
+        )
         if _entry["kind"] == "courtyard" and _fp is not None:
             # Original positions of ALL footprint pads (not just the netted
             # subset): _transform_vertices only applies when this matches the
@@ -971,11 +983,22 @@ def _run_region_simulation(
             # (outline gap >= centroid gap - ri - rj). The +1e-9 margin keeps
             # boundary-straddling pairs on the exact path, so the cull can
             # only skip provably non-interacting pairs.
+            # Layer gate (2026-10-09): bodies collide on their placement
+            # side; a pair involving through-hole pads additionally collides
+            # across sides (protruding leads). Cross-layer SMD-SMD pairs skip
+            # exact geometry entirely — this also shrinks pair work on
+            # mixed-side boards like tube111.
+            _lyr = np.array([cy_cache[u].get("layer", "") for u in fp_uuids])
+            _tht = np.array([bool(cy_cache[u].get("has_tht", False)) for u in fp_uuids])
             _d = fp_centroids_arr[:, None, :] - fp_centroids_arr[None, :, :]
             _dist = np.sqrt(np.sum(_d * _d, axis=2))
             _halo = np.minimum(1.5 * (fp_radii_arr[:, None] + fp_radii_arr[None, :]),
                                params.courtyard_halo_mm)
-            _close = _dist < fp_radii_arr[:, None] + fp_radii_arr[None, :] + _halo + 1e-9
+            _near = _dist < fp_radii_arr[:, None] + fp_radii_arr[None, :] + _halo + 1e-9
+            _sides = (
+                (_lyr[:, None] == _lyr[None, :]) | _tht[:, None] | _tht[None, :]
+            )
+            _close = _near & _sides
 
             # Compute collision forces per footprint pair, then distribute to pads
             # Only movable (real) footprints receive forces, but they collide with ghosts too
@@ -987,7 +1010,7 @@ def _run_region_simulation(
 
                 for j in range(i + 1, n_fp):
                     if not _close[i, j]:
-                        continue  # Far field: no overlap, outside halo reach
+                        continue  # Far field, or opposite sides (SMD-SMD)
                     fp_j_uuid = fp_uuids[j]
                     poly_j = courtyard_polys[fp_j_uuid]
 

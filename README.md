@@ -2,6 +2,13 @@
 
 > **Note:** This project is **mostly AI-generated** (Nemotron, Qwen3.8, and Muse Spark 1.3, plus Karl's brain) and has **not been extensively human-tested**. Expect bugs, incomplete features, and potential regressions. Use at your own risk.
 
+## Contributors
+
+- Karl
+- Nemotron
+- Qwen3.8
+- Muse Spark 1.3
+
 Utility that reads KiCad files (`.kicad_pcb`, `.kicad_sch`) and updates PCB trace
 placement. Current phase: **per-pad force-spring placement with organic rotation**
 plus iterative UI for component selection and step-by-step refinement. No routing

@@ -18,6 +18,10 @@ from the pre-optimization code (30 fixed-budget iterations, tight eps so
 the full budget runs).
 
 Golden file: tests/fixtures/placement_parity_golden.json
+NOTE: golden regenerated 2026-10-09 after layer-aware courtyard collision
+landed (same-layer + THT pairs collide; cross-layer SMD-SMD exempt).
+tube111 (~70% backside) trajectories changed as expected; magnet suite
+(all-F.Cu) is unchanged.
 (tube111: multi-region; ghost: ghost branch; dccf: large board).
 Regenerate ONLY by running the capture snippet against code whose physics
 is independently trusted — never from the optimized code itself:
