@@ -157,7 +157,17 @@ def rip_up_nets(
 
 
 def _shift_at(tree: SExpr, fp: SExpr, dx_mm: float = 0.0, dy_mm: float = 0.0, da_deg: float = 0.0) -> SExpr:
-    """Return ``tree`` with footprint node ``fp``'s ``(at ...)`` position and angle shifted."""
+    """Return ``tree`` with footprint node ``fp``'s ``(at ...)`` position and angle shifted.
+
+    Pad ``(at ...)`` angles store the effective board orientation (verified
+    via pcbnew: tube111 Q1 fp 90 stores pads at 90 = GetOrientation 90),
+    so a footprint rotation by ``da_deg`` must add ``da_deg`` to every pad
+    angle too — otherwise the re-parsed pads keep their stale orientation
+    and square-pad previews (``apply_deltas``) diverge from the file.
+    Pad local ``x y`` positions are untouched (they live in the footprint
+    frame and rotate via the footprint angle). A zero delta is still the
+    exact no-op (nothing rewritten).
+    """
     at = fp.find("at")
     if at is None or len(at.args) < 2:
         raise ValueError("footprint has no (at x y ...) position")
@@ -169,8 +179,40 @@ def _shift_at(tree: SExpr, fp: SExpr, dx_mm: float = 0.0, dy_mm: float = 0.0, da
     elif da_deg != 0.0:
         args.append(da_deg)
     new_at = SExpr("at", tuple(args))
-    new_fp = replace(fp, args=tuple(new_at if a is at else a for a in fp.args))
+    new_fp_args = []
+    for child in fp.args:
+        if child is at:
+            new_fp_args.append(new_at)
+        elif da_deg != 0.0 and isinstance(child, SExpr) and child.head == "pad":
+            new_fp_args.append(_shift_pad_angle(child, da_deg))
+        else:
+            new_fp_args.append(child)
+    new_fp = replace(fp, args=tuple(new_fp_args))
     return replace(tree, args=tuple(new_fp if a is fp else a for a in tree.args))
+
+
+def _shift_pad_angle(pad: SExpr, da_deg: float) -> SExpr:
+    """Return ``pad`` with its ``(at x y [angle])`` angle advanced by ``da_deg``.
+
+    Normalizes to [0, 360) to match ``board_model.apply_deltas`` and KiCad's
+    own serialization (which writes normalized absolute orientations).
+    """
+    at = pad.find("at")
+    if at is None or len(at.args) < 2:
+        return pad
+    args = list(at.args)
+    if len(args) >= 3 and isinstance(args[2], (int, float)):
+        new_angle = (float(args[2]) + da_deg) % 360.0
+        if isinstance(args[2], int) and float(new_angle).is_integer():
+            new_angle = int(new_angle)
+        args[2] = new_angle
+    elif da_deg != 0.0:
+        new_angle = da_deg % 360.0
+        args.append(new_angle)
+    else:
+        return pad
+    new_at = SExpr("at", tuple(args))
+    return replace(pad, args=tuple(new_at if a is at else a for a in pad.args))
 
 
 def nudge_footprint(
@@ -178,9 +220,11 @@ def nudge_footprint(
 ) -> SExpr:
     """Return the board tree with footprint `ref` shifted by (dx_mm, dy_mm, da_deg).
 
-    Only the footprint's `(at ...)` position is rewritten; pads, nets, ERC
-    linkage and every other node pass through untouched. A zero delta is the
-    no-op edit used to exercise read/modify/write without moving anything.
+    The footprint's `(at ...)` position is rewritten and each pad's `(at ...)`
+    angle is advanced by `da_deg` (pad angles store the absolute board
+    orientation). Pad local `x y`, nets, ERC linkage and every other node pass
+    through untouched. A zero delta is the no-op edit used to exercise
+    read/modify/write without moving anything.
     """
     return _shift_at(tree, find_footprint(tree, ref), dx_mm, dy_mm, da_deg)
 

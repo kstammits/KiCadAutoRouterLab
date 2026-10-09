@@ -431,3 +431,47 @@ class TestIntegration:
 
         result = run_routing(model, run_drc=False)
         assert isinstance(result, RoutingResult)
+
+
+class TestNoViaInPad:
+    """Routed vias stay out of SMD solder copper (magnet board)."""
+
+    def test_magnet_routing_has_no_via_in_smd_pad(self):
+        """All shared nets route with no via inside SMD pad copper."""
+        import math
+
+        from test_drc_routing import _build_magnet_pcb_tree, MAGNET_PARAMS
+        from kicad_autorouter.placement import run_placement
+        from kicad_autorouter.board_model import board_model
+        from kicad_autorouter.io import nudge_footprint_by_uuid
+
+        pcb_tree, _, model, _ = _build_magnet_pcb_tree()
+        prop = run_placement(model, MAGNET_PARAMS)
+        for uuid_str, (dx, dy, da) in prop.deltas.items():
+            pcb_tree = nudge_footprint_by_uuid(pcb_tree, uuid_str, dx, dy, da)
+        placed = board_model(pcb_tree)
+        magnet_nets = [n for n in placed.nets if n.startswith("NET_")]
+
+        result, _, _ = route_nets(
+            placed, magnet_nets, set(),
+            params=RoutingParams(grid_resolution_mm=0.5),
+            original_pcb_tree=pcb_tree,
+        )
+        # No net may be trapped by the via exclusion.
+        assert result.nets_routed == 3
+        assert result.nets_failed == 0
+
+        routed = board_model(result.pcb_tree)
+        smd_pads = [p for fp in routed.footprints for p in fp.pads
+                    if not p.is_through_hole]
+        assert smd_pads and routed.vias is not None
+        for via in routed.vias:
+            for pad in smd_pads:
+                copper_r = max(float(s) for s in pad.size_mm) / 2.0
+                dist = math.hypot(via.position.x_mm - pad.position.x_mm,
+                                   via.position.y_mm - pad.position.y_mm)
+                assert dist > copper_r, (
+                    f"via-in-pad: {via.net_name} via at "
+                    f"({via.position.x_mm:.2f}, {via.position.y_mm:.2f}) "
+                    f"{dist:.2f}mm from pad copper r={copper_r:.2f}mm"
+                )

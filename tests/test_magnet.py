@@ -38,7 +38,9 @@ from kicad_autorouter.svg_render import render_board_svg
 MAGNET_PARAMS = PlacementParams(
     max_iterations=200,
     repulsion_kr=2.0,
-    attraction_ka=2.0,
+    # Strong attraction shortens same-net routes: measured intra-group
+    # 25.4→20.0mm (group A) and routed copper 138→124mm vs ka=2.0.
+    attraction_ka=6.0,
     ideal_length_mm=2.0,
     courtyard_repulsion_kc=30000.0,
     # 3x2mm parts: 6mm halo preserves this test's original ~5.4mm
@@ -433,7 +435,11 @@ class TestMovePreservation:
             assert tuple(pad_after.layers) == tuple(pad_before.layers)
             assert pad_after.size_mm == pad_before.size_mm
             assert pad_after.shape == pad_before.shape
-            assert pad_after.angle_deg == pytest.approx(pad_before.angle_deg)
+            # Pad absolute orientation rotates rigidly with the footprint
+            # (file stores GetOrientation, not FPRel — verified via pcbnew).
+            assert pad_after.angle_deg == pytest.approx(
+                (pad_before.angle_deg + 10.0) % 360.0
+            )
         assert after.pads[0].is_through_hole
         # Footprint identity preserved.
         assert after.ref == before.ref

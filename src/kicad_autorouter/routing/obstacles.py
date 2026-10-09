@@ -129,6 +129,48 @@ def build_fanout_cost(
     return secondary
 
 
+def build_via_block_mask(
+    model,
+    grid,
+    clearance_mm: float = 0.2,
+    track_half_mm: float = 0.125,
+) -> np.ndarray:
+    """2D boolean mask where vias are forbidden (SMD pad solder/fanout areas).
+
+    Returns ``(H, W)`` with True at cells covered by a non-through-hole
+    pad's copper plus its fanout halo (pad extent + clearance + half track
+    width — the same inner radius as :func:`build_fanout_cost`). This stops
+    the router from diving through a far-side SMD pad with a last-minute
+    via inside the solder area: the escape track must leave the pad on its
+    own layer and only transition outside the fanout zone.
+
+    Through-hole pads are excluded — they stay legal (free) transition
+    sites via the THT mask, which wins ties in the router.
+    """
+    H, W = grid.height_cells, grid.width_cells
+    mask = np.zeros((H, W), dtype=bool)
+    res_mm = grid.resolution_mm
+    if res_mm <= 0:
+        return mask
+
+    for fp in model.footprints:
+        for pad in fp.pads:
+            if pad.is_through_hole:
+                continue
+            col, row = board_to_grid(grid, pad.position.x_mm, pad.position.y_mm)
+            radius = max(1, int(math.ceil(
+                (_pad_half_extent_mm(pad) + clearance_mm + track_half_mm) / res_mm
+            )))
+            r_min, r_max = max(0, row - radius), min(H - 1, row + radius)
+            c_min, c_max = max(0, col - radius), min(W - 1, col + radius)
+            r2 = radius * radius
+            for r in range(r_min, r_max + 1):
+                dr = r - row
+                dc_max = int(math.sqrt(max(0, r2 - dr * dr)))
+                mask[r, max(c_min, col - dc_max):min(c_max, col + dc_max) + 1] = True
+    return mask
+
+
 def _block_courtyard(cost_grid: np.ndarray, grid, fp):
     """Mark footprint courtyard outline as high cost on both layers.
 

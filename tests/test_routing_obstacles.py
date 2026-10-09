@@ -9,6 +9,7 @@ from kicad_autorouter.routing.grid import create_grid_from_model, board_to_grid
 from kicad_autorouter.routing.obstacles import (
     build_occupancy_grid,
     build_fanout_cost,
+    build_via_block_mask,
     FREE, BLOCKED, HIGH_COST, EDGE_KEEPOUT,
     FANOUT_HALO_INNER, FANOUT_HALO_OUTER,
     _block_courtyard,
@@ -484,3 +485,35 @@ class TestDCCFCostGrid:
         assert mask.dtype == bool
         # DCCF has through-hole parts
         assert np.any(mask)
+
+
+class TestViaBlockMask:
+    """No vias inside SMD pad solder/fanout areas."""
+
+    def test_smd_pad_cells_blocked(self, dccf_model):
+        """SMD pad copper + fanout halo cells forbid vias."""
+        from kicad_autorouter.routing.pipeline import _build_tht_via_mask
+
+        grid = create_grid_from_model(dccf_model, resolution_mm=0.5, margin_mm=2.0)
+        mask = build_via_block_mask(dccf_model, grid)
+        assert mask.shape == (grid.height_cells, grid.width_cells)
+        assert mask.dtype == bool
+
+        smd = [(fp, pad) for fp in dccf_model.footprints
+               for pad in fp.pads if not pad.is_through_hole]
+        assert smd, "DCCF should have SMD pads"
+        for fp, pad in smd[:20]:
+            col, row = board_to_grid(grid, pad.position.x_mm, pad.position.y_mm)
+            assert mask[row, col], f"SMD pad {fp.ref}.{pad.number} not via-blocked"
+
+    def test_tht_pads_stay_legal(self, dccf_model):
+        """Through-hole pads are excluded (free via sites, THT mask wins)."""
+        from kicad_autorouter.routing.pipeline import _build_tht_via_mask
+
+        grid = create_grid_from_model(dccf_model, resolution_mm=0.5, margin_mm=2.0)
+        block = build_via_block_mask(dccf_model, grid)
+        tht = _build_tht_via_mask(dccf_model, grid)
+        assert np.any(tht), "DCCF should have THT pads"
+        # No cell may be both blocked and THT-free (router gives THT priority,
+        # but the builders must not disagree).
+        assert not np.any(block & tht)

@@ -227,6 +227,39 @@ def test_tube111_back_pad_rect_uses_effective_angle():
     assert 'rotate(90.000 130.630 94.345)' in grp.group(0)
 
 
+def test_preview_rotates_square_pads_with_part():
+    """DCCF Q1 pad 1 (rect 1.7x1.7, file-angle 270) advances by da in preview.
+
+    Regression: apply_deltas used to keep pad angles stale, so Step showed
+    the courtyard/positions rotated while square pads stayed unrotated.
+    """
+    import re
+
+    from kicad_autorouter.board_model import apply_deltas
+
+    m = board_model(parse_file(FIXTURES / "DCCF.sved.kicad_pcb"))
+    q1 = m.by_ref["Q1"]
+    assert q1.pads[0].angle_deg == 270.0
+    prop = PlacementProposal(
+        deltas={q1.uuid: (1.5, -2.25, 25.0)}, iterations=5,
+        final_max_disp_mm=2.7, elapsed_s=0.0, params={},
+    )
+    preview = render_board_svg(m, proposal=prop)
+    accepted = render_board_svg(apply_deltas(m, prop.deltas))
+    grp_preview = re.search(
+        rf'<g class="[^"]*" data-fp-uuid="{re.escape(q1.uuid)}".*?</g>',
+        preview, re.DOTALL,
+    ).group(0)
+    grp_accepted = re.search(
+        rf'<g class="[^"]*" data-fp-uuid="{re.escape(q1.uuid)}".*?</g>',
+        accepted, re.DOTALL,
+    ).group(0)
+    # 270 + 25 = 295 must appear (not stale 270), identically in both.
+    assert "rotate(295.000" in grp_preview
+    assert "rotate(270.000" not in grp_preview
+    assert grp_preview == grp_accepted
+
+
 def _c11_uuid(m):
     return next(f.uuid for f in m.footprints if f.ref == "C11")
 

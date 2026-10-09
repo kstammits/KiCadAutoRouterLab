@@ -140,6 +140,9 @@ class TestApplyDeltasMatchesNudge:
             for pa, pb in zip(a.pads, b.pads):
                 assert pa.position.x_mm == pytest.approx(pb.position.x_mm)
                 assert pa.position.y_mm == pytest.approx(pb.position.y_mm)
+                # Pad absolute orientation must agree too (footprint rotation
+                # advances both the model and the file pad angles).
+                assert pa.angle_deg == pytest.approx(pb.angle_deg)
             for (a1, a2), (b1, b2) in zip(a.courtyard, b.courtyard):
                 assert a1.x_mm == pytest.approx(b1.x_mm)
                 assert a1.y_mm == pytest.approx(b1.y_mm)

@@ -24,7 +24,7 @@ from . import (
 from .output import routes_to_tracks_vias, apply_routes_to_tree
 from .power import identify_power_nets, route_power_rails, route_ground_stitching, route_decap_fanout
 from .grid import RoutingGrid, board_to_grid
-from .obstacles import BLOCKED, build_fanout_cost
+from .obstacles import BLOCKED, build_fanout_cost, build_via_block_mask
 
 
 @dataclass
@@ -264,7 +264,14 @@ def route_nets(
     
     # 3. Create THT via mask for free layer transitions at through-hole pads
     tht_via_mask = _build_tht_via_mask(model, routing_grid)
-    
+
+    # 3b. Via-block mask: no vias inside SMD pad solder/fanout areas
+    via_block_mask = build_via_block_mask(
+        model, routing_grid,
+        clearance_mm=params.clearance_mm,
+        track_half_mm=params.track_width_mm / 2.0,
+    )
+
     # 4. Create router
     cost_map = CostMap(
         base_cost=1,
@@ -272,7 +279,7 @@ def route_nets(
         blocked_threshold=100,
         heuristic_weight=params.heuristic_weight,
     )
-    router = SingleNetRouter(routing_grid, cost_grid, cost_map, tht_via_mask)
+    router = SingleNetRouter(routing_grid, cost_grid, cost_map, tht_via_mask, via_block_mask)
     
     # 5. Identify net classes
     power_nets, ground_nets, signal_nets = identify_power_nets(model)
@@ -398,6 +405,9 @@ def run_routing(
     # 3. Create THT via mask for free layer transitions at through-hole pads
     tht_via_mask = _build_tht_via_mask(model, grid)
 
+    # 3b. Via-block mask: no vias inside SMD pad solder/fanout areas
+    via_block_mask = build_via_block_mask(model, grid)
+
     # 4. Create router
     cost_map = CostMap(
         base_cost=1,
@@ -405,7 +415,7 @@ def run_routing(
         blocked_threshold=100,
         heuristic_weight=3.0,
     )
-    router = SingleNetRouter(grid, cost_grid, cost_map, tht_via_mask)
+    router = SingleNetRouter(grid, cost_grid, cost_map, tht_via_mask, via_block_mask)
     
     # 4. Identify net classes
     power_nets, ground_nets, signal_nets = identify_power_nets(model)

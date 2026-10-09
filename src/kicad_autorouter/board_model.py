@@ -46,7 +46,11 @@ class Pad:
 
     ``net_name`` is None for unconnected pads (e.g. mounting holes).
     ``size_mm`` is the pad's (width, height); ``shape`` is the KiCad shape
-    symbol (circle/rect/...); ``angle_deg`` is the pad's local rotation.
+    symbol (circle/rect/...); ``angle_deg`` is the pad's effective board
+    orientation in degrees (absolute, as stored in the file's ``(at ...)``;
+    verified via pcbnew: tube111 Q1 fp 90 stores pads at 90 = GetOrientation
+    90, FPRel 0 — i.e. NOT footprint-relative). It rotates rigidly with the
+    footprint (see ``apply_deltas``).
     ``pad_type`` is the KiCad pad type (thru_hole, np_thru_hole, smd).
     ``drill_mm`` is the drill diameter (0 for SMD).
     ``layers`` is the tuple of layer names this pad exists on.
@@ -1006,8 +1010,13 @@ def apply_deltas(
 
         new_pose = replace(fp, x_mm=new_x, y_mm=new_y, angle_deg=new_angle)
 
-        # Recompute pad positions from new footprint pose, preserving
-        # all other pad properties (pad_type, drill, layers, ...).
+        # Recompute pad positions from new footprint pose. Pad angles in
+        # the file store the effective board orientation (verified via
+        # pcbnew: tube111 Q1 fp 90 has pads file-angle 90 = GetOrientation
+        # 90, FPRel 0), so they rotate rigidly with the footprint: the
+        # footprint-relative orientation is preserved, the absolute angle
+        # gains da. Positions use the local-frame round trip; angles just
+        # add (normalized to [0, 360) to match KiCad's serialization).
         new_pads = tuple(
             replace(
                 pad,
@@ -1016,6 +1025,7 @@ def apply_deltas(
                     # Convert board pad position to local coordinates using old pose
                     *_to_local_point(pad.position, fp),
                 ),
+                angle_deg=(pad.angle_deg + da) % 360.0 if da != 0.0 else pad.angle_deg,
             )
             for pad in fp.pads
         )

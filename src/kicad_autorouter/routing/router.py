@@ -44,6 +44,7 @@ class SingleNetRouter:
         cost_grid: np.ndarray,
         cost_map: Optional[CostMap] = None,
         tht_via_mask: Optional[np.ndarray] = None,
+        via_block_mask: Optional[np.ndarray] = None,
     ):
         self.grid = grid
         self.cost_grid = cost_grid
@@ -53,6 +54,9 @@ class SingleNetRouter:
         self.W = grid.width_cells
         # THT via mask: True at (row, col) where through-hole pads allow free layer transition
         self.tht_via_mask = tht_via_mask if tht_via_mask is not None else np.zeros((self.H, self.W), dtype=bool)
+        # Via-block mask: True at (row, col) where vias are forbidden (SMD
+        # pad solder/fanout areas). THT-free transitions win ties.
+        self.via_block_mask = via_block_mask if via_block_mask is not None else np.zeros((self.H, self.W), dtype=bool)
 
     def route(
         self,
@@ -235,9 +239,12 @@ class SingleNetRouter:
                     # Check same cell on other layer
                     if self._is_blocked(r, c, nl):
                         continue
-                    # Via cost: free at THT pad locations
+                    # Via cost: free at THT pad locations; forbidden inside
+                    # SMD pad solder/fanout areas (THT wins ties).
                     if self.tht_via_mask[r, c]:
                         cell_cost = 0
+                    elif self.via_block_mask[r, c]:
+                        continue
                     else:
                         cell_cost = self.cost_map.via_cost
                     cell_cost += self._secondary_at(secondary, r, c, nl)

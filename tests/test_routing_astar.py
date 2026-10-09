@@ -358,6 +358,56 @@ class TestRouterIntegration:
                     return
 
 
+class TestViaBlockMask:
+    """Vias are forbidden inside SMD solder/fanout cells (THT wins ties)."""
+
+    def _free_router(self, block=(), tht=()):
+        from kicad_autorouter.routing.grid import RoutingGrid
+
+        grid = RoutingGrid(
+            resolution_mm=0.1, layers=("F.Cu", "B.Cu"),
+            origin_mm=(0.0, 0.0), width_cells=10, height_cells=10,
+        )
+        cost_grid = np.zeros((2, 10, 10), dtype=np.int16)
+        via_block = np.zeros((10, 10), dtype=bool)
+        for c, r in block:
+            via_block[r, c] = True
+        tht_mask = np.zeros((10, 10), dtype=bool)
+        for c, r in tht:
+            tht_mask[r, c] = True
+        return SingleNetRouter(grid, cost_grid, CostMap(), tht_mask, via_block)
+
+    @staticmethod
+    def _vias_in(path):
+        """Cells (c, r) where the path changes layer."""
+        return {
+            (a[0], a[1]) for a, b in zip(path, path[1:]) if a[2] != b[2]
+        }
+
+    def test_stacked_terminals_detour_around_blocked_cell(self):
+        """Same-cell layer change detours when that cell is via-blocked."""
+        router = self._free_router(block=[(5, 5)])
+        result = router._a_star((5, 5, 0), (5, 5, 1))
+        assert result.success
+        assert (5, 5) not in self._vias_in(result.path)
+        assert len(result.path) > 2  # had to leave and come back
+
+    def test_tht_wins_over_via_block(self):
+        """A THT-free cell stays a legal via site even if block-listed."""
+        router = self._free_router(block=[(5, 5)], tht=[(5, 5)])
+        result = router._a_star((5, 5, 0), (5, 5, 1))
+        assert result.success
+        assert result.path == [(5, 5, 0), (5, 5, 1)]
+
+    def test_cross_layer_route_avoids_blocked_via_cells(self):
+        """Corner-to-corner route never transitions on a blocked cell."""
+        blocked = [(c, r) for c in range(4, 7) for r in range(4, 7)]
+        router = self._free_router(block=blocked)
+        result = router.route([(0, 0, 0), (9, 9, 1)])
+        assert result.success
+        assert not (self._vias_in(result.path) & set(blocked))
+
+
 class TestDCCFRouter:
     """Router tests on DCCF board."""
 
