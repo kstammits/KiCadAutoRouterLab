@@ -3,7 +3,6 @@
 import pytest
 import numpy as np
 
-from kicad_autorouter.board_model import board_model
 from kicad_autorouter.routing.grid import create_grid_from_model, board_to_grid
 from kicad_autorouter.routing.obstacles import build_occupancy_grid, FREE, BLOCKED, HIGH_COST
 from kicad_autorouter.routing.router import (
@@ -11,34 +10,8 @@ from kicad_autorouter.routing.router import (
     CostMap,
     RouteResult,
 )
-from kicad_autorouter.sexpr import parse_file
 
-FIXTURES = __import__("pathlib").Path(__file__).parent / "fixtures"
-MINIMAL_PCB = FIXTURES / "minimal.kicad_pcb"
-DCCF_PCB = FIXTURES / "DCCF.sved.kicad_pcb"
-
-
-@pytest.fixture(scope="module")
-def minimal_model():
-    return board_model(parse_file(MINIMAL_PCB))
-
-
-@pytest.fixture(scope="module")
-def dccf_model():
-    return board_model(parse_file(DCCF_PCB))
-
-
-@pytest.fixture
-def routing_setup(minimal_model):
-    """Create grid, cost_grid, and router for testing."""
-    grid = __import__("kicad_autorouter.routing.grid", fromlist=["create_grid_from_model"]).create_grid_from_model(
-        minimal_model, resolution_mm=0.1, margin_mm=2.0
-    )
-    cost_grid = build_occupancy_grid(minimal_model, grid, default_clearance_mm=0.2)
-    cost_map = CostMap()
-    router = SingleNetRouter(grid, cost_grid, cost_map)
-    return grid, cost_grid, router
-
+from .helpers import vias_in_path
 
 class TestCostMap:
     """Tests for CostMap defaults and behavior."""
@@ -46,7 +19,10 @@ class TestCostMap:
         """CostMap has expected default values."""
         cm = CostMap()
         assert cm.base_cost == 1
-        assert cm.via_cost == 50
+        assert cm.via_cost_mm == 5.0
+        # mm price scales to cells per grid: 5mm @0.1mm = 50 cells
+        assert cm.via_cost_cells(0.1) == 50
+        assert cm.via_cost_cells(0.5) == 10
         assert cm.high_cost_penalty == 20
         assert cm.edge_keepout_penalty == 40
         assert cm.blocked_threshold == 100
@@ -137,7 +113,7 @@ class TestAStar:
                 return
 
     def test_a_star_via_transition(self, routing_setup):
-        """Layer change incurs via_cost."""
+        """Layer change incurs the mm-denominated via price (scaled to cells)."""
         grid, cost_grid, router = routing_setup
         # Find a column where both layers are free at same position
         for r in range(grid.height_cells):
@@ -149,8 +125,9 @@ class TestAStar:
                     assert result.path[-1] == (c, r, 1)
                     # Path should have a layer change
                     assert any(p[2] != result.path[0][2] for p in result.path)
-                    # Cost should include via_cost
-                    assert result.cost >= router.cost_map.via_cost
+                    # Cost should include via_cost (mm scaled to this grid)
+                    assert result.cost >= router._via_cost_cells
+                    assert router._via_cost_cells == int(5.0 / grid.resolution_mm)
                     return
 
     def test_a_star_tht_via_free(self, routing_setup):
@@ -379,10 +356,7 @@ class TestViaBlockMask:
 
     @staticmethod
     def _vias_in(path):
-        """Cells (c, r) where the path changes layer."""
-        return {
-            (a[0], a[1]) for a, b in zip(path, path[1:]) if a[2] != b[2]
-        }
+        return vias_in_path(path)
 
     def test_stacked_terminals_detour_around_blocked_cell(self):
         """Same-cell layer change detours when that cell is via-blocked."""

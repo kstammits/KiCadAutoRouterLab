@@ -672,24 +672,44 @@ def _point_key(p: Point) -> Tuple[float, float]:
     return (round(p.x_mm / tolerance) * tolerance, round(p.y_mm / tolerance) * tolerance)
 
 
+def sample_quadratic_bezier(
+    p0: Tuple[float, float],
+    p1: Tuple[float, float],
+    p2: Tuple[float, float],
+    n: int,
+):
+    """Yield ``n+1`` ``(x, y)`` points along the quadratic Bezier ``B(t)``.
+
+    Shared sampler for ``_approximate_arc_as_segments`` (board outline
+    extraction) and ``obstacles._draw_arc_keepout`` (edge-arc stamping):
+    both treat an arc's start/mid/end as Bezier control points.
+    """
+    for i in range(n + 1):
+        t = i / n
+        u = 1 - t
+        yield (
+            u * u * p0[0] + 2 * u * t * p1[0] + t * t * p2[0],
+            u * u * p0[1] + 2 * u * t * p1[1] + t * t * p2[1],
+        )
+
+
 def _approximate_arc_as_segments(arc: EdgeCutArc, num_segments: int = 8) -> List[Segment]:
     """Approximate an EdgeCutArc as line segments using quadratic Bezier.
 
     Uses the arc's start, mid, end as control points for a quadratic Bezier curve.
     """
-    import math
     start = arc.start
     mid = arc.mid
     end = arc.end
 
     segments = []
     prev = start
-    for i in range(1, num_segments + 1):
-        t = i / num_segments
-        # Quadratic Bezier: B(t) = (1-t)²*P0 + 2(1-t)t*P1 + t²*P2
-        u = 1 - t
-        x = u * u * start.x_mm + 2 * u * t * mid.x_mm + t * t * end.x_mm
-        y = u * u * start.y_mm + 2 * u * t * mid.y_mm + t * t * end.y_mm
+    for x, y in sample_quadratic_bezier(
+        (start.x_mm, start.y_mm), (mid.x_mm, mid.y_mm), (end.x_mm, end.y_mm),
+        num_segments,
+    ):
+        if (x, y) == (prev.x_mm, prev.y_mm):
+            continue  # skip t=0 (== start)
         curr = Point(x, y)
         segments.append((prev, curr))
         prev = curr

@@ -22,6 +22,37 @@ NOTE: golden regenerated 2026-10-09 after layer-aware courtyard collision
 landed (same-layer + THT pairs collide; cross-layer SMD-SMD exempt).
 tube111 (~70% backside) trajectories changed as expected; magnet suite
 (all-F.Cu) is unchanged.
+NOTE: golden regenerated 2026-10-10 after deliberate physics fixes —
+pair-loop ordering (movable-vs-earlier-immobile), bounded boundary push,
+and courtyard-outline via polygonize/unary_union (DCCF 87 closed/0 fallback).
+Justification: tests/test_magnet.py (12 passed) + test_placement_pairs.py
++ test_placement_layers.py (9 passed) all green on the new physics.
+NOTE: forces entries regenerated 2026-10-10 after deliberate REPORTING
+change (no physics change): proposals now report initial (next-step) forces
+F0 evaluated at the committed board instead of the residual F1 at the
+preview end, and the SVG overlay anchors them on the committed positions.
+Deltas in this file are byte-identical before/after (the trajectories loop
+above passed unmodified); only "forces" values changed. Justification:
+test_forces_predict_next_step_not_residual +
+test_single_step_delta_follows_reported_force in
+tests/test_placement.py::TestForceComponents, magnet/layers/pairs suites
+green.
+NOTE: full golden regenerated 2026-10-10 after deliberate dynamics
+retune (placement physics, all justified against the behavioral bar):
+lowered courtyard/boundary defaults (kc 10000->2000, kb 500000->20000;
+magnitudes were discarded by step caps, only overshoot remains),
+max_step 2.0->1.0mm (no more vaulting across the 3mm halo in one step),
+per-iteration rotation cap max_dangle_deg=15 (closed-form Kabsch fit,
+rotate-back-to-cap about the centroid + recenter, so translation is
+bit-identical with the cap on or off; 15deg allows full THT
+reorientation over a run, unlike 3deg which starved magnet clustering),
+and contact-weighted overlap pushes (pads on the contact side take
+more; weights average exactly 1 so totals are conserved; halo nudges
+stay uniform broadcasts). Justification: tests/test_magnet.py (all
+heuristics incl. clustering ratios), tests/test_placement_layers.py,
+tests/test_placement_pairs.py (incl. rotation-cap, weighting-conservation
+and separation pins) all green; cross-scale spot checks (lone-pair
+attraction, DCCF U2 single-step force/delta agreement) sane.
 (tube111: multi-region; ghost: ghost branch; dccf: large board).
 Regenerate ONLY by running the capture snippet against code whose physics
 is independently trusted — never from the optimized code itself:

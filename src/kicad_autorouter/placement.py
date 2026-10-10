@@ -23,8 +23,17 @@ from typing import Dict, List, Optional, Set, Tuple
 
 import numpy as np
 from shapely.geometry import Polygon
+from shapely.ops import polygonize, unary_union
 
-from .board_model import BoardModel, BoardRegion, Footprint, Pad
+from .board_model import BoardModel, BoardRegion, Footprint, Pad, Segment
+
+
+# Nets that connect globally (power distribution), not for placement:
+# attraction springs on these would drag every powered part together.
+_POWER_NET_PATTERNS = frozenset({
+    "GND", "VCC", "VDD", "VSS", "GROUND",
+    "+12V", "+5V", "+3.3V", "+1.8V", "-12V", "-5V",
+})
 
 
 @dataclass(frozen=True)
@@ -38,14 +47,28 @@ class PlacementParams:
     convergence_eps_mm: float = 0.01
     # Rigid constraint stiffness (high to keep footprint pads together)
     rigid_stiffness: float = 5e5
-    # Courtyard collision repulsion force constant
-    courtyard_repulsion_kc: float = 10000.0
+    # Courtyard collision repulsion force constant. Deliberately modest:
+    # the integrator caps every step, so extra magnitude only buys
+    # overshoot oscillation, not faster separation (2026-10-10).
+    courtyard_repulsion_kc: float = 2000.0
     # Near-miss halo: courtyard interference reach past part outlines (mm).
     # Caps the size-scaled 1.5x(radius_i + radius_j) halo so large parts
     # don't push across the board; strength saturates at kc at contact.
     courtyard_halo_mm: float = 3.0
-    # Boundary repulsion force constant (pushes footprints away from region edges)
-    boundary_repulsion_kb: float = 500000.0
+    # Boundary repulsion force constant (pushes footprints away from region
+    # edges). Kept at ~2x kc: decisive at the edge (max 2*kb) without
+    # shoving edge-near parts into their neighbors at 100x the force that
+    # separates them (2026-10-10: kb was 5e5).
+    boundary_repulsion_kb: float = 20000.0
+    # Rotation rate limit (degrees per iteration). Translation caps are
+    # per-pad, which otherwise synthesizes pure spin (one pad takes the
+    # full budget while its mate takes ~0: tens of degrees/iter on 2-4mm
+    # parts, read out later by Kabsch). 15deg still allows a full turn
+    # in 24 iterations -- THT reorientation into aligned wells needs it
+    # (3deg starves magnet clustering) -- while clipping the worst
+    # helicoptering 4x. Translation is bit-identical with the cap on or
+    # off; only spin is bounded.
+    max_dangle_deg: float = 15.0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -69,6 +92,8 @@ def _validate(params: PlacementParams) -> None:
         "rigid_stiffness",
         "courtyard_repulsion_kc",
         "courtyard_halo_mm",
+        "boundary_repulsion_kb",
+        "max_dangle_deg",
     )
     for name in numeric:
         value = getattr(params, name)
@@ -82,6 +107,8 @@ def _validate(params: PlacementParams) -> None:
         "rigid_stiffness",
         "courtyard_repulsion_kc",
         "courtyard_halo_mm",
+        "boundary_repulsion_kb",
+        "max_dangle_deg",
     ):
         if getattr(params, name) <= 0:
             raise ValueError(f"{name} must be > 0")
@@ -175,7 +202,7 @@ def _build_net_edges_pad_level(
     Each pair appears once (i < j). Only connects pads on different footprints.
     """
     if power_net_patterns is None:
-        power_net_patterns = {"GND", "VCC", "VDD", "VSS", "GND", "GROUND", "+12V", "+5V", "+3.3V", "+1.8V", "-12V", "-5V"}
+        power_net_patterns = _POWER_NET_PATTERNS
     
     net_to_pads: Dict[str, List[int]] = {}
     for i, pad in enumerate(pads):
@@ -376,6 +403,22 @@ def _compute_footprint_pose_from_pads(
         return new_x, new_y, angle_deg
 
 
+def _contact_weights(proj: np.ndarray) -> np.ndarray:
+    """Per-pad share of one pair-push, from projection onto push direction.
+
+    ``proj`` is ``((pad - centroid) . u) / radius`` per pad (~[-1, 1];
+    negative on the contact side, which takes more: ``w = 1 - proj``).
+    Weights average exactly 1, so the footprint total is conserved and no
+    force is created or destroyed -- only its moment arm changes. A single
+    pad gets exactly 1.
+    """
+    w = 1.0 - np.asarray(proj, dtype=np.float64)
+    m = float(w.mean()) if len(w) else 1.0
+    if math.isfinite(m) and abs(m) > 1e-9:
+        return w / m
+    return np.ones_like(w)
+
+
 def _board_bbox(model: BoardModel) -> Tuple[float, float, float, float]:
     """Compute board bounding box from Edge.Cuts."""
     if not model.edge_cuts and not model.edge_arcs:
@@ -397,24 +440,119 @@ def _board_bbox(model: BoardModel) -> Tuple[float, float, float, float]:
     return min_x, max_x, min_y, max_y
 
 
+def _boundary_edge_push(dist_mm: float, threshold_mm: float, kb: float) -> float:
+    """Inward push from one region edge: bounded linear falloff.
+
+    Returns 0 past the threshold, rising linearly to 2*kb exactly at the
+    edge; already-outside parts get an ~kb saturating pull back in.
+    Deliberately singularity-free: the old ``kb*2*(t-d)/(d+eps)`` form
+    blew up to ~3.5e7 on a part sitting ~0.03mm inside the region edge
+    (2026-10-10, DCCF R11) and only the per-iteration step cap masked it.
+    """
+    if dist_mm < 0:
+        d = abs(dist_mm)
+        return kb * d / (d + 1e-6)
+    if dist_mm < threshold_mm:
+        return kb * 2.0 * (threshold_mm - dist_mm) / threshold_mm
+    return 0.0
+
+
+def _courtyard_outline_polygon(segments: Tuple[Segment, ...]) -> Optional[Polygon]:
+    """Build the courtyard outline polygon from raw segments, any order.
+
+    ``shapely.ops.polygonize`` assembles closed rings regardless of segment
+    order/orientation. The old approach (concatenating segment endpoints in
+    file order) only forms a valid ring for head-to-tail-ordered files; on
+    DCCF 66 of 87 footprints with courtyards came out self-intersecting
+    (e.g. every RV fader has a reversed top-edge segment, putting a
+    diagonal spike through the ring) and silently degraded to the
+    netted-pad bbox. Returns the largest closed ring by area, or None when
+    nothing closes (open polylines, degenerate input) — callers keep the
+    pad-bbox fallback for that case.
+    """
+    lines: list[tuple[tuple[float, float], tuple[float, float]]] = []
+    for a, b in segments or ():
+        p = (a.x_mm, a.y_mm)
+        q = (b.x_mm, b.y_mm)
+        if math.hypot(q[0] - p[0], q[1] - p[1]) > 1e-9:
+            lines.append((p, q))
+    if not lines:
+        return None
+    try:
+        rings = [r for r in polygonize(lines) if r.is_valid and r.area > 0]
+    except Exception:
+        return None
+    if not rings:
+        return None
+    if len(rings) == 1:
+        return rings[0]
+    # Disjoint loops (body + separate island outlines): the sim poses a
+    # single rigid outline per footprint, so keep the largest. Nested loops
+    # merge first so a drawn hole doesn't split the outline.
+    try:
+        merged = unary_union(rings)
+    except Exception:
+        return max(rings, key=lambda p: p.area)
+    if isinstance(merged, Polygon):
+        return merged if merged.is_valid and merged.area > 0 else None
+    parts = [
+        g for g in getattr(merged, "geoms", [])
+        if isinstance(g, Polygon) and g.is_valid and g.area > 0
+    ]
+    if not parts:
+        return None
+    return max(parts, key=lambda p: p.area)
+
+
+def _rigid_pose_vertices(
+    verts: np.ndarray, orig_pos: np.ndarray, curr_pos: np.ndarray
+) -> np.ndarray:
+    """Pose local courtyard vertices by the rigid motion orig->curr pads.
+
+    Translation plus rotation from the first two pads (same rule the old
+    per-vertex Python loop used; numpy form is bit-identical). Returns
+    verts unchanged when the pad mapping degenerates (empty or length
+    mismatch) — in that case there is no observable motion to pose by.
+    Shared by the sim's per-iteration posing and _transform_vertices so
+    the two entry points cannot drift apart.
+    """
+    v = np.asarray(verts, dtype=np.float64)
+    o = np.asarray(orig_pos, dtype=np.float64)
+    c = np.asarray(curr_pos, dtype=np.float64)
+    if v.size == 0 or o.shape != c.shape or o.shape[0] == 0:
+        return v
+    oc = o.mean(axis=0)
+    cc = c.mean(axis=0)
+    ang = 0.0
+    if o.shape[0] >= 2:
+        ov = o[1] - o[0]
+        cv = c[1] - c[0]
+        ang = math.atan2(cv[1], cv[0]) - math.atan2(ov[1], ov[0])
+    ca, sa = math.cos(ang), math.sin(ang)
+    tx, ty = cc[0] - oc[0], cc[1] - oc[1]
+    dx = v[:, 0] - oc[0]
+    dy = v[:, 1] - oc[1]
+    return np.column_stack((
+        dx * ca - dy * sa + oc[0] + tx,
+        dx * sa + dy * ca + oc[1] + ty,
+    ))
+
+
 def _footprint_courtyard_polygon(fp: Footprint, pad_positions: Optional[np.ndarray] = None, pad_indices: Optional[List[int]] = None) -> Polygon:
     """Build a shapely Polygon from footprint's courtyard segments.
 
     If no courtyard, fall back to pad bounding box.
-    
+
     Args:
         fp: The footprint
         pad_positions: Optional (n_pads, 2) array of current pad positions for this region
         pad_indices: Optional list of local pad indices for this footprint in the region's pad array
     """
     def _get_courtyard_vertices() -> list[tuple[float, float]]:
-        if not fp.courtyard:
+        outline = _courtyard_outline_polygon(fp.courtyard)
+        if outline is None:
             return []
-        vertices = []
-        for a, b in fp.courtyard:
-            vertices.append((a.x_mm, a.y_mm))
-            vertices.append((b.x_mm, b.y_mm))
-        return vertices
+        return list(outline.exterior.coords)
 
     def _get_original_pad_positions() -> np.ndarray:
         """Get original pad positions in board coordinates from footprint."""
@@ -424,38 +562,10 @@ def _footprint_courtyard_polygon(fp: Footprint, pad_positions: Optional[np.ndarr
 
     def _transform_vertices(vertices: list[tuple[float, float]], orig_pos: np.ndarray, curr_pos: np.ndarray) -> list[tuple[float, float]]:
         """Apply rigid transformation from original to current pad positions."""
-        if len(orig_pos) == 0 or len(curr_pos) == 0 or len(orig_pos) != len(curr_pos):
-            return vertices
-        
-        # Compute centroids
-        orig_centroid = orig_pos.mean(axis=0)
-        curr_centroid = curr_pos.mean(axis=0)
-        
-        # Translation
-        tx = curr_centroid[0] - orig_centroid[0]
-        ty = curr_centroid[1] - orig_centroid[1]
-        
-        # Rotation: use first two pads if available
-        angle = 0.0
-        if len(orig_pos) >= 2 and len(curr_pos) >= 2:
-            orig_vec = orig_pos[1] - orig_pos[0]
-            curr_vec = curr_pos[1] - curr_pos[0]
-            orig_angle = math.atan2(orig_vec[1], orig_vec[0])
-            curr_angle = math.atan2(curr_vec[1], curr_vec[0])
-            angle = curr_angle - orig_angle
-        
-        # Apply transformation
-        cos_a = math.cos(angle)
-        sin_a = math.sin(angle)
-        transformed = []
-        for vx, vy in vertices:
-            # Translate to origin, rotate, translate back + translation
-            dx = vx - orig_centroid[0]
-            dy = vy - orig_centroid[1]
-            rx = dx * cos_a - dy * sin_a
-            ry = dx * sin_a + dy * cos_a
-            transformed.append((rx + orig_centroid[0] + tx, ry + orig_centroid[1] + ty))
-        return transformed
+        posed = _rigid_pose_vertices(
+            np.asarray(vertices, dtype=np.float64), orig_pos, curr_pos
+        )
+        return [tuple(map(float, row)) for row in posed.tolist()]
 
     # Try courtyard first
     courtyard_vertices = _get_courtyard_vertices()
@@ -553,9 +663,7 @@ def _run_region_simulation(
         if model.footprint_region.get(fp.uuid) != region_idx:
             fp_movable[fp.uuid] = False
             continue
-        if fp.uuid is None or fp.locked:
-            fp_movable[fp.uuid] = False
-        elif movable_uuids is not None and fp.uuid not in movable_uuids:
+        if movable_uuids is not None and fp.uuid not in movable_uuids:
             fp_movable[fp.uuid] = False
         else:
             fp_movable[fp.uuid] = True
@@ -575,36 +683,13 @@ def _run_region_simulation(
     if not pad_movable.any():
         return {}, {}, 0, {}
 
-    # Power net patterns to exclude from attraction (connect globally, not for placement)
-    power_net_patterns = {"GND", "VCC", "VDD", "VSS", "GND", "GROUND", "+12V", "+5V", "+3.3V", "+1.8V", "-12V", "-5V"}
-
-    # Build net edges for this region
-    pads_with_nets = [(i, pad) for i, pad in enumerate(region_pads) if pad.net_name]
-    net_to_pads: Dict[str, List[int]] = {}
-    for i, pad in pads_with_nets:
-        if pad.net_name and pad.net_name not in power_net_patterns:
-            net_to_pads.setdefault(pad.net_name, []).append(i)
-
-    edges_set = set()
-    for net_name, pad_indices in net_to_pads.items():
-        if len(pad_indices) < 2:
-            continue
-        for i in pad_indices:
-            for j in pad_indices:
-                if i >= j:
-                    continue
-                if region_pad_to_fp_idx[i] != region_pad_to_fp_idx[j]:
-                    edges_set.add((i, j))
-
-    if edges_set:
-        edges = sorted(edges_set)
-        src_idx = np.array([e[0] for e in edges], dtype=int)
-        dst_idx = np.array([e[1] for e in edges], dtype=int)
-        has_net_edges = True
-    else:
-        src_idx = np.array([], dtype=int)
-        dst_idx = np.array([], dtype=int)
-        has_net_edges = False
+    # Net attraction edges for this region. Same builder as the tests pin
+    # (layer-blind by design: cross-layer electrical nearness keeps
+    # working through springs; courtyard collision is what honors layers).
+    src_idx, dst_idx = _build_net_edges_pad_level(
+        region_pads, region_pad_to_fp_idx
+    )
+    has_net_edges = len(src_idx) > 0
 
     # Rigid constraints (MST of pads within each footprint in this region)
     rigid_src, rigid_dst, rigid_rest = _build_rigid_constraints_mst(
@@ -628,8 +713,11 @@ def _run_region_simulation(
     # Temperature schedule (Fruchterman–Reingold)
     temp = max(max_x - min_x, max_y - min_y) / 10.0
     temp_min = params.convergence_eps_mm
-    # Max displacement per iteration to prevent boundary crossing
-    max_step = min(2.0, temp)
+    # Max displacement per iteration: 1mm keeps parts inside the halo
+    # gradient instead of vaulting across it in one step (halo reach is
+    # 3mm; the old 2mm budget crossed most of it at once, landing in
+    # overlap past the restoring slope).
+    max_step = min(1.0, temp)
 
     iteration = 0
 
@@ -643,9 +731,8 @@ def _run_region_simulation(
     for fp in model.footprints:
         if not fp.uuid or model.footprint_region.get(fp.uuid) != region_idx:
             continue
-        local_idx = len(fp_uuids)
         fp_uuids.append(fp.uuid)
-        fp_movable_list.append(fp.uuid in fp_movable and fp_movable.get(fp.uuid, False))
+        fp_movable_list.append(fp_movable.get(fp.uuid, False))
         if fp.uuid in region_fp_uuid_to_pad_indices:
             fp_pad_indices[fp.uuid] = region_fp_uuid_to_pad_indices[fp.uuid]
 
@@ -653,7 +740,6 @@ def _run_region_simulation(
     for fp in model.ghost_footprints:
         if not fp.uuid or model.footprint_region.get(fp.uuid) != region_idx:
             continue
-        local_idx = len(fp_uuids)
         fp_uuids.append(fp.uuid)
         fp_movable_list.append(False)  # Ghosts never movable
         if fp.uuid in region_fp_uuid_to_pad_indices:
@@ -677,6 +763,21 @@ def _run_region_simulation(
 
     fp_movable_arr = np.array(fp_movable_list, dtype=bool)
 
+    # Static pad->footprint index array + per-footprint pad rows. The pad
+    # layout never changes during a run; the loop below only moves values.
+    _pad_fp_idx = np.array(pad_to_fp_local, dtype=int)
+    fp_local_to_rows: List[np.ndarray] = [
+        np.where(_pad_fp_idx == _li)[0] for _li in range(len(fp_uuids))
+    ]
+    # Pads whose displacement the F2 rigid-projection may touch: movable
+    # pads of movable footprints (immobile pads carry zero disp anyway).
+    if len(fp_uuids):
+        _touch_static = pad_movable & (_pad_fp_idx >= 0) & fp_movable_arr[
+            np.clip(_pad_fp_idx, 0, len(fp_uuids) - 1)
+        ]
+    else:
+        _touch_static = np.zeros(len(region_pads), dtype=bool)
+
     # ---- Per-run courtyard shape cache ----
     # A courtyard's LOCAL geometry never changes — each iteration only applies
     # a rigid pose (translate + one rotation). The old code rebuilt every
@@ -698,9 +799,10 @@ def _run_region_simulation(
 
         Only the pose-independent parts are cached here (branch resolution +
         local vertices); per-iteration centroids/radii are derived exactly as
-        before from the posed polygons. Branch logic must stay in sync with
-        _footprint_courtyard_polygon: courtyard-first, then pad-bbox, then
-        1x1 point fallback.
+        before from the posed polygons. Both entry points share
+        _courtyard_outline_polygon, so the branch order (courtyard-first,
+        then pad-bbox, then 1x1 point fallback) stays in sync by
+        construction.
 
         kind 'courtyard': verts posed per iter (or left static when the live
         pad mapping degenerates — same rule as _transform_vertices).
@@ -709,21 +811,13 @@ def _run_region_simulation(
         """
         if _fp is None:
             return {"kind": "empty", "empty": True}
-        verts: list[tuple[float, float]] = []
-        for a, b in _fp.courtyard:
-            verts.append((a.x_mm, a.y_mm))
-            verts.append((b.x_mm, b.y_mm))
-        if len(verts) >= 3:
-            try:
-                _poly = Polygon(verts)
-                if _poly.is_valid and _poly.area > 0:
-                    return {
-                        "kind": "courtyard",
-                        "empty": False,
-                        "verts": np.array(verts, dtype=np.float64),
-                    }
-            except Exception:
-                pass
+        outline = _courtyard_outline_polygon(_fp.courtyard)
+        if outline is not None:
+            return {
+                "kind": "courtyard",
+                "empty": False,
+                "verts": np.array(outline.exterior.coords, dtype=np.float64),
+            }
         if _fp.pads:
             # Pad-bbox fallback: bounds track current pads, resolved per iter.
             return {"kind": "bbox", "empty": False}
@@ -766,18 +860,17 @@ def _run_region_simulation(
                 [(p.position.x_mm, p.position.y_mm) for p in _fp.pads],
                 dtype=np.float64,
             )
-            _entry["orig_centroid"] = (
-                _entry["orig_pos"].mean(axis=0) if len(_entry["orig_pos"]) else np.zeros(2)
-            )
         cy_cache[_uuid] = _entry
 
-    # Build same-footprint mask: True for pad pairs belonging to same footprint (exclude ghosts)
-    n_pads_local = len(region_pads)
-    same_fp_mask = np.zeros((n_pads_local, n_pads_local), dtype=bool)
-    for i in range(n_pads_local):
-        for j in range(n_pads_local):
-            if i != j and pad_to_fp_local[i] >= 0 and pad_to_fp_local[i] == pad_to_fp_local[j]:
-                same_fp_mask[i, j] = True
+    # Same-footprint mask: no repulsion between pads of one footprint.
+    # Vectorized form of the old O(n^2) Python loop (identical result:
+    # same local fp index, non-negative so ghosts never match each other).
+    _fp_col = np.array(pad_to_fp_local, dtype=int)
+    same_fp_mask = (
+        (_fp_col[:, None] == _fp_col[None, :])
+        & (_fp_col[:, None] >= 0)
+        & ~np.eye(len(region_pads), dtype=bool)
+    )
 
     # Build ghost attraction edges: (ghost_anchor, target_pad_indices, ideal_len, ka)
     ghost_attractions = []
@@ -901,17 +994,16 @@ def _run_region_simulation(
         boundary_force = np.zeros((n_pads_local, 2), dtype=np.float64)
 
         # Polygon-based courtyard collision from cached shapes.
-        # Per iteration only rigid poses change, so transformed vertices are
-        # computed with numpy (bit-identical to the old per-vertex Python
-        # loop — verified 0.0 diff) while shapely Polygons/centroids/radii
-        # are derived exactly as before. A vectorized bounding-circle
+        # Per iteration only rigid poses change, posed through the shared
+        # _rigid_pose_vertices kernel (same rule the old per-vertex Python
+        # loop used, so force math is unchanged) while shapely
+        # Polygons/centroids/radii are derived exactly as before. A vectorized bounding-circle
         # broadphase then culls far pairs (+1e-9 margin) so the expensive
         # pairwise exact calls (intersects/intersection/distance) run only
         # for pairs within halo reach — the common far-field case costs one
         # numpy op and zero shapely pair calls. Force math for surviving
         # pairs is byte-for-byte the old logic.
         n_fp = len(fp_uuids)
-        fp_forces = np.zeros((n_fp, 2), dtype=np.float64)
         if n_fp:
             courtyard_polys: dict[str, Polygon] = {}
             fp_centroids: list[list[float]] = []
@@ -921,23 +1013,10 @@ def _run_region_simulation(
                 kind = e["kind"]
                 if kind == "courtyard" and len(e["pad_idx"]) == len(e.get("orig_pos", [])) \
                         and len(e["pad_idx"]) > 0:
-                    v = e["verts"]
-                    oc = e["orig_centroid"]
                     cp = pos[e["pad_idx"]]
-                    cc = cp.mean(axis=0)
-                    ang = 0.0
-                    op = e["orig_pos"]
-                    if len(op) >= 2:
-                        ov = op[1] - op[0]
-                        cv = cp[1] - cp[0]
-                        ang = math.atan2(cv[1], cv[0]) - math.atan2(ov[1], ov[0])
-                    ca, sa = math.cos(ang), math.sin(ang)
-                    tx, ty = cc[0] - oc[0], cc[1] - oc[1]
-                    dx = v[:, 0] - oc[0]
-                    dy = v[:, 1] - oc[1]
-                    rx = dx * ca - dy * sa + oc[0] + tx
-                    ry = dx * sa + dy * ca + oc[1] + ty
-                    poly = Polygon(np.column_stack((rx, ry)))
+                    poly = Polygon(_rigid_pose_vertices(
+                        e["verts"], e["orig_pos"], cp
+                    ))
                 elif kind == "courtyard":
                     # No live pads (length mismatch): old code left the
                     # courtyard untransformed — static local polygon.
@@ -1000,15 +1079,45 @@ def _run_region_simulation(
             )
             _close = _near & _sides
 
-            # Compute collision forces per footprint pair, then distribute to pads
-            # Only movable (real) footprints receive forces, but they collide with ghosts too
+            # Spread one pair-push over a footprint's pads, weighted by
+            # projection onto the push direction: contact-side pads take
+            # more, far-side pads less. A shove then also twists the part
+            # to glance off (corrective moment) instead of translating
+            # straight through its neighbor -- torque without any new
+            # geometry. Weights average exactly 1, so the footprint total
+            # (and the reported components) is conserved.
+            def _spread(rows, cx, cy, radius, ux, uy, fx, fy):
+                if rows is None or len(rows) == 0:
+                    return
+                r = float(radius)
+                if not math.isfinite(r) or r < 1e-9:
+                    poly_force[rows, 0] += fx
+                    poly_force[rows, 1] += fy
+                    return
+                proj = ((pos[rows, 0] - cx) * ux + (pos[rows, 1] - cy) * uy) / r
+                w = _contact_weights(proj)
+                poly_force[rows, 0] += w * fx
+                poly_force[rows, 1] += w * fy
+
+            # Compute collision forces per footprint pair, then distribute to pads.
+            # Movable footprints collide with EVERYTHING (movable, locked,
+            # unselected, ghosts) regardless of file order: a selected part
+            # must feel an immobile part's courtyard even when the immobile
+            # part sorts earlier (2026-10-10: R11 slipped into RV2's
+            # courtyard because the old j>i loop never evaluated the pair).
+            # Movable-movable pairs are still evaluated exactly once (j > i);
+            # the j < i arm below only adds pairs with a non-movable j.
             for i in range(n_fp):
                 if not fp_movable_arr[i]:
                     continue  # Only movable footprints accumulate forces
                 fp_i_uuid = fp_uuids[i]
                 poly_i = courtyard_polys[fp_i_uuid]
 
-                for j in range(i + 1, n_fp):
+                for j in range(n_fp):
+                    if j == i:
+                        continue
+                    if j < i and fp_movable_arr[j]:
+                        continue  # movable-movable pair already done from the other side
                     if not _close[i, j]:
                         continue  # Far field, or opposite sides (SMD-SMD)
                     fp_j_uuid = fp_uuids[j]
@@ -1030,14 +1139,14 @@ def _run_region_simulation(
                             if dist > 1e-6:
                                 # Force proportional to overlap area
                                 force_mag = params.courtyard_repulsion_kc * intersection.area / (dist + 1e-6)
-                                fx = force_mag * dx / dist
-                                fy = force_mag * dy / dist
-                                fp_forces[i, 0] += fx
-                                fp_forces[i, 1] += fy
-                                # Ghost (j) doesn't move, but we apply equal/opposite for completeness
+                                ux, uy = dx / dist, dy / dist
+                                fx, fy = force_mag * ux, force_mag * uy
+                                _spread(fp_local_to_rows[i], fp_centroids_arr[i, 0], fp_centroids_arr[i, 1],
+                                        fp_radii_arr[i], ux, uy, fx, fy)
+                                # Equal/opposite on j (only matters if j moves)
                                 if fp_movable_arr[j]:
-                                    fp_forces[j, 0] -= fx
-                                    fp_forces[j, 1] -= fy
+                                    _spread(fp_local_to_rows[j], fp_centroids_arr[j, 0], fp_centroids_arr[j, 1],
+                                            fp_radii_arr[j], -ux, -uy, -fx, -fy)
                     else:
                         # Near miss: bounded-halo linear falloff.
                         # Reach is capped at an absolute halo past the part
@@ -1049,10 +1158,9 @@ def _run_region_simulation(
                         # the old kc*margin/d^2 did. (Emptiness was already
                         # checked above via the shape cache.)
                         poly_dist = poly_i.distance(poly_j)
-                        halo_reach = min(
-                            1.5 * (fp_radii_arr[i] + fp_radii_arr[j]),
-                            params.courtyard_halo_mm,
-                        )
+                        # Same reach the broadphase above culled on (matrix
+                        # form); reuse it instead of recomputing per pair.
+                        halo_reach = float(_halo[i, j])
                         if poly_dist < halo_reach:
                             # Gentle repulsion - use polygon distance for margin (more accurate for asymmetric shapes)
                             margin = halo_reach - poly_dist
@@ -1066,20 +1174,23 @@ def _run_region_simulation(
                                         params.courtyard_repulsion_kc
                                         * (margin / halo_reach)
                                     )
-                                    fx = strength * dx / centroid_dist
-                                    fy = strength * dy / centroid_dist
-                                    fp_forces[i, 0] += fx
-                                    fp_forces[i, 1] += fy
-                                    fp_forces[j, 0] -= fx
-                                    fp_forces[j, 1] -= fy
+                                    ux, uy = dx / centroid_dist, dy / centroid_dist
+                                    fx, fy = strength * ux, strength * uy
+                                    # Halo nudges stay uniform broadcasts:
+                                    # weighting them would inject a moment
+                                    # into every near-miss and churn crowded
+                                    # boards instead of settling them; the
+                                    # corrective moment applies to true
+                                    # overlap only (branch above).
+                                    poly_force[fp_local_to_rows[i], 0] += fx
+                                    poly_force[fp_local_to_rows[i], 1] += fy
+                                    if fp_movable_arr[j]:
+                                        poly_force[fp_local_to_rows[j], 0] -= fx
+                                        poly_force[fp_local_to_rows[j], 1] -= fy
 
-            # Distribute footprint forces to pads
-            for pad_idx in range(n_pads_local):
-                fp_i_local = pad_to_fp_local[pad_idx]
-                if fp_i_local >= 0 and fp_movable_arr[fp_i_local]:
-                    poly_force[pad_idx, 0] = fp_forces[fp_i_local, 0]
-                    poly_force[pad_idx, 1] = fp_forces[fp_i_local, 1]
-
+            # Courtyard pushes were spread directly onto pads above
+            # (overlap-weighted, halo uniform; totals conserved); nothing
+            # left to broadcast.
             force += poly_force
 
             # Boundary repulsion: push footprints away from region edges
@@ -1120,44 +1231,19 @@ def _run_region_simulation(
                 # Dynamic threshold: 10% of footprint size, minimum 1mm, maximum 10mm
                 threshold = max(1.0, min(10.0, 0.1 * max(fp_width, fp_height)))
 
-                # Distance to region boundaries
-                # Left edge
+                # Distance to region boundaries (bounded pushes, see
+                # _boundary_edge_push; left/bottom push +, right/top push -)
                 dist_left = minx - min_x
-                if dist_left < 0:
-                    # Already outside - strong push back
-                    force_mag = boundary_k * abs(dist_left) / (abs(dist_left) + 1e-6)
-                    boundary_force[pad_idx, 0] += force_mag
-                elif dist_left < threshold:
-                    # Close to edge - strong repulsion
-                    force_mag = boundary_k * 2.0 * (threshold - dist_left) / (dist_left + 1e-6)
-                    boundary_force[pad_idx, 0] += force_mag
+                boundary_force[pad_idx, 0] += _boundary_edge_push(dist_left, threshold, boundary_k)
 
-                # Right edge
                 dist_right = max_x - maxx
-                if dist_right < 0:
-                    force_mag = boundary_k * abs(dist_right) / (abs(dist_right) + 1e-6)
-                    boundary_force[pad_idx, 0] -= force_mag
-                elif dist_right < threshold:
-                    force_mag = boundary_k * 2.0 * (threshold - dist_right) / (dist_right + 1e-6)
-                    boundary_force[pad_idx, 0] -= force_mag
+                boundary_force[pad_idx, 0] -= _boundary_edge_push(dist_right, threshold, boundary_k)
 
-                # Bottom edge
                 dist_bottom = miny - min_y
-                if dist_bottom < 0:
-                    force_mag = boundary_k * abs(dist_bottom) / (abs(dist_bottom) + 1e-6)
-                    boundary_force[pad_idx, 1] += force_mag
-                elif dist_bottom < threshold:
-                    force_mag = boundary_k * 2.0 * (threshold - dist_bottom) / (dist_bottom + 1e-6)
-                    boundary_force[pad_idx, 1] += force_mag
+                boundary_force[pad_idx, 1] += _boundary_edge_push(dist_bottom, threshold, boundary_k)
 
-                # Top edge
                 dist_top = max_y - maxy
-                if dist_top < 0:
-                    force_mag = boundary_k * abs(dist_top) / (abs(dist_top) + 1e-6)
-                    boundary_force[pad_idx, 1] -= force_mag
-                elif dist_top < threshold:
-                    force_mag = boundary_k * 2.0 * (threshold - dist_top) / (dist_top + 1e-6)
-                    boundary_force[pad_idx, 1] -= force_mag
+                boundary_force[pad_idx, 1] -= _boundary_edge_push(dist_top, threshold, boundary_k)
 
             force += boundary_force
 
@@ -1177,6 +1263,19 @@ def _run_region_simulation(
         for comp in components.values():
             comp[~pad_movable] = 0.0
         return force, components
+    # Initial forces predict the NEXT step from the committed board positions.
+    # They are captured before the loop so the overlay explains the move it
+    # is about to make (F0 -> D0), not the residual at the preview end
+    # (F1 at pos1, which previously pointed back after overshoot and looked
+    # like the integrator moved against the displayed force).
+    initial_force, initial_components = _compute_total_force(
+        positions, len(region_pads), pad_movable,
+        params, has_net_edges, src_idx, dst_idx, ideal_len,
+        has_rigid, rigid_src, rigid_dst, rigid_rest,
+        ghost_attractions,
+        same_fp_mask,
+        return_components=True,
+    )
     for iteration in range(params.max_iterations):
         force = _compute_total_force(
             positions, len(region_pads), pad_movable,
@@ -1192,10 +1291,66 @@ def _run_region_simulation(
         scale = np.minimum(1.0, temp / np.maximum(disp_norm, 1e-6))
         disp *= scale
 
-        # Cap max step size to prevent boundary crossing
+        # Cap max step size: 1mm keeps parts inside the halo gradient
+        # instead of vaulting across it in one step (halo reach is 3mm;
+        # the old 2mm budget crossed most of it at once, landing in
+        # overlap past the restoring slope).
         disp_norm = np.linalg.norm(disp, axis=1, keepdims=True)
         scale = np.minimum(1.0, max_step / np.maximum(disp_norm, 1e-6))
         disp *= scale
+
+        # Rotation rate cap (F2): bound each footprint's spin to
+        # max_dangle_deg per iteration with translation bit-identical to
+        # the uncapped path. Per-pad caps above let one pad take the full
+        # budget while its mate takes ~0 -- pure spin that Kabsch only
+        # reads out afterwards (tens of degrees/iter on small parts,
+        # which then land inside neighbors). The fitted 2D angle comes
+        # from a closed-form Kabsch fit (no SVD); over-cap footprints
+        # are rotated back to exactly the cap about their centroid and
+        # recentered, so translation is untouched. Rotation stays fully
+        # free across iterations (a THT part can still turn around over
+        # a run; >= 180 disables the cap entirely).
+        if _touch_static.any() and params.max_dangle_deg < 180.0:
+            _rows = np.where(_touch_static)[0]
+            _fp_rows = _pad_fp_idx[_rows]
+            _nfp = len(fp_uuids)
+            _cnt = np.zeros(_nfp)
+            _sx = np.zeros((_nfp, 2))
+            _sp = np.zeros((_nfp, 2))
+            np.add.at(_cnt, _fp_rows, 1.0)
+            np.add.at(_sx, _fp_rows, disp[_rows])
+            np.add.at(_sp, _fp_rows, positions[_rows])
+            _n = np.maximum(_cnt, 1.0)
+            _dc = _sx / _n[:, None]
+            _pc = _sp / _n[:, None]
+            _lp = positions[_rows] - _pc[_fp_rows]
+            _vp = _lp + (disp[_rows] - _dc[_fp_rows])
+            _num = np.zeros(_nfp)
+            _den = np.zeros(_nfp)
+            np.add.at(_num, _fp_rows, _lp[:, 0] * _vp[:, 1] - _lp[:, 1] * _vp[:, 0])
+            np.add.at(_den, _fp_rows, _lp[:, 0] * _vp[:, 0] + _lp[:, 1] * _vp[:, 1])
+            _cap_a = math.radians(params.max_dangle_deg)
+            for _li in np.where(
+                (_cnt >= 2.0)
+                & (np.abs(np.arctan2(_num, _den)) > _cap_a)
+                & ((_num * _num + _den * _den) > 1e-24)
+            )[0]:
+                _m = fp_local_to_rows[_li]
+                _m = _m[_touch_static[_m]]
+                _th = math.atan2(float(_num[_li]), float(_den[_li]))
+                _phi = math.copysign(_cap_a, _th) - _th
+                _cc, _ss = math.cos(_phi), math.sin(_phi)
+                # Recompute this footprint's vectors (cheap: few pads).
+                _sel = np.where(_fp_rows == _li)[0]
+                _lr = _lp[_sel]
+                _vr = _vp[_sel]
+                _wr = np.empty_like(_vr)
+                _wr[:, 0] = _cc * _vr[:, 0] - _ss * _vr[:, 1]
+                _wr[:, 1] = _ss * _vr[:, 0] + _cc * _vr[:, 1]
+                _nd = _dc[_li] + (_wr - _lr)
+                # Recenter: keep baseline translation exactly.
+                _nd -= _nd.mean(axis=0, keepdims=True) - _dc[_li]
+                disp[_m] = _nd
 
         # Update positions (only movable pads)
         positions[pad_movable] += disp[pad_movable]
@@ -1220,16 +1375,12 @@ def _run_region_simulation(
     footprint_forces = {}
     footprint_components: Dict[str, Dict[str, Tuple[float, float]]] = {}
 
-    # Recompute final forces for force reporting (with per-cause breakdown
-    # for the forces overlay)
-    final_force, final_components = _compute_total_force(
-        positions, len(region_pads), pad_movable,
-        params, has_net_edges, src_idx, dst_idx, ideal_len,
-        has_rigid, rigid_src, rigid_dst, rigid_rest,
-        ghost_attractions,
-        same_fp_mask,
-        return_components=True,
-    )
+    # Reported forces are the initial (next-step) forces captured above,
+    # evaluated at the committed board positions the overlay anchors on.
+    # (Previously this recomputed at the final preview positions, whose
+    # residual points back after overshoot / convergence and mismatched the
+    # displacement just taken.)
+    final_force, final_components = initial_force, initial_components
 
     for fp in model.footprints:
         if model.footprint_region.get(fp.uuid) != region_idx:

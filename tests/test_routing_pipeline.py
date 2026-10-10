@@ -21,33 +21,6 @@ from kicad_autorouter.routing.pipeline import (
 )
 from kicad_autorouter.sexpr import parse_file
 
-FIXTURES = __import__("pathlib").Path(__file__).parent / "fixtures"
-MINIMAL_PCB = FIXTURES / "minimal.kicad_pcb"
-DCCF_PCB = FIXTURES / "DCCF.sved.kicad_pcb"
-
-
-@pytest.fixture(scope="module")
-def minimal_model():
-    return board_model(parse_file(MINIMAL_PCB))
-
-
-@pytest.fixture(scope="module")
-def dccf_model():
-    return board_model(parse_file(DCCF_PCB))
-
-
-@pytest.fixture
-def routing_setup(minimal_model):
-    """Create grid, cost_grid, and router for testing."""
-    from kicad_autorouter.routing.grid import create_grid_from_model
-    from kicad_autorouter.routing.obstacles import build_occupancy_grid
-    grid = create_grid_from_model(minimal_model, resolution_mm=0.1, margin_mm=2.0)
-    cost_grid = build_occupancy_grid(minimal_model, grid, default_clearance_mm=0.2)
-    cost_map = CostMap()
-    router = SingleNetRouter(grid, cost_grid, cost_map)
-    return grid, cost_grid, router
-
-
 class TestApplyRouteToGrid:
     """Tests for _apply_route_to_grid."""
 
@@ -235,13 +208,6 @@ class TestRunRouting:
         result = run_routing(dccf_model, run_drc=False)
         assert isinstance(result, RoutingResult)
 
-    def test_run_routing_respects_max_via_count(self, dccf_model):
-        """Max via count limits routing."""
-        pytest.skip("Full DCCF routing is slow - run manually if needed")
-        result = run_routing(dccf_model, max_via_count=1, run_drc=False)
-        assert result.vias_added <= 1
-
-
 class TestRunFullPipeline:
     """Tests for complete pipeline."""
 
@@ -278,21 +244,20 @@ class TestRoutingParams:
         params = RoutingParams()
         assert params.grid_resolution_mm == 0.1
         assert params.via_cost_mm == 5.0
-        assert params.max_via_count == 100
         assert params.track_width_mm == 0.25
         assert params.run_drc is False
 
     def test_routing_params_to_dict(self):
-        params = RoutingParams(via_cost_mm=10.0, max_via_count=50)
+        params = RoutingParams(via_cost_mm=10.0)
         d = params.to_dict()
         assert d["via_cost_mm"] == 10.0
-        assert d["max_via_count"] == 50
+        assert "max_via_count" not in d  # removed 2026-10-10: never enforced
 
     def test_routing_params_from_dict(self):
         d = {"via_cost_mm": 7.5, "max_via_count": 200, "unknown_param": 999}
         params = RoutingParams.from_dict(d)
         assert params.via_cost_mm == 7.5
-        assert params.max_via_count == 200
+        assert not hasattr(params, "max_via_count")  # stale keys ignored
         assert params.track_width_mm == 0.25  # default preserved
 
     def test_routing_params_new_keys_roundtrip(self):
@@ -440,7 +405,7 @@ class TestNoViaInPad:
         """All shared nets route with no via inside SMD pad copper."""
         import math
 
-        from test_drc_routing import _build_magnet_pcb_tree, MAGNET_PARAMS
+        from tests.test_drc_routing import _build_magnet_pcb_tree, MAGNET_PARAMS
         from kicad_autorouter.placement import run_placement
         from kicad_autorouter.board_model import board_model
         from kicad_autorouter.io import nudge_footprint_by_uuid

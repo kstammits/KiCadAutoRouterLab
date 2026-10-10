@@ -22,9 +22,11 @@
   - Ground stitching: connect ground splits with vias at boundaries
   - Decap fanout: short direct routes, THT caps use both layers (free via)
 
-- [ ] **R6. Through-Hole "Free Via" Support** (partial)
-  - THT pad marks cell blocked on BOTH layers ✅
-  - Layer transition at THT pad = 0 via cost (pending: tht_via_mask in router)
+- [x] **R6. Through-Hole "Free Via" Support** (done 2026-10-10)
+  - THT pad marks HIGH_COST ring on BOTH layers ✅
+  - Layer transition at THT drill disc = 0 via cost (drill-radius mask, not single cell); no `Via` emitted on own holes (barrel reuse); foreign nets face a hard exclusion ring (secondary-grid blocking, own net exempt)
+  - Via price is mm-denominated (`CostMap.via_cost_mm`, router scales to cells per grid)
+  - Keepout zones (`tracks_allowed=False`) mark BLOCKED on their layers
   - Power/ground nets: THT pads become automatic stitching points (deferred)
 
 - [x] **R7. Output & Writeback**

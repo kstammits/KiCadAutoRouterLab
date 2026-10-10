@@ -25,7 +25,7 @@ from .output import routes_to_tracks_vias, apply_routes_to_tree
 from .smooth import own_net_soft_mask, smooth_grid_path, smoothed_wire_mm
 from .power import identify_power_nets, route_power_rails, route_ground_stitching, route_decap_fanout
 from .grid import RoutingGrid, board_to_grid
-from .obstacles import BLOCKED, build_fanout_cost, build_via_block_mask
+from .obstacles import BLOCKED, bresenham_cells, build_fanout_cost, build_via_block_mask, stamp_square, tht_drill_cells
 
 
 @dataclass
@@ -47,7 +47,6 @@ class RoutingParams:
     grid_resolution_mm: float = 0.1
     margin_mm: float = 2.0
     via_cost_mm: float = 5.0          # Via cost in mm wire equivalent
-    max_via_count: int = 100          # Maximum total vias allowed
     track_width_mm: float = 0.25      # Default signal track width
     power_width_mm: float = 0.5       # Power/ground track width
     clearance_mm: float = 0.2         # Default clearance between tracks
@@ -65,7 +64,6 @@ class RoutingParams:
             "grid_resolution_mm": self.grid_resolution_mm,
             "margin_mm": self.margin_mm,
             "via_cost_mm": self.via_cost_mm,
-            "max_via_count": self.max_via_count,
             "track_width_mm": self.track_width_mm,
             "power_width_mm": self.power_width_mm,
             "clearance_mm": self.clearance_mm,
@@ -83,7 +81,7 @@ class RoutingParams:
     def from_dict(cls, d: dict) -> "RoutingParams":
         # Filter to only known keys
         valid_keys = {
-            "grid_resolution_mm", "margin_mm", "via_cost_mm", "max_via_count",
+            "grid_resolution_mm", "margin_mm", "via_cost_mm",
             "track_width_mm", "power_width_mm", "clearance_mm", "via_size_mm",
             "via_drill_mm", "max_attempts_per_net", "run_drc", "debug",
             "net_widths", "heuristic_weight", "max_expansions"
@@ -194,35 +192,13 @@ def _apply_route_to_grid(
 def _mark_line_blocked(layer_grid: np.ndarray, r1: int, c1: int, r2: int, c2: int, radius: int = 0) -> None:
     """Bresenham line drawing to mark cells as BLOCKED (plus ``radius`` halo)."""
     H, W = layer_grid.shape
-    dr = abs(r2 - r1)
-    dc = abs(c2 - c1)
-    sr = 1 if r1 < r2 else -1
-    sc = 1 if c1 < c2 else -1
-    err = dc - dr
 
-    def _stamp(r: int, c: int) -> None:
-        r_min, r_max = max(0, r - radius), min(H - 1, r + radius)
-        c_min, c_max = max(0, c - radius), min(W - 1, c + radius)
-        layer_grid[r_min:r_max + 1, c_min:c_max + 1] = np.maximum(
-            layer_grid[r_min:r_max + 1, c_min:c_max + 1], BLOCKED
-        )
-
-    r, c = r1, c1
-    while True:
+    for c, r in bresenham_cells(c1, r1, c2, r2):
         if 0 <= r < H and 0 <= c < W:
             if radius:
-                _stamp(r, c)
+                stamp_square(layer_grid, r, c, radius, BLOCKED)
             else:
                 layer_grid[r, c] = BLOCKED
-        if r == r2 and c == c2:
-            break
-        e2 = 2 * err
-        if e2 > -dr:
-            err -= dr
-            c += sc
-        if e2 < dc:
-            err += dc
-            r += sr
 
 
 def _smooth_result(result, cost_grid, routing_grid, corridor: int, blocked_threshold: int = 100,
@@ -357,10 +333,10 @@ def route_nets(
         track_half_mm=params.track_width_mm / 2.0,
     )
 
-    # 4. Create router
+    # 4. Create router (via price in mm; the router scales to cells)
     cost_map = CostMap(
         base_cost=1,
-        via_cost=int(params.via_cost_mm / params.grid_resolution_mm),
+        via_cost_mm=params.via_cost_mm,
         blocked_threshold=100,
         heuristic_weight=params.heuristic_weight,
     )
@@ -446,7 +422,8 @@ def route_nets(
     for net_name in requested_signal:
         _route_one_net(net_name)
     
-    # 10. Convert all results to tracks/vias (per-net resolved widths)
+    # 10. Convert all results to tracks/vias (per-net resolved widths;
+    # own-THT hops reuse the barrel: no Via emitted there)
     tracks, vias = routes_to_tracks_vias(
         all_results,
         routing_grid,
@@ -455,6 +432,7 @@ def route_nets(
         power_width_mm=params.power_width_mm,
         via_size_mm=params.via_size_mm,
         via_drill_mm=params.via_drill_mm,
+        tht_sites=_tht_sites_by_net(model, routing_grid),
     )
     
     # 11. Apply routes to PCB tree
@@ -484,7 +462,6 @@ def run_routing(
     grid_resolution_mm: float = 0.1,
     margin_mm: float = 2.0,
     via_cost: float = 5.0,
-    max_via_count: int = 100,
     track_width_mm: float = 0.25,
     power_width_mm: float = 0.5,
     via_size_mm: float = 0.8,
@@ -509,10 +486,10 @@ def run_routing(
     # 3b. Via-block mask: no vias inside SMD pad solder/fanout areas
     via_block_mask = build_via_block_mask(model, grid)
 
-    # 4. Create router
+    # 4. Create router (via_cost is already mm wire equivalent)
     cost_map = CostMap(
         base_cost=1,
-        via_cost=int(via_cost / grid_resolution_mm),
+        via_cost_mm=via_cost,
         blocked_threshold=100,
         heuristic_weight=3.0,
     )
@@ -603,7 +580,7 @@ def run_routing(
     all_results.update(decap_results)
     all_results.update({n: ripup.routed_paths[n] for n in ripup.routed_paths})
     
-    # Convert to tracks/vias
+    # Convert to tracks/vias (own-THT hops reuse the barrel)
     tracks, vias = routes_to_tracks_vias(
         all_results,
         grid,
@@ -611,6 +588,7 @@ def run_routing(
         power_width_mm=power_width_mm,
         via_size_mm=via_size_mm,
         via_drill_mm=via_drill_mm,
+        tht_sites=_tht_sites_by_net(model, grid),
     )
     
     # 10. Apply routes to PCB tree
@@ -639,22 +617,40 @@ def run_routing(
     )
 
 
-def _build_tht_via_mask(model, grid) -> np.ndarray:
-    """Build a 2D boolean mask marking THT pad locations for free via transitions.
-    
-    Returns (H, W) boolean array where True = through-hole pad at that grid cell.
+def _tht_sites_by_net(model, grid) -> dict:
+    """Map net name -> drill-hole ``{(col, row)}`` for its own THT pads.
+
+    Used by output to suppress Via emission on free hops (existing barrel).
+    Per-net scoping: a hop onto foreign THT copper still emits a via.
     """
-    from .grid import board_to_grid
+    sites: dict = {}
+    for fp in model.footprints:
+        for pad in fp.pads:
+            if pad.is_through_hole and pad.net_name:
+                sites.setdefault(pad.net_name, set()).update(tht_drill_cells(pad, grid))
+    return sites
+
+
+def _build_tht_via_mask(model, grid) -> np.ndarray:
+    """Build a 2D boolean mask of free layer-transition sites at THT holes.
+
+    Each through-hole pad contributes a disc of drill radius (the copper-
+    free hole the barrel already provides), not just its center cell, so
+    the free hop is hittable at fine grids too. The surrounding copper
+    annulus stays protected by the per-net exclusion ring in the secondary
+    grid (foreign nets) — this mask only zeroes the transition price.
+
+    Returns (H, W) boolean array where True = free transition site.
+    """
     H, W = grid.height_cells, grid.width_cells
     mask = np.zeros((H, W), dtype=bool)
-    
+
     for fp in model.footprints:
         for pad in fp.pads:
             if pad.is_through_hole:
-                col, row = board_to_grid(grid, pad.position.x_mm, pad.position.y_mm)
-                if 0 <= row < H and 0 <= col < W:
-                    mask[row, col] = True
-    
+                for (c, r) in tht_drill_cells(pad, grid):
+                    mask[r, c] = True
+
     return mask
 
 

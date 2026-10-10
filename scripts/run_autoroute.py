@@ -105,6 +105,11 @@ def main(argv=None) -> int:
                     ideal_length_mm=base_params.ideal_length_mm,
                     max_iterations=step_iters,
                     convergence_eps_mm=base_params.convergence_eps_mm,
+                    rigid_stiffness=base_params.rigid_stiffness,
+                    courtyard_repulsion_kc=base_params.courtyard_repulsion_kc,
+                    courtyard_halo_mm=base_params.courtyard_halo_mm,
+                    boundary_repulsion_kb=base_params.boundary_repulsion_kb,
+                    max_dangle_deg=base_params.max_dangle_deg,
                 )
             else:
                 step_params = base_params

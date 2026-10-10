@@ -1178,6 +1178,9 @@ class Handler(BaseHTTPRequestHandler):
                 convergence_eps_mm=req.get("convergence_eps_mm", base_params.convergence_eps_mm),
                 rigid_stiffness=req.get("rigid_stiffness", base_params.rigid_stiffness),
                 courtyard_repulsion_kc=req.get("courtyard_repulsion_kc", base_params.courtyard_repulsion_kc),
+                courtyard_halo_mm=req.get("courtyard_halo_mm", base_params.courtyard_halo_mm),
+                boundary_repulsion_kb=req.get("boundary_repulsion_kb", base_params.boundary_repulsion_kb),
+                max_dangle_deg=req.get("max_dangle_deg", base_params.max_dangle_deg),
             )
 
             # If movable_uuids not provided, compute as all unlocked except pinned

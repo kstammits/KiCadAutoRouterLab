@@ -5,7 +5,8 @@ from pathlib import Path
 import pytest
 
 from kicad_autorouter.board_model import BoardModel, Footprint, Pad, Point, board_model, commit_placement
-from kicad_autorouter.io import _net_name_of, copper_counts_by_net, rip_up_nets
+from kicad_autorouter.board_model import _net_name as _net_name_from_node
+from kicad_autorouter.io import copper_counts_by_net, rip_up_nets
 from kicad_autorouter.sexpr import SExpr, parse_file
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -20,15 +21,6 @@ def tube111_tree():
 @pytest.fixture(scope="module")
 def tube111_model(tube111_tree):
     return board_model(tube111_tree)
-
-
-def _net_name_from_node(node):
-    """Extract net name from S-expression net node (uses args[0])."""
-    if node is None or not node.args:
-        return None
-    value = node.args[0]
-    name = str(value) if isinstance(value, str) else None
-    return name or None
 
 
 class TestCommitPlacementCore:
@@ -204,10 +196,10 @@ class TestRipUpNetsSexpr:
 
     def test_rip_up_nets_indexed_net_form(self, tube111_tree):
         """rip_up_nets must handle (net <idx> NAME) segment/via form (KiCad 6+)."""
-        assert _net_name_of(SExpr("net", (5, "GND"))) == "GND"
-        assert _net_name_of(SExpr("net", ("GND",))) == "GND"
-        assert _net_name_of(SExpr("net", (0,))) is None
-        assert _net_name_of(SExpr("net", (0, ""))) is None
+        assert _net_name_from_node(SExpr("net", (5, "GND"))) == "GND"
+        assert _net_name_from_node(SExpr("net", ("GND",))) == "GND"
+        assert _net_name_from_node(SExpr("net", (0,))) is None
+        assert _net_name_from_node(SExpr("net", (0, ""))) is None
 
         seg = SExpr(
             "segment",

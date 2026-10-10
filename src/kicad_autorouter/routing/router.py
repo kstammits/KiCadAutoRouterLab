@@ -23,9 +23,14 @@ class RouteResult:
 
 @dataclass
 class CostMap:
-    """Routing cost parameters."""
+    """Routing cost parameters.
+
+    ``via_cost_mm`` is resolution-independent (mm wire equivalent); the
+    router scales it to cells via the grid resolution at construction.
+    All other penalties are per-cell entry costs on top of ``base_cost``.
+    """
     base_cost: int = 1              # per cell (wire length)
-    via_cost: int = 50              # per via transition (5mm at 0.1mm)
+    via_cost_mm: float = 5.0        # per via transition (mm wire equivalent)
     courtyard_penalty: int = 5      # additional cost for COURTYARD cells
     high_cost_penalty: int = 20     # additional cost for HIGH_COST cells
     edge_keepout_penalty: int = 40  # additional cost for EDGE_KEEPOUT cells
@@ -34,6 +39,23 @@ class CostMap:
     # penalties invisible (200/cell gradient vs +20/+40 penalties); 3 keeps
     # the search penalty-respecting while still guided.
     heuristic_weight: float = 3.0
+
+    def via_cost_cells(self, resolution_mm: float) -> int:
+        """Via price in cells for a grid resolution (``int()`` truncation).
+
+        Truncation (not round) preserves the historical values exactly at
+        every tested resolution (5.0/0.1=50, 5.0/0.5=10); ``max(1, …)``
+        guards absurd coarse grids from a free via.
+        """
+        if resolution_mm <= 0:
+            return 1
+        return max(1, int(self.via_cost_mm / resolution_mm))
+
+
+# Secondary-grid values at/above this are impassable (foreign-THT exclusion
+# rings). Soft halos (INNER 500 / OUTER 100) stay below, so they steer
+# without ever trapping — see build_fanout_cost.
+SECONDARY_BLOCKED = 1000
 
 
 class SingleNetRouter:
@@ -54,6 +76,9 @@ class SingleNetRouter:
         self.n_layers = len(grid.layers)
         self.H = grid.height_cells
         self.W = grid.width_cells
+        # Via price scaled to this grid (mm → cells); resolution-independent
+        # tradeoff between via and wire at every grid density.
+        self._via_cost_cells = self.cost_map.via_cost_cells(grid.resolution_mm)
         # Safety net: bound A* node expansions per search so a hard/blocked
         # net fails fast instead of hanging the server thread for minutes.
         self.max_expansions = max_expansions
@@ -73,8 +98,11 @@ class SingleNetRouter:
         Uses MST approximation: pairwise A* distances -> MST -> route edges sequentially.
 
         ``secondary`` is an optional per-net cost overlay (e.g. fanout halos
-        over other nets' pads). It is ADDED to entry costs but never blocks,
-        so it steers around foreign copper without trapping terminals.
+        over other nets' pads). Values below SECONDARY_BLOCKED are ADDED to
+        entry costs (steer without trapping); values at/above block entry
+        and via landings (foreign-THT exclusion rings). The routed net's
+        own pads are excluded at build time, so its terminals stay
+        reachable.
         """
         if len(terminals) < 2:
             return RouteResult([], 0.0, 0, 0.0, False)
@@ -151,6 +179,25 @@ class SingleNetRouter:
             cost=total_cost,
             success=True,
         )
+
+    def _secondary_blocked(
+        self,
+        secondary: Optional[np.ndarray],
+        row: int,
+        col: int,
+        layer: int,
+    ) -> bool:
+        """True when the per-net secondary grid forbids this cell.
+
+        Fail-safe with no goal exemption: the secondary grid excludes the
+        routed net's own pads at build time, so a blocked goal would mean
+        pathological pad overlap — "no path" beats a short.
+        """
+        if secondary is None:
+            return False
+        if not (0 <= row < self.H and 0 <= col < self.W and 0 <= layer < self.n_layers):
+            return False
+        return int(secondary[layer, row, col]) >= SECONDARY_BLOCKED
 
     def _secondary_at(
         self,
@@ -234,6 +281,8 @@ class SingleNetRouter:
                     continue
                 if self._is_blocked(nr, nc, l):
                     continue
+                if self._secondary_blocked(secondary, nr, nc, l):
+                    continue
                 cell_cost = self._cell_cost(nr, nc, l) + self._secondary_at(secondary, nr, nc, l)
                 ng = g + cell_cost
                 if ng < g_score[l, nr, nc]:
@@ -248,6 +297,8 @@ class SingleNetRouter:
                     # Check same cell on other layer
                     if self._is_blocked(r, c, nl):
                         continue
+                    if self._secondary_blocked(secondary, r, c, nl):
+                        continue
                     # Via cost: free at THT pad locations; forbidden inside
                     # SMD pad solder/fanout areas (THT wins ties).
                     if self.tht_via_mask[r, c]:
@@ -255,7 +306,7 @@ class SingleNetRouter:
                     elif self.via_block_mask[r, c]:
                         continue
                     else:
-                        cell_cost = self.cost_map.via_cost
+                        cell_cost = self._via_cost_cells
                     cell_cost += self._secondary_at(secondary, r, c, nl)
                     ng = g + cell_cost
                     if ng < g_score[nl, r, c]:

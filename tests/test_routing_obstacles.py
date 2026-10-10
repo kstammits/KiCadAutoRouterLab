@@ -4,8 +4,7 @@ import pytest
 import numpy as np
 from shapely.geometry import Polygon
 
-from kicad_autorouter.board_model import board_model
-from kicad_autorouter.routing.grid import create_grid_from_model, board_to_grid
+from kicad_autorouter.routing.grid import create_grid_from_model, board_to_grid, grid_to_board
 from kicad_autorouter.routing.obstacles import (
     build_occupancy_grid,
     build_fanout_cost,
@@ -22,32 +21,8 @@ from kicad_autorouter.routing.obstacles import (
     _mark_circular_zone,
     _fill_polygon,
 )
-from kicad_autorouter.routing.grid import create_grid_from_model
-from kicad_autorouter.sexpr import parse_file
 
-FIXTURES = __import__("pathlib").Path(__file__).parent / "fixtures"
-MINIMAL_PCB = FIXTURES / "minimal.kicad_pcb"
-DCCF_PCB = FIXTURES / "DCCF.sved.kicad_pcb"
-
-
-@pytest.fixture(scope="module")
-def minimal_model():
-    return board_model(parse_file(MINIMAL_PCB))
-
-
-@pytest.fixture(scope="module")
-def dccf_model():
-    return board_model(parse_file(DCCF_PCB))
-
-
-@pytest.fixture
-def grid(minimal_model):
-    return create_grid_from_model(minimal_model, resolution_mm=0.1, margin_mm=2.0)
-
-
-@pytest.fixture
-def cost_grid(grid, minimal_model):
-    return build_occupancy_grid(minimal_model, grid, default_clearance_mm=0.2)
+from .helpers import make_fp as make_test_fp
 
 
 class TestCostGridShape:
@@ -102,23 +77,21 @@ class TestFanoutCost:
     """Tests for build_fanout_cost (per-net secondary halo grid)."""
 
     def _two_pad_model(self, grid):
-        from kicad_autorouter.board_model import BoardModel, Footprint, Pad, Point
+        from dataclasses import replace
+
+        from kicad_autorouter.board_model import BoardModel
         x0, y0 = grid.origin_mm[0] + 50, grid.origin_mm[1] + 50
+
+        def _pad_only_fp(ref, uuid, x, net):
+            fp = make_test_fp(ref, uuid, x, y0, (net,),
+                              footprint_id="",
+                              pad_shape="circle", pad_layers=("F.Cu",))
+            return replace(fp, courtyard=())
+
         return BoardModel(
             footprints=(
-                Footprint(ref="R1", footprint_id="", layer="F.Cu", x_mm=x0, y_mm=y0,
-                          angle_deg=0,
-                          pads=(Pad(number="1", net_name="A", position=Point(x0, y0),
-                                    size_mm=(1, 1), pad_type="smd", drill_mm=0,
-                                    layers=("F.Cu",)),),
-                          courtyard=()),
-                Footprint(ref="R2", footprint_id="", layer="F.Cu", x_mm=x0 + 10, y_mm=y0,
-                          angle_deg=0,
-                          pads=(Pad(number="1", net_name="B",
-                                    position=Point(x0 + 10, y0),
-                                    size_mm=(1, 1), pad_type="smd", drill_mm=0,
-                                    layers=("F.Cu",)),),
-                          courtyard=()),
+                _pad_only_fp("R1", "uuid-r1", x0, "A"),
+                _pad_only_fp("R2", "uuid-r2", x0 + 10, "B"),
             ),
             keepout_zones=(),
             nets={},
@@ -210,14 +183,13 @@ class TestPadMarking:
 
     def test_mark_pad_clearance_net_class(self, grid):
         """Net-specific clearance overrides default."""
-        from kicad_autorouter.board_model import Footprint, Pad, Point
         from kicad_autorouter.routing.grid import board_to_grid
 
         # Place footprint within grid bounds
         x_mm, y_mm = grid.origin_mm[0] + 100, grid.origin_mm[1] + 100
-        fp = Footprint(ref="TEST", footprint_id="", layer="F.Cu", x_mm=x_mm, y_mm=y_mm, angle_deg=0,
-                       pads=(Pad(number="1", net_name="NET_A", position=Point(x_mm, y_mm), size_mm=(1,1),
-                                 pad_type="smd", drill_mm=0, layers=("F.Cu",)),))
+        fp = make_test_fp("TEST", "uuid-test", x_mm, y_mm, ("NET_A",),
+                          footprint_id="",
+                          pad_shape="circle", pad_layers=("F.Cu",))
         cost_grid = np.full((2, grid.height_cells, grid.width_cells), FREE, dtype=np.int16)
 
         clearance_cells = {"NET_A": 5}  # 5 cells for NET_A
@@ -316,6 +288,35 @@ class TestDrawingPrimitives:
         # Line should be BLOCKED
         assert np.any(layer_grid == BLOCKED)
 
+    def test_bresenham_cells_matches_wrappers(self, grid):
+        """Shared iterator stamps exactly what the old triplicated loops did."""
+        from kicad_autorouter.routing.obstacles import bresenham_cells, stamp_square
+        from kicad_autorouter.routing.pipeline import _mark_line_blocked
+        H, W = grid.height_cells, grid.width_cells
+        cases = [(5, 5, 20, 5), (5, 5, 5, 20), (0, 0, 30, 17), (40, 30, 10, 12)]
+        for c1, r1, c2, r2 in cases:
+            # Iterator path == _draw_line_blocked footprint.
+            line = np.full((H, W), FREE, dtype=np.int16)
+            for c, r in bresenham_cells(c1, r1, c2, r2):
+                if 0 <= r < H and 0 <= c < W:
+                    line[r, c] = max(line[r, c], BLOCKED)
+            ref = np.full((H, W), FREE, dtype=np.int16)
+            _draw_line_blocked(
+                ref, grid,
+                *grid_to_board(grid, c1, r1), *grid_to_board(grid, c2, r2),
+                value=BLOCKED,
+            )
+            # board_to_grid clamps so endpoints land on the same cells.
+            assert set(zip(*np.where(line == BLOCKED))) == set(zip(*np.where(ref == BLOCKED)))
+            # Radius arm == stamp_square.
+            halo = np.full((H, W), FREE, dtype=np.int16)
+            _mark_line_blocked(halo, r1, c1, r2, c2, radius=2)
+            expect = np.full((H, W), FREE, dtype=np.int16)
+            for c, r in bresenham_cells(c1, r1, c2, r2):
+                if 0 <= r < H and 0 <= c < W:
+                    stamp_square(expect, r, c, 2, BLOCKED)
+            assert (halo == expect).all()
+
     def test_mark_circular_zone_radius(self, grid):
         """Circular zone radius in cells."""
         layer_grid = np.full((grid.height_cells, grid.width_cells), FREE, dtype=np.int16)
@@ -334,6 +335,41 @@ class TestDrawingPrimitives:
         col_span = marked_cols.max() - marked_cols.min()
         assert row_span <= 12  # diameter ~ 2*radius+1
         assert col_span <= 12
+
+
+class TestDiscHelpers:
+    """Shared disc/radius helpers match the inlined formulas they replace."""
+
+    def test_disc_cells_matches_circular_zone(self, grid):
+        """disc_cells() yields exactly the _mark_circular_zone footprint."""
+        from kicad_autorouter.routing.obstacles import disc_cells
+        H, W = grid.height_cells, grid.width_cells
+        for radius in (1, 2, 5):
+            layer_grid = np.full((H, W), FREE, dtype=np.int16)
+            _mark_circular_zone(layer_grid, 50, 60, radius, HIGH_COST)
+            stamped = {(r, c) for r in range(H) for c in range(W)
+                       if layer_grid[r, c] == HIGH_COST}
+            assert set(disc_cells(50, 60, radius, H, W)) == stamped
+
+    def test_disc_cells_clips_at_edges(self, grid):
+        from kicad_autorouter.routing.obstacles import disc_cells
+        H, W = grid.height_cells, grid.width_cells
+        cells = set(disc_cells(0, 0, 3, H, W))
+        assert cells, "corner disc is non-empty"
+        assert all(0 <= r < H and 0 <= c < W for r, c in cells)
+
+    def test_halo_radii(self):
+        from kicad_autorouter.routing.obstacles import (
+            drill_radius_cells,
+            pad_halo_radius_cells,
+        )
+        # Previously inlined max(1, ceil(...)) spells, verbatim values.
+        assert pad_halo_radius_cells(0.5, 0.2, 0.125, 0.5) == 2
+        assert pad_halo_radius_cells(0.5, 0.2, 0.125, 0.1) == 9
+        assert pad_halo_radius_cells(0.0, 0.2, 0.0, 0.5) == 1
+        assert drill_radius_cells(0.8, 0.5) == 1
+        assert drill_radius_cells(0.8, 0.1) == 4
+        assert drill_radius_cells(0.0, 0.1) == 1
 
 
 class TestPolygonFill:
@@ -395,21 +431,13 @@ class TestPolygonFill:
     def test_pad_inside_own_courtyard_can_route_out(self, grid):
         """Regression: an SMD pad enclosed by its own courtyard outline
         must still reach a cell outside it (outlines are HIGH_COST)."""
-        from kicad_autorouter.board_model import Footprint, Pad, Point
         from kicad_autorouter.routing.router import SingleNetRouter, CostMap
 
         x_mm = grid.origin_mm[0] + 50
         y_mm = grid.origin_mm[1] + 50
-        hw, hh = 1.5, 1.0
-        corners = [Point(x_mm - hw, y_mm - hh), Point(x_mm + hw, y_mm - hh),
-                   Point(x_mm + hw, y_mm + hh), Point(x_mm - hw, y_mm + hh),
-                   Point(x_mm - hw, y_mm - hh)]
-        fp = Footprint(ref="T1", footprint_id="", layer="F.Cu", x_mm=x_mm, y_mm=y_mm,
-                       angle_deg=0,
-                       pads=(Pad(number="1", net_name="N1", position=Point(x_mm, y_mm),
-                                 size_mm=(1, 1), pad_type="smd", drill_mm=0,
-                                 layers=("F.Cu",)),),
-                       courtyard=tuple((corners[i], corners[i + 1]) for i in range(4)))
+        fp = make_test_fp("T1", "uuid-t1", x_mm, y_mm, ("N1",),
+                          footprint_id="", hw=1.5, hh=1.0,
+                          pad_shape="circle", pad_layers=("F.Cu",))
         cost_grid = np.full((2, grid.height_cells, grid.width_cells), FREE, dtype=np.int16)
         _block_courtyard(cost_grid, grid, fp)
 

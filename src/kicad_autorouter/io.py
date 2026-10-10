@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Dict, Optional, Set, Union
 
 from .sexpr import SExpr, parse_file, to_sexpr, Symbol
-from .board_model import _to_local
+from .board_model import _net_name, _to_local
 
 
 @dataclass(frozen=True)
@@ -59,13 +59,22 @@ def _shift_mm(value, delta_mm):
     return result
 
 
+def _find_footprint_where(tree: SExpr, pred, missing: str) -> SExpr:
+    """Return the first top-level footprint node satisfying ``pred``."""
+    for fp in tree.children("footprint"):
+        if pred(fp):
+            return fp
+    raise KeyError(missing)
+
+
 def find_footprint(tree: SExpr, ref: str) -> SExpr:
     """Return the top-level footprint node whose Reference property is `ref`."""
-    for fp in tree.children("footprint"):
-        for prop in fp.children("property"):
-            if len(prop.args) >= 2 and prop.args[0] == "Reference" and prop.args[1] == ref:
-                return fp
-    raise KeyError(f"no footprint with reference {ref!r}")
+    def _matches(fp: SExpr) -> bool:
+        return any(
+            len(prop.args) >= 2 and prop.args[0] == "Reference" and prop.args[1] == ref
+            for prop in fp.children("property")
+        )
+    return _find_footprint_where(tree, _matches, f"no footprint with reference {ref!r}")
 
 
 def find_footprint_by_uuid(tree: SExpr, uuid: str) -> SExpr:
@@ -74,29 +83,10 @@ def find_footprint_by_uuid(tree: SExpr, uuid: str) -> SExpr:
     Addresses footprints a reference cannot identify uniquely — duplicate or
     missing refs — since every placed footprint carries its own UUID.
     """
-    for fp in tree.children("footprint"):
+    def _matches(fp: SExpr) -> bool:
         u = fp.find("uuid")
-        if u is not None and u.args and str(u.args[0]) == uuid:
-            return fp
-    raise KeyError(f"no footprint with uuid {uuid!r}")
-
-
-def _net_name_of(node: Optional[SExpr]) -> Optional[str]:
-    """Extract net name from a ``(net ...)`` node.
-
-    Handles both KiCad forms:
-    - ``(net "NAME")`` (single-arg, e.g. tube111 segments/vias)
-    - ``(net <index> "NAME")`` (indexed, KiCad 6+)
-    Empty names and bare numeric refs map to None.
-    """
-    if node is None or not node.args:
-        return None
-    if len(node.args) >= 2 and isinstance(node.args[1], str):
-        name = node.args[1]
-        return name if name else None
-    value = node.args[0]
-    name = str(value) if isinstance(value, str) else None
-    return name or None
+        return u is not None and bool(u.args) and str(u.args[0]) == uuid
+    return _find_footprint_where(tree, _matches, f"no footprint with uuid {uuid!r}")
 
 
 def copper_counts_by_net(tree: SExpr) -> Dict[str, Dict[str, int]]:
@@ -109,11 +99,11 @@ def copper_counts_by_net(tree: SExpr) -> Dict[str, Dict[str, int]]:
 
     counts: Dict[str, Dict[str, int]] = defaultdict(lambda: {"tracks": 0, "vias": 0})
     for seg in tree.children("segment"):
-        name = _net_name_of(seg.find("net"))
+        name = _net_name(seg.find("net"))
         if name:
             counts[name]["tracks"] += 1
     for via in tree.children("via"):
-        name = _net_name_of(via.find("net"))
+        name = _net_name(via.find("net"))
         if name:
             counts[name]["vias"] += 1
     return dict(counts)
@@ -145,7 +135,7 @@ def rip_up_nets(
         if node.head not in ("segment", "via"):
             return True
         net_node = node.find("net")
-        net_name = _net_name_of(net_node)
+        net_name = _net_name(net_node)
         if net_name is None:
             return True  # Keep tracks without net assignment
         if net_name in protected:
@@ -293,65 +283,6 @@ def _format_effects(font_size: Tuple[float, float] = (1.0, 1.0), thickness: floa
     if hide:
         args.append(SExpr("hide", (Symbol("yes"),)))
     return SExpr("effects", tuple(args))
-
-
-def _pad_to_sexpr(pad) -> SExpr:
-    """Convert a Pad dataclass to KiCad pad S-expression."""
-    # Pad position is in board coordinates, need to convert to local
-    # For now, assume pads are at local positions relative to footprint center
-    # The board_model pads have absolute positions; we need to compute local
-    
-    args = [
-        Symbol(pad.number),
-        Symbol(pad.pad_type),
-        Symbol(pad.shape),
-    ]
-    
-    # at position (local coordinates)
-    args.append(_format_at(pad.position.x_mm, pad.position.y_mm, pad.angle_deg))
-    
-    # size
-    args.append(_format_size(pad.size_mm[0], pad.size_mm[1]))
-    
-    # drill
-    if pad.drill_mm > 0:
-        args.append(_format_drill(pad.drill_mm))
-    
-    # layers
-    if pad.layers:
-        args.append(_format_layers(pad.layers))
-    
-    # net
-    if pad.net_name:
-        args.append(SExpr("net", (pad.net_name,)))
-    
-    # pinfunction/pintype if available
-    if hasattr(pad, 'pinfunction') and pad.pinfunction:
-        args.append(SExpr("pinfunction", (pad.pinfunction,)))
-    if hasattr(pad, 'pintype') and pad.pintype:
-        args.append(SExpr("pintype", (pad.pintype,)))
-    
-    # uuid
-    import uuid as uuid_module
-    args.append(SExpr("uuid", (uuid_module.uuid4().hex,)))
-    
-    return SExpr("pad", tuple(args))
-
-
-def _courtyard_to_sexpr(courtyard_segments) -> list[SExpr]:
-    """Convert courtyard segments to fp_line/fp_circle S-expressions."""
-    sexprs = []
-    for start, end in courtyard_segments:
-        # Check if it's a circle approximation (many small segments)
-        # For simplicity, emit as fp_line
-        sexprs.append(SExpr("fp_line", (
-            SExpr("start", (start.x_mm, start.y_mm)),
-            SExpr("end", (end.x_mm, end.y_mm)),
-            _format_stroke(0.05),
-            SExpr("layer", (Symbol("F.CrtYd"),)),
-            SExpr("uuid", (__import__("uuid").uuid4().hex,)),
-        )))
-    return sexprs
 
 
 def _reference_text_to_sexpr(ref: str, x_mm: float = 0.0, y_mm: float = 0.0, layer: str = "F.Fab") -> SExpr:

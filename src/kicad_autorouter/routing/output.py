@@ -40,8 +40,17 @@ def routes_to_tracks_vias(
     power_width_mm: float = 0.5,
     via_size_mm: float = 0.8,
     via_drill_mm: float = 0.4,
+    tht_sites: dict = None,
 ) -> Tuple[List[Track], List[Via]]:
-    """Convert routing results to KiCad tracks and vias."""
+    """Convert routing results to KiCad tracks and vias.
+
+    ``tht_sites`` maps net name -> grid ``{(col, row)}`` cells covered by
+    that net's own through-hole drill holes. A layer transition on one of
+    those cells reuses the existing plated barrel, so no new ``Via`` is
+    emitted (drilling into a hole would be drill-on-copper). Per-net
+    scoping matters: a hop onto foreign THT copper still emits a via
+    (and the router's exclusion ring normally prevents such hops anyway).
+    """
     
     tracks = []
     vias = []
@@ -88,7 +97,11 @@ def routes_to_tracks_vias(
                     net_name=net_name,
                 ))
             else:
-                # Layer transition - via
+                # Layer transition: a hop on the net's own THT drill hole
+                # reuses the plated barrel — no new via drilled. (Hops
+                # never move within a cell: c1 == c2 and r1 == r2 here.)
+                if tht_sites and (c1, r1) in tht_sites.get(net_name, ()):
+                    continue
                 via_x = (x1 + x2) / 2
                 via_y = (y1 + y2) / 2
                 vias.append(Via(

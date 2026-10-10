@@ -713,7 +713,11 @@ def render_board_svg(
     if moved:
         parts.extend(_proposal_overlay(model, proposal))
     if proposal is not None and show_forces:
-        parts.extend(_forces_overlay(view, proposal))
+        # Forces are evaluated at the committed board positions (they predict
+        # the next step from where the board is), so anchor them on `model`,
+        # not the preview-shifted `view`. Displacement ghosts/arrows above
+        # already show where the proposal would move to.
+        parts.extend(_forces_overlay(model, proposal))
     if drc_violations:
         parts.extend(_drc_violations_overlay(drc_violations, drc_ignored_types, stale=drc_stale))
     parts.append("</svg>")

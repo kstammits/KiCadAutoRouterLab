@@ -14,19 +14,7 @@ from kicad_autorouter.routing.grid import (
 from kicad_autorouter.sexpr import parse_file
 
 FIXTURES = __import__("pathlib").Path(__file__).parent / "fixtures"
-MINIMAL_PCB = FIXTURES / "minimal.kicad_pcb"
-DCCF_PCB = FIXTURES / "DCCF.sved.kicad_pcb"
 TUBE111_PCB = FIXTURES / "tube111.kicad_pcb"
-
-
-@pytest.fixture(scope="module")
-def minimal_model():
-    return board_model(parse_file(MINIMAL_PCB))
-
-
-@pytest.fixture(scope="module")
-def dccf_model():
-    return board_model(parse_file(DCCF_PCB))
 
 
 @pytest.fixture(scope="module")
@@ -94,10 +82,6 @@ class TestGridCreation:
 
 class TestCoordinateTransforms:
     """Tests for board<->grid coordinate transforms."""
-
-    @pytest.fixture
-    def grid(self, minimal_model):
-        return create_grid_from_model(minimal_model, resolution_mm=0.1, margin_mm=2.0)
 
     def test_board_to_grid_roundtrip(self, grid):
         """board_to_grid -> grid_to_board returns nearby point."""

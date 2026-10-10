@@ -30,9 +30,9 @@ from kicad_autorouter.placement import (
 )
 from kicad_autorouter.sexpr import parse_file
 
+from .helpers import make_fp as make_test_fp
+
 FIXTURES = Path(__file__).parent / "fixtures"
-MINIMAL_PCB = FIXTURES / "minimal.kicad_pcb"
-DCCF_PCB = FIXTURES / "DCCF.sved.kicad_pcb"
 TUBE111_PCB = FIXTURES / "tube111.kicad_pcb"
 GHOST_TEST_PCB = FIXTURES / "ghost_test.kicad_pcb"
 
@@ -40,16 +40,6 @@ GHOST_TEST_PCB = FIXTURES / "ghost_test.kicad_pcb"
 @pytest.fixture(scope="module")
 def ghost_test_model():
     return board_model(parse_file(GHOST_TEST_PCB))
-
-
-@pytest.fixture(scope="module")
-def minimal_model():
-    return board_model(parse_file(MINIMAL_PCB))
-
-
-@pytest.fixture(scope="module")
-def dccf_model():
-    return board_model(parse_file(DCCF_PCB))
 
 
 @pytest.mark.unit
@@ -486,23 +476,53 @@ class TestForceComponents:
                 "ghost", "courtyard", "boundary",
             }
 
+    def test_forces_predict_next_step_not_residual(self):
+        """Reported forces are evaluated at the committed board (F0).
+
+        They must be horizon-independent (identical for a static probe and a
+        multi-iteration run from the same pose) so the overlay predicts the
+        next Step instead of showing the residual at the preview end.
+        """
+        m = _two_squares_model(gap_mm=2.0)
+        base = dict(
+            repulsion_kr=1.0,
+            courtyard_repulsion_kc=100.0,
+            courtyard_halo_mm=3.0,
+        )
+        static_prop = run_placement(m, PlacementParams(max_iterations=0, **base))
+        stepping_prop = run_placement(m, PlacementParams(max_iterations=5, **base))
+        assert static_prop.forces.keys() == stepping_prop.forces.keys()
+        for uuid, f_static in static_prop.forces.items():
+            f_step = stepping_prop.forces[uuid]
+            assert f_step == pytest.approx(f_static)
+            c_static = static_prop.force_components[uuid]
+            c_step = stepping_prop.force_components[uuid]
+            assert set(c_step) == set(c_static)
+            for cause, v_static in c_static.items():
+                assert c_step[cause] == pytest.approx(v_static)
+
+    def test_single_step_delta_follows_reported_force(self):
+        """For a 1-iteration run the displacement must head along F0."""
+        m = _two_squares_model(gap_mm=2.0)
+        p = PlacementParams(
+            max_iterations=1, repulsion_kr=1.0,
+            courtyard_repulsion_kc=100.0, courtyard_halo_mm=3.0,
+        )
+        prop = run_placement(m, p)
+        for uuid, (dx, dy, _da) in prop.deltas.items():
+            fx, fy = prop.forces[uuid]
+            assert fx * dx + fy * dy > 0.0, (
+                f"{uuid}: delta {(dx, dy)} opposes reported force {(fx, fy)}"
+            )
+
 
 def _two_squares_model(gap_mm: float) -> BoardModel:
     """Two 1-pad footprints with 2x2mm square courtyards, `gap_mm` apart edge-to-edge."""
 
     def make_fp(ref: str, uuid: str, net: str, x: float) -> Footprint:
-        pad = Pad(number="1", net_name=net, position=Point(x, 0.0))
-        corners = [
-            Point(x - 1.0, -1.0), Point(x + 1.0, -1.0),
-            Point(x + 1.0, 1.0), Point(x - 1.0, 1.0),
-            Point(x - 1.0, -1.0),
-        ]
-        courtyard = tuple((corners[i], corners[i + 1]) for i in range(4))
-        return Footprint(
-            ref=ref, footprint_id="T:R_0805", layer="F.Cu",
-            x_mm=x, y_mm=0.0, angle_deg=0.0,
-            pads=(pad,), courtyard=courtyard, uuid=uuid,
-        )
+        return make_test_fp(ref, uuid, x, 0.0, (net,),
+                            footprint_id="T:R_0805", hw=1.0, hh=1.0,
+                            pad_shape="circle", pad_layers=())
 
     fpa = make_fp("A1", "aaaaaaaa-0000-0000-0000-000000000001", "N1", 0.0)
     fpb = make_fp("B1", "bbbbbbbb-0000-0000-0000-000000000002", "N2", 2.0 + gap_mm)
@@ -572,14 +592,29 @@ class TestCourtyardHalo:
             PlacementParams.from_dict({"courtyard_halo_mm": 0.0})
 
     @pytest.mark.dccf
-    def test_c11_quarter_inch_clearance_is_quiet(self, dccf_model):
-        """C11 (4mm+ from neighbors) feels no courtyard force at new scale.
+    def test_c11_close_neighbor_contact_is_bounded(self, dccf_model):
+        """C11 feels bounded halo contact from its true close neighbor.
 
         Regression for the report: old size-scaled halo had RV sockets
         pushing C11 from 20-30mm away with ~3800 units.
+
+        Re-baselined 2026-10-10 (was test_c11_quarter_inch_clearance_is_quiet):
+        the courtyard-outline fix (polygonize/unary_union) recovered true
+        outlines, and C11/R11 now measure 1.30mm apart (inside the 3mm halo;
+        R14 sits exactly at the 3.00mm halo edge). So ~22.7 units of
+        legitimate halo contact replaced the buggy-shape 0.0. The upper
+        bound (< 50) still catches the old ~3800 blow-up by two orders of
+        magnitude; the lower bound (> 5) pins that contact is detected
+        (guards against a regression back to silent pad-bbox shapes).
+
+        Measured at the rest layout (max_iterations=0) on purpose: after
+        live iterations the pads slosh on mm scale (hot start + stiff
+        contact) and the reported force oscillates 0 -> 18 -> 2.5 -> 17
+        across adjacent iteration counts (2026-10-10), so any threshold
+        on the post-motion value pins a chaotic landing, not physics.
         """
         p = PlacementParams(
-            max_iterations=5,
+            max_iterations=0,
             courtyard_repulsion_kc=20.0,
             courtyard_halo_mm=3.0,
         )
@@ -590,8 +625,7 @@ class TestCourtyardHalo:
         uuid = "883e9176-8fb8-4697-9a2d-1a656ba552fe"
         comps = prop.force_components[uuid]
         courtyard = math.hypot(*comps["courtyard"])
-        pads = max(math.hypot(*comps["repulsion"]), math.hypot(*comps["attraction"]))
-        # Was ~3800 (courtyard) vs ~3 (pads) under the old size-scaled halo;
-        # pad forces must dominate now that distant halos are silent.
-        assert courtyard < 1.0
-        assert pads > courtyard
+        # Legitimate R11 contact at 1.3mm gap measures ~22.7; was ~3800
+        # from 20-30mm-away RV sockets under the old size-scaled halo,
+        # and 0.0 under the buggy pad-bbox shapes.
+        assert 5.0 < courtyard < 50.0, f"C11 courtyard={courtyard:.2f}"
