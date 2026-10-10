@@ -673,17 +673,32 @@ def _cost_grid_to_png(cost_grid: np.ndarray, routing_grid) -> str:
     return f"data:image/png;base64,{b64}"
 
 
-def proposal_to_json(proposal) -> dict:
+def proposal_to_json(proposal, include_frames=True) -> dict:
     def r5(x):
         return round(x, 5) if isinstance(x, float) else x
 
-    return {
+    def r3(x):
+        return round(x, 3) if isinstance(x, float) else x
+
+    def r2(x):
+        return round(x, 2) if isinstance(x, float) else x
+
+    out = {
         "deltas": {u: [r5(dx), r5(dy), r5(da)] for u, (dx, dy, da) in proposal.deltas.items()},
         "iterations": proposal.iterations,
         "final_max_disp_mm": r5(proposal.final_max_disp_mm),
         "elapsed_s": r5(proposal.elapsed_s),
         "params": proposal.params,
     }
+    frames = getattr(proposal, "frames", None) or []
+    if include_frames and frames:
+        out["frames"] = [
+            {u: [r3(dx), r3(dy), r2(da)] for u, (dx, dy, da) in fr.items()}
+            for fr in frames
+        ]
+        out["frame_stride"] = getattr(proposal, "frame_stride", 1)
+        out["frame_count"] = len(frames)
+    return out
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -821,6 +836,24 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(404, b"no proposal", "text/plain")
                 return
             body = json.dumps(proposal_to_json(proposal)).encode()
+            self._send(200, body, "application/json")
+            return
+        if parsed.path == "/api/placement/frames":
+            proposal = STATE.current_proposal
+            if proposal is None:
+                self._send(404, b"no proposal", "text/plain")
+                return
+            frames = getattr(proposal, "frames", None) or []
+            if not frames:
+                self._send(404, b"no frames (re-run with record_frames)", "text/plain")
+                return
+            body = json.dumps({
+                "ok": True,
+                "iterations": proposal.iterations,
+                "frame_stride": getattr(proposal, "frame_stride", 1),
+                "frame_count": len(frames),
+                "frames": proposal_to_json(proposal)["frames"],
+            }).encode()
             self._send(200, body, "application/json")
             return
         if parsed.path == "/api/placement/pinned":
@@ -1114,6 +1147,24 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 # Step budget overrides the saved max_iterations; other settings preserved.
                 params = replace(params, max_iterations=iterations)
+            # Trajectory frames for the motion player: explicit opt-in, plus
+            # auto-record on short Step budgets (<=200 iters) where per-iter
+            # Kabsch capture is cheap and strange-moves debugging happens.
+            record_frames = bool(req.get("record_frames", False))
+            frame_stride = req.get("frame_stride", 1)
+            max_frames = req.get("max_frames", 200)
+            try:
+                frame_stride = max(1, int(frame_stride))
+            except (TypeError, ValueError):
+                self._send(400, b"frame_stride must be a positive integer", "text/plain")
+                return
+            try:
+                max_frames = max(1, min(1000, int(max_frames)))
+            except (TypeError, ValueError):
+                self._send(400, b"max_frames must be a positive integer", "text/plain")
+                return
+            if iterations is not None and iterations <= 200:
+                record_frames = True
 
 # If movable_uuids not provided, compute as all unlocked except pinned
             if movable_uuids is None:
@@ -1128,7 +1179,12 @@ class Handler(BaseHTTPRequestHandler):
             
             
             try:
-                proposal = run_placement(model, params, movable_uuids)
+                proposal = run_placement(
+                    model, params, movable_uuids,
+                    record_frames=record_frames,
+                    frame_stride=frame_stride,
+                    max_frames=max_frames,
+                )
             except Exception as exc:
                 import traceback
                 traceback.print_exc()
@@ -1144,6 +1200,8 @@ class Handler(BaseHTTPRequestHandler):
                 "final_max_disp_mm": proposal.final_max_disp_mm,
                 "elapsed_s": proposal.elapsed_s,
                 "version": version,
+                "frame_count": len(getattr(proposal, "frames", None) or []),
+                "frame_stride": getattr(proposal, "frame_stride", 1),
             }
             self._send(200, json.dumps(payload).encode(), "application/json")
             return

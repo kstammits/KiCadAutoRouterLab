@@ -23,7 +23,7 @@ from typing import Dict, List, Optional, Set, Tuple
 
 import numpy as np
 from shapely.geometry import Polygon
-from shapely.ops import polygonize, unary_union
+from shapely.ops import nearest_points, polygonize, unary_union
 
 from .board_model import BoardModel, BoardRegion, Footprint, Pad, Segment
 
@@ -120,12 +120,59 @@ def _validate(params: PlacementParams) -> None:
         raise ValueError("max_iterations must be >= 1")
 
 
+# Trajectory-frame viz precision: 1 micron / 0.01 deg is far below the
+# convergence epsilon (~0.01mm) and invisible on SVG, but cuts JSON payload
+# ~30% vs full float repr.
+FRAME_XY_DECIMALS = 3
+FRAME_ANGLE_DECIMALS = 2
+FRAME_DEFAULT_MAX = 200
+
+
+def _round_frame_deltas(
+    frame: Dict[str, Tuple[float, float, float]],
+    xy_decimals: int = FRAME_XY_DECIMALS,
+    angle_decimals: int = FRAME_ANGLE_DECIMALS,
+) -> Dict[str, Tuple[float, float, float]]:
+    """Round one frame's (dx, dy, da) deltas for compact JSON output."""
+    return {
+        uuid: (
+            round(float(dx), xy_decimals),
+            round(float(dy), xy_decimals),
+            round(float(da), angle_decimals),
+        )
+        for uuid, (dx, dy, da) in frame.items()
+    }
+
+
+def _thin_frames(
+    frames: List[Dict[str, Tuple[float, float, float]]], max_frames: int
+) -> List[Dict[str, Tuple[float, float, float]]]:
+    """Uniformly downsample frames to at most max_frames, always keeping last.
+
+    Deterministic (round-half-away via int(i * (n-1) / (m-1))); no-ops when
+    already within budget.
+    """
+    n = len(frames)
+    if max_frames < 1:
+        return []
+    if n <= max_frames:
+        return frames
+    if max_frames == 1:
+        return [frames[-1]]
+    return [frames[int(i * (n - 1) / (max_frames - 1))] for i in range(max_frames - 1)] + [
+        frames[-1]
+    ]
+
+
 @dataclass(frozen=True)
 class PlacementProposal:
     """Result of a placement run: per-footprint deltas keyed by UUID + diagnostics.
 
     Deltas are (dx_mm, dy_mm, dangle_deg) for each movable footprint.
     Forces are (Fx, Fy) in arbitrary units for each movable footprint.
+    Frames (opt-in via run_placement(record_frames=True)) hold per-sampled-
+    iteration (dx, dy, da) deltas vs the committed start positions for the
+    SVG motion player; already rounded + downsampled to max_frames.
     """
 
     deltas: Dict[str, Tuple[float, float, float]]
@@ -137,6 +184,8 @@ class PlacementProposal:
     force_components: Dict[str, Dict[str, Tuple[float, float]]] = field(
         default_factory=dict
     )
+    frames: List[Dict[str, Tuple[float, float, float]]] = field(default_factory=list)
+    frame_stride: int = 1
 
 
 def _collect_pad_nodes(model: BoardModel) -> Tuple[List[Pad], List[int], Dict[str, List[int]], Dict[int, int], List[bool]]:
@@ -629,13 +678,25 @@ def _run_region_simulation(
     model: "BoardModel",
     params: "PlacementParams",
     movable_uuids: Optional[Set[str]],
-) -> Tuple[Dict[str, Tuple[float, float, float]], Dict[str, Tuple[float, float]], int]:
+    record_frames: bool = False,
+    frame_stride: int = 1,
+) -> Tuple[
+    Dict[str, Tuple[float, float, float]],
+    Dict[str, Tuple[float, float]],
+    int,
+    Dict[str, Dict[str, Tuple[float, float]]],
+    List[Dict[str, Tuple[float, float, float]]],
+]:
     """Run force-spring simulation for a single board region.
 
     Returns:
         - deltas: {uuid: (dx, dy, da)} for footprints in this region
         - forces: {uuid: (Fx, Fy)} for footprints in this region
         - iterations: number of iterations run
+        - force_components: {uuid: {cause: (Fx, Fy)}}
+        - frames: per-sampled-iteration (dx, dy, da) deltas vs start
+          (empty unless record_frames; rounded, stride-sampled, final
+          frame always appended)
     """
     from .board_model import BoardRegion
 
@@ -645,7 +706,7 @@ def _run_region_simulation(
     # Filter pads for this region
     n_pads = len(region_pads)
     if n_pads == 0:
-        return {}, {}, 0, {}
+        return {}, {}, 0, {}, []
 
     # Build pad positions array
     pad_positions = np.zeros((n_pads, 2), dtype=np.float64)
@@ -681,7 +742,7 @@ def _run_region_simulation(
     ], dtype=bool)
 
     if not pad_movable.any():
-        return {}, {}, 0, {}
+        return {}, {}, 0, {}, []
 
     # Net attraction edges for this region. Same builder as the tests pin
     # (layer-blind by design: cross-layer electrical nearness keeps
@@ -1165,16 +1226,31 @@ def _run_region_simulation(
                             # Gentle repulsion - use polygon distance for margin (more accurate for asymmetric shapes)
                             margin = halo_reach - poly_dist
                             if margin > 0:
-                                # Direction from j centroid to i centroid
-                                dx = fp_centroids_arr[i, 0] - fp_centroids_arr[j, 0]
-                                dy = fp_centroids_arr[i, 1] - fp_centroids_arr[j, 1]
-                                centroid_dist = math.hypot(dx, dy)
-                                if centroid_dist > 1e-6:
+                                # Direction along the contact normal (edge-orthogonal):
+                                # the nearest-point pair on the two outlines, not
+                                # centroid-centroid (which skews diagonal on long/wide
+                                # parts: e.g. DCCF RV2's centroid sits ~17mm down the
+                                # fader body from R8, so a centroid push shoves R8
+                                # sideways along RV2 instead of straight off its edge).
+                                try:
+                                    _pi, _pj = nearest_points(poly_i, poly_j)
+                                    dx = float(_pi.x - _pj.x)
+                                    dy = float(_pi.y - _pj.y)
+                                except Exception:
+                                    dx = dy = 0.0
+                                _gap = math.hypot(dx, dy)
+                                if _gap <= 1e-9:
+                                    # Coincident/degenerate outlines: fall back to
+                                    # the centroid direction (always defined).
+                                    dx = fp_centroids_arr[i, 0] - fp_centroids_arr[j, 0]
+                                    dy = fp_centroids_arr[i, 1] - fp_centroids_arr[j, 1]
+                                    _gap = math.hypot(dx, dy)
+                                if _gap > 1e-6:
                                     strength = (
                                         params.courtyard_repulsion_kc
                                         * (margin / halo_reach)
                                     )
-                                    ux, uy = dx / centroid_dist, dy / centroid_dist
+                                    ux, uy = dx / _gap, dy / _gap
                                     fx, fy = strength * ux, strength * uy
                                     # Halo nudges stay uniform broadcasts:
                                     # weighting them would inject a moment
@@ -1276,6 +1352,45 @@ def _run_region_simulation(
         same_fp_mask,
         return_components=True,
     )
+    # ---- Trajectory frames (opt-in motion viz) ----
+    # Dense per-sampled-iteration (dx, dy, da) vs committed start for every
+    # movable footprint with pads in this region. Kabsch per frame is cheap
+    # (2x2 SVD per part) and only runs when requested.
+    _frame_stride = max(1, int(frame_stride or 1))
+    _frame_fps: List[Tuple[str, list]] = []
+    if record_frames:
+        for _fp in model.footprints:
+            if not _fp.uuid or _fp.locked:
+                continue
+            if model.footprint_region.get(_fp.uuid) != region_idx:
+                continue
+            if movable_uuids is not None and _fp.uuid not in movable_uuids:
+                continue
+            _pi = region_fp_uuid_to_pad_indices.get(_fp.uuid)
+            if not _pi:
+                continue
+            _frame_fps.append((_fp, list(_pi)))
+
+    def _capture_frame(pos: np.ndarray) -> Dict[str, Tuple[float, float, float]]:
+        frame: Dict[str, Tuple[float, float, float]] = {}
+        for _fp, _pi in _frame_fps:
+            try:
+                _nx, _ny, _na = _compute_footprint_pose_from_pads(
+                    _fp, pos, _pi, region_global_pad_idx_to_local
+                )
+            except Exception:
+                continue
+            _dx = _nx - _fp.x_mm
+            _dy = _ny - _fp.y_mm
+            _da = (_na - _fp.angle_deg + 180) % 360 - 180
+            frame[_fp.uuid] = (
+                round(float(_dx), FRAME_XY_DECIMALS),
+                round(float(_dy), FRAME_XY_DECIMALS),
+                round(float(_da), FRAME_ANGLE_DECIMALS),
+            )
+        return frame
+
+    _region_frames: List[Dict[str, Tuple[float, float, float]]] = []
     for iteration in range(params.max_iterations):
         force = _compute_total_force(
             positions, len(region_pads), pad_movable,
@@ -1360,6 +1475,9 @@ def _run_region_simulation(
         positions[:, 0] = np.clip(positions[:, 0], min_x, max_x)
         positions[:, 1] = np.clip(positions[:, 1], min_y, max_y)
 
+        if record_frames and _frame_fps and ((iteration + 1) % _frame_stride == 0):
+            _region_frames.append(_capture_frame(positions))
+
         # Convergence check
         max_disp = float(np.max(np.linalg.norm(positions - prev_positions, axis=1)))
         if max_disp < params.convergence_eps_mm:
@@ -1420,13 +1538,46 @@ def _run_region_simulation(
                     comp[cause] = (float(s[0]), float(s[1]))
             footprint_components[fp.uuid] = comp
 
-    return deltas, footprint_forces, iteration + 1, footprint_components
+    if record_frames and _frame_fps:
+        _final_frame = _capture_frame(positions)
+        # Avoid doubling the last sampled frame when the run ended exactly
+        # on a stride boundary (same rounded values).
+        if not _region_frames or _region_frames[-1] != _final_frame:
+            _region_frames.append(_final_frame)
+
+    return deltas, footprint_forces, iteration + 1, footprint_components, _region_frames
+
+
+def _merge_region_frames(
+    per_region: List[List[Dict[str, Tuple[float, float, float]]]],
+) -> List[Dict[str, Tuple[float, float, float]]]:
+    """Merge per-region frame lists into global frames.
+
+    Regions converge independently, so lists differ in length; shorter
+    regions hold their last pose (parts at rest) while longer ones keep
+    moving. Union of uuids per index.
+    """
+    if not per_region:
+        return []
+    n = max(len(f) for f in per_region)
+    merged: List[Dict[str, Tuple[float, float, float]]] = []
+    for k in range(n):
+        frame: Dict[str, Tuple[float, float, float]] = {}
+        for frames in per_region:
+            if not frames:
+                continue
+            frame.update(frames[min(k, len(frames) - 1)])
+        merged.append(frame)
+    return merged
 
 
 def run_placement(
     model: BoardModel,
     params: PlacementParams,
     movable_uuids: Optional[Set[str]] = None,
+    record_frames: bool = False,
+    frame_stride: int = 1,
+    max_frames: int = FRAME_DEFAULT_MAX,
 ) -> PlacementProposal:
     """Run per-pad force-spring placement for ``model`` under ``params``.
 
@@ -1440,11 +1591,26 @@ def run_placement(
         movable_uuids: Optional set of footprint UUIDs that are allowed to move.
             If None (default), all unlocked footprints can move. If provided,
             only footprints in this set AND not locked can move.
+        record_frames: capture per-iteration (dx, dy, da) frames for the SVG
+            motion player (default False — zero overhead when off).
+        frame_stride: record every Nth iteration (effective stride is raised
+            automatically so capture stays within max_frames).
+        max_frames: cap on frames in the proposal; longer runs are uniformly
+            thinned (last frame always kept).
 
     Returns:
         PlacementProposal with per-footprint deltas (dx, dy, dangle) keyed by UUID.
     """
     start = time.perf_counter()
+    # Bound capture cost upfront: effective stride guarantees at most
+    # max_frames samples even for 19k-iteration convergence runs.
+    _eff_stride = max(1, int(frame_stride or 1))
+    if record_frames and max_frames >= 1 and params.max_iterations > max_frames:
+        import math as _math
+
+        _eff_stride = max(
+            _eff_stride, _math.ceil(params.max_iterations / max_frames)
+        )
 
     # Collect pad nodes
     pads, pad_to_fp_idx, fp_uuid_to_pad_indices, global_pad_idx_to_local, pad_is_ghost = _collect_pad_nodes(model)
@@ -1470,6 +1636,7 @@ def run_placement(
         all_components: Dict[str, Dict[str, Tuple[float, float]]] = {}
         total_iterations = 0
         max_final_disp = 0.0
+        all_region_frames: List[List[Dict[str, Tuple[float, float, float]]]] = []
 
         for region_idx, region in enumerate(model.board_regions):
             # Collect pads for this region
@@ -1502,18 +1669,24 @@ def run_placement(
                     region_global_pad_idx_to_local[local_idx] = global_pad_idx_to_local[i]
 
             if region_pads:
-                region_deltas, region_forces, region_iters, region_comps = _run_region_simulation(
+                region_deltas, region_forces, region_iters, region_comps, region_frames = _run_region_simulation(
                     region_idx, model.board_regions[region_idx],
                     region_pad_indices, region_pads, region_pad_to_fp_idx,
                     region_fp_uuid_to_pad_indices, region_global_pad_idx_to_local,
-                    region_pad_is_ghost, model, params, movable_uuids
+                    region_pad_is_ghost, model, params, movable_uuids,
+                    record_frames, _eff_stride,
                 )
                 all_deltas.update(region_deltas)
                 all_forces.update(region_forces)
                 all_components.update(region_comps)
                 total_iterations = max(total_iterations, region_iters)
                 max_final_disp = max(max_final_disp, max((math.hypot(dx, dy) for dx, dy, _ in region_deltas.values()), default=0.0))
+                if record_frames and region_frames:
+                    all_region_frames.append(region_frames)
 
+        merged_frames = _thin_frames(
+            _merge_region_frames(all_region_frames), max_frames
+        ) if record_frames else []
         return PlacementProposal(
             deltas=all_deltas,
             iterations=total_iterations,
@@ -1522,6 +1695,8 @@ def run_placement(
             params=params.to_dict(),
             forces=all_forces,
             force_components=all_components,
+            frames=merged_frames,
+            frame_stride=_eff_stride if record_frames else 1,
         )
 
     # Single region mode: create a virtual region covering the whole board
@@ -1540,13 +1715,15 @@ def run_placement(
     region_global_pad_idx_to_local = global_pad_idx_to_local
     region_pad_is_ghost = pad_is_ghost
 
-    region_deltas, region_forces, region_iters, region_comps = _run_region_simulation(
+    region_deltas, region_forces, region_iters, region_comps, region_frames = _run_region_simulation(
         0, virtual_region,
         region_pad_indices, region_pads, region_pad_to_fp_idx,
         region_fp_uuid_to_pad_indices, region_global_pad_idx_to_local,
-        region_pad_is_ghost, model, params, movable_uuids
+        region_pad_is_ghost, model, params, movable_uuids,
+        record_frames, _eff_stride,
     )
 
+    thin_frames = _thin_frames(region_frames, max_frames) if record_frames else []
     return PlacementProposal(
         deltas=region_deltas,
         iterations=region_iters,
@@ -1555,4 +1732,6 @@ def run_placement(
         params=params.to_dict(),
         forces=region_forces,
         force_components=region_comps,
+        frames=thin_frames,
+        frame_stride=_eff_stride if record_frames else 1,
     )

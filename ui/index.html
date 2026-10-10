@@ -193,6 +193,13 @@
   .footprint.fp-selected text { fill: #7ee0a0; }
   .footprint.fp-movable text { fill: #4a8a4a; }
   
+  /* Motion scrubber */
+  #motion-bar input[type=range] { flex:1; min-width:6rem; }
+  #motion-readout { font-size:.65rem; color:#9fb0c0; white-space:nowrap; font-variant-numeric:tabular-nums; }
+  #motion-speed { background:#161c22; border:1px solid #3a4a5a; color:#d7e0e9; border-radius:3px; padding:.1rem .25rem; font-family:inherit; font-size:.7rem; }
+  .motion-trail { fill:none; stroke:#7ee0a0; stroke-width:0.12; opacity:0.7; }
+  .motion-trail-dot { fill:#7ee0a0; opacity:0.9; }
+
   /* Marquee selection rectangle */
   .marquee { position:absolute; pointer-events:none; border:1px dashed #7ee0a0; background:rgba(126,224,160,0.1); z-index:10; }
 
@@ -354,6 +361,23 @@
             <button id="accept-btn" disabled>Accept</button>
             <button id="clear-btn">Clear</button>
             <span id="diag"></span>
+          </div>
+          <div class="bar" id="motion-bar">
+            <span class="num">Motion</span>
+            <button id="motion-first-btn" title="First frame">|◀</button>
+            <button id="motion-prev-btn" title="Previous frame (←)">◀</button>
+            <button id="motion-play-btn" class="primary" title="Play motion slowly">▶</button>
+            <button id="motion-next-btn" title="Next frame (→)">▶</button>
+            <button id="motion-last-btn" title="Last frame">▶|</button>
+            <input type="range" id="motion-slider" min="0" max="0" value="0" step="1" title="Scrub trajectory frames">
+            <span id="motion-readout">no frames</span>
+            <select id="motion-speed" title="Playback speed (kept slow on purpose)">
+              <option value="1">1 fps</option>
+              <option value="2" selected>2 fps</option>
+              <option value="4">4 fps</option>
+            </select>
+            <label class="chk" title="Draw per-part trails up to the current frame"><input type="checkbox" id="motion-trails" checked> trails</label>
+            <button id="motion-reset-btn" title="Back to the proposal preview (final pose)">Reset</button>
           </div>
           <div class="params" id="params-grid"></div>
           <div class="bar"><button id="reset-params-btn">Reset params</button></div>
@@ -777,7 +801,16 @@ function renderCostGridOverlay() {
 }
 
 async function fetchAndInjectSVG(version) {
-  const res = await fetch(boardSrc(version));
+  let src = boardSrc(version);
+  // Motion owns the viewport while frames are loaded: its (dx, dy, da) group
+  // transforms are deltas vs the COMMITTED board, so the base SVG must be the
+  // committed view. An overlay=1 SVG already sits at the proposal pose
+  // (apply_deltas) — re-applying motion on top doubles every move (2026-10-10:
+  // Step-1 looked fine, full Run flipped R8 out).
+  if (typeof motion !== "undefined" && motion.frames.length) {
+    src = src.replace("overlay=1", "overlay=0");
+  }
+  const res = await fetch(src);
   if (!res.ok) return;
   const svgText = await res.text();
   viewport.querySelectorAll("svg").forEach(el => el.remove());
@@ -798,6 +831,7 @@ async function fetchAndInjectSVG(version) {
   applyViewBox();
   applyLayerVisibility();
   highlightSelectedNets();
+  if (typeof motion !== "undefined" && motion.frames.length) applyMotionFrame(motion.idx);
 }
 
 async function poll() {
@@ -814,8 +848,11 @@ async function poll() {
     document.getElementById("reset-btn").hidden = false;
     if (st.version !== lastVersion) {
       lastVersion = st.version;
+      if (motion.playing) pauseMotion();
+      resetMotionState();
       await fetchAndInjectSVG(st.version);
       await loadSelectionState();
+      await loadMotionFrames(true);
     }
   } else {
     sidePanel.hidden = true;
@@ -1704,6 +1741,228 @@ function fmtDuration(ms) {
   return `≈${Math.floor(s / 60)}min${s % 60 ? ` ${s % 60}s` : ""}`;
 }
 
+// ---- Motion player: scrub + slow playback of downsampled trajectory frames ----
+// Frames are (dx, dy, da) deltas vs the committed board positions the SVG is
+// drawn at, so each part animates via an in-place group transform — no SVG
+// re-fetch per frame. Playback is deliberately slow (max 4 fps): frames are
+// stride-sampled iterations, not wall-clock video, and fast playback hides
+// the direction reversals this player exists to debug.
+const motion = {
+  frames: [],      // [{uuid: [dx, dy, da]}]
+  stride: 1,
+  iterations: 0,
+  idx: 0,
+  basePos: {},     // {uuid: [x_mm, y_mm]} — rotation pivots, captured per load
+  playing: false,
+  timer: null,
+};
+
+function motionEls() {
+  return {
+    slider: document.getElementById("motion-slider"),
+    readout: document.getElementById("motion-readout"),
+    playBtn: document.getElementById("motion-play-btn"),
+    first: document.getElementById("motion-first-btn"),
+    prev: document.getElementById("motion-prev-btn"),
+    next: document.getElementById("motion-next-btn"),
+    last: document.getElementById("motion-last-btn"),
+    speed: document.getElementById("motion-speed"),
+    trails: document.getElementById("motion-trails"),
+    reset: document.getElementById("motion-reset-btn"),
+  };
+}
+
+function motionSetEnabled(on) {
+  const { slider, playBtn, first, prev, next, last } = motionEls();
+  const canPlay = on && motion.frames.length > 1;
+  slider.disabled = !on;
+  playBtn.disabled = !canPlay;
+  for (const b of [first, prev, next, last]) b.disabled = !on;
+}
+
+function motionReadout() {
+  const { readout, slider } = motionEls();
+  const n = motion.frames.length;
+  if (!n) { readout.textContent = "no frames"; return; }
+  const approxIter = Math.min(motion.iterations, motion.idx * motion.stride + 1);
+  const ds = motion.stride > 1 ? ` · stride ${motion.stride} (thinned)` : "";
+  readout.textContent = `frame ${motion.idx + 1}/${n} · ~iter ${approxIter}/${motion.iterations}${ds}`;
+  slider.value = String(motion.idx);
+}
+
+function motionFpNode(uuid) {
+  return viewport.querySelector(`g.footprint[data-fp-uuid="${uuid}"]`);
+}
+
+function applyMotionFrame(i) {
+  const svg = viewport.querySelector("svg");
+  if (!svg || !motion.frames.length) return;
+  motion.idx = Math.max(0, Math.min(motion.frames.length - 1, i));
+  const frame = motion.frames[motion.idx];
+  const seen = new Set();
+  for (const [uuid, d] of Object.entries(frame)) {
+    seen.add(uuid);
+    const g = motionFpNode(uuid);
+    if (!g) continue;
+    const base = motion.basePos[uuid];
+    if (!base) continue;
+    const [dx, dy, da] = d;
+    if (!dx && !dy && !da) { g.removeAttribute("transform"); continue; }
+    // Board geometry rotates R(-da) while SVG rotate() is R(+a): negate.
+    // Rotate about the committed center, then translate: p' = R(p-c)+c+d.
+    g.setAttribute("transform", `translate(${dx} ${dy}) rotate(${-da} ${base[0]} ${base[1]})`);
+  }
+  // Clear stale transforms for parts absent from this frame (sparse frames,
+  // or a newer run whose frame set omits a previously-moved part). Runs on
+  // every frame, not just idx 0 — scrubbing back from a dense frame would
+  // otherwise leave later transforms behind.
+  viewport.querySelectorAll("g.footprint[transform]").forEach(g => {
+    const uuid = g.getAttribute("data-fp-uuid");
+    if (uuid && !seen.has(uuid)) g.removeAttribute("transform");
+  });
+  drawMotionTrails();
+  motionReadout();
+}
+
+function drawMotionTrails() {
+  const svg = viewport.querySelector("svg");
+  if (!svg) return;
+  svg.querySelector("#motion-trails")?.remove();
+  if (!motionEls().trails.checked || !motion.frames.length || motion.idx < 1) return;
+  const NS = "http://www.w3.org/2000/svg";
+  const g = document.createElementNS(NS, "g");
+  g.setAttribute("id", "motion-trails");
+  g.setAttribute("pointer-events", "none");
+  for (const uuid of Object.keys(motion.frames[motion.idx])) {
+    const base = motion.basePos[uuid];
+    if (!base) continue;
+    const pts = [];
+    for (let k = 0; k <= motion.idx; k++) {
+      const d = motion.frames[k][uuid];
+      if (!d) continue;
+      pts.push(`${(base[0] + d[0]).toFixed(3)},${(base[1] + d[1]).toFixed(3)}`);
+    }
+    if (pts.length < 2) continue;
+    const pl = document.createElementNS(NS, "polyline");
+    pl.setAttribute("points", pts.join(" "));
+    pl.setAttribute("class", "motion-trail");
+    g.appendChild(pl);
+    const [lx, ly] = pts[pts.length - 1].split(",");
+    const dot = document.createElementNS(NS, "circle");
+    dot.setAttribute("cx", lx); dot.setAttribute("cy", ly);
+    dot.setAttribute("r", "0.25");
+    dot.setAttribute("class", "motion-trail-dot");
+    g.appendChild(dot);
+  }
+  svg.appendChild(g);
+}
+
+function clearMotionView() {
+  viewport.querySelectorAll("g.footprint[transform]").forEach(g => g.removeAttribute("transform"));
+  viewport.querySelector("#motion-trails")?.remove();
+}
+
+function resetMotionState() {
+  pauseMotion();
+  clearMotionView();
+  motion.frames = []; motion.stride = 1; motion.iterations = 0;
+  motion.idx = 0; motion.basePos = {};
+  const { slider } = motionEls();
+  slider.max = "0"; slider.value = "0";
+  motionReadout();
+  motionSetEnabled(false);
+}
+
+function pauseMotion() {
+  if (motion.timer) { clearInterval(motion.timer); motion.timer = null; }
+  motion.playing = false;
+  motionEls().playBtn.textContent = "▶";
+  motionEls().playBtn.title = "Play motion slowly";
+}
+
+function stepMotion(delta) {
+  if (!motion.frames.length) return;
+  pauseMotion();
+  applyMotionFrame(motion.idx + delta);
+}
+
+function toggleMotionPlay() {
+  if (!motion.frames.length) return;
+  if (motion.playing) { pauseMotion(); return; }
+  if (motion.idx >= motion.frames.length - 1) applyMotionFrame(0);
+  motion.playing = true;
+  const btn = motionEls().playBtn;
+  btn.textContent = "⏸";
+  btn.title = "Pause";
+  // Slow on purpose: at most 4 fps so single-frame jumps stay visible.
+  const fps = Math.min(4, Math.max(1, parseInt(motionEls().speed.value, 10) || 2));
+  motion.timer = setInterval(() => {
+    if (motion.idx >= motion.frames.length - 1) { pauseMotion(); return; }
+    applyMotionFrame(motion.idx + 1);
+  }, 1000 / fps);
+}
+
+async function loadMotionFrames(silent) {
+  try {
+    const res = await fetch("/api/placement/frames");
+    if (!res.ok) {
+      if (!silent) diagEl.textContent = "no motion frames — Step to record a trajectory";
+      resetMotionState();
+      return;
+    }
+    const data = await res.json();
+    if (!data.frames || !data.frames.length) { resetMotionState(); return; }
+    // Rotation pivots: committed footprint centers.
+    const fpRes = await fetch("/api/footprints");
+    const basePos = {};
+    if (fpRes.ok) {
+      const fpData = await fpRes.json();
+      for (const fp of fpData.footprints || []) {
+        if (fp.uuid != null && fp.x_mm != null) basePos[fp.uuid] = [fp.x_mm, fp.y_mm];
+      }
+    }
+    pauseMotion();
+    motion.frames = data.frames;
+    motion.stride = data.frame_stride || 1;
+    motion.iterations = data.iterations || data.frames.length;
+    motion.basePos = basePos;
+    motion.idx = data.frames.length - 1; // rest on the final (proposal) pose
+    // Re-inject the base SVG before applying: the live SVG may still show the
+    // previous proposal (overlay=1 sits at apply_deltas poses), which would
+    // stack under the new transforms. fetchAndInjectSVG forces overlay=0
+    // while frames are loaded and re-applies the rest frame on inject.
+    if (typeof lastVersion !== "undefined" && lastVersion) {
+      await fetchAndInjectSVG(lastVersion);
+    } else {
+      clearMotionView();
+    }
+    const { slider } = motionEls();
+    slider.max = String(data.frames.length - 1);
+    motionSetEnabled(true);
+    applyMotionFrame(motion.idx);
+  } catch (err) {
+    if (!silent) diagEl.textContent = `motion load failed: ${err.message}`;
+    resetMotionState();
+  }
+}
+
+document.getElementById("motion-play-btn").addEventListener("click", toggleMotionPlay);
+document.getElementById("motion-prev-btn").addEventListener("click", () => stepMotion(-1));
+document.getElementById("motion-next-btn").addEventListener("click", () => stepMotion(1));
+document.getElementById("motion-first-btn").addEventListener("click", () => { pauseMotion(); applyMotionFrame(0); });
+document.getElementById("motion-last-btn").addEventListener("click", () => { pauseMotion(); applyMotionFrame(motion.frames.length - 1); });
+document.getElementById("motion-reset-btn").addEventListener("click", () => {
+  pauseMotion();
+  clearMotionView();
+  if (motion.frames.length) applyMotionFrame(motion.frames.length - 1);
+});
+document.getElementById("motion-slider").addEventListener("input", (e) => {
+  pauseMotion();
+  applyMotionFrame(parseInt(e.target.value, 10) || 0);
+});
+document.getElementById("motion-trails").addEventListener("change", drawMotionTrails);
+motionSetEnabled(false);
+
 async function runPlacement(movableUuids, iterations) {
   const params = readParams();
   const budget = iterations ?? params.max_iterations ?? 1000;
@@ -1730,7 +1989,7 @@ async function runPlacement(movableUuids, iterations) {
     const saveRes = await fetch("/api/placement/params", { method: "POST", body: JSON.stringify(params) });
     if (!saveRes.ok) throw new Error(await saveRes.text());
 
-    const body = { movable_uuids: movableUuids };
+    const body = { movable_uuids: movableUuids, record_frames: true, max_frames: 200 };
     if (iterations != null) body.iterations = iterations;
     const res = await fetch("/api/placement/run", {
       method: "POST",
@@ -1740,6 +1999,7 @@ async function runPlacement(movableUuids, iterations) {
     });
     if (!res.ok) throw new Error(await res.text());
     const r = await res.json();
+    await loadMotionFrames(true);
     if (r.moved > 0) {
       diagEl.textContent = `v${r.version} — ${r.moved} moved, max Δ ${r.final_max_disp_mm.toFixed(2)} mm, ${r.iterations} iters, ${r.elapsed_s.toPrecision(2)} s`;
       document.getElementById("accept-btn").disabled = false;
@@ -1813,6 +2073,7 @@ document.getElementById("accept-btn").addEventListener("click", async () => {
     document.getElementById("step-selected-btn").textContent = "Step Selected";
     document.getElementById("step-all-btn").textContent = "Step All Movable";
     document.getElementById("undo-btn").disabled = false;
+    resetMotionState(); // positions committed — cached deltas are stale
   } catch (err) {
     diagEl.textContent = `accept failed: ${err.message}`;
   }
@@ -1824,6 +2085,7 @@ document.getElementById("clear-btn").addEventListener("click", async () => {
   document.getElementById("accept-btn").disabled = true;
   document.getElementById("step-selected-btn").textContent = "Step Selected";
   document.getElementById("step-all-btn").textContent = "Step All Movable";
+  resetMotionState();
 });
 
 document.getElementById("undo-btn").addEventListener("click", async () => {
@@ -1835,6 +2097,7 @@ document.getElementById("undo-btn").addEventListener("click", async () => {
     document.getElementById("accept-btn").disabled = true;
     document.getElementById("step-selected-btn").textContent = "Step Selected";
     document.getElementById("step-all-btn").textContent = "Step All Movable";
+    resetMotionState();
   } catch (err) {
     diagEl.textContent = `undo failed: ${err.message}`;
   }
@@ -2617,6 +2880,11 @@ document.addEventListener("keydown", e => {
     // Space - step selected
     e.preventDefault();
     document.getElementById("step-selected-btn").click();
+  } else if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && motion.frames.length) {
+    const tag = (document.activeElement?.tagName || "").toLowerCase();
+    if (tag === "input" || tag === "select" || tag === "textarea") return;
+    e.preventDefault();
+    stepMotion(e.key === "ArrowLeft" ? -1 : 1);
   }
 });
 
