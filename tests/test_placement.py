@@ -51,7 +51,6 @@ class TestParams:
         p = PlacementParams()
         assert p.repulsion_kr == 100.0
         assert p.attraction_ka == 0.05
-        assert p.ideal_length_mm == 25.0
         assert p.max_iterations == 1000
         assert p.convergence_eps_mm == 0.01
         assert p.rigid_stiffness == 5e5
@@ -83,7 +82,6 @@ class TestParams:
             {"max_iterations": 2.5},
             {"repulsion_kr": 0},
             {"attraction_ka": -0.1},
-            {"ideal_length_mm": 0},
             {"convergence_eps_mm": 0},
             {"repulsion_kr": "big"},
         ],
@@ -386,9 +384,8 @@ class TestGhostComponents:
         """Ghost attraction properties are parsed correctly."""
         ghost = next(fp for fp in ghost_test_model.ghost_footprints if fp.ref == "GHOST_FERRULE")
         assert len(ghost.ghost_attractions) == 1
-        target_ref, ideal_len, ka = ghost.ghost_attractions[0]
+        target_ref, ka = ghost.ghost_attractions[0]
         assert target_ref == "U1"
-        assert ideal_len == 25.0
         assert ka == 0.1
 
     def test_ghost_attracts_target_footprint(self, ghost_test_model):

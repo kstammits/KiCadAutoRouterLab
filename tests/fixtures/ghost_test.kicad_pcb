@@ -161,7 +161,7 @@
 			(at 0 0 0)
 			(layer "F.SilkS")
 			(hide yes))
-		(property "ghost_attract_1" "U1,25.0,0.1"
+		(property "ghost_attract_1" "U1,0.1"
 			(at 0 0 0)
 			(layer "F.SilkS")
 			(hide yes))

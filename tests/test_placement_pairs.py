@@ -85,7 +85,6 @@ PARAMS = PlacementParams(
     convergence_eps_mm=1e-12,
     repulsion_kr=100.0,
     attraction_ka=0.05,
-    ideal_length_mm=25.0,
     courtyard_repulsion_kc=10000.0,
     courtyard_halo_mm=3.0,
     boundary_repulsion_kb=1.0,  # negligible: parts start at board center
@@ -103,7 +102,6 @@ SEPARATION_PARAMS = PlacementParams(
     convergence_eps_mm=1e-12,
     repulsion_kr=100.0,
     attraction_ka=0.05,
-    ideal_length_mm=25.0,
     courtyard_repulsion_kc=10000.0,
     courtyard_halo_mm=3.0,
     boundary_repulsion_kb=1.0,
@@ -145,19 +143,17 @@ def test_movable_separates_from_later_immobile():
 
 
 @pytest.mark.regression
-def test_rotation_rate_capped_per_iteration():
-    """F2: no footprint spins more than max_dangle_deg in one iteration.
+def test_shear_produces_finite_rotation():
+    """Rotational shear is governed by rigid MST + contact weighting.
 
-    A locked part sits ~0.3mm from one pad of a 2-pad movable part, so
-    per-pad repulsion differs by ~50x across the footprint -- without a
-    cap the translation budget synthesizes tens of degrees of spin in a
-    single step, which Kabsch only reads out after the damage is done.
-    Courtyard kc is set near-zero on purpose: courtyard pushes are
-    stretch-dominated (both pads shoved along one axis, which Kabsch
-    reads as extension, not rotation) and already small here -- this
-    test isolates rotational shear. The cap bounds the rate (15deg
-    default still allows full reorientation over a run, which magnet
-    clustering needs); rotation is never frozen.
+    Replaces test_rotation_rate_capped_per_iteration (2026-10-11): the
+    max_dangle_deg cap is removed -- there is no velocity to damp, only
+    per-iteration displacements. A locked part sits ~0.3mm from one pad
+    of a 2-pad movable part, so per-pad repulsion differs by ~50x across
+    the footprint. Courtyard kc is near-zero on purpose to isolate
+    repulsion shear. What this guards: the shear resolves to finite
+    motion (no NaN, no full spins in a single step from a sub-mm
+    layout), with rotation read out via Kabsch as before.
     """
     from .helpers import make_fp as _make_fp
 
@@ -187,29 +183,18 @@ def test_rotation_rate_capped_per_iteration():
         convergence_eps_mm=1e-12,
         repulsion_kr=100.0,
         attraction_ka=0.05,
-        ideal_length_mm=25.0,
         courtyard_repulsion_kc=1e-6,  # near-zero: isolate repulsion shear
         courtyard_halo_mm=3.0,
         boundary_repulsion_kb=1.0,
         rigid_stiffness=5e5,
     )
-    capped = run_placement(
-        model, PlacementParams(**base, max_dangle_deg=15.0),
-        movable_uuids={"uuid-m"},
-    )
-    assert "uuid-m" in capped.deltas
-    _, _, da_capped = capped.deltas["uuid-m"]
-    assert abs(da_capped) <= 15.0 + 1e-6, f"rotation exceeded cap: da={da_capped}"
-    # Control: cap disabled (>= 180) must show the shear the cap removes.
-    free = run_placement(
-        model, PlacementParams(**base, max_dangle_deg=200.0),
-        movable_uuids={"uuid-m"},
-    )
-    _, _, da_free = free.deltas["uuid-m"]
-    assert abs(da_free) > 15.0, (
-        f"expected uncapped spin above the cap, got da={da_free} "
-        f"(capped was {da_capped})"
-    )
+    prop = run_placement(model, PlacementParams(**base), movable_uuids={"uuid-m"})
+    assert "uuid-m" in prop.deltas
+    import math
+
+    dx, dy, da = prop.deltas["uuid-m"]
+    assert all(math.isfinite(v) for v in (dx, dy, da))
+    assert abs(da) < 180.0, f"single step must not spin: da={da}"
 
 
 @pytest.mark.regression
@@ -229,7 +214,6 @@ def test_contact_weighting_conserves_total():
         convergence_eps_mm=1e-12,
         repulsion_kr=100.0,
         attraction_ka=0.05,
-        ideal_length_mm=25.0,
         courtyard_repulsion_kc=10000.0,
         courtyard_halo_mm=3.0,
         boundary_repulsion_kb=1.0,
@@ -321,7 +305,6 @@ def test_boundary_force_bounded_near_edge():
         convergence_eps_mm=1e-12,
         repulsion_kr=100.0,
         attraction_ka=0.05,
-        ideal_length_mm=25.0,
         courtyard_repulsion_kc=10000.0,
         courtyard_halo_mm=3.0,
         boundary_repulsion_kb=500000.0,

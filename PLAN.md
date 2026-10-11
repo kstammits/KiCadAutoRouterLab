@@ -1,13 +1,10 @@
 # PLAN — Routing Stage (2026-10-03)
 
-**Context**: Placement pass works (spring migration, per-UUID writeback, SVG preview). Next: **additive two-layer routing** (F.Cu + B.Cu) with per-net-class width/clearance. Tracks are additive only — we never delete existing tracks, only add new ones for unconnected pad pairs.
-
 **Constraints (2026-10-03)**:
 - Grid: 0.1mm resolution (configurable)
 - Via cost: 5mm wire equivalent, max ~100 vias total
 - Layers: F.Cu + B.Cu (both signals + power/ground)
 - Track widths: per-net (power wider, signal standard)
-- Vias: <100 total, cost=5mm equivalent
 - **Rip-up during placement**: when parts move, their connected nets get ripped up, parts move freely, then re-routed
 - **Through-hole as free vias**: THT pads connect both layers at zero via cost
 - Two power rails (V+, V-) + broken ground planes on both layers
@@ -22,18 +19,6 @@
   - Ground stitching: connect ground splits with vias at boundaries
   - Decap fanout: short direct routes, THT caps use both layers (free via)
 
-- [x] **R6. Through-Hole "Free Via" Support** (done 2026-10-10)
-  - THT pad marks HIGH_COST ring on BOTH layers ✅
-  - Layer transition at THT drill disc = 0 via cost (drill-radius mask, not single cell); no `Via` emitted on own holes (barrel reuse); foreign nets face a hard exclusion ring (secondary-grid blocking, own net exempt)
-  - Via price is mm-denominated (`CostMap.via_cost_mm`, router scales to cells per grid)
-  - Keepout zones (`tracks_allowed=False`) mark BLOCKED on their layers
-  - Power/ground nets: THT pads become automatic stitching points (deferred)
-
-- [x] **R7. Output & Writeback**
-  - `output.py`: routes → KiCad track/via S-expressions (collinear merge, per-class widths)
-  - `io.py` extensions: track/via writer → insert into PCB S-expression tree
-  - Pipeline entry: parse → place → route → writeback → optional `kicad-cli drc` (stubbed in `pipeline.py`)
-
 - [ ] **R8. Tests & Parity**
   - Unit tests: grid transforms, obstacle marking, A* pathfinding, MST, RipUpManager
   - Integration test: route tube111 (pre-routed) → verify connectivity, THT free vias, no DRC violations
@@ -41,11 +26,8 @@
   - DRC gate: route → writeback → `kicad-cli drc` → iterate
 
 ## Scaling Notes
-- Grid: 0.1mm (configurable), ~100 cells/mm
+- Grid: 0.1mm (configurable), ~100 cells/mm2
 - Dense grid operations: numpy arrays, avoid Python loops
-- Lee BFS: deque + int8 grid, bit-packed if needed
-- Multi-net: O(nets × grid_cells) per pass; rip-up adds constant factor
-- Barnes–Hut for repulsion only needed at n ≳ 3–5k (current n≈100)
 
 ## Documentation Updates
 - `docs/autorouting_glossary.md`: add routing section with grid/Lee/A*/rip-up terms

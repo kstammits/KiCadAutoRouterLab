@@ -37,6 +37,51 @@ test_forces_predict_next_step_not_residual +
 test_single_step_delta_follows_reported_force in
 tests/test_placement.py::TestForceComponents, magnet/layers/pairs suites
 green.
+NOTE: full golden regenerated 2026-10-11 after integrator
+simplification (no physics-law change, but every trajectory moves):
+Fruchterman-Reingold temperature schedule removed, replaced with a fixed
+max_step_mm=1.0 cap (disp = force * cap, capped per pad); max_dangle_deg
+rotation cap removed with it; dead region np.clip left out (boundary force
+owns containment). The budget no longer shapes the path — the same
+(model, params) prefix is identical for any max_iterations. Justification:
+behavioral bar green (forces matrix incl. equilibrium, magnet incl.
+400-iter separation, layers, pairs incl. repurposed shear test, frames,
+ghost); fixed steps settle stiff contacts slower (seed42/kr30 sliver at
+200, clean at 400 — covered by the separation test budget).
+NOTE: full golden regenerated 2026-10-11 after deliberate sign/law
+fixes (placement physics, all justified against the behavioral bar):
+net-attraction and rigid-MST application signs were inverted (both pads
+pushed apart; exposed by the ideal_length removal, which had masked the
+attraction flip for close pairs) — swapped so pairs pull together;
+courtyard overlap kc/dist replaced with penetration-scaled kc*(1+area)
+plus coincident-tiebreak and zero-area-touch halo fallback (old form went
+weaker when deeper and silent when stacked); ghost fixture moved to the
+2-part attract format. Justification: tests/test_placement_forces.py (14
+matrix pins incl. sqrt(kr/ka) equilibrium, overlap monotonicity,
+coincident separation, per-force roles), tests/test_magnet.py (heuristics
++ preservation), tests/test_placement_layers.py (layer gate now asserted
+directly), tests/test_placement_pairs.py, tests/test_placement.py ghost/
+components suites all green.
+NOTE: full golden regenerated 2026-10-11 after courtyard fallback
+(board model, justified against the behavioral bar): footprints with
+no CrtYd (5x europi:Thonkiconn jacks on tube111: silk-only + pads)
+now synthesize an outline from Fab → SilkS → pad-bbox instead of an
+empty courtyard, so the SVG draws the jack body and placement
+collides the true 10x11.5mm body rather than a pad sliver. fp_arc
+support added (sampled as Bezier); fp_rect added. tube111 trajectories
+move; magnet/ghost/DCCF physics otherwise unchanged. Justification:
+forces/magnet/layers/pairs/placement suites green (85 passed).
+NOTE: full golden regenerated 2026-10-11 after deliberate integrator
+damping (placement dynamics, justified against the behavioral bar):
+per-pad adaptive step scale (halve on direction reversal, floor 1/8;
+regrow 1.08x on steady headings) kills the saturated 1mm ping-pong
+across the halo gradient that scrub playback showed as jitter with no
+progress; frames now also skip rounded-identical poses so scrub has no
+redundant steps. First-step deltas are bit-identical (scale starts at
+1.0). Justification: tests/test_placement_forces.py (14 matrix pins),
+tests/test_magnet.py, tests/test_placement_layers.py,
+tests/test_placement_pairs.py, tests/test_placement.py ghost/components
+suites all green on the new dynamics.
 NOTE: full golden regenerated 2026-10-10 after deliberate dynamics
 retune (placement physics, all justified against the behavioral bar):
 lowered courtyard/boundary defaults (kc 10000->2000, kb 500000->20000;

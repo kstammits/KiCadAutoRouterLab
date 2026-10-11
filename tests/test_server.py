@@ -86,7 +86,7 @@ def test_params_roundtrip():
         with urllib.request.urlopen(f"{base}/api/placement/params") as r:
             defaults = json.load(r)
         assert defaults["repulsion_kr"] == 100.0
-        custom = dict(defaults, repulsion_kr=42.5, ideal_length_mm=33.0)
+        custom = dict(defaults, repulsion_kr=42.5)
         req = urllib.request.Request(
             f"{base}/api/placement/params",
             data=json.dumps(custom).encode(),
@@ -94,7 +94,7 @@ def test_params_roundtrip():
         )
         with urllib.request.urlopen(req) as r:
             saved = json.load(r)
-        assert saved["repulsion_kr"] == 42.5 and saved["ideal_length_mm"] == 33.0
+        assert saved["repulsion_kr"] == 42.5
         with urllib.request.urlopen(f"{base}/api/placement/params") as r:
             reloaded = json.load(r)
         assert reloaded["repulsion_kr"] == 42.5

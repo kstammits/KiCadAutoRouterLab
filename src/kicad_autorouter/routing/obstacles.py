@@ -261,6 +261,47 @@ def drill_radius_cells(drill_mm: float, res_mm: float) -> int:
     return max(1, int(math.ceil((drill_mm / 2.0) / res_mm)))
 
 
+def via_halo_radius_cells(
+    via_size_mm: float,
+    clearance_mm: float,
+    track_half_mm: float,
+    res_mm: float,
+) -> int:
+    """Halo radius in cells covering via copper + clearance + track half-width.
+
+    A drilled via is an annulus of ``via_size_mm`` OD plus manufacturing
+    tolerance; foreign copper (prior tracks/vias, exclusion rings) must keep
+    ``clearance_mm + track_half_mm`` beyond the annulus edge. Same
+    ``max(1, ceil(...))`` spelling as :func:`pad_halo_radius_cells`.
+    """
+    if res_mm <= 0:
+        return 1
+    return max(1, int(math.ceil(
+        (via_size_mm / 2.0 + clearance_mm + track_half_mm) / res_mm
+    )))
+
+
+def track_corridor_radius_cells(
+    width_mm: float,
+    clearance_mm: float,
+    res_mm: float,
+) -> int:
+    """Corridor radius in cells reserving emitted track + clearance halo.
+
+    Covers the track half-width plus the clearance to neighboring copper so
+    later nets' tracks and via landings keep DRC distance. Single spelling
+    for what pipeline previously derived as ``max(half_width-1,
+    clearance_cells)`` with mismatched numerators.
+    """
+    if res_mm <= 0:
+        return 1
+    half_width = max(1, int(math.ceil(width_mm / res_mm / 2.0)))
+    clearance_radius = max(0, int(math.ceil(
+        (clearance_mm + width_mm / 2.0) / res_mm
+    )))
+    return max(max(0, half_width - 1), clearance_radius)
+
+
 def disc_cells(row: int, col: int, radius: int, H: int, W: int):
     """Yield bound-clipped ``(r, c)`` of the filled disc (same scan as the
     vectorized ``_mark_circular_zone``: ``dr²+dc² ≤ r²``)."""

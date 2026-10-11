@@ -1231,14 +1231,13 @@ class Handler(BaseHTTPRequestHandler):
             params = PlacementParams(
                 repulsion_kr=req.get("repulsion_kr", base_params.repulsion_kr),
                 attraction_ka=req.get("attraction_ka", base_params.attraction_ka),
-                ideal_length_mm=req.get("ideal_length_mm", base_params.ideal_length_mm),
                 max_iterations=0,
                 convergence_eps_mm=req.get("convergence_eps_mm", base_params.convergence_eps_mm),
                 rigid_stiffness=req.get("rigid_stiffness", base_params.rigid_stiffness),
                 courtyard_repulsion_kc=req.get("courtyard_repulsion_kc", base_params.courtyard_repulsion_kc),
                 courtyard_halo_mm=req.get("courtyard_halo_mm", base_params.courtyard_halo_mm),
                 boundary_repulsion_kb=req.get("boundary_repulsion_kb", base_params.boundary_repulsion_kb),
-                max_dangle_deg=req.get("max_dangle_deg", base_params.max_dangle_deg),
+                max_step_mm=req.get("max_step_mm", base_params.max_step_mm),
             )
 
             # If movable_uuids not provided, compute as all unlocked except pinned

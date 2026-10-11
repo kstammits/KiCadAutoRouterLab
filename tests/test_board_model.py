@@ -532,9 +532,8 @@ class TestGhostFootprints:
         assert ferrule_ghost.x_mm == 50.0
         assert ferrule_ghost.y_mm == 20.0
         assert len(ferrule_ghost.ghost_attractions) == 1
-        target_ref, ideal_len, ka = ferrule_ghost.ghost_attractions[0]
+        target_ref, ka = ferrule_ghost.ghost_attractions[0]
         assert target_ref == "U1"
-        assert ideal_len == 25.0
         assert ka == 0.1
 
     def test_ghost_courtyard_parsed(self, ghost_test_tree):

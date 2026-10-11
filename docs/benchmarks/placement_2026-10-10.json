@@ -1,0 +1,211 @@
+{
+  "cases": [
+    {
+      "board": "minimal",
+      "footprints": 4,
+      "pads": 4,
+      "fixed_budget_iters": 0,
+      "fixed_s": 0.0,
+      "ms_per_iter": 0.036,
+      "converged_iters": 0,
+      "converged_s": 0.0,
+      "moved": 0
+    },
+    {
+      "board": "tube111",
+      "footprints": 105,
+      "pads": 272,
+      "fixed_budget_iters": 50,
+      "fixed_s": 1.143,
+      "ms_per_iter": 22.868,
+      "converged_iters": 1000,
+      "converged_s": 23.639,
+      "moved": 95
+    },
+    {
+      "board": "synthetic_8fp",
+      "footprints": 8,
+      "pads": 32,
+      "fixed_budget_iters": 50,
+      "fixed_s": 0.064,
+      "ms_per_iter": 1.27,
+      "converged_iters": 112,
+      "converged_s": 0.149,
+      "moved": 8
+    },
+    {
+      "board": "synthetic_16fp",
+      "footprints": 16,
+      "pads": 64,
+      "fixed_budget_iters": 50,
+      "fixed_s": 0.123,
+      "ms_per_iter": 2.46,
+      "converged_iters": 129,
+      "converged_s": 0.391,
+      "moved": 16
+    },
+    {
+      "board": "synthetic_32fp",
+      "footprints": 32,
+      "pads": 128,
+      "fixed_budget_iters": 50,
+      "fixed_s": 0.226,
+      "ms_per_iter": 4.515,
+      "converged_iters": 1000,
+      "converged_s": 7.868,
+      "moved": 32
+    },
+    {
+      "board": "synthetic_64fp",
+      "footprints": 64,
+      "pads": 256,
+      "fixed_budget_iters": 50,
+      "fixed_s": 0.473,
+      "ms_per_iter": 9.459,
+      "converged_iters": 1000,
+      "converged_s": 14.903,
+      "moved": 64
+    },
+    {
+      "board": "DCCF",
+      "footprints": 97,
+      "pads": 272,
+      "fixed_budget_iters": 50,
+      "fixed_s": 0.708,
+      "ms_per_iter": 14.159,
+      "converged_iters": 1000,
+      "converged_s": 12.557,
+      "moved": 87
+    }
+  ],
+  "formula": {
+    "ms_per_iter = a*pads^2 + b*fps^2 + c": {
+      "a": 1.0908945404147574e-05,
+      "b": 0.0016391536481346193,
+      "c": 1.395064009304334
+    },
+    "max_abs_err_ms": 3.46594810138342
+  },
+  "profile_top": [
+    {
+      "func": "placement.py:1574:run_placement",
+      "calls": 1,
+      "tottime": 0.0005,
+      "cumtime": 0.6334
+    },
+    {
+      "func": "placement.py:669:_run_region_simulation",
+      "calls": 3,
+      "tottime": 0.0108,
+      "cumtime": 0.6324
+    },
+    {
+      "func": "placement.py:964:_compute_total_force",
+      "calls": 63,
+      "tottime": 0.0889,
+      "cumtime": 0.5974
+    },
+    {
+      "func": "decorators.py:73:wrapped",
+      "calls": 105547,
+      "tottime": 0.1162,
+      "cumtime": 0.3315
+    },
+    {
+      "func": "decorators.py:171:wrapper",
+      "calls": 8692,
+      "tottime": 0.0136,
+      "cumtime": 0.0858
+    },
+    {
+      "func": "point.py:88:x",
+      "calls": 25484,
+      "tottime": 0.0069,
+      "cumtime": 0.0696
+    },
+    {
+      "func": "point.py:93:y",
+      "calls": 25484,
+      "tottime": 0.0065,
+      "cumtime": 0.0674
+    },
+    {
+      "func": "placement.py:556:_rigid_pose_vertices",
+      "calls": 1890,
+      "tottime": 0.0164,
+      "cumtime": 0.0396
+    },
+    {
+      "func": "placement.py:1150:_spread",
+      "calls": 2858,
+      "tottime": 0.022,
+      "cumtime": 0.0387
+    },
+    {
+      "func": "base.py:668:intersection",
+      "calls": 1437,
+      "tottime": 0.0005,
+      "cumtime": 0.0372
+    },
+    {
+      "func": "polygon.py:227:__new__",
+      "calls": 2205,
+      "tottime": 0.0018,
+      "cumtime": 0.0361
+    },
+    {
+      "func": "base.py:219:coords",
+      "calls": 2297,
+      "tottime": 0.0022,
+      "cumtime": 0.0343
+    },
+    {
+      "func": "base.py:721:is_empty",
+      "calls": 11906,
+      "tottime": 0.0034,
+      "cumtime": 0.0324
+    },
+    {
+      "func": "ops.py:285:nearest_points",
+      "calls": 2800,
+      "tottime": 0.0019,
+      "cumtime": 0.0321
+    },
+    {
+      "func": "set_operations.py:112:intersection",
+      "calls": 1437,
+      "tottime": 0.0307,
+      "cumtime": 0.0307
+    },
+    {
+      "func": "decorators.py:75:<listcomp>",
+      "calls": 105547,
+      "tottime": 0.0235,
+      "cumtime": 0.0296
+    },
+    {
+      "func": "~:0:<method 'mean' of 'numpy.ndarray' objects>",
+      "calls": 7045,
+      "tottime": 0.0016,
+      "cumtime": 0.0283
+    },
+    {
+      "func": "_methods.py:117:_mean",
+      "calls": 7237,
+      "tottime": 0.0127,
+      "cumtime": 0.0274
+    },
+    {
+      "func": "base.py:817:intersects",
+      "calls": 5953,
+      "tottime": 0.0023,
+      "cumtime": 0.0268
+    },
+    {
+      "func": "_geometry.py:273:get_x",
+      "calls": 25484,
+      "tottime": 0.024,
+      "cumtime": 0.024
+    }
+  ]
+}

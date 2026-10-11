@@ -129,7 +129,7 @@ class Footprint:
     ``ghost`` marks pseudo-components used for placement forces only; they
     participate in the simulation but are never written back to the PCB.
     ``ghost_attractions`` defines explicit attraction springs from this ghost
-    to target footprints by Reference: (target_ref, ideal_length_mm, ka).
+    to target footprints by Reference: (target_ref, ka).
     """
 
     ref: str
@@ -143,7 +143,7 @@ class Footprint:
     locked: bool = False
     uuid: str = ""
     ghost: bool = False
-    ghost_attractions: Tuple[Tuple[str, float, float], ...] = ()
+    ghost_attractions: Tuple[Tuple[str, float], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -352,54 +352,129 @@ def _pad(
     )
 
 
+def _graphic_segments(node: SExpr, to_board) -> list:
+    """Outline segments of one ``fp_line``/``fp_rect``/``fp_poly``/``fp_circle``/``fp_arc`` node.
+
+    Local coordinates → board via ``to_board``. Circles become 16 chords;
+    arcs are sampled as quadratic Beziers (same helper the edge-cut code
+    uses). Unknown/malformed nodes yield no segments.
+    """
+    import math
+
+    segs = []
+    try:
+        if node.head == "fp_line":
+            start, end = _point(node.find("start")), _point(node.find("end"))
+            segs.append((to_board(start.x_mm, start.y_mm), to_board(end.x_mm, end.y_mm)))
+        elif node.head == "fp_rect":
+            start, end = _point(node.find("start")), _point(node.find("end"))
+            corners = [
+                (start.x_mm, start.y_mm), (end.x_mm, start.y_mm),
+                (end.x_mm, end.y_mm), (start.x_mm, end.y_mm),
+            ]
+            pts = [to_board(px, py) for px, py in corners]
+            segs.extend(zip(pts, pts[1:] + pts[:1]))
+        elif node.head == "fp_poly":
+            pts_node = node.find("pts")
+            if pts_node is None:
+                return segs
+            pts = [
+                to_board(float(a.args[0]), float(a.args[1]))
+                for a in pts_node.args
+                if isinstance(a, SExpr) and a.head == "xy"
+            ]
+            segs.extend(zip(pts, pts[1:] + pts[:1]))
+        elif node.head == "fp_circle":
+            center, end = node.find("center"), node.find("end")
+            if center is None or end is None:
+                return segs
+            cx, cy = float(center.args[0]), float(center.args[1])
+            ex, ey = float(end.args[0]), float(end.args[1])
+            radius = math.hypot(ex - cx, ey - cy)
+            for i in range(16):
+                a1 = 2 * math.pi * i / 16
+                a2 = 2 * math.pi * (i + 1) / 16
+                p1 = to_board(cx + radius * math.cos(a1), cy + radius * math.sin(a1))
+                p2 = to_board(cx + radius * math.cos(a2), cy + radius * math.sin(a2))
+                segs.append((p1, p2))
+        elif node.head == "fp_arc":
+            start, mid, end = node.find("start"), node.find("mid"), node.find("end")
+            if start is None or mid is None or end is None:
+                return segs
+            s = (float(start.args[0]), float(start.args[1]))
+            m = (float(mid.args[0]), float(mid.args[1]))
+            e = (float(end.args[0]), float(end.args[1]))
+            pts = [
+                to_board(px, py)
+                for px, py in sample_quadratic_bezier(s, m, e, 16)
+            ]
+            segs.extend(zip(pts, pts[1:]))
+    except (TypeError, ValueError, IndexError, AttributeError):
+        return []
+    return segs
+
+
+_COURTYARD_LAYERS = ("F.CrtYd", "B.CrtYd")
+_FAB_LAYERS = ("F.Fab", "B.Fab")
+_SILK_LAYERS = ("F.SilkS", "B.SilkS")
+_GRAPHIC_KINDS = ("fp_line", "fp_rect", "fp_poly", "fp_circle", "fp_arc")
+
+
 def _courtyard_segments(
     fp_node: SExpr, x_mm: float, y_mm: float, angle_deg: float, layer: str
 ) -> Tuple[Segment, ...]:
-    """Collect F.CrtYd/B.CrtYd outline segments in board coordinates."""
+    """Collect footprint outline segments in board coordinates.
+
+    Preferred source is the ``F.CrtYd``/``B.CrtYd`` courtyard; footprints
+    without one (e.g. ``europi:Thonkiconn`` jacks, which carry only
+    ``F.SilkS`` + pads) fall back to ``F.Fab``/``B.Fab``, then
+    ``F.SilkS``/``B.SilkS``, then a pad-bounding-box rectangle — so every
+    multi-pad part gets a drawn body outline for the SVG and a real
+    collision polygon for placement instead of an empty courtyard.
+    """
 
     def to_board(lx: float, ly: float) -> Point:
         return _to_board(lx, ly, x_mm, y_mm, angle_deg, layer)
 
-    segments = []
-    for line in fp_node.children("fp_line"):
-        lay = line.find("layer")
-        if lay is None or not lay.args or str(lay.args[0]) not in ("F.CrtYd", "B.CrtYd"):
-            continue
-        start = _point(line.find("start"))
-        end = _point(line.find("end"))
-        segments.append((to_board(start.x_mm, start.y_mm), to_board(end.x_mm, end.y_mm)))
-    for poly in fp_node.children("fp_poly"):
-        lay = poly.find("layer")
-        if lay is None or not lay.args or str(lay.args[0]) not in ("F.CrtYd", "B.CrtYd"):
-            continue
-        pts_node = poly.find("pts")
-        pts = [
-            to_board(float(a.args[0]), float(a.args[1]))
-            for a in pts_node.args
-            if isinstance(a, SExpr) and a.head == "xy"
-        ]
-        for a, b in zip(pts, pts[1:] + pts[:1]):
-            segments.append((a, b))
-    for circle in fp_node.children("fp_circle"):
-        lay = circle.find("layer")
-        if lay is None or not lay.args or str(lay.args[0]) not in ("F.CrtYd", "B.CrtYd"):
-            continue
-        center = circle.find("center")
-        end = circle.find("end")
-        if center is None or end is None:
-            continue
-        cx, cy = float(center.args[0]), float(center.args[1])
-        ex, ey = float(end.args[0]), float(end.args[1])
-        # Convert circle to line segments (approximate with 16 segments)
-        import math
-        radius = math.hypot(ex - cx, ey - cy)
-        for i in range(16):
-            a1 = 2 * math.pi * i / 16
-            a2 = 2 * math.pi * (i + 1) / 16
-            p1 = to_board(cx + radius * math.cos(a1), cy + radius * math.sin(a1))
-            p2 = to_board(cx + radius * math.cos(a2), cy + radius * math.sin(a2))
-            segments.append((p1, p2))
-    return tuple(segments)
+    buckets: dict = {"crt": [], "fab": [], "silk": []}
+    for kind in _GRAPHIC_KINDS:
+        for node in fp_node.children(kind):
+            lay = node.find("layer")
+            layer_name = str(lay.args[0]) if lay is not None and lay.args else ""
+            if layer_name in _COURTYARD_LAYERS:
+                buckets["crt"].extend(_graphic_segments(node, to_board))
+            elif layer_name in _FAB_LAYERS:
+                buckets["fab"].extend(_graphic_segments(node, to_board))
+            elif layer_name in _SILK_LAYERS:
+                buckets["silk"].extend(_graphic_segments(node, to_board))
+    for key in ("crt", "fab", "silk"):
+        if buckets[key]:
+            return tuple(buckets[key])
+
+    # Last resort: pad bounding box + 0.25mm courtyard clearance.
+    pad_boxes = []
+    for pad_node in fp_node.children("pad"):
+        at = pad_node.find("at")
+        px = float(at.args[0]) if at is not None and len(at.args) >= 1 else 0.0
+        py = float(at.args[1]) if at is not None and len(at.args) >= 2 else 0.0
+        size_node = pad_node.find("size")
+        if size_node is not None and len(size_node.args) >= 2:
+            try:
+                sx, sy = float(size_node.args[0]), float(size_node.args[1])
+            except (TypeError, ValueError):
+                sx, sy = 1.0, 1.0
+        else:
+            sx, sy = 1.0, 1.0
+        pad_boxes.append((px - sx / 2, py - sy / 2, px + sx / 2, py + sy / 2))
+    if not pad_boxes:
+        return ()
+    m = 0.25
+    x0 = min(b[0] for b in pad_boxes) - m
+    y0 = min(b[1] for b in pad_boxes) - m
+    x1 = max(b[2] for b in pad_boxes) + m
+    y1 = max(b[3] for b in pad_boxes) + m
+    corners = [to_board(x0, y0), to_board(x1, y0), to_board(x1, y1), to_board(x0, y1)]
+    return tuple(zip(corners, corners[1:] + corners[:1]))
 
 
 def _is_ghost(node: SExpr) -> bool:
@@ -412,11 +487,11 @@ def _is_ghost(node: SExpr) -> bool:
     return False
 
 
-def _parse_ghost_attractions(node: SExpr) -> Tuple[Tuple[str, float, float], ...]:
+def _parse_ghost_attractions(node: SExpr) -> Tuple[Tuple[str, float], ...]:
     """Parse ghost_attract_N properties from a footprint node.
     
-    Format: (property "ghost_attract_1" "TARGET_REF,ideal_length_mm,ka")
-    Returns tuple of (target_ref, ideal_length_mm, ka).
+    Format: (property "ghost_attract_1" "TARGET_REF,ka")
+    Returns tuple of (target_ref, ka).
     """
     attractions = []
     for prop in node.children("property"):
@@ -428,14 +503,13 @@ def _parse_ghost_attractions(node: SExpr) -> Tuple[Tuple[str, float, float], ...
             if not val:
                 continue
             parts = [p.strip() for p in val.split(",")]
-            if len(parts) != 3:
+            if len(parts) != 2:
                 continue
-            target_ref, ideal_len_str, ka_str = parts
+            target_ref, ka_str = parts
             try:
-                ideal_len = float(ideal_len_str)
                 ka = float(ka_str)
-                if ideal_len >= 0 and ka >= 0:
-                    attractions.append((target_ref, ideal_len, ka))
+                if ka >= 0:
+                    attractions.append((target_ref, ka))
             except ValueError:
                 continue
     return tuple(attractions)

@@ -603,7 +603,7 @@ def _proposal_overlay(model: BoardModel, proposal: PlacementProposal) -> List[st
     """Ghost courtyards at original positions + old→new arrows for moved parts."""
     out = [
         f'<g stroke="{GHOST_COURTYARD}" stroke-width="0.1" '
-        f'stroke-dasharray="0.6 0.4" opacity="0.9">'
+        f'stroke-dasharray="0.3 0.2" opacity="0.9">'
     ]
     for fp in model.footprints:
         if fp.uuid not in proposal.deltas:

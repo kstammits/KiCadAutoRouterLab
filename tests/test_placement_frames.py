@@ -71,13 +71,21 @@ class TestTrajectoryFrames:
         prop = run_placement(
             _two_close_parts(), _params(), record_frames=True, frame_stride=2,
         )
-        # 5 iters, stride 2 -> samples at 2,4 + final = 3 frames
-        assert len(prop.frames) == 3
+        # 5 iters, stride 2 -> frame 0 (start) + samples at 2,4 + final = 4 frames
+        assert len(prop.frames) == 4
         assert prop.frame_stride == 2
         assert set(prop.frames[0]) == {
             "aaaaaaaa-0000-0000-0000-000000000001",
             "bbbbbbbb-0000-0000-0000-000000000002",
         }
+
+    def test_first_frame_is_starting_pose(self):
+        prop = run_placement(
+            _two_close_parts(), _params(), record_frames=True,
+        )
+        assert prop.frames, "expected motion over 5 iters"
+        for dx, dy, da in prop.frames[0].values():
+            assert (dx, dy, da) == (0.0, 0.0, 0.0)
 
     def test_last_frame_matches_deltas(self):
         prop = run_placement(

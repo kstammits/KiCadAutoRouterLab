@@ -41,7 +41,6 @@ MAGNET_PARAMS = PlacementParams(
     repulsion_kr=2.0,
     # Matches test_magnet.MAGNET_PARAMS: strong attraction shortens routes.
     attraction_ka=6.0,
-    ideal_length_mm=2.0,
     courtyard_repulsion_kc=30000.0,
     boundary_repulsion_kb=500000.0,
     convergence_eps_mm=0.1,
@@ -198,6 +197,7 @@ def cli():
 
 def test_magnet_placement_then_route_drc_clean(cli, tmp_path):
     """Place 7 resistors with magnet params, route nets, verify DRC clean."""
+
     
     # 1. Build PCB tree with magnet test resistors
     pcb_tree, sch_tree, model, test_resistors = _build_magnet_pcb_tree()

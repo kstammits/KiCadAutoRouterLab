@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections import deque
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
@@ -69,6 +70,7 @@ class SingleNetRouter:
         tht_via_mask: Optional[np.ndarray] = None,
         via_block_mask: Optional[np.ndarray] = None,
         max_expansions: int = 2_000_000,
+        via_clearance_cells: int = 0,
     ):
         self.grid = grid
         self.cost_grid = cost_grid
@@ -87,6 +89,10 @@ class SingleNetRouter:
         # Via-block mask: True at (row, col) where vias are forbidden (SMD
         # pad solder/fanout areas). THT-free transitions win ties.
         self.via_block_mask = via_block_mask if via_block_mask is not None else np.zeros((self.H, self.W), dtype=bool)
+        # Via clearance halo radius (cells): a drilled via's annulus plus
+        # clearance to foreign copper. 0 = legacy single-cell check.
+        # Set per-net by the pipeline from via OD + clearance + track half.
+        self.via_clearance_cells = max(0, int(via_clearance_cells))
 
     def route(
         self,
@@ -213,6 +219,43 @@ class SingleNetRouter:
             return 0
         return int(secondary[layer, row, col])
 
+    def _via_landing_blocked(
+        self,
+        row: int,
+        col: int,
+        secondary: Optional[np.ndarray] = None,
+    ) -> bool:
+        """True when a via halo at (row, col) would violate foreign copper.
+
+        Scans the ``via_clearance_cells`` disc on every layer for
+        ``BLOCKED`` cost cells (prior tracks/vias/zones), secondary
+        exclusion rings (foreign THT), and via-block solder areas. The
+        center cell's own THT drill disc is exempt (free hop reuses the
+        barrel); SMD solder areas still forbid even THT-adjacent sites
+        unless the center itself is a drill hole.
+        """
+        radius = self.via_clearance_cells
+        if radius <= 0:
+            return False
+        # Free hop at its own drill hole: the barrel already exists, so the
+        # annulus needs no new clearance beyond what the pad rings enforce.
+        if self.tht_via_mask[row, col]:
+            return False
+        r2 = radius * radius
+        for l in range(self.n_layers):
+            layer_grid = self.cost_grid[l]
+            for r in range(max(0, row - radius), min(self.H, row + radius + 1)):
+                dr = r - row
+                dc_max = int(math.sqrt(max(0, r2 - dr * dr)))
+                for c in range(max(0, col - dc_max), min(self.W, col + dc_max + 1)):
+                    if layer_grid[r, c] >= self.cost_map.blocked_threshold:
+                        return True
+                    if secondary is not None and int(secondary[l, r, c]) >= SECONDARY_BLOCKED:
+                        return True
+                    if self.via_block_mask[r, c]:
+                        return True
+        return False
+
     def _a_star(
         self,
         start: Tuple[int, int, int],
@@ -306,6 +349,12 @@ class SingleNetRouter:
                     elif self.via_block_mask[r, c]:
                         continue
                     else:
+                        # Hard block: via annulus + clearance halo must not
+                        # overlap foreign copper (prior tracks/vias, THT
+                        # rings, solder areas). Prevents DRC shorts like
+                        # NET_B via on a NET_A track.
+                        if self._via_landing_blocked(r, c, secondary):
+                            continue
                         cell_cost = self._via_cost_cells
                     cell_cost += self._secondary_at(secondary, r, c, nl)
                     ng = g + cell_cost

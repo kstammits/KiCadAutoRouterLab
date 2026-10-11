@@ -540,25 +540,25 @@ loadInput.addEventListener("change", async () => {
 const PARAM_DEFS = [
   { key: "repulsion_kr", label: "Repulsion k_r", min: 1, max: 10000, step: 1, log: true },
   { key: "attraction_ka", label: "Attraction k_a", min: 0.001, max: 1, step: 0.005, log: true },
-  { key: "ideal_length_mm", label: "Ideal length (mm)", min: 0, max: 200, step: 1 },
   { key: "max_iterations", label: "Max iterations", min: 1, max: 20000, step: 10 },
   { key: "convergence_eps_mm", label: "Convergence eps (mm)", min: 0.0001, max: 1, step: 0.001, log: true },
   { key: "rigid_stiffness", label: "Rigid stiffness", min: 1000, max: 1e9, step: 1, log: true },
   { key: "courtyard_repulsion_kc", label: "Courtyard repulsion k_c", min: 0, max: 20000, step: 10 },
   { key: "courtyard_halo_mm", label: "Courtyard halo (mm)", min: 0, max: 20, step: 0.5 },
   { key: "boundary_repulsion_kb", label: "Boundary repulsion k_b", min: 100, max: 1e6, step: 1, log: true },
+  { key: "max_step_mm", label: "Max step (mm/iter)", min: 0.1, max: 5, step: 0.1 },
 ];
 
 const PARAM_DESC = {
   repulsion_kr: "Coulomb repulsion between ALL pads (k_r / d²). Higher = stronger push-apart. Log scale.",
-  attraction_ka: "Hooke's spring attraction between net-connected pads. F = k_a × (d - L₀). Log scale.",
-  ideal_length_mm: "Target distance for net springs (L₀). 0 = auto-compute from board density.",
+  attraction_ka: "Constant-magnitude attraction between net-connected pads (F = k_a toward each other). Balances Coulomb repulsion at d = √(k_r/k_a). Log scale.",
   max_iterations: "Hard limit on simulation steps.",
   convergence_eps_mm: "Stop when max pad displacement < this per iteration. Log scale.",
   rigid_stiffness: "Internal spring stiffness keeping footprint pads rigid. Very high = rigid body. Log scale (1e3–1e9).",
   courtyard_repulsion_kc: "Footprint-level repulsion when courtyards overlap/approach. Max strength at contact; falls linearly to zero at the halo edge.",
   courtyard_halo_mm: "Near-miss reach past part outlines (mm). Caps the size-scaled halo so big parts don't push across the board. E.g. 3mm means a quarter inch of clearance feels nothing.",
   boundary_repulsion_kb: "Repulsion from board region edges. Higher = stronger push away from boundaries. Log scale (100–1e6).",
+  max_step_mm: "Max pad movement per iteration (mm). Each pad moves along its total force up to this budget; smaller forces move proportionally, so the sim settles as forces balance. 1mm keeps parts inside the 3mm halo gradient.",
 };
 
 const paramsGrid = document.getElementById("params-grid");
@@ -1784,7 +1784,11 @@ function motionReadout() {
   const { readout, slider } = motionEls();
   const n = motion.frames.length;
   if (!n) { readout.textContent = "no frames"; return; }
-  const approxIter = Math.min(motion.iterations, motion.idx * motion.stride + 1);
+  // frames[0] is the starting pose (iter 0); frames[k] follows k*stride
+  // completed iterations; the last frame is always the final pose.
+  const approxIter = (motion.idx >= n - 1)
+    ? motion.iterations
+    : Math.min(motion.iterations, motion.idx * motion.stride);
   const ds = motion.stride > 1 ? ` · stride ${motion.stride} (thinned)` : "";
   readout.textContent = `frame ${motion.idx + 1}/${n} · ~iter ${approxIter}/${motion.iterations}${ds}`;
   slider.value = String(motion.idx);

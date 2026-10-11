@@ -46,7 +46,6 @@ MAGNET_PARAMS = PlacementParams(
     # Strong attraction shortens same-net routes: measured intra-group
     # 25.4→20.0mm (group A) and routed copper 138→124mm vs ka=2.0.
     attraction_ka=6.0,
-    ideal_length_mm=2.0,
     courtyard_repulsion_kc=30000.0,
     # 3x2mm parts: 6mm halo preserves this test's original ~5.4mm
     # (1.5x radii sum) near-miss reach under the bounded-halo regime.
@@ -309,7 +308,7 @@ class TestNetMagnet:
         print(f"  Average cross-group distance: {avg_cross:.1f}mm")
         print(f"  Tightening (intra/start): {avg_intra/avg_start:.2f}")
         print(f"  Params: kr={MAGNET_PARAMS.repulsion_kr}, ka={MAGNET_PARAMS.attraction_ka}, "
-              f"ideal={MAGNET_PARAMS.ideal_length_mm}, iter={MAGNET_PARAMS.max_iterations}")
+              f"  iter={MAGNET_PARAMS.max_iterations}")
 
         assert avg_intra < avg_start * 0.85, (
             f"Intra-group distance ({avg_intra:.1f}mm) did not tighten vs "
@@ -344,7 +343,6 @@ class TestNetMagnet:
             max_iterations=200,
             repulsion_kr=50.0,
             attraction_ka=0.5,
-            ideal_length_mm=5.0,
             courtyard_repulsion_kc=20000.0,
             boundary_repulsion_kb=500000.0,
             convergence_eps_mm=0.1,
@@ -478,7 +476,8 @@ class TestMagnetHeuristics:
             )
 
     def test_no_attraction_no_tight_grouping(self):
-        """Control (ka=0): repulsion-only equilibrium converges from a loose start.
+        """Control (ka=0): repulsion-only stays finite and separated from a
+        loose start.
 
         The old tuned-vs-control comparison (control looser than tuned by
         1.5x on seed 42) was calibrated on 2mm-step tunneling dynamics.
@@ -490,9 +489,17 @@ class TestMagnetHeuristics:
         different mechanisms, so a control-vs-tuned ordering is layout
         luck, not physics. What this guards instead: the start must be
         genuinely loose (else any "tightening" test is vacuous), and the
-        repulsion-only run must settle to equilibrium, not hit the cap.
-        Attraction-tightens-vs-start is covered relationally across seeds
-        by test_attraction_pulls_groups_together.
+        repulsion-only run must stay finite and separated, not pile up.
+
+        Re-baselined 2026-10-11: the convergence assertion (must not hit
+        the cap) assumed a finite rest point, but unbounded Coulomb has
+        none on this board — the control drifts outward for the full
+        budget — and stiff penetration-scaled contact plus the undamped
+        integrator limit-cycles at walls instead of resting, so max_disp
+        never drops under eps. Hitting the budget while separated, finite
+        and deterministic is correct behavior. Attraction-tightens-vs-start
+        is covered relationally across seeds by
+        test_attraction_pulls_groups_together.
         """
         model = _build_magnet_board(42)
         params = replace(MAGNET_PARAMS, attraction_ka=0.0)
@@ -505,9 +512,24 @@ class TestMagnetHeuristics:
             f"seed-42 start already grouped ({intra_start:.1f}mm); "
             "tightening tests would be vacuous"
         )
-        assert control.iterations < params.max_iterations, (
-            "repulsion-only run should settle to equilibrium, not hit the cap"
-        )
+        for uuid, delta in control.deltas.items():
+            assert all(math.isfinite(v) for v in delta), uuid
+        for uuid, force in control.forces.items():
+            assert all(math.isfinite(v) for v in force), uuid
+        polys = _final_courtyard_polys(model, control)
+        for i, a in enumerate(HEURISTIC_REFS):
+            for b in HEURISTIC_REFS[i + 1:]:
+                pa, pb = polys[a], polys[b]
+                area = (
+                    pa.intersection(pb).area
+                    if not pa.is_empty and not pb.is_empty
+                    else 0.0
+                )
+                assert area <= 1e-6, f"control pair {a}/{b} overlaps {area:.4f}mm^2"
+        repeat = run_placement(model, params)
+        assert set(repeat.deltas) == set(control.deltas)
+        for uuid, delta in control.deltas.items():
+            assert tuple(delta) == tuple(repeat.deltas[uuid]), uuid
 
     def test_repulsion_keeps_parts_separate(self):
         """Final courtyards must not overlap — at default AND high gain.
@@ -515,13 +537,18 @@ class TestMagnetHeuristics:
         This is the assembly/silkscreen-spacing intent: courtyard repulsion's
         job is separation. Mean-spread ordering is deliberately NOT asserted
         (measured: high kr can pack parts along edges instead of spreading
-        them — a dynamics quirk, not a separation failure).
+        them — a dynamics quirk, not a separation failure). Budget is 400,
+        not MAGNET_PARAMS' 200: under the fixed 1mm step cap (2026-10-11,
+        no more cooling schedule) stiff high-gain contacts settle slower —
+        seed 42 kr=30 leaves a 9e-4mm^2 sliver at 200 iters that resolves
+        to exactly 0.0 by 400. The threshold stays 1e-6.
         """
         for seed in HEURISTIC_SEEDS:
             model = _build_magnet_board(seed)
             for kr in (MAGNET_PARAMS.repulsion_kr, 30.0):
                 prop = run_placement(
-                    model, replace(MAGNET_PARAMS, repulsion_kr=kr)
+                    model, replace(MAGNET_PARAMS, repulsion_kr=kr,
+                                   max_iterations=400)
                 )
                 polys = _final_courtyard_polys(model, prop)
                 for i, a in enumerate(HEURISTIC_REFS):
@@ -574,7 +601,7 @@ class TestMovePreservation:
         enriched = replace(
             orig,
             pads=tht_pads,
-            ghost_attractions=(("R2", 25.0, 0.1),),
+            ghost_attractions=(("R2", 0.1),),
         )
         footprints = tuple(
             enriched if fp.uuid == orig.uuid else fp
@@ -653,7 +680,7 @@ class TestMovePreservation:
         assert after.pads[0].pad_type == "thru_hole"
         assert after.pads[0].drill_mm == pytest.approx(0.8)
         assert tuple(after.pads[0].layers) == ("F.Cu", "B.Cu", "*.Cu")
-        assert tuple(after.ghost_attractions) == (("R2", 25.0, 0.1),)
+        assert tuple(after.ghost_attractions) == (("R2", 0.1),)
         assert moved.version == model.version
         assert moved.ghost_footprints == model.ghost_footprints
         assert moved.board_regions == model.board_regions

@@ -11,7 +11,7 @@ fixed anchors).
 
 Supports multi-board region simulation: footprints are grouped by board outline
 region (from Edge.Cuts) and each region is simulated independently with its own
-bounding box and temperature schedule.
+bounding box and fixed per-iteration step budget.
 """
 
 from __future__ import annotations
@@ -42,7 +42,6 @@ class PlacementParams:
 
     repulsion_kr: float = 100.0
     attraction_ka: float = 0.05
-    ideal_length_mm: float = 25.0
     max_iterations: int = 1000
     convergence_eps_mm: float = 0.01
     # Rigid constraint stiffness (high to keep footprint pads together)
@@ -60,15 +59,17 @@ class PlacementParams:
     # shoving edge-near parts into their neighbors at 100x the force that
     # separates them (2026-10-10: kb was 5e5).
     boundary_repulsion_kb: float = 20000.0
-    # Rotation rate limit (degrees per iteration). Translation caps are
-    # per-pad, which otherwise synthesizes pure spin (one pad takes the
-    # full budget while its mate takes ~0: tens of degrees/iter on 2-4mm
-    # parts, read out later by Kabsch). 15deg still allows a full turn
-    # in 24 iterations -- THT reorientation into aligned wells needs it
-    # (3deg starves magnet clustering) -- while clipping the worst
-    # helicoptering 4x. Translation is bit-identical with the cap on or
-    # off; only spin is bounded.
-    max_dangle_deg: float = 15.0
+    # Max pad displacement per iteration (mm). The integrator moves each
+    # pad along its total force vector, capped at this budget; below one
+    # force-unit the move is proportional, so the sim settles smoothly as
+    # forces balance instead of oscillating around equilibrium. 1mm keeps
+    # parts inside the halo gradient instead of vaulting across it in one
+    # step (halo reach is 3mm; a 2mm budget crossed most of it at once,
+    # landing in overlap past the restoring slope). Replaces the old
+    # Fruchterman-Reingold temperature schedule (2026-10-11): the cooling
+    # gain coupled the iteration budget to the trajectory, so changing
+    # max_iterations changed the path, not just its length.
+    max_step_mm: float = 1.0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -87,13 +88,12 @@ def _validate(params: PlacementParams) -> None:
     numeric = (
         "repulsion_kr",
         "attraction_ka",
-        "ideal_length_mm",
         "convergence_eps_mm",
         "rigid_stiffness",
         "courtyard_repulsion_kc",
         "courtyard_halo_mm",
         "boundary_repulsion_kb",
-        "max_dangle_deg",
+        "max_step_mm",
     )
     for name in numeric:
         value = getattr(params, name)
@@ -102,13 +102,12 @@ def _validate(params: PlacementParams) -> None:
     for name in (
         "repulsion_kr",
         "attraction_ka",
-        "ideal_length_mm",
         "convergence_eps_mm",
         "rigid_stiffness",
         "courtyard_repulsion_kc",
         "courtyard_halo_mm",
         "boundary_repulsion_kb",
-        "max_dangle_deg",
+        "max_step_mm",
     ):
         if getattr(params, name) <= 0:
             raise ValueError(f"{name} must be > 0")
@@ -125,7 +124,7 @@ def _validate(params: PlacementParams) -> None:
 # ~30% vs full float repr.
 FRAME_XY_DECIMALS = 3
 FRAME_ANGLE_DECIMALS = 2
-FRAME_DEFAULT_MAX = 200
+FRAME_DEFAULT_MAX = 100
 
 
 def _round_frame_deltas(
@@ -173,6 +172,10 @@ class PlacementProposal:
     Frames (opt-in via run_placement(record_frames=True)) hold per-sampled-
     iteration (dx, dy, da) deltas vs the committed start positions for the
     SVG motion player; already rounded + downsampled to max_frames.
+    frames[0] is always the committed starting pose (all-zero deltas =
+    completed iteration 0); frames[k] is the pose after k*stride completed
+    iterations, except the last frame which is always the final pose after
+    ``iterations`` completed iterations.
     """
 
     deltas: Dict[str, Tuple[float, float, float]]
@@ -696,7 +699,9 @@ def _run_region_simulation(
         - force_components: {uuid: {cause: (Fx, Fy)}}
         - frames: per-sampled-iteration (dx, dy, da) deltas vs start
           (empty unless record_frames; rounded, stride-sampled, final
-          frame always appended)
+          frame always appended). frames[0] is the starting pose
+          (iteration 0, all-zero deltas); frames[k] follows k*stride
+          completed iterations; the last frame is the final pose.
     """
     from .board_model import BoardRegion
 
@@ -763,22 +768,9 @@ def _run_region_simulation(
     for fp_uuid, pad_indices in region_fp_uuid_to_pad_indices.items():
         region_fp_to_pad_indices[fp_uuid] = pad_indices
 
-    # Ideal length for net springs
-    if params.ideal_length_mm > 0:
-        ideal_len = params.ideal_length_mm
-    else:
-        region_area = (max_x - min_x) * (max_y - min_y)
-        n_movable_pads = int(pad_movable.sum())
-        ideal_len = math.sqrt(max(region_area, 1.0) / max(n_movable_pads, 1))
-
-    # Temperature schedule (Fruchterman–Reingold)
-    temp = max(max_x - min_x, max_y - min_y) / 10.0
-    temp_min = params.convergence_eps_mm
-    # Max displacement per iteration: 1mm keeps parts inside the halo
-    # gradient instead of vaulting across it in one step (halo reach is
-    # 3mm; the old 2mm budget crossed most of it at once, landing in
-    # overlap past the restoring slope).
-    max_step = min(1.0, temp)
+    # Fixed step budget (mm per iteration); see max_step_mm. No cooling
+    # schedule: the trajectory must not depend on the iteration budget.
+    step_cap = params.max_step_mm
 
     iteration = 0
 
@@ -830,14 +822,6 @@ def _run_region_simulation(
     fp_local_to_rows: List[np.ndarray] = [
         np.where(_pad_fp_idx == _li)[0] for _li in range(len(fp_uuids))
     ]
-    # Pads whose displacement the F2 rigid-projection may touch: movable
-    # pads of movable footprints (immobile pads carry zero disp anyway).
-    if len(fp_uuids):
-        _touch_static = pad_movable & (_pad_fp_idx >= 0) & fp_movable_arr[
-            np.clip(_pad_fp_idx, 0, len(fp_uuids) - 1)
-        ]
-    else:
-        _touch_static = np.zeros(len(region_pads), dtype=bool)
 
     # ---- Per-run courtyard shape cache ----
     # A courtyard's LOCAL geometry never changes — each iteration only applies
@@ -933,7 +917,7 @@ def _run_region_simulation(
         & ~np.eye(len(region_pads), dtype=bool)
     )
 
-    # Build ghost attraction edges: (ghost_anchor, target_pad_indices, ideal_len, ka)
+    # Build ghost attraction edges: (ghost_anchor, target_pad_indices, ka)
     ghost_attractions = []
     for fp in model.ghost_footprints:
         if not fp.uuid or model.footprint_region.get(fp.uuid) != region_idx:
@@ -942,7 +926,7 @@ def _run_region_simulation(
             continue
         # Ghost anchor is the footprint's position
         ghost_anchor = np.array([fp.x_mm, fp.y_mm], dtype=np.float64)
-        for target_ref, ideal_len_attr, ka_attr in fp.ghost_attractions:
+        for target_ref, ka_attr in fp.ghost_attractions:
             # Resolve target Ref to UUID and pad indices
             target_fp = model.by_ref.get(target_ref)
             if target_fp is None:
@@ -956,7 +940,7 @@ def _run_region_simulation(
             target_pad_indices = fp_pad_indices.get(target_fp.uuid, [])
             if not target_pad_indices:
                 continue
-            ghost_attractions.append((ghost_anchor, target_pad_indices, ideal_len_attr, ka_attr))
+            ghost_attractions.append((ghost_anchor, target_pad_indices, ka_attr))
 
     positions = pad_positions.copy()
     prev_positions = pad_positions.copy()
@@ -969,7 +953,6 @@ def _run_region_simulation(
         has_net_edges: bool,
         src_idx: np.ndarray,
         dst_idx: np.ndarray,
-        ideal_len: float,
         has_rigid: bool,
         rigid_src: np.ndarray,
         rigid_dst: np.ndarray,
@@ -1000,22 +983,28 @@ def _run_region_simulation(
         force_vec = diff * (force_mag[:, :, None] / dist[:, :, None])
         repulsion = np.sum(force_vec, axis=1)
 
-        # Attraction: Hooke's law along net edges
+        # Attraction: constant-magnitude pull along net edges.
+        # src is pulled toward dst (+unit) and dst toward src (-unit), so
+        # the pair settles where this balances Coulomb repulsion
+        # (d = sqrt(kr/ka) for an isolated pad pair). The signs were
+        # inverted before 2026-10-11 (both pads pushed apart), which the
+        # ideal_length removal exposed: with F = ka*(d-L0) the old code
+        # attracted only when closer than L0 and the flip went unnoticed.
         attraction = np.zeros((n_pads, 2), dtype=np.float64)
         if has_net_edges:
             diff_edge = pos[dst_idx] - pos[src_idx]
             dist_edge = np.linalg.norm(diff_edge, axis=1, keepdims=True)
             dist_edge = np.maximum(dist_edge, 1e-6)
             unit = diff_edge / dist_edge
-            force_mag_edge = params.attraction_ka * (dist_edge - ideal_len)
+            force_mag_edge = params.attraction_ka
             force_vec_edge = unit * force_mag_edge
-            np.add.at(attraction, src_idx, -force_vec_edge)
-            np.add.at(attraction, dst_idx, force_vec_edge)
+            np.add.at(attraction, src_idx, force_vec_edge)
+            np.add.at(attraction, dst_idx, -force_vec_edge)
 
         # Ghost attraction: centroid-to-centroid springs from ghost to target
         ghost_attr_force = np.zeros((n_pads, 2), dtype=np.float64)
         if ghost_attractions:
-            for ghost_anchor, target_pad_indices, ideal_len_attr, ka_attr in ghost_attractions:
+            for ghost_anchor, target_pad_indices, ka_attr in ghost_attractions:
                 if not target_pad_indices:
                     continue
                 # Compute target centroid from current pad positions
@@ -1025,7 +1014,7 @@ def _run_region_simulation(
                 dist_attr = np.linalg.norm(diff_attr)
                 if dist_attr > 1e-6:
                     unit_attr = diff_attr / dist_attr
-                    force_mag_attr = ka_attr * (dist_attr - ideal_len_attr)
+                    force_mag_attr = ka_attr 
                     # Force on target points TOWARD ghost (opposite to unit_attr which points ghost->target)
                     force_vec_attr = -unit_attr * force_mag_attr
                     # Apply equally to all target pads (distribute)
@@ -1034,7 +1023,10 @@ def _run_region_simulation(
                         ghost_attr_force[pad_idx] += force_per_pad
                     # Ghost is fixed - no reaction force applied to ghost pads
 
-        # Rigid constraints
+        # Rigid constraints: Hooke springs at MST rest lengths. Stretched
+        # pairs pull together (src toward dst), compressed pairs push apart
+        # — same sign convention as net attraction (fixed 2026-10-11; was
+        # inverted, masked because pad deviations sit near rest length).
         rigid_force = np.zeros((n_pads, 2), dtype=np.float64)
         if has_rigid:
             diff_rigid = pos[rigid_dst] - pos[rigid_src]
@@ -1043,8 +1035,8 @@ def _run_region_simulation(
             unit_rigid = diff_rigid / dist_rigid
             force_mag_rigid = params.rigid_stiffness * 0.1 * (dist_rigid - rigid_rest[:, None])
             force_vec_rigid = unit_rigid * force_mag_rigid
-            np.add.at(rigid_force, rigid_src, -force_vec_rigid)
-            np.add.at(rigid_force, rigid_dst, force_vec_rigid)
+            np.add.at(rigid_force, rigid_src, force_vec_rigid)
+            np.add.at(rigid_force, rigid_dst, -force_vec_rigid)
 
         force = repulsion + attraction + rigid_force + ghost_attr_force
 
@@ -1055,15 +1047,7 @@ def _run_region_simulation(
         boundary_force = np.zeros((n_pads_local, 2), dtype=np.float64)
 
         # Polygon-based courtyard collision from cached shapes.
-        # Per iteration only rigid poses change, posed through the shared
-        # _rigid_pose_vertices kernel (same rule the old per-vertex Python
-        # loop used, so force math is unchanged) while shapely
-        # Polygons/centroids/radii are derived exactly as before. A vectorized bounding-circle
-        # broadphase then culls far pairs (+1e-9 margin) so the expensive
-        # pairwise exact calls (intersects/intersection/distance) run only
-        # for pairs within halo reach — the common far-field case costs one
-        # numpy op and zero shapely pair calls. Force math for surviving
-        # pairs is byte-for-byte the old logic.
+        # Per iteration only rigid poses change
         n_fp = len(fp_uuids)
         if n_fp:
             courtyard_polys: dict[str, Polygon] = {}
@@ -1120,9 +1104,7 @@ def _run_region_simulation(
 
             # Vectorized broadphase on the exact values above: a pair can
             # interact only if centroid distance < ri + rj + halo_reach
-            # (outline gap >= centroid gap - ri - rj). The +1e-9 margin keeps
-            # boundary-straddling pairs on the exact path, so the cull can
-            # only skip provably non-interacting pairs.
+            # (outline gap >= centroid gap - ri - rj). 
             # Layer gate (2026-10-09): bodies collide on their placement
             # side; a pair involving through-hole pads additionally collides
             # across sides (protruding leads). Cross-layer SMD-SMD pairs skip
@@ -1134,19 +1116,13 @@ def _run_region_simulation(
             _dist = np.sqrt(np.sum(_d * _d, axis=2))
             _halo = np.minimum(1.5 * (fp_radii_arr[:, None] + fp_radii_arr[None, :]),
                                params.courtyard_halo_mm)
-            _near = _dist < fp_radii_arr[:, None] + fp_radii_arr[None, :] + _halo + 1e-9
+            _near = _dist < fp_radii_arr[:, None] + fp_radii_arr[None, :] + _halo + 1e-8
             _sides = (
                 (_lyr[:, None] == _lyr[None, :]) | _tht[:, None] | _tht[None, :]
             )
             _close = _near & _sides
 
-            # Spread one pair-push over a footprint's pads, weighted by
-            # projection onto the push direction: contact-side pads take
-            # more, far-side pads less. A shove then also twists the part
-            # to glance off (corrective moment) instead of translating
-            # straight through its neighbor -- torque without any new
-            # geometry. Weights average exactly 1, so the footprint total
-            # (and the reported components) is conserved.
+            # Spread one pair-push over a footprint's pads
             def _spread(rows, cx, cy, radius, ux, uy, fx, fy):
                 if rows is None or len(rows) == 0:
                     return
@@ -1160,14 +1136,48 @@ def _run_region_simulation(
                 poly_force[rows, 0] += w * fx
                 poly_force[rows, 1] += w * fy
 
+            def _apply_halo_push(
+                li: int, lj: int,
+                pi: Polygon, pj: Polygon,
+                margin: float,
+            ) -> None:
+                """Halo push for one pair at a given inside-halo margin.
+
+                Shared by the near-miss branch (margin = reach - gap) and
+                the boundary-touch case (margin = full reach at zero gap),
+                so contact is continuous from both sides. Direction along
+                the contact normal (edge-orthogonal): the nearest-point
+                pair on the two outlines."""
+                if margin <= 0:
+                    return
+                halo_reach = float(_halo[li, lj])
+                try:
+                    _qi, _qj = nearest_points(pi, pj)
+                    dx = float(_qi.x - _qj.x)
+                    dy = float(_qi.y - _qj.y)
+                except Exception:
+                    dx = dy = 0.0
+                _gap = math.hypot(dx, dy)
+                if _gap <= 1e-8:
+                    # Coincident/degenerate outlines: fall back to
+                    # the centroid direction (always defined).
+                    dx = fp_centroids_arr[li, 0] - fp_centroids_arr[lj, 0]
+                    dy = fp_centroids_arr[li, 1] - fp_centroids_arr[lj, 1]
+                    _gap = math.hypot(dx, dy)
+                if _gap > 1e-6:
+                    strength = (
+                        params.courtyard_repulsion_kc
+                        * (margin / halo_reach)
+                    )
+                    ux, uy = dx / _gap, dy / _gap
+                    fx, fy = strength * ux, strength * uy
+                    poly_force[fp_local_to_rows[li], 0] += fx
+                    poly_force[fp_local_to_rows[li], 1] += fy
+                    if fp_movable_arr[lj]:
+                        poly_force[fp_local_to_rows[lj], 0] -= fx
+                        poly_force[fp_local_to_rows[lj], 1] -= fy
+
             # Compute collision forces per footprint pair, then distribute to pads.
-            # Movable footprints collide with EVERYTHING (movable, locked,
-            # unselected, ghosts) regardless of file order: a selected part
-            # must feel an immobile part's courtyard even when the immobile
-            # part sorts earlier (2026-10-10: R11 slipped into RV2's
-            # courtyard because the old j>i loop never evaluated the pair).
-            # Movable-movable pairs are still evaluated exactly once (j > i);
-            # the j < i arm below only adds pairs with a non-movable j.
             for i in range(n_fp):
                 if not fp_movable_arr[i]:
                     continue  # Only movable footprints accumulate forces
@@ -1190,79 +1200,63 @@ def _run_region_simulation(
                         continue
                     if poly_i.intersects(poly_j):
                         intersection = poly_i.intersection(poly_j)
-                        if intersection.area > 0:
-                            # Penetration vector from intersection centroid to poly_i centroid
+                        if intersection.area <= 1e-6:
+                            # Boundary touch (zero-area intersection):
+                            # halo contact at full kc instead of going
+                            # silent, so the contact plane has no force
+                            # cliff the integrator could tunnel through.
+                            _apply_halo_push(
+                                i, j, poly_i, poly_j, float(_halo[i, j]),
+                            )
+                        else:
+                            # Penetration-scaled push: F = kc * (1 + area).
+                            # At first touch (area -> 0) this equals kc,
+                            # continuous with the halo branch maximum (kc at
+                            # zero gap); deeper overlap pushes harder. The old
+                            # kc/dist form did the opposite (weaker when
+                            # deeper) and went fully silent on coincident
+                            # outlines (dist = 0 failed the guard below), so
+                            # stacked parts felt nothing and piled up.
                             inter_centroid = intersection.centroid
                             poly_i_centroid = poly_i.centroid
                             dx = poly_i_centroid.x - inter_centroid.x
                             dy = poly_i_centroid.y - inter_centroid.y
                             dist = math.hypot(dx, dy)
-                            if dist > 1e-6:
-                                # Force proportional to overlap area
-                                force_mag = params.courtyard_repulsion_kc * intersection.area / (dist + 1e-6)
-                                ux, uy = dx / dist, dy / dist
-                                fx, fy = force_mag * ux, force_mag * uy
-                                _spread(fp_local_to_rows[i], fp_centroids_arr[i, 0], fp_centroids_arr[i, 1],
-                                        fp_radii_arr[i], ux, uy, fx, fy)
-                                # Equal/opposite on j (only matters if j moves)
-                                if fp_movable_arr[j]:
-                                    _spread(fp_local_to_rows[j], fp_centroids_arr[j, 0], fp_centroids_arr[j, 1],
-                                            fp_radii_arr[j], -ux, -uy, -fx, -fy)
+                            if dist <= 1e-6:
+                                # Containment / coincident outlines: the
+                                # intersection centroid sits on the polygon
+                                # centroid, so fall back to the
+                                # centroid-to-centroid direction.
+                                dx = fp_centroids_arr[i, 0] - fp_centroids_arr[j, 0]
+                                dy = fp_centroids_arr[i, 1] - fp_centroids_arr[j, 1]
+                                dist = math.hypot(dx, dy)
+                            if dist <= 1e-6:
+                                # Perfectly coincident: deterministic +x
+                                # tiebreak so stacked parts still separate
+                                # instead of feeling zero force.
+                                dx, dy, dist = 1.0, 0.0, 1.0
+                            force_mag = params.courtyard_repulsion_kc * (
+                                1.0 + intersection.area
+                            )
+                            ux, uy = dx / dist, dy / dist
+                            fx, fy = force_mag * ux, force_mag * uy
+                            _spread(fp_local_to_rows[i], fp_centroids_arr[i, 0], fp_centroids_arr[i, 1],
+                                    fp_radii_arr[i], ux, uy, fx, fy)
+                            # Equal/opposite on j (only matters if j moves)
+                            if fp_movable_arr[j]:
+                                _spread(fp_local_to_rows[j], fp_centroids_arr[j, 0], fp_centroids_arr[j, 1],
+                                        fp_radii_arr[j], -ux, -uy, -fx, -fy)
                     else:
                         # Near miss: bounded-halo linear falloff.
-                        # Reach is capped at an absolute halo past the part
-                        # outlines so giant parts (e.g. DCCF RV sockets with
-                        # r~37mm) don't project ~60mm halos: a quarter inch of
-                        # clearance then means no interference, like DRC
-                        # thinking. Strength saturates at kc (fraction of the
-                        # halo consumed) instead of growing with part size as
-                        # the old kc*margin/d^2 did. (Emptiness was already
-                        # checked above via the shape cache.)
                         poly_dist = poly_i.distance(poly_j)
                         # Same reach the broadphase above culled on (matrix
                         # form); reuse it instead of recomputing per pair.
                         halo_reach = float(_halo[i, j])
                         if poly_dist < halo_reach:
-                            # Gentle repulsion - use polygon distance for margin (more accurate for asymmetric shapes)
-                            margin = halo_reach - poly_dist
-                            if margin > 0:
-                                # Direction along the contact normal (edge-orthogonal):
-                                # the nearest-point pair on the two outlines, not
-                                # centroid-centroid (which skews diagonal on long/wide
-                                # parts: e.g. DCCF RV2's centroid sits ~17mm down the
-                                # fader body from R8, so a centroid push shoves R8
-                                # sideways along RV2 instead of straight off its edge).
-                                try:
-                                    _pi, _pj = nearest_points(poly_i, poly_j)
-                                    dx = float(_pi.x - _pj.x)
-                                    dy = float(_pi.y - _pj.y)
-                                except Exception:
-                                    dx = dy = 0.0
-                                _gap = math.hypot(dx, dy)
-                                if _gap <= 1e-9:
-                                    # Coincident/degenerate outlines: fall back to
-                                    # the centroid direction (always defined).
-                                    dx = fp_centroids_arr[i, 0] - fp_centroids_arr[j, 0]
-                                    dy = fp_centroids_arr[i, 1] - fp_centroids_arr[j, 1]
-                                    _gap = math.hypot(dx, dy)
-                                if _gap > 1e-6:
-                                    strength = (
-                                        params.courtyard_repulsion_kc
-                                        * (margin / halo_reach)
-                                    )
-                                    ux, uy = dx / _gap, dy / _gap
-                                    fx, fy = strength * ux, strength * uy
-                                    # Halo nudges stay uniform broadcasts:
-                                    # weighting them would inject a moment
-                                    # into every near-miss and churn crowded
-                                    # boards instead of settling them; the
-                                    # corrective moment applies to true
-                                    # overlap only (branch above).
-                                    poly_force[fp_local_to_rows[i], 0] += fx
-                                    poly_force[fp_local_to_rows[i], 1] += fy
-                                    if fp_movable_arr[j]:
-                                        poly_force[fp_local_to_rows[j], 0] -= fx
-                                        poly_force[fp_local_to_rows[j], 1] -= fy
+                            _apply_halo_push(
+                                i, j, poly_i, poly_j,
+                                halo_reach - poly_dist,
+                            )
 
             # Courtyard pushes were spread directly onto pads above
             # (overlap-weighted, halo uniform; totals conserved); nothing
@@ -1346,7 +1340,7 @@ def _run_region_simulation(
     # like the integrator moved against the displayed force).
     initial_force, initial_components = _compute_total_force(
         positions, len(region_pads), pad_movable,
-        params, has_net_edges, src_idx, dst_idx, ideal_len,
+        params, has_net_edges, src_idx, dst_idx,
         has_rigid, rigid_src, rigid_dst, rigid_rest,
         ghost_attractions,
         same_fp_mask,
@@ -1355,7 +1349,9 @@ def _run_region_simulation(
     # ---- Trajectory frames (opt-in motion viz) ----
     # Dense per-sampled-iteration (dx, dy, da) vs committed start for every
     # movable footprint with pads in this region. Kabsch per frame is cheap
-    # (2x2 SVD per part) and only runs when requested.
+    # (2x2 SVD per part) and only runs when requested. frames[0] (captured
+    # below before the loop) is the starting pose; loop samples follow every
+    # stride completed iterations; the final pose is always appended.
     _frame_stride = max(1, int(frame_stride or 1))
     _frame_fps: List[Tuple[str, list]] = []
     if record_frames:
@@ -1391,100 +1387,67 @@ def _run_region_simulation(
         return frame
 
     _region_frames: List[Dict[str, Tuple[float, float, float]]] = []
+    # Frame 0: the committed starting pose (all-zero deltas) so the motion
+    # player can scrub from the true start. Previously the first capture
+    # happened only after iteration 1 completed, so playback never showed
+    # step 0 and short Step budgets looked like they "jumped" on load.
+    if record_frames and _frame_fps:
+        _region_frames.append(_capture_frame(positions))
+    # Per-pad adaptive damping: saturated 1mm steps ping-pong across the
+    # halo gradient (direction flips every iteration, scrub shows jitter
+    # with no progress). Halve the budget on direction reversal, recover
+    # gradually on consistent headings. Deterministic function of the
+    # trajectory (not the iteration budget), so the no-cooling invariant
+    # holds: same (model, params) prefix → same path.
+    _step_scale = np.ones((len(region_pads), 1), dtype=np.float64)
+    _prev_disp = np.zeros((len(region_pads), 2), dtype=np.float64)
     for iteration in range(params.max_iterations):
         force = _compute_total_force(
             positions, len(region_pads), pad_movable,
-            params, has_net_edges, src_idx, dst_idx, ideal_len,
+            params, has_net_edges, src_idx, dst_idx,
             has_rigid, rigid_src, rigid_dst, rigid_rest,
             ghost_attractions,
             same_fp_mask,
         )
 
-        # Displacement = force * temp (capped by temp)
-        disp = force * temp
+        # Displacement = force * step_cap, capped per pad at step_cap.
+        # Fixed budget every iteration: no cooling, so the trajectory is a
+        # pure function of (model, params), never of max_iterations.
+        # Containment is the boundary force's job (soft push + saturating
+        # pull-back); the old hard np.clip to the region fought it and is
+        # gone. Rotation is unconstrained: rigid MST + contact weighting
+        # set the spin, read out via Kabsch.
+        disp = force * step_cap
         disp_norm = np.linalg.norm(disp, axis=1, keepdims=True)
-        scale = np.minimum(1.0, temp / np.maximum(disp_norm, 1e-6))
+        scale = np.minimum(1.0, step_cap / np.maximum(disp_norm, 1e-6))
         disp *= scale
-
-        # Cap max step size: 1mm keeps parts inside the halo gradient
-        # instead of vaulting across it in one step (halo reach is 3mm;
-        # the old 2mm budget crossed most of it at once, landing in
-        # overlap past the restoring slope).
-        disp_norm = np.linalg.norm(disp, axis=1, keepdims=True)
-        scale = np.minimum(1.0, max_step / np.maximum(disp_norm, 1e-6))
-        disp *= scale
-
-        # Rotation rate cap (F2): bound each footprint's spin to
-        # max_dangle_deg per iteration with translation bit-identical to
-        # the uncapped path. Per-pad caps above let one pad take the full
-        # budget while its mate takes ~0 -- pure spin that Kabsch only
-        # reads out afterwards (tens of degrees/iter on small parts,
-        # which then land inside neighbors). The fitted 2D angle comes
-        # from a closed-form Kabsch fit (no SVD); over-cap footprints
-        # are rotated back to exactly the cap about their centroid and
-        # recentered, so translation is untouched. Rotation stays fully
-        # free across iterations (a THT part can still turn around over
-        # a run; >= 180 disables the cap entirely).
-        if _touch_static.any() and params.max_dangle_deg < 180.0:
-            _rows = np.where(_touch_static)[0]
-            _fp_rows = _pad_fp_idx[_rows]
-            _nfp = len(fp_uuids)
-            _cnt = np.zeros(_nfp)
-            _sx = np.zeros((_nfp, 2))
-            _sp = np.zeros((_nfp, 2))
-            np.add.at(_cnt, _fp_rows, 1.0)
-            np.add.at(_sx, _fp_rows, disp[_rows])
-            np.add.at(_sp, _fp_rows, positions[_rows])
-            _n = np.maximum(_cnt, 1.0)
-            _dc = _sx / _n[:, None]
-            _pc = _sp / _n[:, None]
-            _lp = positions[_rows] - _pc[_fp_rows]
-            _vp = _lp + (disp[_rows] - _dc[_fp_rows])
-            _num = np.zeros(_nfp)
-            _den = np.zeros(_nfp)
-            np.add.at(_num, _fp_rows, _lp[:, 0] * _vp[:, 1] - _lp[:, 1] * _vp[:, 0])
-            np.add.at(_den, _fp_rows, _lp[:, 0] * _vp[:, 0] + _lp[:, 1] * _vp[:, 1])
-            _cap_a = math.radians(params.max_dangle_deg)
-            for _li in np.where(
-                (_cnt >= 2.0)
-                & (np.abs(np.arctan2(_num, _den)) > _cap_a)
-                & ((_num * _num + _den * _den) > 1e-24)
-            )[0]:
-                _m = fp_local_to_rows[_li]
-                _m = _m[_touch_static[_m]]
-                _th = math.atan2(float(_num[_li]), float(_den[_li]))
-                _phi = math.copysign(_cap_a, _th) - _th
-                _cc, _ss = math.cos(_phi), math.sin(_phi)
-                # Recompute this footprint's vectors (cheap: few pads).
-                _sel = np.where(_fp_rows == _li)[0]
-                _lr = _lp[_sel]
-                _vr = _vp[_sel]
-                _wr = np.empty_like(_vr)
-                _wr[:, 0] = _cc * _vr[:, 0] - _ss * _vr[:, 1]
-                _wr[:, 1] = _ss * _vr[:, 0] + _cc * _vr[:, 1]
-                _nd = _dc[_li] + (_wr - _lr)
-                # Recenter: keep baseline translation exactly.
-                _nd -= _nd.mean(axis=0, keepdims=True) - _dc[_li]
-                disp[_m] = _nd
+        disp *= _step_scale
+        disp[~pad_movable] = 0.0
 
         # Update positions (only movable pads)
         positions[pad_movable] += disp[pad_movable]
         positions = np.nan_to_num(positions, nan=0.0, posinf=0.0, neginf=0.0)
 
-        # Clamp to region bounds
-        positions[:, 0] = np.clip(positions[:, 0], min_x, max_x)
-        positions[:, 1] = np.clip(positions[:, 1], min_y, max_y)
+        # Damping update: reversal → halve (floor 1/8 cap), steady → regrow.
+        _align = np.sum(_prev_disp * disp, axis=1)
+        _rev = _align < 0
+        _fwd = _align > 0
+        _step_scale[_rev] = np.maximum(0.125, _step_scale[_rev] * 0.5)
+        _step_scale[_fwd] = np.minimum(1.0, _step_scale[_fwd] * 1.08)
+        _prev_disp = disp.copy()
 
         if record_frames and _frame_fps and ((iteration + 1) % _frame_stride == 0):
-            _region_frames.append(_capture_frame(positions))
+            _frame = _capture_frame(positions)
+            # Skip redundant scrub steps: rounded pose identical to the
+            # previous frame (settled or sub-micron damped moves).
+            if not _region_frames or _region_frames[-1] != _frame:
+                _region_frames.append(_frame)
 
         # Convergence check
         max_disp = float(np.max(np.linalg.norm(positions - prev_positions, axis=1)))
         if max_disp < params.convergence_eps_mm:
             break
 
-        # Cool temperature
-        temp = max(temp * 0.95, temp_min)
         prev_positions = positions.copy()
 
     # Compute footprint deltas from final pad positions
@@ -1583,7 +1546,7 @@ def run_placement(
 
     Supports multi-board region simulation: footprints are grouped by board
     outline region (from Edge.Cuts) and each region is simulated independently
-    with its own bounding box and temperature schedule.
+    with its own bounding box and fixed per-iteration step budget.
 
     Args:
         model: Board model with footprints, nets, and board outline.
@@ -1593,10 +1556,13 @@ def run_placement(
             only footprints in this set AND not locked can move.
         record_frames: capture per-iteration (dx, dy, da) frames for the SVG
             motion player (default False — zero overhead when off).
+            frames[0] is the starting pose (iteration 0); subsequent frames
+            follow every stride completed iterations; the last frame is
+            always the final pose.
         frame_stride: record every Nth iteration (effective stride is raised
             automatically so capture stays within max_frames).
         max_frames: cap on frames in the proposal; longer runs are uniformly
-            thinned (last frame always kept).
+            thinned (first = starting pose and last = final pose always kept).
 
     Returns:
         PlacementProposal with per-footprint deltas (dx, dy, dangle) keyed by UUID.

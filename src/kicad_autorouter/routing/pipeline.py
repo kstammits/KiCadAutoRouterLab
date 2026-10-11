@@ -25,7 +25,7 @@ from .output import routes_to_tracks_vias, apply_routes_to_tree
 from .smooth import own_net_soft_mask, smooth_grid_path, smoothed_wire_mm
 from .power import identify_power_nets, route_power_rails, route_ground_stitching, route_decap_fanout
 from .grid import RoutingGrid, board_to_grid
-from .obstacles import BLOCKED, bresenham_cells, build_fanout_cost, build_via_block_mask, stamp_square, tht_drill_cells
+from .obstacles import BLOCKED, bresenham_cells, build_fanout_cost, build_via_block_mask, stamp_square, tht_drill_cells, track_corridor_radius_cells, via_halo_radius_cells
 
 
 @dataclass
@@ -153,11 +153,14 @@ def _apply_route_to_grid(
     cost_grid: np.ndarray,
     grid: RoutingGrid,
     half_width_cells: int = 1,
+    extra_radius: int = 0,
 ) -> None:
     """Mark routed tracks and vias as BLOCKED in the cost grid.
 
-    The corridor covers ``half_width_cells`` around the centerline so wide
-    tracks reserve their true emitted footprint for subsequent nets.
+    The corridor covers ``max(half_width_cells - 1, extra_radius)`` around
+    the centerline so emitted tracks reserve their true footprint *plus*
+    clearance to neighboring copper for subsequent nets. Via landings
+    stamp the same halo on both layers (via annulus needs clearance too).
     Updates the cost_grid in-place.
 
     Args:
@@ -165,13 +168,15 @@ def _apply_route_to_grid(
         cost_grid: (n_layers, H, W) int16 array to update
         grid: RoutingGrid for coordinate transforms
         half_width_cells: corridor half-width in cells (>= 1)
+        extra_radius: clearance halo in cells (>= 0)
     """
     if not result.success or not result.path:
         return
 
     path = result.path
     n_layers = cost_grid.shape[0]
-    radius = max(0, half_width_cells - 1)
+    H, W = cost_grid.shape[1], cost_grid.shape[2]
+    radius = max(max(0, half_width_cells - 1), max(0, extra_radius))
 
     for i in range(len(path) - 1):
         c1, r1, l1 = path[i]
@@ -182,11 +187,13 @@ def _apply_route_to_grid(
             # Same layer - mark track corridor along the line
             _mark_line_blocked(cost_grid[l1], r1, c1, r2, c2, radius)
         else:
-            # Layer transition - mark via at both layers
-            if 0 <= l1 < n_layers and 0 <= r1 < cost_grid.shape[1] and 0 <= c1 < cost_grid.shape[2]:
-                cost_grid[l1, r1, c1] = BLOCKED
-            if 0 <= l2 < n_layers and 0 <= r2 < cost_grid.shape[1] and 0 <= c2 < cost_grid.shape[2]:
-                cost_grid[l2, r2, c2] = BLOCKED
+            # Layer transition - mark via halo at both layers
+            for _l, _r, _c in ((l1, r1, c1), (l2, r2, c2)):
+                if 0 <= _l < n_layers and 0 <= _r < H and 0 <= _c < W:
+                    if radius:
+                        stamp_square(cost_grid[_l], _r, _c, radius, BLOCKED)
+                    else:
+                        cost_grid[_l, _r, _c] = BLOCKED
 
 
 def _mark_line_blocked(layer_grid: np.ndarray, r1: int, c1: int, r2: int, c2: int, radius: int = 0) -> None:
@@ -303,9 +310,7 @@ def route_nets(
     # Refresh-in-place when shapes match: drops BLOCKED cells of the nets
     # being re-routed (they were ripped from the model above) while keeping
     # prior unrelated routes (still present as tracks in the model) blocked.
-    # Rebuilding is cheap (~0.1s on DCCF); reusing a stale grid is what made
-    # re-routes search around their own old copper until they hung.
-    #
+
     # KNOWN TRADEOFF (2026-10-09): a rebuilt grid marks pre-existing tracks
     # centerline-only (obstacles._mark_track has no width inflation), while
     # in-batch _apply_route_to_grid reserves the full emitted-width
@@ -382,8 +387,13 @@ def route_nets(
         )
         corridor = _width_cells(width_mm, params.grid_resolution_mm)
         clearance_mm = resolve_clearance(model, params, net_name)
-        clearance_radius = max(0, int(math.ceil(clearance_mm / params.grid_resolution_mm))) \
-            if params.grid_resolution_mm > 0 else 0
+        clearance_radius = track_corridor_radius_cells(
+            width_mm, clearance_mm, params.grid_resolution_mm,
+        )
+        router.via_clearance_cells = via_halo_radius_cells(
+            params.via_size_mm, clearance_mm, width_mm / 2.0,
+            params.grid_resolution_mm,
+        )
         soft_mask = own_net_soft_mask(
             model, routing_grid, net_name,
             clearance_mm=clearance_mm, track_half_mm=width_mm / 2.0,
@@ -398,7 +408,10 @@ def route_nets(
                     pinned=pinned, soft_mask=soft_mask,
                     clearance_radius=clearance_radius,
                 )
-                _apply_route_to_grid(result, cost_grid, routing_grid, corridor)
+                _apply_route_to_grid(
+                    result, cost_grid, routing_grid, corridor,
+                    extra_radius=clearance_radius,
+                )
                 ripup.record_success(net_name, result.path)
                 all_results[net_name] = result
                 nets_routed += 1
@@ -545,8 +558,12 @@ def run_routing(
             track_half_mm=width_mm / 2.0,
         )
         corridor = _width_cells(width_mm, grid_resolution_mm)
-        clearance_radius = max(0, int(math.ceil(0.2 / grid_resolution_mm))) \
-            if grid_resolution_mm > 0 else 0
+        clearance_radius = track_corridor_radius_cells(
+            width_mm, 0.2, grid_resolution_mm,
+        )
+        router.via_clearance_cells = via_halo_radius_cells(
+            via_size_mm, 0.2, width_mm / 2.0, grid_resolution_mm,
+        )
         soft_mask = own_net_soft_mask(
             model, grid, net_name,
             clearance_mm=0.2, track_half_mm=width_mm / 2.0,
@@ -563,7 +580,10 @@ def run_routing(
                     soft_mask=soft_mask, clearance_radius=clearance_radius,
                 )
                 # Apply to cost grid
-                _apply_route_to_grid(result, cost_grid, grid, corridor)
+                _apply_route_to_grid(
+                    result, cost_grid, grid, corridor,
+                    extra_radius=clearance_radius,
+                )
                 ripup.record_success(net_name, result.path)
                 success = True
                 break

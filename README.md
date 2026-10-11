@@ -14,8 +14,6 @@ algorithm yet.
   boundary (the only module that imports `pcbnew`).
 - `scripts/run_autoroute.py` — headless placement pass (.venv): parse → per-pad
   force-spring proposal → per-UUID writeback → optional DRC.
-- `scripts/roundtrip_pair.py` — pure-Python no-op read→edit→write of a pcb+sch
-  pair, with checks.
 - `tests/` — pytest suite + fixtures.
 - `ui/` — stdlib workflow UI + board viewer (`python ui/server.py`).
 - `docs/` — local KiCad 10 docs + project guidance/reference notes.
@@ -51,7 +49,7 @@ with interactive zoom/pan and component selection for iterative placement:
 ### UI workflow
 
 1. **Load** — drop a `.kicad_pcb` file (or use "Load…" button)
-2. **Adjust parameters** — repulsion/attraction, ideal length, etc.
+2. **Adjust parameters** — repulsion/attraction etc.
 3. **Select components** — click a footprint to select it; Shift+click for multi-select; Alt+click to pin (prevent movement)
 4. **Step/Run placement** — Step runs a few iterations (default 5); Run goes to convergence (saved max iterations); ghost courtyards + arrows show proposed moves. Boards with no nets correctly propose no movement.
 5. **Accept proposal** — commits changes to the board model

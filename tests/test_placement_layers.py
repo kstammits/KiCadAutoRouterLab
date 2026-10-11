@@ -85,7 +85,6 @@ PARAMS = PlacementParams(
     convergence_eps_mm=1e-12,
     repulsion_kr=100.0,
     attraction_ka=0.05,
-    ideal_length_mm=25.0,
     courtyard_repulsion_kc=10000.0,
     courtyard_halo_mm=3.0,
     boundary_repulsion_kb=1.0,  # negligible: parts start at board center
@@ -102,15 +101,25 @@ def test_same_layer_overlap_resolves():
     assert after == 0.0  # pushed fully apart
 
 
-def test_cross_layer_overlap_tolerated():
+def test_cross_layer_no_courtyard_force():
+    """Opposite-side SMD pairs feel zero courtyard force (layer gate).
+
+    Replaces test_cross_layer_overlap_tolerated (2026-10-11): its overlap
+    proxy ("pad repulsion alone cannot separate bodies in the budget") went
+    stale — pad Coulomb now separates the pair within 30 iters, so overlap
+    reaches 0.0 despite no courtyard involvement. Assert the intent
+    directly instead: the courtyard components are exactly zero while the
+    pair still moves (via layer-blind pad repulsion).
+    """
     model = _two_part_board(layer_b="B.Cu")
     before = _overlap_area(model, {})
-    prop = run_placement(model, PARAMS)
-    after = _overlap_area(model, prop.deltas)
     assert before > 10.0
-    # No courtyard force across sides: overlap essentially unchanged
-    # (pad repulsion alone cannot separate 6x4 bodies in 10 iters).
-    assert after > before * 0.5
+    prop = run_placement(model, PARAMS)
+    assert prop.deltas, "pair must still move via pad Coulomb"
+    for uuid, comps in prop.force_components.items():
+        assert comps["courtyard"] == (0.0, 0.0), (
+            f"{uuid}: cross-layer SMD-SMD must feel no courtyard force"
+        )
 
 
 def test_tht_collides_across_layers():

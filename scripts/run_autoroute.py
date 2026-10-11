@@ -32,7 +32,6 @@ from kicad_autorouter.validate import KicadCliNotFound, validate_pcb  # noqa: E4
 PARAM_FIELDS = (
     "repulsion_kr",
     "attraction_ka",
-    "ideal_length_mm",
     "max_iterations",
     "convergence_eps_mm",
 )
@@ -102,14 +101,13 @@ def main(argv=None) -> int:
                 step_params = PlacementParams(
                     repulsion_kr=base_params.repulsion_kr,
                     attraction_ka=base_params.attraction_ka,
-                    ideal_length_mm=base_params.ideal_length_mm,
                     max_iterations=step_iters,
                     convergence_eps_mm=base_params.convergence_eps_mm,
                     rigid_stiffness=base_params.rigid_stiffness,
                     courtyard_repulsion_kc=base_params.courtyard_repulsion_kc,
                     courtyard_halo_mm=base_params.courtyard_halo_mm,
                     boundary_repulsion_kb=base_params.boundary_repulsion_kb,
-                    max_dangle_deg=base_params.max_dangle_deg,
+                    max_step_mm=base_params.max_step_mm,
                 )
             else:
                 step_params = base_params
