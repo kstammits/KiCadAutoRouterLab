@@ -59,17 +59,9 @@ class PlacementParams:
     # shoving edge-near parts into their neighbors at 100x the force that
     # separates them (2026-10-10: kb was 5e5).
     boundary_repulsion_kb: float = 20000.0
+    
     # Max pad displacement per iteration (mm). The integrator moves each
-    # pad along its total force vector, capped at this budget; below one
-    # force-unit the move is proportional, so the sim settles smoothly as
-    # forces balance instead of oscillating around equilibrium. 1mm keeps
-    # parts inside the halo gradient instead of vaulting across it in one
-    # step (halo reach is 3mm; a 2mm budget crossed most of it at once,
-    # landing in overlap past the restoring slope). Replaces the old
-    # Fruchterman-Reingold temperature schedule (2026-10-11): the cooling
-    # gain coupled the iteration budget to the trajectory, so changing
-    # max_iterations changed the path, not just its length.
-    max_step_mm: float = 1.0
+    max_step_mm: float = 2.0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -1410,13 +1402,7 @@ def _run_region_simulation(
             same_fp_mask,
         )
 
-        # Displacement = force * step_cap, capped per pad at step_cap.
-        # Fixed budget every iteration: no cooling, so the trajectory is a
-        # pure function of (model, params), never of max_iterations.
-        # Containment is the boundary force's job (soft push + saturating
-        # pull-back); the old hard np.clip to the region fought it and is
-        # gone. Rotation is unconstrained: rigid MST + contact weighting
-        # set the spin, read out via Kabsch.
+        # Displacement = force * step_cap
         disp = force * step_cap
         disp_norm = np.linalg.norm(disp, axis=1, keepdims=True)
         scale = np.minimum(1.0, step_cap / np.maximum(disp_norm, 1e-6))
@@ -1438,10 +1424,7 @@ def _run_region_simulation(
 
         if record_frames and _frame_fps and ((iteration + 1) % _frame_stride == 0):
             _frame = _capture_frame(positions)
-            # Skip redundant scrub steps: rounded pose identical to the
-            # previous frame (settled or sub-micron damped moves).
-            if not _region_frames or _region_frames[-1] != _frame:
-                _region_frames.append(_frame)
+            _region_frames.append(_frame)
 
         # Convergence check
         max_disp = float(np.max(np.linalg.norm(positions - prev_positions, axis=1)))
