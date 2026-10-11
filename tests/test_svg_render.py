@@ -164,7 +164,10 @@ def test_preview_matches_accept_with_rotation():
         }
 
     g_preview, g_accepted = groups(preview), groups(accepted)
-    assert len(g_preview) == len(g_accepted) == len(m.footprints)
+    # Padless graphical parts (logos/art) are hidden from the SVG but stay
+    # in the model — rendered groups equal footprints with pads.
+    n_drawn = sum(1 for f in m.footprints if f.pads)
+    assert len(g_preview) == len(g_accepted) == n_drawn
     assert [u for u in g_preview if g_preview[u] != g_accepted.get(u)] == []
     assert "translate(" not in preview
 

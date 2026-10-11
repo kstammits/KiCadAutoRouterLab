@@ -9,7 +9,7 @@ from typing import Optional, Tuple, List, Set, Dict
 
 import numpy as np
 
-from ..board_model import BoardModel, board_model, netclass_trace_width, netclass_clearance
+from ..board_model import BoardModel, Point, Track, Via, board_model, netclass_trace_width, netclass_clearance
 from ..io import nudge_footprint_by_uuid, save_pair, parse_file, load_pair, rip_up_nets
 from ..placement import PlacementParams, PlacementProposal, run_placement
 from ..drc import run_drc_on_tree, DRCResult, write_pcb_tree
@@ -22,9 +22,12 @@ from . import (
     CostMap,
 )
 from .output import routes_to_tracks_vias, apply_routes_to_tree
+from .output import Track as OutputTrack, Via as OutputVia
 from .smooth import own_net_soft_mask, smooth_grid_path, smoothed_wire_mm
-from .power import identify_power_nets, route_power_rails, route_ground_stitching, route_decap_fanout
+from .power import identify_power_nets, route_power_rails, route_decap_fanout
 from .grid import RoutingGrid, board_to_grid
+from .pour import pour_corridors, pour_net_names, severance_cost
+from .stitch import plan_stitches
 from .obstacles import BLOCKED, bresenham_cells, build_fanout_cost, build_via_block_mask, stamp_square, tht_drill_cells, track_corridor_radius_cells, via_halo_radius_cells
 
 
@@ -39,6 +42,10 @@ class RoutingResult:
     drc_violations: int
     drc_result: Optional[DRCResult] = None
     pcb_tree: Optional = None  # Modified PCB tree after routing
+    stitch_vias_added: int = 0
+    stitch_tracks_added: int = 0
+    gnd_islands_before: int = 0
+    gnd_islands_after: int = 0
 
 
 @dataclass
@@ -58,6 +65,11 @@ class RoutingParams:
     net_widths: Dict[str, float] = field(default_factory=dict)  # Explicit per-net trace widths (override)
     heuristic_weight: float = 3.0     # Weighted-A* greediness (lower respects penalties)
     max_expansions: int = 2_000_000   # A* node-expansion cap per search (fail fast, don't hang)
+    stitch_gnd_vias: bool = True      # Auto-repair GND pour continuity after routing
+    stitch_vias_max: int = 32         # Cap on auto stitching vias
+    stitch_bridges_max: int = 16      # Cap on auto GND bridge tracks (repairs)
+    stitch_bridge_max_mm: float = 30.0  # Longest single bridge track
+    pour_severance_weight: float = 30.0  # Soft cost for tracks severing a pour (0 disables)
 
     def to_dict(self) -> dict:
         return {
@@ -75,6 +87,11 @@ class RoutingParams:
             "net_widths": dict(self.net_widths),
             "heuristic_weight": self.heuristic_weight,
             "max_expansions": self.max_expansions,
+            "stitch_gnd_vias": self.stitch_gnd_vias,
+            "stitch_vias_max": self.stitch_vias_max,
+            "stitch_bridges_max": self.stitch_bridges_max,
+            "stitch_bridge_max_mm": self.stitch_bridge_max_mm,
+            "pour_severance_weight": self.pour_severance_weight,
         }
 
     @classmethod
@@ -84,7 +101,9 @@ class RoutingParams:
             "grid_resolution_mm", "margin_mm", "via_cost_mm",
             "track_width_mm", "power_width_mm", "clearance_mm", "via_size_mm",
             "via_drill_mm", "max_attempts_per_net", "run_drc", "debug",
-            "net_widths", "heuristic_weight", "max_expansions"
+            "net_widths", "heuristic_weight", "max_expansions",
+            "stitch_gnd_vias", "stitch_vias_max", "stitch_bridges_max",
+            "stitch_bridge_max_mm", "pour_severance_weight",
         }
         filtered = {k: v for k, v in d.items() if k in valid_keys}
         return cls(**filtered)
@@ -352,6 +371,13 @@ def route_nets(
     
     # 5. Identify net classes
     power_nets, ground_nets, signal_nets = identify_power_nets(model)
+
+    # 5b. Pour-corridor map for severance-aware routing (computed once on
+    # the ripped model; pour nets themselves route without the penalty).
+    pour_nets = set(pour_net_names(model))
+    corridors, corridor_min_thick = (None, 0.0)
+    if params.pour_severance_weight > 0 and pour_nets:
+        corridors, corridor_min_thick = pour_corridors(model, routing_grid)
     
     # 6. Separate requested nets into categories
     requested_power = [n for n in net_names if n in power_nets]
@@ -385,6 +411,15 @@ def route_nets(
             clearance_mm=resolve_clearance(model, params, net_name),
             track_half_mm=width_mm / 2.0,
         )
+        if corridors is not None and net_name not in pour_nets:
+            # Pour-severance toll: tracks may still cross narrow pour
+            # channels, but prefer paths that keep pours whole.
+            secondary = secondary + severance_cost(
+                corridors, corridor_min_thick, routing_grid,
+                width_mm=width_mm,
+                clearance_mm=resolve_clearance(model, params, net_name),
+                weight=params.pour_severance_weight,
+            )
         corridor = _width_cells(width_mm, params.grid_resolution_mm)
         clearance_mm = resolve_clearance(model, params, net_name)
         clearance_radius = track_corridor_radius_cells(
@@ -447,17 +482,66 @@ def route_nets(
         via_drill_mm=params.via_drill_mm,
         tht_sites=_tht_sites_by_net(model, routing_grid),
     )
-    
+
+    # 10b. Automatic GND continuity repair (stitching vias + bridge tracks).
+    # Runs on the routed board: newly routed copper joins the island model,
+    # so fresh fragments get repaired in the same call. Appends standard
+    # vias/tracks; KiCad refills the pours around them on open.
+    stitch_vias_added = 0
+    stitch_tracks_added = 0
+    islands_before = 0
+    islands_after = 0
+    if params.stitch_gnd_vias and (tracks or vias or model.tracks or model.vias):
+        routed_model = replace(
+            model,
+            tracks=model.tracks + tuple(
+                Track(start=Point(*t.start), end=Point(*t.end),
+                      width_mm=t.width_mm, layer=t.layer, net_name=t.net_name)
+                for t in tracks
+            ),
+            vias=model.vias + tuple(
+                Via(position=Point(*v.position), size_mm=v.size_mm,
+                    drill_mm=v.drill_mm, layers=tuple(v.layers), net_name=v.net_name)
+                for v in vias
+            ),
+        )
+        plan = plan_stitches(
+            routed_model, routing_grid,
+            size_mm=params.via_size_mm,
+            drill_mm=params.via_drill_mm,
+            clearance_mm=params.clearance_mm,
+            bridge_width_mm=params.power_width_mm,
+            max_vias=params.stitch_vias_max,
+            max_bridges=params.stitch_bridges_max,
+            max_bridge_mm=params.stitch_bridge_max_mm,
+        )
+        for sv in plan.vias:
+            vias.append(OutputVia(
+                position=(sv.position.x_mm, sv.position.y_mm),
+                size_mm=sv.size_mm, drill_mm=sv.drill_mm,
+                layers=tuple(sv.layers), net_name=sv.net_name or "",
+            ))
+        for st in plan.tracks:
+            tracks.append(OutputTrack(
+                start=(st.start.x_mm, st.start.y_mm),
+                end=(st.end.x_mm, st.end.y_mm),
+                width_mm=st.width_mm, layer=st.layer, net_name=st.net_name or "",
+            ))
+        stitch_vias_added = len(plan.vias)
+        stitch_tracks_added = len(plan.tracks)
+        islands_before = plan.islands_before
+        islands_after = plan.islands_after
+
     # 11. Apply routes to PCB tree
     pcb_tree = None
     if original_pcb_tree is not None:
         pcb_tree = apply_routes_to_tree(original_pcb_tree, tracks, vias)
-    
+
     # 12. Run DRC if requested
     drc_result = None
     if params.run_drc and pcb_tree is not None:
         drc_result = run_drc_on_tree(pcb_tree, prefix="route_")
-    
+
     return RoutingResult(
         tracks_added=len(tracks),
         vias_added=len(vias),
@@ -467,6 +551,10 @@ def route_nets(
         drc_violations=drc_result.total_issues if drc_result else 0,
         drc_result=drc_result,
         pcb_tree=pcb_tree,
+        stitch_vias_added=stitch_vias_added,
+        stitch_tracks_added=stitch_tracks_added,
+        gnd_islands_before=islands_before,
+        gnd_islands_after=islands_after,
     ), cost_grid, routing_grid
 
 
@@ -510,18 +598,13 @@ def run_routing(
     
     # 4. Identify net classes
     power_nets, ground_nets, signal_nets = identify_power_nets(model)
-    
+
     # 5. Route power rails first
     power_results = route_power_rails(
         model, grid, cost_grid, router, power_nets, power_width_mm
     )
-    
-    # 6. Route ground stitching
-    ground_results = route_ground_stitching(
-        model, grid, cost_grid, router, ground_nets
-    )
-    
-    # 7. Route decoupling caps
+
+    # 6. Route decoupling caps
     decap_refs = [fp.ref for fp in model.footprints if fp.ref.startswith("C") and len(fp.pads) == 2]
     decap_results = route_decap_fanout(
         model, grid, cost_grid, router, decap_refs
@@ -596,10 +679,9 @@ def run_routing(
     # 9. Combine all results
     all_results = {}
     all_results.update(power_results)
-    all_results.update(ground_results)
     all_results.update(decap_results)
     all_results.update({n: ripup.routed_paths[n] for n in ripup.routed_paths})
-    
+
     # Convert to tracks/vias (own-THT hops reuse the barrel)
     tracks, vias = routes_to_tracks_vias(
         all_results,
@@ -610,21 +692,54 @@ def run_routing(
         via_drill_mm=via_drill_mm,
         tht_sites=_tht_sites_by_net(model, grid),
     )
-    
+
+    # 9b. GND continuity repair (stitching vias + bridge tracks), as in
+    # route_nets step 10b. Supersedes the old centroid ground stitching.
+    routed_model = replace(
+        model,
+        tracks=model.tracks + tuple(
+            Track(start=Point(*t.start), end=Point(*t.end),
+                  width_mm=t.width_mm, layer=t.layer, net_name=t.net_name)
+            for t in tracks
+        ),
+        vias=model.vias + tuple(
+            Via(position=Point(*v.position), size_mm=v.size_mm,
+                drill_mm=v.drill_mm, layers=tuple(v.layers), net_name=v.net_name)
+            for v in vias
+        ),
+    )
+    stitch_plan = plan_stitches(
+        routed_model, grid,
+        size_mm=via_size_mm, drill_mm=via_drill_mm, clearance_mm=0.2,
+        bridge_width_mm=power_width_mm,
+    )
+    for sv in stitch_plan.vias:
+        vias.append(OutputVia(
+            position=(sv.position.x_mm, sv.position.y_mm),
+            size_mm=sv.size_mm, drill_mm=sv.drill_mm,
+            layers=tuple(sv.layers), net_name=sv.net_name or "",
+        ))
+    for st in stitch_plan.tracks:
+        tracks.append(OutputTrack(
+            start=(st.start.x_mm, st.start.y_mm),
+            end=(st.end.x_mm, st.end.y_mm),
+            width_mm=st.width_mm, layer=st.layer, net_name=st.net_name or "",
+        ))
+
     # 10. Apply routes to PCB tree
     pcb_tree = None
     if original_pcb_tree is not None:
         pcb_tree = apply_routes_to_tree(original_pcb_tree, tracks, vias)
-    
+
     # 11. Run DRC if requested
     drc_result = None
     if run_drc and pcb_tree is not None:
         drc_result = run_drc_on_tree(pcb_tree, prefix="route_")
-    
+
     # Stats
-    nets_routed = len(ripup.routed_paths) + len(power_results) + len(ground_results)
+    nets_routed = len(ripup.routed_paths) + len(power_results)
     nets_failed = len(ripup.get_failed_nets())
-    
+
     return RoutingResult(
         tracks_added=len(tracks),
         vias_added=len(vias),
@@ -634,6 +749,10 @@ def run_routing(
         drc_violations=drc_result.total_issues if drc_result else 0,
         drc_result=drc_result,
         pcb_tree=pcb_tree,
+        stitch_vias_added=len(stitch_plan.vias),
+        stitch_tracks_added=len(stitch_plan.tracks),
+        gnd_islands_before=stitch_plan.islands_before,
+        gnd_islands_after=stitch_plan.islands_after,
     )
 
 

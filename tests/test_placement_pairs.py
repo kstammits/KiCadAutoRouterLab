@@ -88,7 +88,6 @@ PARAMS = PlacementParams(
     courtyard_repulsion_kc=10000.0,
     courtyard_halo_mm=3.0,
     boundary_repulsion_kb=1.0,  # negligible: parts start at board center
-    rigid_stiffness=5e5,
 )
 
 
@@ -105,7 +104,6 @@ SEPARATION_PARAMS = PlacementParams(
     courtyard_repulsion_kc=10000.0,
     courtyard_halo_mm=3.0,
     boundary_repulsion_kb=1.0,
-    rigid_stiffness=5e5,
 )
 
 
@@ -122,7 +120,7 @@ def test_movable_separates_from_earlier_immobile():
     dx, _, _ = prop.deltas["uuid-b"]
     assert dx > 0.0
     comps = prop.force_components["uuid-b"]
-    assert set(comps) == {"repulsion", "attraction", "rigid", "ghost", "courtyard", "boundary"}
+    assert set(comps) == {"repulsion", "attraction", "ghost", "courtyard", "boundary"}
     cx, _ = comps["courtyard"]
     assert cx > 1e4  # old code: exactly 0.0 (pair never evaluated)
 
@@ -144,7 +142,7 @@ def test_movable_separates_from_later_immobile():
 
 @pytest.mark.regression
 def test_shear_produces_finite_rotation():
-    """Rotational shear is governed by rigid MST + contact weighting.
+    """Rotational shear is governed by rigid projection + contact weighting.
 
     Replaces test_rotation_rate_capped_per_iteration (2026-10-11): the
     max_dangle_deg cap is removed -- there is no velocity to damp, only
@@ -186,7 +184,6 @@ def test_shear_produces_finite_rotation():
         courtyard_repulsion_kc=1e-6,  # near-zero: isolate repulsion shear
         courtyard_halo_mm=3.0,
         boundary_repulsion_kb=1.0,
-        rigid_stiffness=5e5,
     )
     prop = run_placement(model, PlacementParams(**base), movable_uuids={"uuid-m"})
     assert "uuid-m" in prop.deltas
@@ -217,7 +214,6 @@ def test_contact_weighting_conserves_total():
         courtyard_repulsion_kc=10000.0,
         courtyard_halo_mm=3.0,
         boundary_repulsion_kb=1.0,
-        rigid_stiffness=5e5,
     )
     prop = run_placement(model, params, movable_uuids={"uuid-b"})
     total_fx, _ = prop.forces["uuid-b"]
@@ -308,7 +304,6 @@ def test_boundary_force_bounded_near_edge():
         courtyard_repulsion_kc=10000.0,
         courtyard_halo_mm=3.0,
         boundary_repulsion_kb=500000.0,
-        rigid_stiffness=5e5,
     )
     prop = run_placement(model, params)
     bx, by = prop.force_components["uuid-p"]["boundary"]

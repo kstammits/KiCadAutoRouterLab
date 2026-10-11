@@ -244,7 +244,7 @@ class TestZoneMarking:
     """Tests for _mark_zone."""
 
     def test_mark_zone_f_cu_only(self, grid):
-        """Zone only blocks its layer."""
+        """Zone marks its layer passable-at-toll (POUR), other layer free."""
         from kicad_autorouter.board_model import Zone, Point
         zone = Zone(
             uuid="zone1",
@@ -256,8 +256,10 @@ class TestZoneMarking:
 
         _mark_zone(cost_grid, grid, zone)
 
-        assert np.any(cost_grid[0] == BLOCKED)
-        assert not np.any(cost_grid[1] == BLOCKED)
+        from kicad_autorouter.routing.obstacles import POUR
+        assert np.any(cost_grid[0] == POUR)
+        assert not np.any(cost_grid[1] == POUR)
+        assert not np.any(cost_grid >= BLOCKED)
 
 
 class TestEdgeKeepout:
@@ -479,12 +481,14 @@ class TestBuildOccupancyGridIntegration:
         # Minimal has no vias
         assert cost_grid.dtype == np.int16
 
-    def test_zones_blocked_on_layer(self, cost_grid, dccf_model):
-        """Copper zones block their layer."""
+    def test_zones_passable_on_layer(self, cost_grid, dccf_model):
+        """Copper zones mark POUR (passable toll) on their layer."""
+        from kicad_autorouter.routing.obstacles import POUR
         grid = create_grid_from_model(dccf_model, resolution_mm=0.1, margin_mm=2.0)
         dccf_cost = build_occupancy_grid(dccf_model, grid, default_clearance_mm=0.2)
         # DCCF has a GND zone
         assert dccf_cost.dtype == np.int16
+        assert np.any(dccf_cost == POUR)
 
     def test_edge_keepout_present(self, cost_grid):
         """Edge keepout zones exist."""
@@ -495,11 +499,12 @@ class TestDCCFCostGrid:
     """Cost grid tests on DCCF (real board)."""
 
     def test_dccf_cost_grid_has_expected_values(self, dccf_model):
-        """DCCF cost grid has BLOCKED, HIGH_COST, EDGE_KEEPOUT."""
+        """DCCF cost grid has POUR (zones are passable tolls), HIGH_COST, EDGE_KEEPOUT."""
+        from kicad_autorouter.routing.obstacles import POUR
         grid = create_grid_from_model(dccf_model, resolution_mm=0.1, margin_mm=2.0)
         cost_grid = build_occupancy_grid(dccf_model, grid, default_clearance_mm=0.2)
 
-        assert np.any(cost_grid == BLOCKED)
+        assert np.any(cost_grid == POUR)
         assert np.any(cost_grid == HIGH_COST)
         assert np.any(cost_grid == EDGE_KEEPOUT)
 

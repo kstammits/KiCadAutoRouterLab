@@ -10,6 +10,7 @@ from typing import List, Optional, Tuple
 import numpy as np
 
 from .grid import RoutingGrid
+from .obstacles import POUR
 
 
 @dataclass(frozen=True)
@@ -33,6 +34,7 @@ class CostMap:
     base_cost: int = 1              # per cell (wire length)
     via_cost_mm: float = 5.0        # per via transition (mm wire equivalent)
     courtyard_penalty: int = 5      # additional cost for COURTYARD cells
+    pour_penalty: int = 10          # additional cost for POUR cells (cross if needed)
     high_cost_penalty: int = 20     # additional cost for HIGH_COST cells
     edge_keepout_penalty: int = 40  # additional cost for EDGE_KEEPOUT cells
     blocked_threshold: int = 100    # cells >= this are impassable
@@ -228,7 +230,7 @@ class SingleNetRouter:
         """True when a via halo at (row, col) would violate foreign copper.
 
         Scans the ``via_clearance_cells`` disc on every layer for
-        ``BLOCKED`` cost cells (prior tracks/vias/zones), secondary
+        ``BLOCKED`` cost cells (prior tracks/vias/holes), secondary
         exclusion rings (foreign THT), and via-block solder areas. The
         center cell's own THT drill disc is exempt (free hop reuses the
         barrel); SMD solder areas still forbid even THT-adjacent sites
@@ -381,6 +383,8 @@ class SingleNetRouter:
             base += self.cost_map.edge_keepout_penalty
         elif cell_val >= 50:  # HIGH_COST
             base += self.cost_map.high_cost_penalty
+        elif cell_val >= POUR:  # POUR (35)
+            base += self.cost_map.pour_penalty
         elif cell_val >= 25:  # COURTYARD
             base += self.cost_map.courtyard_penalty
         return base

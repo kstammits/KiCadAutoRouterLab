@@ -28,7 +28,7 @@ from typing import List, Optional, Set, Tuple
 import numpy as np
 
 # Cost bands (mirrors routing/obstacles.py + router.CostMap).
-BLOCKED_THRESHOLD = 100  # impassable: tracks, vias, zones
+BLOCKED_THRESHOLD = 100  # impassable: tracks, vias, drilled holes (pours are passable)
 SOFT_THRESHOLD = 50  # HIGH_COST pad rings / EDGE_KEEPOUT: no shortcut through
                          # COURTYARD (25) is below this — shortcuts allowed
 

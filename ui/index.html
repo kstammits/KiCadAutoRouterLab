@@ -391,8 +391,10 @@
             <button id="route-all-btn" title="Route all unprotected nets">Route All Unprotected</button>
             <button id="route-cancel-btn" hidden title="Stop after the current net (already-routed nets are kept)">Cancel</button>
             <progress id="route-progress" hidden max="1" value="0" style="width:8rem;" title="Per-net routing progress"></progress>
+            <button id="gnd-islands-btn" title="Analyze GND pour continuity (islands per layer)">GND Islands</button>
             <span id="route-diag"></span>
           </div>
+          <div id="gnd-islands-results" style="font-size:.72rem;padding:.2rem .7rem;" hidden></div>
           <div class="params" id="routing-params-grid"></div>
           <div class="nets-table-container">
             <table id="nets-table">
@@ -542,11 +544,13 @@ const PARAM_DEFS = [
   { key: "attraction_ka", label: "Attraction k_a", min: 0.001, max: 1, step: 0.005, log: true },
   { key: "max_iterations", label: "Max iterations", min: 1, max: 20000, step: 10 },
   { key: "convergence_eps_mm", label: "Convergence eps (mm)", min: 0.0001, max: 1, step: 0.001, log: true },
-  { key: "rigid_stiffness", label: "Rigid stiffness", min: 1000, max: 1e9, step: 1, log: true },
   { key: "courtyard_repulsion_kc", label: "Courtyard repulsion k_c", min: 0, max: 20000, step: 10 },
   { key: "courtyard_halo_mm", label: "Courtyard halo (mm)", min: 0, max: 20, step: 0.5 },
   { key: "boundary_repulsion_kb", label: "Boundary repulsion k_b", min: 100, max: 1e6, step: 1, log: true },
   { key: "max_step_mm", label: "Max step (mm/iter)", min: 0.1, max: 5, step: 0.1 },
+  { key: "friction_threshold_mm", label: "Friction (mm)", min: 0, max: 0.5, step: 0.005 },
+  { key: "power_attraction_scale", label: "Power attraction", min: 0, max: 2, step: 0.05 },
+  { key: "decap_boost", label: "Decap boost", min: 0, max: 16, step: 0.5 },
 ];
 
 const PARAM_DESC = {
@@ -554,11 +558,13 @@ const PARAM_DESC = {
   attraction_ka: "Constant-magnitude attraction between net-connected pads (F = k_a toward each other). Balances Coulomb repulsion at d = √(k_r/k_a). Log scale.",
   max_iterations: "Hard limit on simulation steps.",
   convergence_eps_mm: "Stop when max pad displacement < this per iteration. Log scale.",
-  rigid_stiffness: "Internal spring stiffness keeping footprint pads rigid. Very high = rigid body. Log scale (1e3–1e9).",
   courtyard_repulsion_kc: "Footprint-level repulsion when courtyards overlap/approach. Max strength at contact; falls linearly to zero at the halo edge.",
   courtyard_halo_mm: "Near-miss reach past part outlines (mm). Caps the size-scaled halo so big parts don't push across the board. E.g. 3mm means a quarter inch of clearance feels nothing.",
   boundary_repulsion_kb: "Repulsion from board region edges. Higher = stronger push away from boundaries. Log scale (100–1e6).",
   max_step_mm: "Max pad movement per iteration (mm). Each pad moves along its total force up to this budget; smaller forces move proportionally, so the sim settles as forces balance. 1mm keeps parts inside the 3mm halo gradient.",
+  friction_threshold_mm: "Static friction: a footprint freezes when its largest proposed pad step is below this (mm). Kills micro-motion tail and terminates settled runs. 0 disables.",
+  power_attraction_scale: "Power-rail attraction trim (fanout-scaled ka/(fanout-1) per edge). 1 = full participation; 0 restores the old exclude-power behavior.",
+  decap_boost: "Decoupling-cap edge multiplier (on top of fanout scaling). Also gates the decap GND-side exception: 0 removes decap GND edges.",
 };
 
 const paramsGrid = document.getElementById("params-grid");
@@ -2303,17 +2309,27 @@ function renderRoutingParams(params) {
     { key: "power_width_mm", label: "Power Width (mm)", min: 0.2, max: 3.0, step: 0.05, default: 0.5 },
     { key: "clearance_mm", label: "Clearance (mm)", min: 0.1, max: 1.0, step: 0.05, default: 0.2 },
     { key: "via_cost_mm", label: "Via Cost (mm)", min: 1, max: 20, step: 0.5, default: 5 },
+    { key: "pour_severance_weight", label: "Pour Severance Weight (0 disables)", min: 0, max: 200, step: 5, default: 30 },
     { key: "grid_resolution_mm", label: "Grid Resolution (mm) — 0.05 is 4x cells, may be rejected on large boards", min: 0.05, max: 0.5, step: 0.05, default: 0.1 },
   ];
   
   // Debug checkbox
   const debugChecked = params.debug ? "checked" : "";
+  const stitchChecked = params.stitch_gnd_vias ?? true ? "checked" : "";
   const debugHtml = `
     <div class="param">
       <span title="Enable debug output (cost grid, search frontier)">Debug Mode</span>
       <div class="row">
         <label class="chk" style="margin:0;">
           <input type="checkbox" data-key="debug" ${debugChecked}> Enabled
+        </label>
+      </div>
+    </div>
+    <div class="param">
+      <span title="Auto-repair GND pour continuity after routing (stitching vias + bridge tracks)">GND Stitching</span>
+      <div class="row">
+        <label class="chk" style="margin:0;">
+          <input type="checkbox" data-key="stitch_gnd_vias" ${stitchChecked}> Enabled
         </label>
       </div>
     </div>
@@ -2479,6 +2495,12 @@ async function routeSelectedNets() {
       totals.vias += r.vias_added || 0;
       totals.routed += r.nets_routed || 0;
       totals.failed += r.nets_failed || 0;
+      totals.stitchVias = (totals.stitchVias || 0) + (r.stitch_vias_added || 0);
+      totals.stitchTracks = (totals.stitchTracks || 0) + (r.stitch_tracks_added || 0);
+      if (r.gnd_islands_before) {
+        totals.gndBefore = r.gnd_islands_before;
+        totals.gndAfter = r.gnd_islands_after;
+      }
       if (r.debug) showCostGridDebug(r.debug);
       // Incremental refresh: show each net's copper as it lands.
       if (r.version) {
@@ -2501,7 +2523,11 @@ async function routeSelectedNets() {
   await fetchNets();
 
   const kept = `v${lastBoardVersion} — ${totals.tracks} tracks, ${totals.vias} vias, ` +
-    `${totals.routed} routed, ${totals.failed} failed (${elapsed()})`;
+    `${totals.routed} routed, ${totals.failed} failed (${elapsed()})` +
+    (totals.stitchVias || totals.stitchTracks
+      ? ` — GND stitch: ${totals.stitchVias || 0} vias, ${totals.stitchTracks || 0} bridges` +
+        (totals.gndBefore ? ` (islands ${totals.gndBefore}→${totals.gndAfter})` : "")
+      : "");
   if (routeCancelRequested) {
     diag.textContent = `cancelled after ${doneCount}/${nets.length} nets — kept ${totals.routed} — ${kept}`;
   } else if (failures.length) {
@@ -2562,6 +2588,92 @@ async function routeAllNets() {
 // Event listeners for routing panel
 document.getElementById("route-selected-btn").addEventListener("click", routeSelectedNets);
 document.getElementById("route-all-btn").addEventListener("click", routeAllNets);
+document.getElementById("gnd-islands-btn").addEventListener("click", fetchGndIslands);
+
+// GND pour continuity overlay (Phase 1 diagnostics): bbox per island,
+// red dashed = dead (no pad/via connection, cf. KiCad isolated-fill DRC).
+let gndIslandsData = null;
+function boardMmToViewport(xMm, yMm) {
+  const svg = viewport.querySelector("svg");
+  if (!svg) return null;
+  const vbAttr = svg.getAttribute("viewBox");
+  if (!vbAttr) return null;
+  const [vbx, vby, vbw, vbh] = vbAttr.split(" ").map(Number);
+  return {
+    x: ((xMm - vbx) / vbw) * viewport.clientWidth,
+    y: ((vby + vbh - yMm) / vbh) * viewport.clientHeight,
+    sx: viewport.clientWidth / vbw,
+    sy: viewport.clientHeight / vbh,
+  };
+}
+
+function renderGndIslandsOverlay() {
+  viewport.querySelectorAll(".gnd-island-overlay").forEach(el => el.remove());
+  if (!gndIslandsData) return;
+  const svg = viewport.querySelector("svg");
+  if (!svg) return;
+  const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+  g.classList.add("gnd-island-overlay");
+  g.style.pointerEvents = "none";
+  for (const [layer, items] of Object.entries(gndIslandsData.layers)) {
+    for (const isl of items) {
+      const [x0, y0, x1, y1] = isl.bbox_mm;
+      const tl = boardMmToViewport(x0, y1);
+      const br = boardMmToViewport(x1, y0);
+      if (!tl || !br) continue;
+      const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+      rect.setAttribute("x", Math.min(tl.x, br.x));
+      rect.setAttribute("y", Math.min(tl.y, br.y));
+      rect.setAttribute("width", Math.abs(br.x - tl.x));
+      rect.setAttribute("height", Math.abs(br.y - tl.y));
+      rect.setAttribute("fill", isl.connected ? "#2ea87a" : "#e06c75");
+      rect.setAttribute("fill-opacity", "0.12");
+      rect.setAttribute("stroke", isl.connected ? "#2ea87a" : "#e06c75");
+      rect.setAttribute("stroke-width", isl.connected ? "1" : "2");
+      if (!isl.connected) rect.setAttribute("stroke-dasharray", "4 2");
+      const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
+      title.textContent = `${isl.net} ${layer}: ${isl.area_mm2}mm² ${isl.connected ? "fed" : "DEAD"}`;
+      rect.appendChild(title);
+      g.appendChild(rect);
+      const c = boardMmToViewport(isl.cx_mm, isl.cy_mm);
+      if (c) {
+        const dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+        dot.setAttribute("cx", c.x);
+        dot.setAttribute("cy", c.y);
+        dot.setAttribute("r", "3");
+        dot.setAttribute("fill", isl.connected ? "#2ea87a" : "#e06c75");
+        g.appendChild(dot);
+      }
+    }
+  }
+  svg.appendChild(g);
+}
+
+async function fetchGndIslands() {
+  const btn = document.getElementById("gnd-islands-btn");
+  const box = document.getElementById("gnd-islands-results");
+  btn.disabled = true;
+  btn.textContent = "Analyzing…";
+  try {
+    const res = await fetch("/api/routing/debug/gnd-islands");
+    if (!res.ok) throw new Error(await res.text());
+    gndIslandsData = await res.json();
+    const parts = [];
+    for (const [layer, items] of Object.entries(gndIslandsData.layers)) {
+      const dead = items.filter(i => !i.connected).length;
+      parts.push(`${layer}: ${items.length} island${items.length === 1 ? "" : "s"}${dead ? ` (${dead} DEAD)` : ""}`);
+    }
+    box.hidden = false;
+    box.textContent = parts.join(" · ") || "no zoned ground pours";
+    renderGndIslandsOverlay();
+  } catch (err) {
+    box.hidden = false;
+    box.textContent = `island analysis failed: ${err}`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "GND Islands";
+  }
+}
 
 // Select all checkbox in nets table
 document.getElementById("nets-select-all").addEventListener("change", e => {

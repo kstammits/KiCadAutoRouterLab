@@ -88,7 +88,6 @@ PARAMS = PlacementParams(
     courtyard_repulsion_kc=10000.0,
     courtyard_halo_mm=3.0,
     boundary_repulsion_kb=1.0,  # negligible: parts start at board center
-    rigid_stiffness=5e5,
 )
 
 
@@ -139,7 +138,7 @@ def test_cross_layer_shared_net_edge_built():
 
     model = _two_part_board(layer_b="B.Cu", shared_net=True)
     pads, pad_to_fp_idx, _, _, _ = _collect_pad_nodes(model)
-    src, dst = _build_net_edges_pad_level(pads, pad_to_fp_idx)
+    src, dst, weights = _build_net_edges_pad_level(pads, pad_to_fp_idx)
     assert len(src) == 1
     assert pad_to_fp_idx[src[0]] == 0  # F.Cu footprint
     assert pad_to_fp_idx[dst[0]] == 1  # B.Cu footprint
@@ -152,5 +151,5 @@ def test_cross_layer_distinct_nets_no_edge():
 
     model = _two_part_board(layer_b="B.Cu", shared_net=False)
     pads, pad_to_fp_idx, _, _, _ = _collect_pad_nodes(model)
-    src, dst = _build_net_edges_pad_level(pads, pad_to_fp_idx)
+    src, dst, weights = _build_net_edges_pad_level(pads, pad_to_fp_idx)
     assert len(src) == 0

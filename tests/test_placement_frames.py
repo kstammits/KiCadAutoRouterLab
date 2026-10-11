@@ -68,8 +68,13 @@ class TestTrajectoryFrames:
         assert prop.frame_stride == 1
 
     def test_records_strided_frames(self):
+        # Pin the recording machinery independent of termination dynamics:
+        # tight eps + no friction force the full 5-iteration budget (early
+        # termination is covered in test_placement_movement.py).
         prop = run_placement(
-            _two_close_parts(), _params(), record_frames=True, frame_stride=2,
+            _two_close_parts(),
+            _params(convergence_eps_mm=1e-12, friction_threshold_mm=0.0),
+            record_frames=True, frame_stride=2,
         )
         # 5 iters, stride 2 -> frame 0 (start) + samples at 2,4 + final = 4 frames
         assert len(prop.frames) == 4

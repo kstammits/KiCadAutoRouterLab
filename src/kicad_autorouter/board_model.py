@@ -40,6 +40,33 @@ class Point:
 Segment = Tuple[Point, Point]
 
 
+# Shared net classification (substring keywords, case-insensitive). Single
+# source of truth for placement + routing so e.g. "Net-+12V" / "VCC_IO"
+# classify the same in both stages (2026-10-11: placement used an
+# exact-match frozenset and disagreed with routing on such names).
+_POWER_KEYWORDS = (
+    "vcc", "vdd", "v+", "v-", "pwr", "power",
+    "+5v", "-5v", "+12v", "-12v", "3v3", "1v8", "1v2", "vbat",
+)
+_GROUND_KEYWORDS = ("gnd", "ground", "vgnd")
+
+
+def is_power_net(net_name: Optional[str]) -> bool:
+    """True for power-rail nets (VCC, VDD, V+/V-, +12V, 3V3, …). Pure name test."""
+    if not net_name:
+        return False
+    lowered = net_name.lower()
+    return any(kw in lowered for kw in _POWER_KEYWORDS)
+
+
+def is_ground_net(net_name: Optional[str]) -> bool:
+    """True for ground nets (GND, GROUND, VGND). Pure name test."""
+    if not net_name:
+        return False
+    lowered = net_name.lower()
+    return any(kw in lowered for kw in _GROUND_KEYWORDS)
+
+
 @dataclass(frozen=True)
 class Pad:
     """One pad of a footprint; ``position`` is already in board coordinates.
@@ -101,12 +128,31 @@ class Via:
 
 @dataclass(frozen=True)
 class Zone:
-    """A copper zone with its outline polygon in board millimeters."""
+    """A copper zone with its outline polygon in board millimeters.
+
+    Fill rules mirror the ``(zone …)`` block so pour analysis can apply
+    KiCad's own semantics: ``clearance_mm`` (``connect_pads/clearance``)
+    is the pour's pullback from different-net copper, ``min_thickness_mm``
+    drops sub-width slivers, ``thermal_gap_mm``/``thermal_bridge_width_mm``
+    describe pad spokes (continuity treats pads as solid connections;
+    spokes matter only for current capacity), ``island_removal_mode``
+    mirrors KiCad's remove-islands setting (reported, not enforced —
+    KiCad owns removal on refill), ``priority`` orders overlapping zones.
+    ``(filled_polygon …)`` caches are deliberately NOT parsed: they go
+    stale the moment we move copper; KiCad regenerates them on refill.
+    Missing blocks (e.g. keepout zones) yield documented defaults.
+    """
 
     uuid: str
     layers: Tuple[str, ...]
     polygon: Tuple[Point, ...]
     net_name: Optional[str] = None
+    clearance_mm: float = 0.5
+    min_thickness_mm: float = 0.25
+    thermal_gap_mm: Optional[float] = None
+    thermal_bridge_width_mm: Optional[float] = None
+    island_removal_mode: int = 0
+    priority: int = 0
 
 
 @dataclass(frozen=True)
@@ -577,22 +623,57 @@ def _zone_polygon(zone_node: SExpr) -> Tuple[Point, ...]:
     )
 
 
+def _zone_fill(zone_node: SExpr, head: str) -> Optional[float]:
+    """First numeric arg of ``(head …)`` inside a zone's ``(fill …)`` block."""
+    fill = zone_node.find("fill")
+    if fill is None:
+        return None
+    return _first_number(fill.find(head))
+
+
+def _zone_layers(zone_node: SExpr) -> Tuple[str, ...]:
+    """Layer names of a zone: plural ``(layers …)`` or singular ``(layer …)``.
+
+    KiCad writes single-layer zones (e.g. tube111's GND pours) with the
+    singular form; the old parser read only the plural and silently
+    dropped every such zone's layers (which in turn disabled ground
+    stitching's same-layer pairing downstream).
+    """
+    layers_node = zone_node.find("layers")
+    if layers_node is not None:
+        return tuple(
+            str(a) for a in layers_node.args if not isinstance(a, SExpr)
+        )
+    layer_node = zone_node.find("layer")
+    if layer_node is not None and layer_node.args:
+        return (str(layer_node.args[0]),)
+    return ()
+
+
 def zones(tree: SExpr) -> list[Zone]:
-    """Extract every copper zone with its outline polygon."""
+    """Extract every copper zone with its outline polygon and fill rules."""
     result = []
     for zone in tree.children("zone"):
         uuid_node = zone.find("uuid")
-        layers_node = zone.find("layers")
+        connect = zone.find("connect_pads")
+        clearance = _first_number(
+            connect.find("clearance") if connect is not None else None
+        )
+        min_thickness = _first_number(zone.find("min_thickness"))
         result.append(
             Zone(
                 uuid=str(uuid_node.args[0]) if uuid_node is not None and uuid_node.args else "",
-                layers=(
-                    tuple(str(a) for a in layers_node.args if not isinstance(a, SExpr))
-                    if layers_node is not None
-                    else ()
-                ),
+                layers=_zone_layers(zone),
                 polygon=_zone_polygon(zone),
                 net_name=_net_name(zone.find("net")),
+                clearance_mm=clearance if clearance is not None else 0.5,
+                min_thickness_mm=min_thickness if min_thickness is not None else 0.25,
+                thermal_gap_mm=_zone_fill(zone, "thermal_gap"),
+                thermal_bridge_width_mm=_zone_fill(zone, "thermal_bridge_width"),
+                island_removal_mode=int(
+                    _zone_fill(zone, "island_removal_mode") or 0
+                ),
+                priority=int(_first_number(zone.find("priority")) or 0),
             )
         )
     return result
@@ -615,18 +696,13 @@ def keepout_zones(tree: SExpr) -> list[KeepoutZone]:
             )
 
         layers_node = zone.find("layers")
-        layers = (
-            tuple(str(a) for a in layers_node.args if not isinstance(a, SExpr))
-            if layers_node is not None
-            else ()
-        )
         uuid_node = zone.find("uuid")
         zones.append(
             KeepoutZone(
                 uuid=str(uuid_node.args[0])
                 if uuid_node is not None and uuid_node.args
                 else "",
-                layers=layers,
+                layers=_zone_layers(zone),
                 polygon=_zone_polygon(zone),
                 tracks_allowed=allowed("tracks"),
                 vias_allowed=allowed("vias"),

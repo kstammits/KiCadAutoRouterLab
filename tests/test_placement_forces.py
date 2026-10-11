@@ -69,7 +69,6 @@ def _base_params(**kw):
         courtyard_repulsion_kc=10000.0,
         courtyard_halo_mm=3.0,
         boundary_repulsion_kb=1.0,
-        rigid_stiffness=5e5,
     )
     base.update(kw)
     return PlacementParams(**base)
@@ -311,9 +310,16 @@ class TestGhostRole:
 
 
 @pytest.mark.physics
-class TestRigidRole:
-    """Rigid MST constraints keep a footprint's pads at rest length while
-    external forces shove it around; without stiffness the body stretches."""
+class TestRigidProjection:
+    """Rigid projection keeps each footprint's shape exact while soft forces
+    move it; there is no stiffness parameter anymore.
+
+    Replaces TestRigidRole (2026-10-11): the old Hooke spring (k_eff = 5e4
+    against O(0.1) Coulomb forces, integrated with a fixed 2mm step cap)
+    was ~1e5x past the explicit-Euler stability limit and rang as a
+    sustained period-2 slam — an isolated 2-pad pair froze at iter 2 then
+    flip-flopped. Position-based projection (Kabsch snap per footprint per
+    iteration) is unconditionally stable and exact to float precision."""
 
     def _shear_board(self):
         mover = make_fp("M", "uuid-m", 0.0, 0.0, ("N1", "N2"),
@@ -331,34 +337,52 @@ class TestRigidRole:
         moved = apply_deltas(model, deltas)
         pads, _, uuid_to_idx, _, _ = _collect_pad_nodes(moved)
         pos = np.array([(p.position.x_mm, p.position.y_mm) for p in pads])
-        fp = next(f for f in moved.footprints if f.uuid == uuid)
         rows = uuid_to_idx[uuid]
         pts = pos[rows]
         return float(np.linalg.norm(pts[0] - pts[-1]))
 
-    def test_stiff_body_holds_shape(self):
+    def test_projected_body_holds_shape_exactly(self):
         model = self._shear_board()
         before = self._pair_span(model, {}, "uuid-m")
-        prop = run_placement(model, _base_params(max_iterations=5))
+        prop = run_placement(model, _base_params(max_iterations=30))
+        assert "uuid-m" in prop.deltas, "shear must move the body"
         after = self._pair_span(model, prop.deltas, "uuid-m")
-        assert after == pytest.approx(before, rel=1e-3)
+        # In-sim snap is float-exact; the apply_deltas writeback
+        # round-trips through an angle, so allow 1ulp-level drift.
+        assert after == pytest.approx(before, rel=1e-9, abs=1e-12), (
+            f"projection must preserve shape ({before} vs {after})"
+        )
 
-    def test_limp_body_diverges(self):
-        """Without stiffness the pads shear independently under the same
-        differential push, so the trajectory must differ from the stiff
-        run.         (Pad-level stretch itself is not observable: proposals carry
-        a rigid pose per footprint, which is exactly what the stiff test
-        above pins.) Budget is 30, not 5: under the fixed step cap a
-        saturated blast moves at full budget every iteration regardless
-        of stiffness, so short runs are stiffness-blind by construction;
-        the runs must reach the unsaturated settling phase to diverge."""
-        model = self._shear_board()
-        stiff = run_placement(model, _base_params(max_iterations=30))
-        limp = run_placement(
-            model, _base_params(max_iterations=30, rigid_stiffness=1e-9)
+    def test_isolated_pair_drifts_monotonically(self):
+        """Regression for the rigid-snap reversal: an isolated 2-pad pair
+        under repulsion-only drift must move monotonically apart — no
+        iter-2 freeze, no flip-flop from iter 3."""
+        u1 = make_fp("U1", "uuid-u1", 0.0, 0.0, ("VCC", "GND"),
+                     hw=0.25, hh=0.25)
+        c1 = make_fp("C1", "uuid-c1", 30.0, 0.0, ("VCC", "GND"),
+                     hw=0.25, hh=0.25)
+        model = _board([u1, c1])
+
+        def _dx(iters):
+            params = _base_params(
+                max_iterations=iters,
+                repulsion_kr=100.0,
+                attraction_ka=0.05,
+                courtyard_repulsion_kc=1e-9,
+                boundary_repulsion_kb=1e-9,
+                include_power_nets=False,
+                decap_boost=0.0,
+            )
+            return run_placement(model, params).deltas.get("uuid-c1", (0.0, 0.0, 0.0))[0]
+
+        traj = [_dx(n) for n in (1, 2, 3, 5, 10)]
+        assert all(b > a > 0.0 for a, b in zip(traj, traj[1:])), (
+            f"pair must drift monotonically apart, got {traj}"
         )
-        dx_stiff, _, _ = stiff.deltas["uuid-m"]
-        dx_limp, _, _ = limp.deltas["uuid-m"]
-        assert abs(dx_stiff - dx_limp) > 1e-6, (
-            f"stiffness must matter under shear ({dx_stiff} vs {dx_limp})"
-        )
+
+    def test_no_stiffness_knob(self):
+        """The spring is gone: no rigid_stiffness field, and legacy files
+        carrying it still load (from_dict ignores unknown keys)."""
+        assert not hasattr(PlacementParams(), "rigid_stiffness")
+        q = PlacementParams.from_dict({"repulsion_kr": 1.0, "rigid_stiffness": 5e5})
+        assert q.repulsion_kr == 1.0

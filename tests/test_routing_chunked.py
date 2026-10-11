@@ -44,20 +44,28 @@ def test_chunked_sequential_matches_batched(minimal_tree):
         pytest.skip("need >= 2 routable nets")
     params = RoutingParams(run_drc=False)
 
-    # Batched: all nets in one call.
-    batched, _, _ = route_nets(model, nets, set(), params=params)
+    # Batched: all nets in one call (with a tree so the final board exists
+    # for the island comparison below).
+    batched, _, _ = route_nets(model, nets, set(), params=params,
+                               original_pcb_tree=minimal_tree)
 
     # Chunked: one net per call, model rebuilt from the tree each time —
     # exactly what ui/server.py does between UI chunk requests.
+    # Stitching runs per call, so route copper and stitch copper are
+    # compared separately: the equivalence tripwire covers routing;
+    # stitching is audited via island counts below.
     tree = minimal_tree
-    totals = {"tracks": 0, "vias": 0, "routed": 0, "failed": 0}
+    totals = {"tracks": 0, "vias": 0, "routed": 0, "failed": 0,
+              "stitch_tracks": 0, "stitch_vias": 0}
     for net in nets:
         m = board_model(tree)
         res, _, _ = route_nets(m, [net], set(), params=params, original_pcb_tree=tree)
-        totals["tracks"] += res.tracks_added
-        totals["vias"] += res.vias_added
+        totals["tracks"] += res.tracks_added - res.stitch_tracks_added
+        totals["vias"] += res.vias_added - res.stitch_vias_added
         totals["routed"] += res.nets_routed
         totals["failed"] += res.nets_failed
+        totals["stitch_tracks"] += res.stitch_tracks_added
+        totals["stitch_vias"] += res.stitch_vias_added
         tree = res.pcb_tree
 
     assert totals["routed"] == batched.nets_routed
@@ -67,15 +75,28 @@ def test_chunked_sequential_matches_batched(minimal_tree):
     # no width inflation), while in-batch _apply_route_to_grid reserves the
     # full emitted-width corridor. So later nets in chunked mode may take
     # slightly tighter paths than in batched mode. Routed/failed sets must
-    # match; track totals must be in the same ballpark. Making rebuilds
-    # width-aware is follow-up work (see TODO.md, GND continuity phase).
-    if batched.tracks_added:
-        ratio = totals["tracks"] / batched.tracks_added
-        assert 0.8 <= ratio <= 1.2, f"track totals diverged: {totals['tracks']} vs {batched.tracks_added}"
-    assert totals["vias"] <= batched.vias_added + 2
+    # match; route-track totals must be in the same ballpark. Making
+    # rebuilds width-aware is follow-up work (see TODO.md, GND continuity
+    # phase). Stitch tracks/vias are excluded here (each chunked call
+    # repairs its intermediate state, so they accumulate differently by
+    # design); island reduction is asserted on the final boards instead.
+    batched_route_tracks = batched.tracks_added - batched.stitch_tracks_added
+    if batched_route_tracks:
+        ratio = totals["tracks"] / batched_route_tracks
+        assert 0.8 <= ratio <= 1.2, f"track totals diverged: {totals['tracks']} vs {batched_route_tracks}"
+    assert totals["vias"] <= (batched.vias_added - batched.stitch_vias_added) + 2
 
-
-def test_chunked_cancel_keeps_routed_nets(minimal_tree):
+    # Both flows must leave fewer GND islands than they found. (Chunked
+    # typically repairs more: it stitches after every net.)
+    from kicad_autorouter.routing.grid import create_grid_from_model
+    from kicad_autorouter.routing.pour import gnd_islands
+    initial = sum(len(v) for v in gnd_islands(
+        model, create_grid_from_model(model)).values())
+    for final_tree, tag in ((batched.pcb_tree, "batched"), (tree, "chunked")):
+        final_model = board_model(final_tree)
+        final = sum(len(v) for v in gnd_islands(
+            final_model, create_grid_from_model(final_model)).values())
+        assert final < initial, f"{tag}: islands {initial} -> {final}"
     """Cancelling after k nets keeps their copper (no rollback by design)."""
     model = board_model(minimal_tree)
     nets = _routable_nets(model)

@@ -1,37 +1,31 @@
-"""Specialized routing for power rails, ground stitching, and decap fanout."""
+"""Specialized routing for power rails and decap fanout."""
 
 from __future__ import annotations
 
-from typing import List, Tuple, Optional
+from typing import List, Tuple
 
 import numpy as np
 
-from ..board_model import BoardModel, Footprint, Pad
+from ..board_model import BoardModel, is_ground_net, is_power_net
 from .grid import RoutingGrid, board_to_grid
-from .router import SingleNetRouter, RouteResult
-from .obstacles import (
-    BLOCKED, HIGH_COST, EDGE_KEEPOUT,
-    board_to_grid as _btg,
-)
+from .router import SingleNetRouter
 
 
 def identify_power_nets(model: BoardModel) -> Tuple[List[str], List[str], List[str]]:
     """Classify nets into power rails, ground, and signal.
     
-    Returns (power_nets, ground_nets, signal_nets)
+    Returns (power_nets, ground_nets, signal_nets).
+    Keyword rules live in board_model.is_power_net / is_ground_net,
+    shared with placement (power wins on overlap, e.g. "GND_PWR").
     """
-    power_keywords = ("vcc", "vdd", "v+", "v-", "pwr", "power", "+5v", "-5v", "+12v", "-12v", "3v3", "1v8", "1v2", "vbat")
-    ground_keywords = ("gnd", "ground", "vgnd")
-    
     power = []
     ground = []
     signal = []
     
     for net_name in model.nets:
-        net_lower = net_name.lower()
-        if any(kw in net_lower for kw in power_keywords):
+        if is_power_net(net_name):
             power.append(net_name)
-        elif any(kw in net_lower for kw in ground_keywords):
+        elif is_ground_net(net_name):
             ground.append(net_name)
         else:
             signal.append(net_name)
@@ -92,51 +86,6 @@ def route_power_rails(
     return results
 
 
-def route_ground_stitching(
-    model: BoardModel,
-    grid: RoutingGrid,
-    cost_grid: np.ndarray,
-    router: "SingleNetRouter",
-    ground_nets: List[str],
-) -> dict:
-    """Connect ground plane splits with stitching vias.
-    
-    Strategy:
-    - Find ground zone fragments on each layer
-    - Add vias at boundaries between fragments
-    - Prioritize near high-current chips
-    """
-    results = {}
-    
-    for net_name in ground_nets:
-        # Find all ground zone polygons
-        ground_zones = [z for z in model.zones if net_name in (z.net_name or "")]
-        if len(ground_zones) < 2:
-            continue
-        
-        # Find boundary gaps between zones on same layer
-        # This is simplified - in practice would need polygon intersection
-        # For now, route between zone centroids
-        for i, z1 in enumerate(ground_zones):
-            for z2 in ground_zones[i+1:]:
-                if not z1.layers or not z2.layers:
-                    continue  # skip zones without layer info
-                if z1.layers != z2.layers:
-                    continue  # different layers - will be stitched via vias
-                
-                # Route between centroids
-                c1 = _zone_centroid(z1, grid)
-                c2 = _zone_centroid(z2, grid)
-                
-                if c1 and c2:
-                    layer_idx = 0 if z1.layers[0] == "F.Cu" else 1
-                    terminals = [(c1[0], c1[1], layer_idx), (c2[0], c2[1], layer_idx)]
-                    result = router.route(terminals)
-                    results[f"{net_name}_stitch_{i}"] = result
-    
-    return results
-
-
 def route_decap_fanout(
     model: BoardModel,
     grid: RoutingGrid,
@@ -192,17 +141,3 @@ def route_decap_fanout(
             results[f"{ref}_{pad.number}"] = result
     
     return results
-
-
-def _zone_centroid(zone, grid: RoutingGrid) -> Optional[Tuple[int, int]]:
-    """Get centroid of zone polygon in grid coordinates."""
-    if not zone.polygon or len(zone.polygon) < 3:
-        return None
-    
-    from ..board_model import Point
-    pts = zone.polygon
-    cx = sum(p.x_mm for p in pts) / len(pts)
-    cy = sum(p.y_mm for p in pts) / len(pts)
-    
-    col, row = board_to_grid(grid, cx, cy)
-    return (col, row)

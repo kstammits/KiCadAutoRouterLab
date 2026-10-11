@@ -14,7 +14,11 @@
 
 ## Routing Work Items (in order)
 
-- [ ] **R5. Power/Ground Special Handling** — deferred per user request
+- [x] **R5. Power/Ground Special Handling** — placement side landed 2026-10-11 (see
+  tests/test_placement_power.py); GND pour side landed 2026-10-11: islands diagnostics
+  (`routing/pour.py` + debug endpoint + overlay), auto stitching vias/bridges
+  (`routing/stitch.py`, region-aware), pours passable-at-toll with severance steering
+  (see tests/test_pour.py, test_stitch.py, test_routing_pour.py)
   - Power rails: wide tracks, dedicated layer channels, daisy-chain/star from connector
   - Ground stitching: connect ground splits with vias at boundaries
   - Decap fanout: short direct routes, THT caps use both layers (free via)

@@ -52,7 +52,6 @@ MAGNET_PARAMS = PlacementParams(
     courtyard_halo_mm=6.0,
     boundary_repulsion_kb=500000.0,
     convergence_eps_mm=0.1,
-    rigid_stiffness=5e5,
 )
 
 
@@ -346,7 +345,6 @@ class TestNetMagnet:
             courtyard_repulsion_kc=20000.0,
             boundary_repulsion_kb=500000.0,
             convergence_eps_mm=0.1,
-            rigid_stiffness=5e5,
         )
         prop = run_placement(magnet_model, boundary_params)
 

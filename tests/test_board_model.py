@@ -23,6 +23,7 @@ from kicad_autorouter.board_model import (
     keepout_zones,
     netlist,
     transform_local,
+    zones,
 )
 from kicad_autorouter.sexpr import SExpr, parse, parse_file
 
@@ -247,6 +248,54 @@ class TestKeepoutZones:
     def test_dccf_has_no_keepout_zones(self, dccf_tree):
         # its single zone is a GND pour without a keepout block
         assert keepout_zones(dccf_tree) == []
+
+
+class TestZoneFillRules:
+    """Zone fill settings mirror the (zone …) block for pour analysis."""
+
+    def test_tube111_gnd_zone_fill_rules(self, tube111_model):
+        gnd = [z for z in tube111_model.zones if z.net_name == "GND"]
+        assert len(gnd) == 6
+        by_uuid = {z.uuid: z for z in gnd}
+        z = by_uuid["00000000-0000-0000-0000-0000612bf858"]
+        assert z.layers == ("F.Cu",)
+        assert z.clearance_mm == pytest.approx(0.508)
+        assert z.min_thickness_mm == pytest.approx(0.254)
+        assert z.thermal_gap_mm == pytest.approx(0.508)
+        assert z.thermal_bridge_width_mm == pytest.approx(0.508)
+        assert z.island_removal_mode == 0
+        assert len(z.polygon) == 5
+
+    def test_tube111_mixed_clearances(self, tube111_model):
+        clearances = sorted({
+            z.clearance_mm
+            for z in tube111_model.zones
+            if z.net_name == "GND"
+        })
+        assert clearances == pytest.approx([0.4, 0.508])
+
+    def test_dccf_gnd_zone_spans_both_layers(self, dccf_tree):
+        gnd = [z for z in zones(dccf_tree) if z.net_name == "GND"]
+        assert len(gnd) == 1
+        assert set(gnd[0].layers) == {"F.Cu", "B.Cu"}
+        assert gnd[0].clearance_mm == pytest.approx(0.508)
+
+    def test_keepout_zone_fill_defaults(self, minimal_tree):
+        # keepout zones carry a (fill …) block with thermals but their own
+        # zero clearance; net stays unconnected.
+        for z in zones(minimal_tree):
+            assert z.net_name is None
+            assert z.thermal_gap_mm == pytest.approx(0.508)
+            assert z.thermal_bridge_width_mm == pytest.approx(0.508)
+            assert z.clearance_mm == pytest.approx(0.0)
+            assert z.min_thickness_mm == pytest.approx(0.254)
+
+    def test_singular_layer_form_parsed(self, tube111_model):
+        # tube111 writes single-layer zones as (layer "F.Cu"); the old
+        # parser read only (layers …) and dropped them (layers == ()),
+        # silently disabling same-layer stitch pairing downstream.
+        for z in tube111_model.zones:
+            assert z.layers, f"zone {z.uuid} lost its layers"
 
 
 class TestNetlist:

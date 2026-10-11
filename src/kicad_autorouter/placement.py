@@ -1,8 +1,9 @@
 """Force-spring placement domain: parameters, proposals, and the runner interface.
 
 The runner implements a vectorized numpy force-spring simulation at the PAD level
-(Fruchterman–Reingold style) with rigid constraints between pads of the same
-footprint. This allows through-hole components to rotate organically when forces
+(Fruchterman–Reingold style) with position-based rigid projection: after each
+step, every movable footprint's pads are Kabsch-snapped onto their exact
+rigid shape. This allows through-hole components to rotate organically when forces
 on their F.Cu and B.Cu pads differ.
 
 Deltas are keyed by footprint UUID (dx_mm, dy_mm, dangle_deg) because refs may
@@ -25,15 +26,20 @@ import numpy as np
 from shapely.geometry import Polygon
 from shapely.ops import nearest_points, polygonize, unary_union
 
-from .board_model import BoardModel, BoardRegion, Footprint, Pad, Segment
+from .board_model import (
+    BoardModel, BoardRegion, Footprint, Pad, Segment,
+    is_ground_net, is_power_net,
+)
 
 
-# Nets that connect globally (power distribution), not for placement:
-# attraction springs on these would drag every powered part together.
-_POWER_NET_PATTERNS = frozenset({
-    "GND", "VCC", "VDD", "VSS", "GROUND",
-    "+12V", "+5V", "+3.3V", "+1.8V", "-12V", "-5V",
-})
+# Power rails are NOT excluded from placement: on a two-layer board their
+# wirelength matters, and excluding them strands decoupling caps (both pads
+# on power/GND → zero attraction edges → repulsion-only drift). Instead,
+# power edges are fanout-scaled (ka/(fanout-1) per edge, so a rail's total
+# pull per pad stays ~constant however many parts share it) instead of
+# dragging every powered part together at full ka. GND stays excluded as a
+# general attractor (copper pour provides connectivity anywhere) — except
+# for decoupling-cap pads, which need a local anchor on both sides.
 
 
 @dataclass(frozen=True)
@@ -44,8 +50,6 @@ class PlacementParams:
     attraction_ka: float = 0.05
     max_iterations: int = 1000
     convergence_eps_mm: float = 0.01
-    # Rigid constraint stiffness (high to keep footprint pads together)
-    rigid_stiffness: float = 5e5
     # Courtyard collision repulsion force constant. Deliberately modest:
     # the integrator caps every step, so extra magnitude only buys
     # overshoot oscillation, not faster separation (2026-10-10).
@@ -62,6 +66,29 @@ class PlacementParams:
     
     # Max pad displacement per iteration (mm). The integrator moves each
     max_step_mm: float = 2.0
+    # Power-rail attraction trim: multiplies the fanout-scaled power term
+    # (ka * power_attraction_scale / (fanout-1) per edge). 1.0 = full
+    # participation; 0 disables power edges (restores the pre-2026-10-11
+    # exclude-all behavior when combined with decap handling below).
+    power_attraction_scale: float = 1.0
+    # Decoupling-cap boost: edges incident to a detected decap pad (2-pad
+    # C* footprint straddling a power and a ground net) are multiplied by
+    # this on top of fanout scaling, so decaps hug their local rail
+    # neighbor instead of drifting. Also gates the decap GND-side
+    # exception: with 0, decap GND pads get no edges (GND fully excluded).
+    decap_boost: float = 4.0
+    # Kill-switch for power participation (A/B comparisons). False drops
+    # all power edges; decap power-side edges go with them (decap GND-side
+    # exception is still gated by decap_boost).
+    include_power_nets: bool = True
+    # Static-friction deadband (mm of proposed per-pad displacement).
+    # A footprint moves only if its largest proposed pad step clears this;
+    # otherwise the whole footprint is frozen for the iteration. Halo and
+    # asymptotic forces decay forever without reaching zero, so without a
+    # deadband runs grind through the full budget on invisible micro-motion
+    # (and accumulate jitter). 0 disables. The mm-scale saturated ping-pong
+    # is still owned by the adaptive _step_scale below, not this.
+    friction_threshold_mm: float = 0.05
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -81,11 +108,13 @@ def _validate(params: PlacementParams) -> None:
         "repulsion_kr",
         "attraction_ka",
         "convergence_eps_mm",
-        "rigid_stiffness",
         "courtyard_repulsion_kc",
         "courtyard_halo_mm",
         "boundary_repulsion_kb",
         "max_step_mm",
+        "friction_threshold_mm",
+        "power_attraction_scale",
+        "decap_boost",
     )
     for name in numeric:
         value = getattr(params, name)
@@ -95,7 +124,6 @@ def _validate(params: PlacementParams) -> None:
         "repulsion_kr",
         "attraction_ka",
         "convergence_eps_mm",
-        "rigid_stiffness",
         "courtyard_repulsion_kc",
         "courtyard_halo_mm",
         "boundary_repulsion_kb",
@@ -103,6 +131,14 @@ def _validate(params: PlacementParams) -> None:
     ):
         if getattr(params, name) <= 0:
             raise ValueError(f"{name} must be > 0")
+    if params.friction_threshold_mm < 0:
+        raise ValueError("friction_threshold_mm must be >= 0")
+    if params.power_attraction_scale < 0:
+        raise ValueError("power_attraction_scale must be >= 0")
+    if params.decap_boost < 0:
+        raise ValueError("decap_boost must be >= 0")
+    if not isinstance(params.include_power_nets, bool):
+        raise ValueError("include_power_nets must be a boolean")
     if isinstance(params.max_iterations, bool) or not isinstance(
         params.max_iterations, int
     ):
@@ -236,132 +272,160 @@ def _collect_pad_nodes(model: BoardModel) -> Tuple[List[Pad], List[int], Dict[st
     return pads, pad_to_fp_idx, fp_uuid_to_pad_indices, global_pad_idx_to_local, pad_is_ghost
 
 
+def _find_decap_pad_indices(
+    pads: List[Pad],
+    pad_to_fp_idx: List[int],
+    fp_ref_by_idx: Dict[int, str],
+) -> Set[int]:
+    """Pad indices belonging to decoupling caps in this pad set.
+
+    A decap is a footprint whose ref starts with "C", contributing exactly
+    2 netted pads here, with one side on a power rail and the other on
+    ground (shared keyword rules with routing). Ghost footprints are never
+    decaps. Used to (a) boost decap-incident edges and (b) admit the
+    decap's GND-side edges that are otherwise excluded (GND pours connect
+    anywhere, so general GND attraction would only clump parts).
+    """
+    fp_to_rows: Dict[int, List[int]] = {}
+    for i, fp_idx in enumerate(pad_to_fp_idx):
+        if fp_idx < 0:
+            continue  # ghost footprint
+        fp_to_rows.setdefault(fp_idx, []).append(i)
+    decap: Set[int] = set()
+    for fp_idx, rows in fp_to_rows.items():
+        if len(rows) != 2:
+            continue
+        ref = fp_ref_by_idx.get(fp_idx, "")
+        if not ref.upper().startswith("C"):
+            continue
+        nets = [pads[i].net_name for i in rows]
+        sides = sorted(
+            "power" if is_power_net(n) else ("ground" if is_ground_net(n) else "signal")
+            for n in nets
+        )
+        if sides == ["ground", "power"]:
+            decap.update(rows)
+    return decap
+
+
 def _build_net_edges_pad_level(
     pads: List[Pad], pad_to_fp_idx: List[int],
-    power_net_patterns: Optional[Set[str]] = None
-) -> Tuple[np.ndarray, np.ndarray]:
+    decap_pad_indices: Optional[Set[int]] = None,
+    power_scale: float = 1.0,
+    decap_boost: float = 4.0,
+    include_power: bool = True,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Build edge index arrays for pad pairs sharing the same net.
 
-    Returns (src_indices, dst_indices) where each is a 1D array of pad indices.
-    Each pair appears once (i < j). Only connects pads on different footprints.
+    Returns (src_indices, dst_indices, weights) where each pair appears
+    once (i < j). Only connects pads on different footprints. Weights are
+    per-edge ka multipliers applied by the attraction kernel:
+
+    - signal nets: 1.0 (unchanged behavior);
+    - power nets: power_scale / (fanout - 1) — a rail shared by many
+      parts pulls each pad about as hard in total as one signal edge,
+      so global rails minimize wirelength without collapsing the board;
+    - ground nets: excluded (0 edges) unless at least one endpoint is a
+      decap pad (see _find_decap_pad_indices), in which case the edge is
+      admitted at the decap-boosted power rate. Pours connect GND
+      anywhere, so general GND attraction has no placement value.
+    - any edge incident to a decap pad additionally gets x decap_boost.
+
+    With include_power=False, power edges are dropped (decap power-side
+    edges go with them); the decap GND-side exception is gated by
+    decap_boost > 0 instead.
     """
-    if power_net_patterns is None:
-        power_net_patterns = _POWER_NET_PATTERNS
-    
+    decap_set = decap_pad_indices or set()
+
     net_to_pads: Dict[str, List[int]] = {}
     for i, pad in enumerate(pads):
-        if pad.net_name and pad.net_name not in power_net_patterns:
+        if pad.net_name:
             net_to_pads.setdefault(pad.net_name, []).append(i)
 
-    edges_set = set()
+    src_list: List[int] = []
+    dst_list: List[int] = []
+    weight_list: List[float] = []
     for net_name, pad_indices in net_to_pads.items():
-        if len(pad_indices) < 2:
+        fanout = len(pad_indices)
+        if fanout < 2:
             continue
-        for i in pad_indices:
-            for j in pad_indices:
-                if i >= j:
-                    continue
+        net_is_power = is_power_net(net_name)
+        net_is_ground = is_ground_net(net_name)
+        if net_is_power and not include_power:
+            continue
+        if net_is_power:
+            base = power_scale / (fanout - 1)
+        elif net_is_ground:
+            # Admitted only for decap-incident pairs below; base is the
+            # fanout-scaled rate and the decap multiplier applies once
+            # via the shared incident check (not squared here).
+            base = power_scale / (fanout - 1)
+        else:
+            base = 1.0
+        if base == 0.0:
+            continue
+        for a in range(len(pad_indices)):
+            for b in range(a + 1, len(pad_indices)):
+                i, j = pad_indices[a], pad_indices[b]
                 # Only connect pads on different footprints
-                if pad_to_fp_idx[i] != pad_to_fp_idx[j]:
-                    edges_set.add((i, j))
-
-    if not edges_set:
-        return np.array([], dtype=int), np.array([], dtype=int)
-
-    edges = sorted(edges_set)
-    src = np.array([e[0] for e in edges], dtype=int)
-    dst = np.array([e[1] for e in edges], dtype=int)
-    return src, dst
-
-
-def _build_rigid_constraints_mst(
-    pad_positions: np.ndarray, fp_uuid_to_pad_indices: Dict[str, List[int]]
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Build MST rigid constraints for all footprints using Prim's algorithm.
-
-    Args:
-        pad_positions: (n_pads, 2) array of current pad positions
-        fp_uuid_to_pad_indices: mapping from footprint UUID to list of pad indices
-
-    Returns:
-        (src_indices, dst_indices, rest_lengths) for all MST edges across all footprints
-    """
-    src_list = []
-    dst_list = []
-    rest_lengths = []
-
-    for pad_indices in fp_uuid_to_pad_indices.values():
-        n = len(pad_indices)
-        if n < 2:
-            continue
-
-        if n == 2:
-            src_list.append(pad_indices[0])
-            dst_list.append(pad_indices[1])
-            diff = pad_positions[pad_indices[1]] - pad_positions[pad_indices[0]]
-            rest_lengths.append(np.linalg.norm(diff))
-            continue
-
-        # Prim's algorithm for MST on this footprint's pads
-        # Start from pad closest to centroid (reduces max edge length)
-        positions_subset = pad_positions[pad_indices]  # (n, 2)
-        centroid = np.mean(positions_subset, axis=0)
-        dists_to_centroid = np.linalg.norm(positions_subset - centroid, axis=1)
-        start_local = int(np.argmin(dists_to_centroid))
-        start_global = pad_indices[start_local]
-
-        in_mst = np.zeros(n, dtype=bool)
-        in_mst[start_local] = True
-        # min_edge[i] = (distance, local_idx_in_subset, parent_global_idx)
-        # For nodes not in MST, track best edge to MST
-        best_dist = np.full(n, np.inf)
-        best_parent = np.full(n, -1, dtype=int)
-
-        # Initialize with edges from start node
-        for j in range(n):
-            if j == start_local:
-                continue
-            diff = positions_subset[j] - positions_subset[start_local]
-            dist = np.linalg.norm(diff)
-            best_dist[j] = dist
-            best_parent[j] = start_local
-
-        # Grow MST
-        for _ in range(n - 1):
-            # Find closest node not in MST
-            candidates = np.where(~in_mst)[0]
-            if len(candidates) == 0:
-                break
-            next_local = candidates[np.argmin(best_dist[candidates])]
-            next_global = pad_indices[next_local]
-            parent_local = best_parent[next_local]
-            parent_global = pad_indices[parent_local]
-
-            # Add edge
-            src_list.append(parent_global)
-            dst_list.append(next_global)
-            rest_lengths.append(best_dist[next_local])
-
-            in_mst[next_local] = True
-
-            # Update best edges from new node
-            for j in range(n):
-                if in_mst[j]:
+                if pad_to_fp_idx[i] == pad_to_fp_idx[j]:
                     continue
-                diff = positions_subset[j] - positions_subset[next_local]
-                dist = np.linalg.norm(diff)
-                if dist < best_dist[j]:
-                    best_dist[j] = dist
-                    best_parent[j] = next_local
+                if net_is_ground and i not in decap_set and j not in decap_set:
+                    continue  # GND pour: no general attraction
+                w = base
+                if i in decap_set or j in decap_set:
+                    w *= decap_boost
+                if w == 0.0:
+                    continue
+                src_list.append(i)
+                dst_list.append(j)
+                weight_list.append(w)
 
     if not src_list:
         return np.array([], dtype=int), np.array([], dtype=int), np.array([], dtype=float)
 
+    order = sorted(range(len(src_list)), key=lambda k: (src_list[k], dst_list[k]))
     return (
-        np.array(src_list, dtype=int),
-        np.array(dst_list, dtype=int),
-        np.array(rest_lengths, dtype=float),
+        np.array([src_list[k] for k in order], dtype=int),
+        np.array([dst_list[k] for k in order], dtype=int),
+        np.array([weight_list[k] for k in order], dtype=float),
     )
+
+
+def _project_rigid_poses(
+    positions: np.ndarray,
+    bodies: List[Tuple[np.ndarray, np.ndarray]],
+) -> None:
+    """Snap proposed pad positions onto their exact rigid bodies (PBD projection).
+
+    Each body is ``(rows, ref)``: region-local pad rows plus a snapshot of
+    those pads' reference shape (taken before the run, i.e. the footprint's
+    true geometry). Kabsch-fit of proposed rows vs reference gives the
+    rotation; pads are rewritten as ``R @ (ref - ref_center) + prop_center``,
+    so shape is exact to float precision by construction while translation
+    and rotation stay fully emergent from the soft forces.
+
+    Single-pad bodies never appear (a point is trivially rigid); locked and
+    ghost footprints are excluded by the caller. Replaces the old
+    Hooke-spring rigid force, whose stiffness (~1e5x past the fixed step
+    cap's stability limit) rang as a sustained period-2 slam (2026-10-11).
+    """
+    for rows, ref in bodies:
+        prop = positions[rows]
+        if np.any(np.isnan(prop)):
+            continue
+        ref_center = ref.mean(axis=0)
+        prop_center = prop.mean(axis=0)
+        h = (ref - ref_center).T @ (prop - prop_center)
+        try:
+            u, _, vt = np.linalg.svd(h)
+            r = vt.T @ u.T
+            if np.linalg.det(r) < 0:
+                vt[-1, :] *= -1
+                r = vt.T @ u.T
+        except np.linalg.LinAlgError:
+            continue
+        positions[rows] = (ref - ref_center) @ r.T + prop_center
 
 
 def _compute_footprint_pose_from_pads(
@@ -744,16 +808,20 @@ def _run_region_simulation(
     # Net attraction edges for this region. Same builder as the tests pin
     # (layer-blind by design: cross-layer electrical nearness keeps
     # working through springs; courtyard collision is what honors layers).
-    src_idx, dst_idx = _build_net_edges_pad_level(
-        region_pads, region_pad_to_fp_idx
+    # Power rails participate fanout-scaled; GND only via decap pads.
+    _ref_by_idx: Dict[int, str] = {}
+    for _i, _fp_idx in enumerate(region_pad_to_fp_idx):
+        if _fp_idx >= 0 and _fp_idx not in _ref_by_idx:
+            _ref_by_idx[_fp_idx] = model.footprints[_fp_idx].ref
+    _decap_pads = _find_decap_pad_indices(region_pads, region_pad_to_fp_idx, _ref_by_idx)
+    src_idx, dst_idx, edge_weights = _build_net_edges_pad_level(
+        region_pads, region_pad_to_fp_idx,
+        decap_pad_indices=_decap_pads,
+        power_scale=params.power_attraction_scale,
+        decap_boost=params.decap_boost,
+        include_power=params.include_power_nets,
     )
     has_net_edges = len(src_idx) > 0
-
-    # Rigid constraints (MST of pads within each footprint in this region)
-    rigid_src, rigid_dst, rigid_rest = _build_rigid_constraints_mst(
-        pad_positions, region_fp_uuid_to_pad_indices
-    )
-    has_rigid = len(rigid_src) > 0
 
     # Build mapping from footprint UUID to local pad indices for boundary checks
     region_fp_to_pad_indices = {}
@@ -772,9 +840,12 @@ def _run_region_simulation(
     fp_pad_indices = {}  # uuid -> list of local pad indices in region
     pad_to_fp_local = []  # pad_idx -> local fp index in fp_uuids
 
-    # Real footprints
+    # Real footprints (padless graphical parts carry no pads, so they can
+    # neither move nor anchor forces — exclude them from collision).
     for fp in model.footprints:
         if not fp.uuid or model.footprint_region.get(fp.uuid) != region_idx:
+            continue
+        if not fp.pads:
             continue
         fp_uuids.append(fp.uuid)
         fp_movable_list.append(fp_movable.get(fp.uuid, False))
@@ -945,10 +1016,7 @@ def _run_region_simulation(
         has_net_edges: bool,
         src_idx: np.ndarray,
         dst_idx: np.ndarray,
-        has_rigid: bool,
-        rigid_src: np.ndarray,
-        rigid_dst: np.ndarray,
-        rigid_rest: np.ndarray,
+        edge_weights: np.ndarray,
         ghost_attractions: list,
         same_fp_mask: np.ndarray = None,
         return_components: bool = False,
@@ -956,10 +1024,12 @@ def _run_region_simulation(
         """Compute total force on each pad at given positions.
 
         With ``return_components`` also returns the per-cause breakdown
-        ``{cause: (n_pads, 2)}`` for ``repulsion``/``attraction``/``rigid``/
+        ``{cause: (n_pads, 2)}`` for ``repulsion``/``attraction``/
         ``ghost``/``courtyard``/``boundary``. The sim loop leaves it off
         (it only needs the total); the end-of-run reporting recompute turns
-        it on for the forces overlay.
+        it on for the forces overlay. Rigidity needs no force term:
+        footprints are snapped onto their exact shape by
+        ``_project_rigid_poses`` after each step.
         """
         # Repulsion: all-pairs Coulomb k_r / d^2
         diff = pos[:, None, :] - pos[None, :, :]  # (n, n, 2)
@@ -978,7 +1048,9 @@ def _run_region_simulation(
         # Attraction: constant-magnitude pull along net edges.
         # src is pulled toward dst (+unit) and dst toward src (-unit), so
         # the pair settles where this balances Coulomb repulsion
-        # (d = sqrt(kr/ka) for an isolated pad pair). The signs were
+        # (d = sqrt(kr/ka) for an isolated pad pair). Per-edge weights
+        # scale ka: 1.0 for signal, fanout-scaled for power, decap-boosted
+        # for decap-incident edges (see _build_net_edges_pad_level). The signs were
         # inverted before 2026-10-11 (both pads pushed apart), which the
         # ideal_length removal exposed: with F = ka*(d-L0) the old code
         # attracted only when closer than L0 and the flip went unnoticed.
@@ -988,7 +1060,7 @@ def _run_region_simulation(
             dist_edge = np.linalg.norm(diff_edge, axis=1, keepdims=True)
             dist_edge = np.maximum(dist_edge, 1e-6)
             unit = diff_edge / dist_edge
-            force_mag_edge = params.attraction_ka
+            force_mag_edge = (params.attraction_ka * edge_weights)[:, None]
             force_vec_edge = unit * force_mag_edge
             np.add.at(attraction, src_idx, force_vec_edge)
             np.add.at(attraction, dst_idx, -force_vec_edge)
@@ -1015,22 +1087,7 @@ def _run_region_simulation(
                         ghost_attr_force[pad_idx] += force_per_pad
                     # Ghost is fixed - no reaction force applied to ghost pads
 
-        # Rigid constraints: Hooke springs at MST rest lengths. Stretched
-        # pairs pull together (src toward dst), compressed pairs push apart
-        # — same sign convention as net attraction (fixed 2026-10-11; was
-        # inverted, masked because pad deviations sit near rest length).
-        rigid_force = np.zeros((n_pads, 2), dtype=np.float64)
-        if has_rigid:
-            diff_rigid = pos[rigid_dst] - pos[rigid_src]
-            dist_rigid = np.linalg.norm(diff_rigid, axis=1, keepdims=True)
-            dist_rigid = np.maximum(dist_rigid, 1e-6)
-            unit_rigid = diff_rigid / dist_rigid
-            force_mag_rigid = params.rigid_stiffness * 0.1 * (dist_rigid - rigid_rest[:, None])
-            force_vec_rigid = unit_rigid * force_mag_rigid
-            np.add.at(rigid_force, rigid_src, force_vec_rigid)
-            np.add.at(rigid_force, rigid_dst, -force_vec_rigid)
-
-        force = repulsion + attraction + rigid_force + ghost_attr_force
+        force = repulsion + attraction + ghost_attr_force
 
         # Initialized here so the components breakdown below is well-defined
         # even when there are no footprints with courtyards in this region.
@@ -1317,7 +1374,6 @@ def _run_region_simulation(
         components = {
             "repulsion": np.nan_to_num(repulsion, nan=0.0, posinf=0.0, neginf=0.0),
             "attraction": np.nan_to_num(attraction, nan=0.0, posinf=0.0, neginf=0.0),
-            "rigid": np.nan_to_num(rigid_force, nan=0.0, posinf=0.0, neginf=0.0),
             "ghost": np.nan_to_num(ghost_attr_force, nan=0.0, posinf=0.0, neginf=0.0),
             "courtyard": np.nan_to_num(poly_force, nan=0.0, posinf=0.0, neginf=0.0),
             "boundary": np.nan_to_num(boundary_force, nan=0.0, posinf=0.0, neginf=0.0),
@@ -1332,8 +1388,7 @@ def _run_region_simulation(
     # like the integrator moved against the displayed force).
     initial_force, initial_components = _compute_total_force(
         positions, len(region_pads), pad_movable,
-        params, has_net_edges, src_idx, dst_idx,
-        has_rigid, rigid_src, rigid_dst, rigid_rest,
+        params, has_net_edges, src_idx, dst_idx, edge_weights,
         ghost_attractions,
         same_fp_mask,
         return_components=True,
@@ -1393,11 +1448,25 @@ def _run_region_simulation(
     # holds: same (model, params) prefix → same path.
     _step_scale = np.ones((len(region_pads), 1), dtype=np.float64)
     _prev_disp = np.zeros((len(region_pads), 2), dtype=np.float64)
+    # Rigid-body projection data (PBD): per movable multi-pad footprint,
+    # (rows, reference-shape snapshot). The reference is the committed board
+    # geometry, i.e. each footprint's true shape; per iteration the proposed
+    # pads are Kabsch-snapped onto its exact rigid pose (see
+    # _project_rigid_poses). The pad layout never changes during a run, so
+    # one snapshot up front covers the whole trajectory.
+    _proj_bodies: List[Tuple[np.ndarray, np.ndarray]] = []
+    for _uuid, _movable in zip(fp_uuids, fp_movable_list):
+        if not _movable:
+            continue
+        _brows = fp_pad_indices.get(_uuid)
+        if _brows is None or len(_brows) < 2:
+            continue
+        _barr = np.asarray(_brows, dtype=int)
+        _proj_bodies.append((_barr, positions[_barr].copy()))
     for iteration in range(params.max_iterations):
         force = _compute_total_force(
             positions, len(region_pads), pad_movable,
-            params, has_net_edges, src_idx, dst_idx,
-            has_rigid, rigid_src, rigid_dst, rigid_rest,
+            params, has_net_edges, src_idx, dst_idx, edge_weights,
             ghost_attractions,
             same_fp_mask,
         )
@@ -1408,17 +1477,37 @@ def _run_region_simulation(
         scale = np.minimum(1.0, step_cap / np.maximum(disp_norm, 1e-6))
         disp *= scale
         disp *= _step_scale
+        # Static friction: freeze a whole footprint whose largest proposed
+        # pad step is below threshold (all-or-nothing keeps the rigid body
+        # consistent for the Kabsch fit; ghost rows are harmless — the
+        # movability mask zeroes them right after regardless). Zeroed steps
+        # leave _step_scale untouched via _align == 0 below, and drive the
+        # convergence check to terminate settled runs.
+        if params.friction_threshold_mm > 0:
+            _step_norm = np.linalg.norm(disp, axis=1)
+            for _rows in fp_local_to_rows:
+                if len(_rows) and np.max(_step_norm[_rows]) < params.friction_threshold_mm:
+                    disp[_rows] = 0.0
         disp[~pad_movable] = 0.0
 
         # Update positions (only movable pads)
         positions[pad_movable] += disp[pad_movable]
         positions = np.nan_to_num(positions, nan=0.0, posinf=0.0, neginf=0.0)
 
-        # Damping update: reversal → halve (floor 1/8 cap), steady → regrow.
+        # Rigid projection: snap each movable body onto its exact shape.
+        # Unconditionally stable (no stiffness parameter); translation and
+        # rotation stay emergent from the soft-force differentials.
+        _project_rigid_poses(positions, _proj_bodies)
+
+        # Damping update: reversal halves the budget, steady headings regrow
+        # it. The floor must sit below convergence_eps_mm / max_step_mm
+        # (0.01/2.0 = 0.005): a 1/8 floor pinned a sustained 0.25mm period-2
+        # flip-flop (overlap flickering in/out across the jump) that neither
+        # eps nor the friction deadband could terminate.
         _align = np.sum(_prev_disp * disp, axis=1)
         _rev = _align < 0
         _fwd = _align > 0
-        _step_scale[_rev] = np.maximum(0.125, _step_scale[_rev] * 0.5)
+        _step_scale[_rev] = np.maximum(1.0 / 256.0, _step_scale[_rev] * 0.5)
         _step_scale[_fwd] = np.minimum(1.0, _step_scale[_fwd] * 1.08)
         _prev_disp = disp.copy()
 

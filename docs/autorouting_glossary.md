@@ -29,7 +29,8 @@ Sources are the local copies under [`wikipedia/`](wikipedia/) (fetched 2026-09-2
 - **Track** (`track`): a routed copper segment on one layer between two points, with a
   width. The unit the router emits during writeback.
 - **Via**: connects tracks across layers at one point.
-- **Zone**: a poured copper area (e.g. ground plane); an obstacle for routing.
+- **Zone**: a poured copper area (e.g. ground plane); passable at a toll for routing
+  (narrow pour corridors carry an extra severance cost so tracks prefer wide copper).
 - **Board outline / edge cuts** (`gr_line` on Edge.Cuts): the physical board boundary;
   routing must stay inside it.
 - **Layer**: copper or technical layer, e.g. `F.Cu`, `B.Cu`. Design rules can differ per
@@ -58,7 +59,7 @@ Key facts that shape the algorithm choice:
   is NP-complete. Real routers are therefore **heuristics** aiming for "good enough", not
   optimal.
 - **Maze router**: represents routing space as a grid sized to the wiring pitch; blocked
-  cells = components, zones, existing tracks. Find a chain of free cells from A to B
+  cells = components, existing tracks (pours are passable at a toll, not blocked). Find a chain of free cells from A to B
   ([`wikipedia/maze_routing.md`](wikipedia/maze_routing.md)).
 - **Lee algorithm**: BFS wave expansion over that grid — mark start `0`, repeatedly mark
   unlabeled neighbors with the next index until the target is reached or no points remain,

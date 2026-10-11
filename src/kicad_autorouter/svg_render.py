@@ -75,6 +75,11 @@ def _bounds(model: BoardModel) -> Tuple[float, float, float, float]:
         for p in zone.polygon:
             add(p)
     for fp in model.footprints:
+        # Padless graphical parts are hidden from the SVG (see
+        # _footprints_svg); their imputed Fab/Silk art must not inflate the
+        # viewBox either.
+        if not fp.pads:
+            continue
         for a, b in fp.courtyard:
             add(a)
             add(b)
@@ -258,6 +263,12 @@ def _footprints_svg(
     """
     out = []
     for fp in model.footprints:
+        # Graphical-only parts (no pads) are hidden: their imputed Fab/Silk
+        # courtyard art floods the DOM with decorative segments and slows
+        # rendering. They stay in the model (physics skips them, writeback
+        # is tree-based), they are just not drawn. Ghosts are unaffected.
+        if not fp.pads:
+            continue
         is_locked = fp.uuid in locked_uuids
         is_pinned = fp.uuid in pinned_uuids
         is_selected = fp.uuid in selected_uuids

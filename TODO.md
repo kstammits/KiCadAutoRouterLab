@@ -5,11 +5,11 @@
 ### Visual
 - [ ] Highlight selected footprint in SVG on table hover
 
-### GND Continuity / Copper Pours (agreed 2026-10-09, phased)
-- Current state: `Zone` parsed + drawn, but routing treats pours as pure `BLOCKED` obstacles (`obstacles._mark_zone`); `route_ground_stitching` only handles ≥2 same-layer zones via centroid routing — real fragmentation (signal tracks carving one pour into islands) is undetected.
-- [ ] Phase 1 — fragmentation diagnostics: `routing/pour.py` `gnd_islands()` (connected components of GND copper per layer: zones + pads + tracks on the grid), `GET /api/routing/debug/gnd-islands`, UI overlay. No routing changes.
-- [ ] Phase 2 — stitching-via suggestions (preview list, accept per-via/all; no auto track-moving).
-- [ ] Phase 3 — auto-stitch + continuity-aware routing (research-grade; settle GND-as-traces vs pours first).
+### GND Continuity / Copper Pours (agreed 2026-10-09, phased; landed 2026-10-11)
+- Phase 0 — DONE: `Zone` carries fill rules (`clearance`, `min_thickness`, `thermal_gap/bridge`, `island_removal_mode`, `priority`); singular `(layer …)` zones parse (previously dropped, silently disabling stitch pairing).
+- Phase 1 — DONE: `routing/pour.py` (`pour_copper_mask`, `pour_islands`, `gnd_islands`), `GET /api/routing/debug/gnd-islands`, UI bbox overlay (red dashed = dead). Validated vs KiCad's own `filled_polygon` (tube111 F: 10 vs 13, B: 26 vs 15).
+- Phase 2 — DONE (automatic, per 2026-10-11 decision): `routing/stitch.py` `plan_stitches()` places GND-GND vias on inter-layer overlap + bridge tracks where no overlap exists; region-aware (never joins panels); runs at end of `route_nets`/`run_routing`. Supersedes centroid `route_ground_stitching` (deleted).
+- Phase 3 — DONE (soft cost, per 2026-10-11 decision): pours are passable-at-toll (`POUR=35` + `CostMap.pour_penalty=10`, was hard `BLOCKED` — which had also made pads inside pours unroutable); `severance_cost()` secondary steers tracks off narrow pour corridors (clipped so it steers, never blocks).
 
 
 ## Notes

@@ -44,7 +44,6 @@ MAGNET_PARAMS = PlacementParams(
     courtyard_repulsion_kc=30000.0,
     boundary_repulsion_kb=500000.0,
     convergence_eps_mm=0.1,
-    rigid_stiffness=5e5,
 )
 
 

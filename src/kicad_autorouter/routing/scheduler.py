@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Dict, List, Optional, Set
 
-from ..board_model import BoardModel
+from ..board_model import BoardModel, is_ground_net, is_power_net
 
 
 def order_nets(model: BoardModel) -> List[str]:
@@ -33,11 +33,11 @@ def order_nets(model: BoardModel) -> List[str]:
     for net_name, conns in model.nets.items():
         net_lower = net_name.lower()
         
-        # Power rails
-        if any(kw in net_lower for kw in ("vcc", "vdd", "v+", "v-", "pwr", "power", "+5v", "-5v", "+12v", "-12v", "3v3", "1v8", "1v2")):
+        # Power rails (shared keyword rules with placement)
+        if is_power_net(net_name):
             power_nets.append(net_name)
         # Ground
-        elif any(kw in net_lower for kw in ("gnd", "ground", "vgnd")):
+        elif is_ground_net(net_name):
             ground_nets.append(net_name)
         # Critical signals
         elif any(kw in net_lower for kw in ("clk", "clock", "diff", "usb", "eth", "hdmi", "pcie", "sata", "spi", "i2c", "uart")):

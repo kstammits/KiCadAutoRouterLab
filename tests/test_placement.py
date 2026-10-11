@@ -3,7 +3,7 @@
 Test categories (pytest markers):
 - unit: Pure logic, no fixtures
 - params: PlacementParams validation/serialization
-- physics: MST force-spring simulation (requires nets)
+- physics: force-spring simulation (requires nets)
 - minimal: Uses minimal.kicad_pcb fixture (4 footprints, no nets)
 - dccf: Uses DCCF.sved.kicad_pcb fixture (97 footprints, 59 nets)
 """
@@ -20,6 +20,7 @@ from kicad_autorouter.board_model import (
     Footprint,
     Pad,
     Point,
+    apply_deltas,
     board_model,
 )
 from kicad_autorouter.placement import (
@@ -53,7 +54,7 @@ class TestParams:
         assert p.attraction_ka == 0.05
         assert p.max_iterations == 1000
         assert p.convergence_eps_mm == 0.01
-        assert p.rigid_stiffness == 5e5
+        assert p.courtyard_repulsion_kc == 2000.0
 
     def test_roundtrip(self):
         p = PlacementParams(repulsion_kr=42.5, max_iterations=7)
@@ -130,7 +131,7 @@ class TestNoNetRunner:
 @pytest.mark.physics
 @pytest.mark.dccf
 class TestPhysicsRunner:
-    """MST force-spring simulation - requires nets."""
+    """Force-spring simulation with rigid projection - requires nets."""
 
     def test_physics_moves_unlocked(self, dccf_model):
         p = PlacementParams(max_iterations=10)
@@ -205,19 +206,36 @@ class TestPhysicsRunner:
             dx, dy, da = prop.deltas[u4_uuid]
             assert dx != 0.0 or dy != 0.0 or da != 0.0
 
-    def test_mst_preserves_footprint_shape(self, dccf_model):
-        """Rigid constraints should keep pad distances constant (within tolerance)."""
-        from kicad_autorouter.placement import _collect_pad_nodes, _build_rigid_constraints_mst
+    def test_projection_preserves_footprint_shape(self, dccf_model):
+        """Rigid projection keeps every footprint's shape (within 1e-9).
+
+        Runs a short sim, then compares each moved footprint's pad-pair
+        distances before/after. The in-sim Kabsch snap preserves geometry
+        to float precision; the apply_deltas writeback round-trips through
+        a reported angle, so the model-level pin allows 1ulp-level drift
+        (1e-9) — still six orders tighter than the old Hooke spring's
+        ~1e-3, which additionally rang as a period-2 slam.
+        """
+        from kicad_autorouter.placement import _collect_pad_nodes
 
         pads, _, fp_uuid_to_pad_indices, _, _ = _collect_pad_nodes(dccf_model)
-        pad_positions = np.array([[p.position.x_mm, p.position.y_mm] for p in pads])
-
-        rigid_src, rigid_dst, rigid_rest = _build_rigid_constraints_mst(pad_positions, fp_uuid_to_pad_indices)
-
-        # Check rest lengths match initial distances
-        for i, j, L0 in zip(rigid_src, rigid_dst, rigid_rest):
-            actual = np.linalg.norm(pad_positions[j] - pad_positions[i])
-            assert actual == pytest.approx(L0, rel=1e-6)
+        before = np.array([[p.position.x_mm, p.position.y_mm] for p in pads])
+        p = PlacementParams(max_iterations=10)
+        prop = run_placement(dccf_model, p)
+        moved = apply_deltas(dccf_model, prop.deltas)
+        pads2, _, fp_uuid_to_pad_indices2, _, _ = _collect_pad_nodes(moved)
+        after = np.array([[p.position.x_mm, p.position.y_mm] for p in pads2])
+        assert prop.deltas, "short DCCF run must move something"
+        for uuid, rows in fp_uuid_to_pad_indices.items():
+            rows2 = fp_uuid_to_pad_indices2[uuid]
+            assert len(rows) == len(rows2)
+            if len(rows) < 2:
+                continue
+            d0 = np.linalg.norm(before[rows] - before[rows[0]], axis=1)
+            d1 = np.linalg.norm(after[rows2] - after[rows2[0]], axis=1)
+            assert d0 == pytest.approx(d1, rel=1e-9, abs=1e-12), (
+                f"footprint {uuid} deformed"
+            )
 
     def test_mst_no_bending_for_collinear_under_pure_translation(self, dccf_model):
         """If all pads of a collinear footprint feel equal force, it should translate without rotation."""
@@ -314,7 +332,7 @@ class TestCourtyardCollision:
         p = PlacementParams(max_iterations=5, courtyard_repulsion_kc=0.0)
         prop = run_placement(dccf_model, p)
 
-        # Only repulsion, attraction, rigid forces remain
+        # Only repulsion, attraction, ghost and boundary forces remain
         total_force_magnitude = sum(math.hypot(fx, fy) for fx, fy in prop.forces.values())
         # Should still have other forces
         assert total_force_magnitude > 0.0
@@ -469,7 +487,7 @@ class TestForceComponents:
         prop = run_placement(ghost_test_model, p)
         for comps in prop.force_components.values():
             assert set(comps) == {
-                "repulsion", "attraction", "rigid",
+                "repulsion", "attraction",
                 "ghost", "courtyard", "boundary",
             }
 

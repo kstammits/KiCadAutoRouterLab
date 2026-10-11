@@ -28,6 +28,8 @@ from kicad_autorouter.placement import (
     run_placement,
 )
 from kicad_autorouter.routing.pipeline import RoutingParams, route_nets
+from kicad_autorouter.routing.grid import create_grid_from_model
+from kicad_autorouter.routing.pour import gnd_islands
 from kicad_autorouter.routing.power import identify_power_nets
 from kicad_autorouter.sexpr import parse
 from kicad_autorouter.svg_render import render_board_svg
@@ -643,12 +645,21 @@ def _cost_grid_to_png(cost_grid: np.ndarray, routing_grid) -> str:
     layer_data = cost_grid[0]
     
     # Create RGBA array directly
-    # Colors: 0=transparent, 50=yellow (HIGH_COST), 80=orange (EDGE_KEEPOUT), 100+=red (BLOCKED)
+    # Colors: 0=transparent, 25=gray (COURTYARD), 35=teal (POUR),
+    # 50=yellow (HIGH_COST), 80=orange (EDGE_KEEPOUT), 100+=red (BLOCKED)
     rgba = np.zeros((H, W, 4), dtype=np.uint8)
-    
+
     # Mask for non-zero costs
     mask = layer_data > 0
-    
+
+    # COURTYARD (25) -> gray
+    courtyard = (layer_data == 25) & mask
+    rgba[courtyard] = [140, 140, 140, 140]
+
+    # POUR (35) -> teal
+    pour = (layer_data == 35) & mask
+    rgba[pour] = [46, 168, 122, 140]
+
     # HIGH_COST (50) -> yellow
     high_cost = (layer_data == 50) & mask
     rgba[high_cost] = [255, 255, 0, 180]
@@ -888,9 +899,14 @@ class Handler(BaseHTTPRequestHandler):
             selected = STATE.get_selected_uuids()
             locked = {fp.uuid for fp in model.footprints if fp.locked and fp.uuid}
             footprints_data = []
-            # Real footprints
+            # Real footprints (padless graphical parts are hidden from the
+            # UI for framerate: no pads, no physics, not sent — they stay
+            # in the model/tree so writeback is unaffected; ghosts below
+            # are unaffected).
             for fp in model.footprints:
                 if not fp.uuid:
+                    continue
+                if not fp.pads:
                     continue
                 # Collect unique net names for this footprint
                 nets = sorted({pad.net_name for pad in fp.pads if pad.net_name})
@@ -1009,6 +1025,41 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps(payload).encode(), "application/json")
             return
         
+        # GET /api/routing/debug/gnd-islands - pour continuity diagnostics.
+        # No routing run required: builds a 0.2mm grid on the fly (4x fewer
+        # cells than the 0.1mm routing grid; topology equivalent for viz).
+        if parsed.path == "/api/routing/debug/gnd-islands":
+            model, _, _, _, _, _ = STATE.snapshot
+            if model is None:
+                self._send(404, b"no board loaded", "text/plain")
+                return
+            try:
+                grid = create_grid_from_model(model, resolution_mm=0.2)
+                islands = gnd_islands(model, grid)
+            except Exception as exc:
+                self._send(500, f"island analysis failed: {exc}".encode(), "text/plain")
+                return
+            layers = {}
+            for layer, items in islands.items():
+                layers[layer] = [{
+                    "net": isl.net_name,
+                    "area_mm2": round(isl.area_mm2, 2),
+                    "cx_mm": round(isl.centroid_mm[0], 3),
+                    "cy_mm": round(isl.centroid_mm[1], 3),
+                    "cells": isl.cell_count,
+                    "connected": isl.has_connection,
+                    "bbox_mm": [round(v, 3) for v in isl.bbox_mm],
+                    "zones": list(isl.zone_uuids),
+                } for isl in items]
+            payload = {
+                "ok": True,
+                "resolution_mm": grid.resolution_mm,
+                "origin_mm": list(grid.origin_mm),
+                "layers": layers,
+            }
+            self._send(200, json.dumps(payload).encode(), "application/json")
+            return
+
         # GET /api/routing/debug/cost-grid.png - return cost grid as PNG for SVG overlay
         if parsed.path == "/api/routing/debug/cost-grid.png":
             model, _, _, _, _, _ = STATE.snapshot
@@ -1233,11 +1284,13 @@ class Handler(BaseHTTPRequestHandler):
                 attraction_ka=req.get("attraction_ka", base_params.attraction_ka),
                 max_iterations=0,
                 convergence_eps_mm=req.get("convergence_eps_mm", base_params.convergence_eps_mm),
-                rigid_stiffness=req.get("rigid_stiffness", base_params.rigid_stiffness),
                 courtyard_repulsion_kc=req.get("courtyard_repulsion_kc", base_params.courtyard_repulsion_kc),
                 courtyard_halo_mm=req.get("courtyard_halo_mm", base_params.courtyard_halo_mm),
                 boundary_repulsion_kb=req.get("boundary_repulsion_kb", base_params.boundary_repulsion_kb),
                 max_step_mm=req.get("max_step_mm", base_params.max_step_mm),
+                power_attraction_scale=req.get("power_attraction_scale", base_params.power_attraction_scale),
+                decap_boost=req.get("decap_boost", base_params.decap_boost),
+                include_power_nets=req.get("include_power_nets", base_params.include_power_nets),
             )
 
             # If movable_uuids not provided, compute as all unlocked except pinned
@@ -1522,6 +1575,10 @@ class Handler(BaseHTTPRequestHandler):
                 "nets_failed": result.nets_failed,
                 "drc_clean": result.drc_clean,
                 "drc_violations": result.drc_violations,
+                "stitch_vias_added": result.stitch_vias_added,
+                "stitch_tracks_added": result.stitch_tracks_added,
+                "gnd_islands_before": result.gnd_islands_before,
+                "gnd_islands_after": result.gnd_islands_after,
                 "version": version,
             }
             # Include debug info if requested

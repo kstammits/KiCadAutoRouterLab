@@ -294,7 +294,7 @@ def test_forces_include_components():
         for uuid, total in body["forces"].items():
             comps = body["force_components"][uuid]
             assert set(comps) == {
-                "repulsion", "attraction", "rigid",
+                "repulsion", "attraction",
                 "ghost", "courtyard", "boundary",
             }
             sx = sum(v[0] for v in comps.values())
@@ -446,5 +446,58 @@ def test_docs_html_served():
         with urllib.request.urlopen(f"{base}/docs.html") as r:
             body = r.read().decode()
         assert "<title>KiCad AutoRouter — Docs</title>" in body
+    finally:
+        httpd.shutdown()
+
+
+@pytest.mark.server
+@pytest.mark.minimal
+def test_gnd_islands_requires_board():
+    httpd, base = _client()
+    try:
+        with pytest.raises(urllib.error.HTTPError) as ei:
+            urllib.request.urlopen(f"{base}/api/routing/debug/gnd-islands")
+        assert ei.value.code == 404
+    finally:
+        httpd.shutdown()
+
+
+@pytest.mark.server
+@pytest.mark.minimal
+def test_gnd_islands_empty_without_pour():
+    httpd, base = _client()
+    try:
+        data = (Path(__file__).parent / "fixtures" / "minimal.kicad_pcb").read_bytes()
+        req = urllib.request.Request(f"{base}/api/load?name=minimal", data=data, method="POST")
+        with urllib.request.urlopen(req) as r:
+            assert json.load(r)["ok"] is True
+        with urllib.request.urlopen(f"{base}/api/routing/debug/gnd-islands") as r:
+            payload = json.load(r)
+        assert payload["ok"] is True
+        assert payload["layers"]["F.Cu"] == []
+        assert payload["layers"]["B.Cu"] == []
+    finally:
+        httpd.shutdown()
+
+
+@pytest.mark.server
+def test_gnd_islands_tube111_fragmented():
+    httpd, base = _client()
+    try:
+        data = (Path(__file__).parent / "fixtures" / "tube111.kicad_pcb").read_bytes()
+        req = urllib.request.Request(f"{base}/api/load?name=tube111", data=data, method="POST")
+        with urllib.request.urlopen(req) as r:
+            assert json.load(r)["ok"] is True
+        with urllib.request.urlopen(f"{base}/api/routing/debug/gnd-islands") as r:
+            payload = json.load(r)
+        assert payload["ok"] is True
+        assert payload["resolution_mm"] == pytest.approx(0.2)
+        fcu = payload["layers"]["F.Cu"]
+        assert len(fcu) >= 2  # tracks carve the pour
+        first = fcu[0]
+        for key in ("net", "area_mm2", "cx_mm", "cy_mm", "cells",
+                    "connected", "bbox_mm", "zones"):
+            assert key in first, key
+        assert first["net"] == "GND"
     finally:
         httpd.shutdown()

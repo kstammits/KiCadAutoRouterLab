@@ -103,11 +103,13 @@ def main(argv=None) -> int:
                     attraction_ka=base_params.attraction_ka,
                     max_iterations=step_iters,
                     convergence_eps_mm=base_params.convergence_eps_mm,
-                    rigid_stiffness=base_params.rigid_stiffness,
                     courtyard_repulsion_kc=base_params.courtyard_repulsion_kc,
                     courtyard_halo_mm=base_params.courtyard_halo_mm,
                     boundary_repulsion_kb=base_params.boundary_repulsion_kb,
                     max_step_mm=base_params.max_step_mm,
+                    power_attraction_scale=base_params.power_attraction_scale,
+                    decap_boost=base_params.decap_boost,
+                    include_power_nets=base_params.include_power_nets,
                 )
             else:
                 step_params = base_params

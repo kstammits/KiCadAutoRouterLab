@@ -14,7 +14,8 @@ from .grid import RoutingGrid, board_to_grid
 # Cell cost values (int8)
 FREE = 0
 COURTYARD = 25     # placement guide only — not a copper keepout
-BLOCKED = 100      # impassable (tracks, vias, zones)
+POUR = 35          # copper pour interior: passable at a toll (see CostMap.pour_penalty)
+BLOCKED = 100      # impassable (tracks, vias, drilled holes)
 HIGH_COST = 50     # near pads, clearance zones
 EDGE_KEEPOUT = 80  # near board edge
 
@@ -391,8 +392,17 @@ def _mark_polygon_on_layers(cost_grid: np.ndarray, grid, polygon, layers, value:
 
 
 def _mark_zone(cost_grid: np.ndarray, grid, zone):
-    """Mark copper zone as blocked on its layers."""
-    _mark_polygon_on_layers(cost_grid, grid, zone.polygon, zone.layers, BLOCKED)
+    """Mark copper zone interior as passable-at-toll on its layers.
+
+    Pours are NOT blockers: real boards route tracks across pours and
+    KiCad refills around them with the zone clearance. Hard-blocking
+    pours made any pad inside a pour unroutable (escape steps refused)
+    and denied the router the crossing it needs; the pour-severance
+    secondary (Phase 3) steers tracks toward wide corridors instead,
+    and auto-stitching repairs residual fragments. ``_fill_polygon``
+    takes the max, so pad HIGH_COST and track BLOCKED cells survive.
+    """
+    _mark_polygon_on_layers(cost_grid, grid, zone.polygon, zone.layers, POUR)
 
 
 def _mark_keepout(cost_grid: np.ndarray, grid, keepout) -> None:
