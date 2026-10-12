@@ -813,12 +813,12 @@ async function fetchAndInjectSVG(version) {
   // committed view. An overlay=1 SVG already sits at the proposal pose
   // (apply_deltas) — re-applying motion on top doubles every move (2026-10-10:
   // Step-1 looked fine, full Run flipped R8 out).
+  // Also: force vectors must be rendered INSIDE footprint groups so they move
+  // with the parts. Server renders forces at absolute coords; we need forces=0
+  // and let the client inject them into the footprint groups.
   if (typeof motion !== "undefined" && motion.frames.length) {
     src = src.replace("overlay=1", "overlay=0");
-    // Ensure force markers are present for motion force vector overlay
-    if (!src.includes("forces=1")) {
-      src = src.replace("forces=0", "forces=1");
-    }
+    src = src.replace("forces=1", "forces=0");
   }
   const res = await fetch(src);
   if (!res.ok) return;
