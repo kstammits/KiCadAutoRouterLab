@@ -287,7 +287,7 @@
       <span id="board-sch" class="chip" hidden>pcb only</span>
       <span id="app-version" class="chip" style="margin-left:0.5rem; font-size:0.6rem;">v?</span>
       <label class="chk"><input type="checkbox" id="overlay-toggle" checked> proposal</label>
-      <label class="chk"><input type="checkbox" id="forces-toggle"> forces</label>
+      <label class="chk"><input type="checkbox" id="forces-toggle" checked> forces</label>
       <span id="forces-legend" class="chip" style="font-size:0.6rem; display:none; gap:0.5rem; align-items:center;">
         <span><i style="display:inline-block; width:1.2rem; border-top:2px solid #22d3ee;"></i> repulsion</span>
         <span><i style="display:inline-block; width:1.2rem; border-top:2px solid #a3e635;"></i> attraction</span>
@@ -1865,22 +1865,23 @@ function drawForceVectors(svg, frameIdx) {
       const [fx, fy] = vec;
       const mag = Math.hypot(fx, fy);
       if (mag < 1e-6) continue;
-      // Hide negligible causes (< 1% of strongest)
-      if (mag < 0.01 * maxMag) continue;
+      // Hide negligible causes (< 0.1% of strongest for this footprint)
+      if (mag < 0.001 * maxMag) continue;
 
-      // Log scale normalized to max across all visible
-      const length = Math.max(5.0 * Math.log1p(mag) / Math.log1p(maxMag), 0.5);
+      // Log scale normalized to max across all visible, capped at 3mm to prevent off-board "sticks"
+      const length = Math.min(Math.max(5.0 * Math.log1p(mag) / Math.log1p(maxMag), 0.5), 3.0);
       const ux = fx / mag, uy = fy / mag;
       const color = FORCE_CAUSE_COLORS[cause];
       const dash = FORCE_CAUSE_DASH[cause] || "none";
 
       const line = document.createElementNS(NS, "line");
-      // Force vectors in LOCAL coordinates (relative to footprint center)
-      // The footprint group transform will move/rotate them with the part
-      line.setAttribute("x1", "0");
-      line.setAttribute("y1", "0");
-      line.setAttribute("x2", (ux * length).toFixed(3));
-      line.setAttribute("y2", (uy * length).toFixed(3));
+      // Force vectors in LOCAL coordinates at courtyard centroid.
+      // The footprint group transform will move/rotate them with the part.
+      const centroid = motion.forceCentroids?.[uuid] || [0.0, 0.0];
+      line.setAttribute("x1", centroid[0].toFixed(3));
+      line.setAttribute("y1", centroid[1].toFixed(3));
+      line.setAttribute("x2", (centroid[0] + ux * length).toFixed(3));
+      line.setAttribute("y2", (centroid[1] + uy * length).toFixed(3));
       line.setAttribute("stroke", color);
       line.setAttribute("stroke-width", "0.18");
       if (dash !== "none") line.setAttribute("stroke-dasharray", dash);
@@ -2011,12 +2012,26 @@ async function loadMotionFrames(silent) {
     const data = await res.json();
     if (!data.frames || !data.frames.length) { resetMotionState(); return; }
     // Rotation pivots: committed footprint centers.
+    // Also compute courtyard centroids in LOCAL coordinates (relative to footprint origin)
+    // so force vectors drawn at local centroid move correctly with the footprint transform.
     const fpRes = await fetch("/api/footprints");
     const basePos = {};
+    const forceCentroids = {}; // {uuid: [cx_local, cy_local]}
     if (fpRes.ok) {
       const fpData = await fpRes.json();
       for (const fp of fpData.footprints || []) {
-        if (fp.uuid != null && fp.x_mm != null) basePos[fp.uuid] = [fp.x_mm, fp.y_mm];
+        if (fp.uuid != null && fp.x_mm != null) {
+          basePos[fp.uuid] = [fp.x_mm, fp.y_mm];
+          // Compute courtyard centroid in local coords from bbox [minx, miny, maxx, maxy]
+          if (fp.bbox && fp.bbox.length === 4) {
+            const cx_board = (fp.bbox[0] + fp.bbox[1]) / 2;
+            const cy_board = (fp.bbox[2] + fp.bbox[3]) / 2;
+            forceCentroids[fp.uuid] = [cx_board - fp.x_mm, cy_board - fp.y_mm];
+          } else {
+            // Fallback: footprint origin
+            forceCentroids[fp.uuid] = [0.0, 0.0];
+          }
+        }
       }
     }
     pauseMotion();
@@ -2025,6 +2040,7 @@ async function loadMotionFrames(silent) {
     motion.stride = data.frame_stride || 1;
     motion.iterations = data.iterations || data.frames.length;
     motion.basePos = basePos;
+    motion.forceCentroids = forceCentroids;
     motion.idx = data.frames.length - 1; // rest on the final (proposal) pose
     // Re-inject the base SVG before applying: the live SVG may still show the
     // previous proposal (overlay=1 sits at apply_deltas poses), which would
