@@ -11,9 +11,9 @@ from __future__ import annotations
 
 import html
 import math
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Collection, Dict, List, Optional, Set, Tuple
 
-from .board_model import BoardModel, Point, apply_deltas, is_ground_net, is_power_net
+from .board_model import BoardModel, Point, apply_deltas, is_ground_net, is_power_net_effective
 from .drc import DEFAULT_IGNORED_TYPES
 from .placement import PlacementProposal
 
@@ -55,12 +55,15 @@ def _fmt(v: float) -> str:
     return f"{v:.3f}"
 
 
-def net_colors(model: BoardModel) -> Dict[str, str]:
+def net_colors(
+    model: BoardModel, extra_power: Collection[str] = ()
+) -> Dict[str, str]:
     """Deterministic per-net colors; hues step by the golden angle.
 
     Power/ground nets get fixed hues (POWER_NET_COLOR/GROUND_NET_COLOR,
     power wins on overlap like identify_power_nets) so rails read
-    instantly regardless of net-list order.
+    instantly regardless of net-list order. User-marked power membership
+    (``extra_power``) counts as power.
     """
     names = sorted(name for name in model.nets if name)
     colors = {
@@ -68,18 +71,21 @@ def net_colors(model: BoardModel) -> Dict[str, str]:
         for i, name in enumerate(names)
     }
     for name in names:
-        if is_power_net(name):
+        if is_power_net_effective(name, extra_power):
             colors[name] = POWER_NET_COLOR
         elif is_ground_net(name):
             colors[name] = GROUND_NET_COLOR
     return colors
 
 
-def decap_fp_uuids(model: BoardModel) -> Set[str]:
+def decap_fp_uuids(
+    model: BoardModel, extra_power: Collection[str] = ()
+) -> Set[str]:
     """UUIDs of footprints special-treated as decoupling caps.
 
     Same rule as placement._find_decap_pad_indices: ref C*, exactly 2
     netted pads, one power + one ground side. Ghosts/padless excluded.
+    User-marked power membership (``extra_power``) counts as power.
     """
     out: Set[str] = set()
     for fp in model.footprints:
@@ -91,7 +97,7 @@ def decap_fp_uuids(model: BoardModel) -> Set[str]:
         if len(nets) != 2:
             continue
         sides = sorted(
-            "power" if is_power_net(n) else ("ground" if is_ground_net(n) else "signal")
+            "power" if is_power_net_effective(n, extra_power) else ("ground" if is_ground_net(n) else "signal")
             for n in nets
         )
         if sides == ["ground", "power"]:
@@ -160,7 +166,9 @@ def _edge_cuts_svg(model: BoardModel) -> List[str]:
     return out
 
 
-def _zones_svg(model: BoardModel) -> List[str]:
+def _zones_svg(
+    model: BoardModel, extra_power: Collection[str] = ()
+) -> List[str]:
     keepout_uuids = {z.uuid for z in model.keepout_zones}
     out: List[str] = []
     for layer in ("F.Cu", "B.Cu"):
@@ -175,7 +183,7 @@ def _zones_svg(model: BoardModel) -> List[str]:
             is_keepout = zone.uuid in keepout_uuids
             if is_keepout:
                 fill = KEEPOUT_FILL
-            elif zone.net_name and is_power_net(zone.net_name):
+            elif zone.net_name and is_power_net_effective(zone.net_name, extra_power):
                 fill = POWER_NET_COLOR
             elif zone.net_name and is_ground_net(zone.net_name):
                 fill = GROUND_NET_COLOR
@@ -234,6 +242,7 @@ def _footprint_pads_svg(
     colors: Dict[str, str],
     flip: bool,
     fp_angle_deg: float,
+    extra_power: Collection[str] = (),
 ) -> str:
     """Generate pad elements for a single footprint."""
     out = []
@@ -248,7 +257,7 @@ def _footprint_pads_svg(
         label = ""
         # Close-zoom net labels for rails only (bounds DOM growth):
         # hidden by default, shown via .zoom-close on the viewport.
-        if net and (is_power_net(net) or is_ground_net(net)):
+        if net and (is_power_net_effective(net, extra_power) or is_ground_net(net)):
             label = (
                 f'<text class="pad-net-label" data-net="{html.escape(net)}" '
                 f'x="{x}" y="{_fmt(py - h / 2.0 - 0.4)}" text-anchor="middle" '
@@ -327,6 +336,7 @@ def _footprints_svg(
     locked_uuids: Set[str],
     pinned_uuids: Set[str],
     selected_uuids: Set[str],
+    extra_power: Collection[str] = (),
 ) -> List[str]:
     """Generate all footprint elements (courtyards, pads, refs) grouped by footprint.
 
@@ -336,7 +346,7 @@ def _footprints_svg(
     pivot and rotation direction as the writeback in ``io``) instead of a
     group-transform approximation.
     """
-    decaps = decap_fp_uuids(model)
+    decaps = decap_fp_uuids(model, extra_power)
     out = []
     for fp in model.footprints:
         # Graphical-only parts (no pads) are hidden: their imputed Fab/Silk
@@ -370,7 +380,7 @@ def _footprints_svg(
         fp_group = [
             f'<g class="{cls}" data-fp-uuid="{fp.uuid}">',
             _footprint_courtyard_svg(fp, is_locked, is_pinned, is_selected, is_movable, is_decap),
-            _footprint_pads_svg(fp, colors, flip, fp.angle_deg),
+            _footprint_pads_svg(fp, colors, flip, fp.angle_deg, extra_power),
             _footprint_ref_svg(fp),
             "</g>",
         ]
@@ -731,6 +741,7 @@ def render_board_svg(
     drc_ignored_types: Optional[Set[str]] = None,
     drc_stale: bool = False,
     include_force_markers: bool = False,
+    extra_power_nets: Collection[str] = (),
 ) -> str:
     """Build the full SVG document for ``model`` (millimeter user units).
 
@@ -754,8 +765,10 @@ def render_board_svg(
         include_force_markers: If True, include force marker definitions (arrowheads)
             even when show_forces=False. Needed when motion frames exist so the
             client can draw force vectors client-side with proper markers.
+        extra_power_nets: user-marked power membership (rail colors, rail
+            pad labels, decap halos follow it).
     """
-    colors = net_colors(model)
+    colors = net_colors(model, extra_power_nets)
     moved = bool(proposal is not None and proposal.deltas)
     # Preview footprints at their exact post-Accept positions: apply_deltas is
     # the same code path commit_placement uses, and nudge_footprint_by_uuid
@@ -799,8 +812,8 @@ def render_board_svg(
     selected = selected_uuids or set()
 
     parts.extend(_edge_cuts_svg(model))
-    parts.extend(_zones_svg(model))
-    parts.extend(_footprints_svg(view, colors, locked_uuids, pinned, selected))
+    parts.extend(_zones_svg(model, extra_power_nets))
+    parts.extend(_footprints_svg(view, colors, locked_uuids, pinned, selected, extra_power_nets))
     parts.extend(_ghost_footprints_svg(view, colors))
     parts.extend(_tracks_svg(model, colors))
     parts.extend(_vias_svg(model, colors))

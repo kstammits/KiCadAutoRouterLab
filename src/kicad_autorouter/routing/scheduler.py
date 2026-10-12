@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Dict, List, Optional, Set
+from typing import Collection, Dict, List, Optional, Set
 
-from ..board_model import BoardModel, is_ground_net, is_power_net
+from ..board_model import BoardModel, is_ground_net, is_power_net_effective
 
 
-def order_nets(model: BoardModel) -> List[str]:
+def order_nets(
+    model: BoardModel, extra_power: Collection[str] = ()
+) -> List[str]:
     """Return net names in routing priority order.
     
     Priority:
@@ -33,8 +35,8 @@ def order_nets(model: BoardModel) -> List[str]:
     for net_name, conns in model.nets.items():
         net_lower = net_name.lower()
         
-        # Power rails (shared keyword rules with placement)
-        if is_power_net(net_name):
+        # Power rails (keyword match or user-marked membership)
+        if is_power_net_effective(net_name, extra_power):
             power_nets.append(net_name)
         # Ground
         elif is_ground_net(net_name):
@@ -57,6 +59,18 @@ def order_nets(model: BoardModel) -> List[str]:
         ordered.extend(sorted(category, key=sort_key))
 
     return ordered
+
+
+def is_rippupable_victim(net_name: Optional[str]) -> bool:
+    """True when a net's copper may be evicted to make way for another net.
+
+    GND-only rule: ground-pour copper (GND/GND_PWR/VGND, ...) is cheaply
+    replicated elsewhere (zones refill + ``plan_stitches()`` rebuilds
+    inter-layer continuity), so it is always fair game. Signal/power
+    copper is never evicted except when explicitly requested or
+    placement-moved — this is what stops tracks ripping each other out.
+    """
+    return is_ground_net(net_name)
 
 
 class RipUpManager:
@@ -103,6 +117,20 @@ class RipUpManager:
             if self.rip_up(net):
                 count += 1
         return count
+
+    def can_rip(self, requestor_net: str, victim_net: Optional[str]) -> bool:
+        """True when ``requestor_net`` may evict ``victim_net``'s copper.
+
+        Priority rule ("don't rip anyone higher than you"): only GND-family
+        victims are evictable, regardless of requestor. Same-net re-route
+        (requestor == victim) is always allowed and handled by the
+        pipeline's requested-net rip-up, not by this gate.
+        """
+        if victim_net is None:
+            return False
+        if requestor_net == victim_net:
+            return True
+        return is_rippupable_victim(victim_net)
 
     def record_success(self, net_name: str, path: List[Tuple[int, int, int]]) -> None:
         """Record successful routing."""

@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import Collection, List, Optional, Tuple
 
 import numpy as np
 
-from ..board_model import BoardModel
+from ..board_model import BoardModel, is_power_net_effective
 from .grid import RoutingGrid, grid_segment_to_board
 from .router import RouteResult
 
@@ -41,6 +41,7 @@ def routes_to_tracks_vias(
     via_size_mm: float = 0.8,
     via_drill_mm: float = 0.4,
     tht_sites: dict = None,
+    extra_power: Collection[str] = (),
 ) -> Tuple[List[Track], List[Via]]:
     """Convert routing results to KiCad tracks and vias.
 
@@ -50,6 +51,11 @@ def routes_to_tracks_vias(
     emitted (drilling into a hole would be drill-on-copper). Per-net
     scoping matters: a hop onto foreign THT copper still emits a via
     (and the router's exclusion ring normally prevents such hops anyway).
+
+    Widths come from ``net_class_widths`` (resolved upstream, including
+    user-marked power membership); the fallback below only bites for
+    callers that pass no map (legacy path) and honors effective-power
+    membership (keyword OR ``extra_power``) via the shared helper.
     """
     
     tracks = []
@@ -62,10 +68,9 @@ def routes_to_tracks_vias(
         if not result.success or not result.path:
             continue
         
-        # Determine track width for this net
+        # Determine track width for this net (shared effective-power rule)
         track_width = width_map.get(net_name, default_width_mm)
-        net_lower = net_name.lower()
-        if any(kw in net_lower for kw in ("vcc", "vdd", "v+", "v-", "pwr", "power", "gnd", "ground")):
+        if is_power_net_effective(net_name, extra_power):
             track_width = max(track_width, power_width_mm)
         
         path = result.path

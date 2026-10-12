@@ -5,11 +5,11 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Optional, Tuple, List, Set, Dict
+from typing import Collection, Optional, Tuple, List, Set, Dict
 
 import numpy as np
 
-from ..board_model import BoardModel, Point, Track, Via, board_model, netclass_trace_width, netclass_clearance
+from ..board_model import BoardModel, Point, Track, Via, board_model, is_ground_net, netclass_clearance, resolve_track_width_mm
 from ..io import nudge_footprint_by_uuid, save_pair, parse_file, load_pair, rip_up_nets
 from ..placement import PlacementParams, PlacementProposal, run_placement
 from ..drc import run_drc_on_tree, DRCResult, write_pcb_tree
@@ -46,6 +46,7 @@ class RoutingResult:
     stitch_tracks_added: int = 0
     gnd_islands_before: int = 0
     gnd_islands_after: int = 0
+    gnd_stripped: int = 0  # GND vias+tracks evicted as blockers (rebuilt by stitcher)
 
 
 @dataclass
@@ -66,6 +67,9 @@ class RoutingParams:
     heuristic_weight: float = 3.0     # Weighted-A* greediness (lower respects penalties)
     max_expansions: int = 2_000_000   # A* node-expansion cap per search (fail fast, don't hang)
     stitch_gnd_vias: bool = True      # Auto-repair GND pour continuity after routing
+    strip_gnd_blockers: bool = True  # Evict GND vias/tracks upfront (rebuildable via stitcher);
+    # GND-only exception to protected_nets: signal/power copper is never
+    # evicted except when explicitly requested, so tracks can't rip each other.
     stitch_vias_max: int = 32         # Cap on auto stitching vias
     stitch_bridges_max: int = 16      # Cap on auto GND bridge tracks (repairs)
     stitch_bridge_max_mm: float = 30.0  # Longest single bridge track
@@ -88,6 +92,7 @@ class RoutingParams:
             "heuristic_weight": self.heuristic_weight,
             "max_expansions": self.max_expansions,
             "stitch_gnd_vias": self.stitch_gnd_vias,
+            "strip_gnd_blockers": self.strip_gnd_blockers,
             "stitch_vias_max": self.stitch_vias_max,
             "stitch_bridges_max": self.stitch_bridges_max,
             "stitch_bridge_max_mm": self.stitch_bridge_max_mm,
@@ -102,39 +107,34 @@ class RoutingParams:
             "track_width_mm", "power_width_mm", "clearance_mm", "via_size_mm",
             "via_drill_mm", "max_attempts_per_net", "run_drc", "debug",
             "net_widths", "heuristic_weight", "max_expansions",
-            "stitch_gnd_vias", "stitch_vias_max", "stitch_bridges_max",
+            "stitch_gnd_vias", "strip_gnd_blockers", "stitch_vias_max", "stitch_bridges_max",
             "stitch_bridge_max_mm", "pour_severance_weight",
         }
         filtered = {k: v for k, v in d.items() if k in valid_keys}
         return cls(**filtered)
 
 
-_POWER_KEYWORDS = ("vcc", "vdd", "v+", "v-", "pwr", "power", "gnd", "ground")
-
-# Upper bound on total routing cells (all layers) per route_nets call.
+    # Upper bound on total routing cells (all layers) per route_nets call.
 # DCCF at 0.1mm ~= 9.6M cells (routes in ~1s); at 0.05mm ~= 38M cells
 # (multi-minute A* + ~150MB g-score arrays). Fail fast above this.
 MAX_GRID_CELLS_TOTAL = 12_000_000
 
 
-def resolve_track_width(model: BoardModel, params: RoutingParams, net_name: Optional[str]) -> float:
-    """Emitted trace width for a net.
+def resolve_track_width(model: BoardModel, params: RoutingParams, net_name: Optional[str], extra_power: Collection[str] = ()) -> float:
+    """Emitted trace width for a net (thin wrapper over the canonical resolver).
 
     Precedence: explicit ``params.net_widths`` → board ``(net_class
-    trace_width)`` → power-keyword heuristic → ``params.track_width_mm``.
+    trace_width)`` → effective-power heuristic → ``params.track_width_mm``.
     """
-    if net_name and net_name in params.net_widths:
-        try:
-            if float(params.net_widths[net_name]) > 0:
-                return float(params.net_widths[net_name])
-        except (TypeError, ValueError):
-            pass
-    if net_name and net_name in model.net_netclass:
-        return netclass_trace_width(model, net_name, params.track_width_mm)
-    net_lower = (net_name or "").lower()
-    if any(kw in net_lower for kw in _POWER_KEYWORDS):
-        return max(params.track_width_mm, params.power_width_mm)
-    return params.track_width_mm
+    return resolve_track_width_mm(
+        net_name,
+        net_widths=params.net_widths,
+        net_netclass=model.net_netclass,
+        net_classes=model.net_classes,
+        default_mm=params.track_width_mm,
+        power_mm=params.power_width_mm,
+        extra_power=extra_power,
+    )
 
 
 def resolve_clearance(model: BoardModel, params: RoutingParams, net_name: Optional[str]) -> float:
@@ -267,12 +267,13 @@ def route_nets(
     routing_grid: Optional[RoutingGrid] = None,
     params: Optional[RoutingParams] = None,
     original_pcb_tree: Optional = None,
+    extra_power_nets: Collection[str] = (),
 ) -> Tuple[RoutingResult, np.ndarray, RoutingGrid]:
     """Route a specific list of nets.
-    
+
     This function supports incremental routing by accepting and returning
     the cost_grid and routing_grid, allowing them to be persisted between calls.
-    
+
     Args:
         model: BoardModel with footprints, nets, tracks, vias
         net_names: List of net names to route (in priority order)
@@ -281,7 +282,11 @@ def route_nets(
         routing_grid: Pre-built routing grid (optional, will be built if None)
         params: RoutingParams configuration (optional, uses defaults if None)
         original_pcb_tree: Original PCB S-expression tree for writeback
-    
+        extra_power_nets: User-marked power membership (app nets table,
+            seeded from power-named KiCad netclasses on load). Marked nets
+            route first with wide tracks and join the protected family via
+            the caller's protected set.
+
     Returns:
         Tuple of (RoutingResult, updated_cost_grid, routing_grid)
     """
@@ -289,12 +294,37 @@ def route_nets(
         params = RoutingParams()
     
     # 0. Rip up selected nets from model so router can find new paths
-    # (Existing tracks for these nets would block routing)
+    # (Existing tracks for these nets would block routing). Protected nets
+    # are never ripped here — except GND (see 0b): signal/power copper is
+    # only removed when explicitly requested, so tracks can't rip each other.
     if net_names:
         model = _rip_up_nets_from_model(model, net_names)
         # Also rip up from PCB tree if provided
         if original_pcb_tree is not None:
             original_pcb_tree = rip_up_nets(original_pcb_tree, set(net_names), protected_nets)
+
+    # 0b. GND-only blocker eviction (upfront bulk strip). Pre-existing
+    # zone-pour stitch vias and old GND tracks would otherwise wall off
+    # new routes as hard BLOCKED cells; GND is cheaply rebuilt (zones
+    # refill + plan_stitches), so evict it even when protected. Never
+    # touches signal/power copper.
+    gnd_stripped = 0
+    if params.strip_gnd_blockers:
+        model, gnd_stripped = _strip_gnd_blockers_from_model(model)
+        if gnd_stripped and original_pcb_tree is not None:
+            # Collect GND net names present on the tree (model is already
+            # stripped, so scan the tree instead via a net-name pass).
+            from ..board_model import _net_name as _tree_net_name
+            gnd_nets = set()
+            for node in (*original_pcb_tree.children("segment"), *original_pcb_tree.children("via")):
+                name = _tree_net_name(node.find("net"))
+                if is_ground_net(name):
+                    gnd_nets.add(name)
+            if gnd_nets:
+                # Bypass protected_nets for GND only (rebuildable); the
+                # affected set contains solely ground nets, so signal/power
+                # copper is untouched regardless.
+                original_pcb_tree = rip_up_nets(original_pcb_tree, gnd_nets, set())
     
     # 1. Create or reuse grid. A reused grid is only valid when it matches
     # the requested resolution AND covers the same board area: a resolution
@@ -369,8 +399,8 @@ def route_nets(
         max_expansions=params.max_expansions,
     )
     
-    # 5. Identify net classes
-    power_nets, ground_nets, signal_nets = identify_power_nets(model)
+    # 5. Identify net classes (user-marked power membership included)
+    power_nets, ground_nets, signal_nets = identify_power_nets(model, extra_power_nets)
 
     # 5b. Pour-corridor map for severance-aware routing (computed once on
     # the ripped model; pour nets themselves route without the penalty).
@@ -404,7 +434,7 @@ def route_nets(
         terminals = _terminals_for_net(model, routing_grid, net_name)
         if len(terminals) < 2:
             return False
-        width_mm = resolve_track_width(model, params, net_name)
+        width_mm = resolve_track_width(model, params, net_name, extra_power_nets)
         width_map[net_name] = width_mm
         secondary = build_fanout_cost(
             model, routing_grid, net_name,
@@ -481,17 +511,20 @@ def route_nets(
         via_size_mm=params.via_size_mm,
         via_drill_mm=params.via_drill_mm,
         tht_sites=_tht_sites_by_net(model, routing_grid),
+        extra_power=extra_power_nets,
     )
 
     # 10b. Automatic GND continuity repair (stitching vias + bridge tracks).
     # Runs on the routed board: newly routed copper joins the island model,
     # so fresh fragments get repaired in the same call. Appends standard
-    # vias/tracks; KiCad refills the pours around them on open.
+    # vias/tracks; KiCad refills the pours around them on open. Runs
+    # whenever stitching is enabled — even after a GND strip left no copper
+    # behind — so evicted stitch vias are always rebuilt in the same call.
     stitch_vias_added = 0
     stitch_tracks_added = 0
     islands_before = 0
     islands_after = 0
-    if params.stitch_gnd_vias and (tracks or vias or model.tracks or model.vias):
+    if params.stitch_gnd_vias:
         routed_model = replace(
             model,
             tracks=model.tracks + tuple(
@@ -555,6 +588,7 @@ def route_nets(
         stitch_tracks_added=stitch_tracks_added,
         gnd_islands_before=islands_before,
         gnd_islands_after=islands_after,
+        gnd_stripped=gnd_stripped,
     ), cost_grid, routing_grid
 
 
@@ -570,10 +604,12 @@ def run_routing(
     max_attempts_per_net: int = 3,
     run_drc: bool = True,
     original_pcb_tree: Optional = None,
+    extra_power_nets: Collection[str] = (),
 ) -> RoutingResult:
     """Run complete routing on a board model.
-    
+
     Returns routing statistics and modifies model's track/via lists.
+    ``extra_power_nets``: user-marked power membership (see route_nets).
     """
     # 1. Create grid
     grid = create_grid_from_model(model, grid_resolution_mm, margin_mm)
@@ -596,8 +632,8 @@ def run_routing(
     )
     router = SingleNetRouter(grid, cost_grid, cost_map, tht_via_mask, via_block_mask)
     
-    # 4. Identify net classes
-    power_nets, ground_nets, signal_nets = identify_power_nets(model)
+    # 4. Identify net classes (user-marked power membership included)
+    power_nets, ground_nets, signal_nets = identify_power_nets(model, extra_power_nets)
 
     # 5. Route power rails first
     power_results = route_power_rails(
@@ -634,7 +670,7 @@ def run_routing(
         if len(terminals) < 2:
             continue
 
-        width_mm = resolve_track_width(model, legacy_params, net_name)
+        width_mm = resolve_track_width(model, legacy_params, net_name, extra_power_nets)
         secondary = build_fanout_cost(
             model, grid, net_name,
             clearance_mm=0.2,
@@ -691,6 +727,7 @@ def run_routing(
         via_size_mm=via_size_mm,
         via_drill_mm=via_drill_mm,
         tht_sites=_tht_sites_by_net(model, grid),
+        extra_power=extra_power_nets,
     )
 
     # 9b. GND continuity repair (stitching vias + bridge tracks), as in
@@ -821,6 +858,26 @@ def _rip_up_nets_from_model(model: BoardModel, net_names: List[str]) -> BoardMod
         version=model.version,
         version_warning=model.version_warning,
     )
+
+
+def _strip_gnd_blockers_from_model(model: BoardModel) -> Tuple[BoardModel, int]:
+    """Return (model without GND copper, count removed).
+
+    GND-only eviction: every track/via on a ground net (``is_ground_net``)
+    is a blocker candidate — pre-existing zone-pour stitch vias, old GND
+    tracks, and prior stitcher bridges. Zones themselves are kept (KiCad
+    refills them); ``plan_stitches()`` rebuilds inter-layer continuity
+    afterwards. Signal/power copper is never touched here — that is what
+    stops tracks ripping each other out. Deliberately ignores
+    ``protected_nets``: GND is rebuildable, so protection still means
+    "never rip signal/power" (see ``strip_gnd_blockers`` param).
+    """
+    kept_tracks = tuple(t for t in model.tracks if not is_ground_net(t.net_name))
+    kept_vias = tuple(v for v in model.vias if not is_ground_net(v.net_name))
+    removed = (len(model.tracks) - len(kept_tracks)) + (len(model.vias) - len(kept_vias))
+    if removed == 0:
+        return model, 0
+    return replace(model, tracks=kept_tracks, vias=kept_vias), removed
 
 
 def run_full_pipeline(

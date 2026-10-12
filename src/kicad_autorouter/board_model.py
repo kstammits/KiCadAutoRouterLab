@@ -24,7 +24,7 @@ from __future__ import annotations
 import math
 import uuid as uuid_module
 from dataclasses import dataclass, field, replace
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Collection, Dict, List, Optional, Set, Tuple
 
 from .sexpr import SExpr, get_generator_version
 
@@ -65,6 +65,68 @@ def is_ground_net(net_name: Optional[str]) -> bool:
         return False
     lowered = net_name.lower()
     return any(kw in lowered for kw in _GROUND_KEYWORDS)
+
+
+def is_power_net_effective(
+    net_name: Optional[str], extra_power: Collection[str] = ()
+) -> bool:
+    """True when a net counts as a power rail: keyword match OR user-marked.
+
+    ``extra_power`` is the user-owned power-membership set (toggled in the
+    app's nets table, seeded from power-named KiCad netclasses on load).
+    Ground stays keyword-only; on overlap power wins (e.g. "GND_PWR").
+    """
+    if net_name and net_name in extra_power:
+        return True
+    return is_power_net(net_name)
+
+
+def seed_power_nets_from_netclasses(model: "BoardModel") -> Set[str]:
+    """Net names sitting in power-keyword-named KiCad netclasses.
+
+    Load-time seed for the user-owned power set: a class literally called
+    "Power" (or matching the power keywords) marks its member nets. Only
+    nets present on the board are returned (stale names pruned). Keyword
+    power nets need no seeding — they classify automatically.
+    """
+    out: Set[str] = set()
+    for cls in model.net_classes:
+        if cls.name and is_power_net(cls.name):
+            out.update(n for n in cls.nets if n in model.nets)
+    return out
+
+
+def resolve_track_width_mm(
+    net_name: Optional[str],
+    *,
+    net_widths: Optional[Dict[str, float]] = None,
+    net_netclass: Optional[Dict[str, str]] = None,
+    net_classes: Tuple["NetClass", ...] = (),
+    default_mm: float = 0.25,
+    power_mm: float = 0.5,
+    extra_power: Collection[str] = (),
+) -> float:
+    """Canonical emitted trace width for a net (single source of truth).
+
+    Precedence: explicit per-net widths → board ``(net_class trace_width)``
+    → effective-power (keyword OR user-marked) → default. Plain-argument
+    shape so both ``routing/pipeline.py`` and ``routing/output.py`` can
+    share it without an import cycle (params types live in pipeline).
+    """
+    if net_name and net_widths and net_name in net_widths:
+        try:
+            if float(net_widths[net_name]) > 0:
+                return float(net_widths[net_name])
+        except (TypeError, ValueError):
+            pass
+    if net_name and net_netclass and net_name in net_netclass:
+        class_name = net_netclass[net_name]
+        for cls in net_classes:
+            if cls.name == class_name and cls.trace_width_mm > 0:
+                return cls.trace_width_mm
+    if is_power_net_effective(net_name, extra_power):
+        return max(default_mm, power_mm)
+    return default_mm
 
 
 @dataclass(frozen=True)

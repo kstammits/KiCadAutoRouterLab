@@ -445,7 +445,8 @@
                   <th style="width:5rem;">Footprints</th>
                   <th style="width:5rem;">Tracks</th>
                   <th style="width:4rem;">Vias</th>
-                  <th style="width:4rem;" title="Power status from server keyword rules (read-only)">Pwr</th>
+                  <th style="width:4.5rem;" title="Resolved track width for this net (explicit → netclass → power → default)">Width</th>
+                  <th style="width:4rem;" title="Power status: keyword rules or your ⚡ override (click to toggle)">Pwr</th>
                   <th style="width:5rem;" title="Decoupling caps on this net (C*, power+ground)">Decap</th>
                   <th class="net-col-protect" style="width:4rem;" title="Protected nets are routed first and never ripped up">
                     <label class="chk"><input type="checkbox" id="nets-protect-all" title="Protect all visible">🔒</label>
@@ -2375,11 +2376,17 @@ function renderNetsTable(nets) {
   
   tbody.innerHTML = nets.map((net, idx) => {
     const color = netColorByName(net.name, idx);
+    const pwrTitle = net.power_user
+      ? "Power net (your override — click Pwr cell to unmark)"
+      : (net.is_power
+        ? "Power net (keyword rules — click Pwr cell to unmark)"
+        : "Signal net — click Pwr cell to mark as power");
     const pwr = net.is_power
-      ? `<span class="power-badge is-power" title="Power net (server keyword rules)">PWR</span>`
+      ? `<span class="power-badge is-power" title="${pwrTitle}">PWR</span>`
       : (net.is_ground
-        ? `<span class="power-badge is-ground" title="Ground net (server keyword rules)">GND</span>`
+        ? `<span class="power-badge is-ground" title="Ground net (keyword rules)">GND</span>`
         : "");
+    const width = (net.width_mm ?? "") === "" ? "" : Number(net.width_mm).toFixed(2);
     const decaps = Array.isArray(net.decap_refs) ? net.decap_refs : [];
     const decap = decaps.length
       ? `<span class="decap-badge" title="Decoupling caps: ${decaps.join(", ")}">◉×${decaps.length}</span>`
@@ -2395,7 +2402,8 @@ function renderNetsTable(nets) {
         <td class="net-col-fps">${net.footprint_count ?? ""}</td>
         <td class="net-col-tracks">${net.track_count ?? ""}</td>
         <td class="net-col-vias">${net.via_count ?? ""}</td>
-        <td class="net-col-pwr">${pwr || ""}</td>
+        <td class="net-col-width">${width}</td>
+        <td class="net-col-pwr" data-power-cell="${net.name}" title="${pwrTitle}" style="cursor:pointer;">${pwr || ""}</td>
         <td class="net-col-decap">${decap}</td>
         <td class="net-col-protect">
           <label class="chk"><input type="checkbox" class="net-protect-cb" ${net.protected ? 'checked' : ''} data-net="${net.name}" title="Protected nets are routed first and never ripped up"></label>
@@ -2434,6 +2442,30 @@ function renderNetsTable(nets) {
       } catch (err) {
         console.error("Failed to toggle protected:", err);
         // Revert checkbox on error
+        await fetchNets();
+      }
+    });
+  });
+
+  // Power membership toggles: click the Pwr cell to mark/unmark a net as
+  // a power rail (wide tracks, route-first, placement magnetism). Badges,
+  // widths and decap marks refresh via fetchNets.
+  tbody.querySelectorAll('td[data-power-cell]').forEach(td => {
+    td.addEventListener("click", async e => {
+      if (e.target.type === "checkbox") return;
+      const net = td.dataset.powerCell;
+      const row = lastNetsByName.get(net);
+      const markPower = !(row && row.is_power);
+      try {
+        const res = await fetch("/api/nets/power", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ net, power: markPower })
+        });
+        if (!res.ok) throw new Error(await res.text());
+        await fetchNets();
+      } catch (err) {
+        console.error("Failed to toggle power:", err);
         await fetchNets();
       }
     });
@@ -2512,6 +2544,7 @@ function renderRoutingParams(params) {
   // Debug checkbox
   const debugChecked = params.debug ? "checked" : "";
   const stitchChecked = params.stitch_gnd_vias ?? true ? "checked" : "";
+  const stripChecked = params.strip_gnd_blockers ?? true ? "checked" : "";
   const debugHtml = `
     <div class="param">
       <span title="Enable debug output (cost grid, search frontier)">Debug Mode</span>
@@ -2526,6 +2559,14 @@ function renderRoutingParams(params) {
       <div class="row">
         <label class="chk" style="margin:0;">
           <input type="checkbox" data-key="stitch_gnd_vias" ${stitchChecked}> Enabled
+        </label>
+      </div>
+    </div>
+    <div class="param">
+      <span title="Evict GND vias/tracks upfront before routing (rebuildable via stitching); signal/power copper is never evicted">Strip GND Blockers</span>
+      <div class="row">
+        <label class="chk" style="margin:0;">
+          <input type="checkbox" data-key="strip_gnd_blockers" ${stripChecked}> Enabled
         </label>
       </div>
     </div>
@@ -2693,6 +2734,7 @@ async function routeSelectedNets() {
       totals.failed += r.nets_failed || 0;
       totals.stitchVias = (totals.stitchVias || 0) + (r.stitch_vias_added || 0);
       totals.stitchTracks = (totals.stitchTracks || 0) + (r.stitch_tracks_added || 0);
+      totals.gndStripped = (totals.gndStripped || 0) + (r.gnd_stripped || 0);
       if (r.gnd_islands_before) {
         totals.gndBefore = r.gnd_islands_before;
         totals.gndAfter = r.gnd_islands_after;

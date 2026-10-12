@@ -20,7 +20,7 @@ from __future__ import annotations
 import math
 import time
 from dataclasses import asdict, dataclass, field, fields
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Collection, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 from shapely.geometry import Polygon
@@ -28,7 +28,7 @@ from shapely.ops import nearest_points, polygonize, unary_union
 
 from .board_model import (
     BoardModel, BoardRegion, Footprint, Pad, Segment,
-    is_ground_net, is_power_net,
+    is_ground_net, is_power_net_effective,
 )
 
 
@@ -299,15 +299,17 @@ def _find_decap_pad_indices(
     pads: List[Pad],
     pad_to_fp_idx: List[int],
     fp_ref_by_idx: Dict[int, str],
+    extra_power: Collection[str] = (),
 ) -> Set[int]:
     """Pad indices belonging to decoupling caps in this pad set.
 
     A decap is a footprint whose ref starts with "C", contributing exactly
     2 netted pads here, with one side on a power rail and the other on
-    ground (shared keyword rules with routing). Ghost footprints are never
-    decaps. Used to (a) boost decap-incident edges and (b) admit the
-    decap's GND-side edges that are otherwise excluded (GND pours connect
-    anywhere, so general GND attraction would only clump parts).
+    ground (effective-power membership, so user-marked rails count).
+    Ghost footprints are never decaps. Used to (a) boost decap-incident edges
+    and (b) admit the decap's GND-side edges that are otherwise excluded
+    (GND pours connect anywhere, so general GND attraction would only
+    clump parts).
     """
     fp_to_rows: Dict[int, List[int]] = {}
     for i, fp_idx in enumerate(pad_to_fp_idx):
@@ -323,7 +325,7 @@ def _find_decap_pad_indices(
             continue
         nets = [pads[i].net_name for i in rows]
         sides = sorted(
-            "power" if is_power_net(n) else ("ground" if is_ground_net(n) else "signal")
+            "power" if is_power_net_effective(n, extra_power) else ("ground" if is_ground_net(n) else "signal")
             for n in nets
         )
         if sides == ["ground", "power"]:
@@ -337,6 +339,7 @@ def _build_net_edges_pad_level(
     power_scale: float = 1.0,
     decap_boost: float = 4.0,
     include_power: bool = True,
+    extra_power: Collection[str] = (),
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Build edge index arrays for pad pairs sharing the same net.
 
@@ -345,7 +348,8 @@ def _build_net_edges_pad_level(
     per-edge ka multipliers applied by the attraction kernel:
 
     - signal nets: 1.0 (unchanged behavior);
-    - power nets: power_scale / (fanout - 1) — a rail shared by many
+    - power nets (keyword match or user-marked ``extra_power``):
+      power_scale / (fanout - 1) — a rail shared by many
       parts pulls each pad about as hard in total as one signal edge,
       so global rails minimize wirelength without collapsing the board;
     - ground nets: excluded (0 edges) unless at least one endpoint is a
@@ -372,7 +376,7 @@ def _build_net_edges_pad_level(
         fanout = len(pad_indices)
         if fanout < 2:
             continue
-        net_is_power = is_power_net(net_name)
+        net_is_power = is_power_net_effective(net_name, extra_power)
         net_is_ground = is_ground_net(net_name)
         if net_is_power and not include_power:
             continue
@@ -762,6 +766,7 @@ def _run_region_simulation(
     movable_uuids: Optional[Set[str]],
     record_frames: bool = False,
     frame_stride: int = 1,
+    extra_power_nets: Collection[str] = (),
 ) -> Tuple[
     Dict[str, Tuple[float, float, float]],
     Dict[str, Tuple[float, float]],
@@ -840,13 +845,14 @@ def _run_region_simulation(
     for _i, _fp_idx in enumerate(region_pad_to_fp_idx):
         if _fp_idx >= 0 and _fp_idx not in _ref_by_idx:
             _ref_by_idx[_fp_idx] = model.footprints[_fp_idx].ref
-    _decap_pads = _find_decap_pad_indices(region_pads, region_pad_to_fp_idx, _ref_by_idx)
+    _decap_pads = _find_decap_pad_indices(region_pads, region_pad_to_fp_idx, _ref_by_idx, extra_power_nets)
     src_idx, dst_idx, edge_weights = _build_net_edges_pad_level(
         region_pads, region_pad_to_fp_idx,
         decap_pad_indices=_decap_pads,
         power_scale=params.power_attraction_scale,
         decap_boost=params.decap_boost,
         include_power=params.include_power_nets,
+        extra_power=extra_power_nets,
     )
     has_net_edges = len(src_idx) > 0
 
@@ -1697,6 +1703,7 @@ def run_placement(
     record_frames: bool = False,
     frame_stride: int = 1,
     max_frames: int = FRAME_DEFAULT_MAX,
+    extra_power_nets: Collection[str] = (),
 ) -> PlacementProposal:
     """Run per-pad force-spring placement for ``model`` under ``params``.
 
@@ -1719,6 +1726,9 @@ def run_placement(
             automatically so capture stays within max_frames).
         max_frames: cap on frames in the proposal; longer runs are uniformly
             thinned (first = starting pose and last = final pose always kept).
+        extra_power_nets: user-marked power membership (app nets table,
+            seeded from power-named KiCad netclasses on load). Marked nets
+            get fanout-scaled rail attraction and count for decap detection.
 
     Returns:
         PlacementProposal with per-footprint deltas (dx, dy, dangle) keyed by UUID.
@@ -1797,7 +1807,7 @@ def run_placement(
                     region_pad_indices, region_pads, region_pad_to_fp_idx,
                     region_fp_uuid_to_pad_indices, region_global_pad_idx_to_local,
                     region_pad_is_ghost, model, params, movable_uuids,
-                    record_frames, _eff_stride,
+                    record_frames, _eff_stride, extra_power_nets,
                 )
                 all_deltas.update(region_deltas)
                 all_forces.update(region_forces)
@@ -1848,7 +1858,7 @@ def run_placement(
         region_pad_indices, region_pads, region_pad_to_fp_idx,
         region_fp_uuid_to_pad_indices, region_global_pad_idx_to_local,
         region_pad_is_ghost, model, params, movable_uuids,
-        record_frames, _eff_stride,
+        record_frames, _eff_stride, extra_power_nets,
     )
 
     thin_frames = _thin_frames(region_frames, max_frames) if record_frames else []

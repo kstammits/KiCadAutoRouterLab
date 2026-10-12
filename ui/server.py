@@ -18,7 +18,15 @@ UI_DIR = Path(__file__).resolve().parent
 REPO_ROOT = UI_DIR.parent.resolve()
 sys.path.insert(0, str(UI_DIR.parent / "src"))
 
-from kicad_autorouter.board_model import apply_deltas, board_model, commit_placement, is_ground_net, is_power_net
+from kicad_autorouter.board_model import (
+    apply_deltas,
+    board_model,
+    commit_placement,
+    is_ground_net,
+    is_power_net_effective,
+    resolve_track_width_mm,
+    seed_power_nets_from_netclasses,
+)
 from kicad_autorouter.drc import TMP_DIR, run_drc_on_tree
 from kicad_autorouter.io import nudge_footprint_by_uuid, rip_up_nets
 from kicad_autorouter.pipeline import stages
@@ -105,6 +113,9 @@ class BoardState:
         self.version_warning: Optional[str] = None  # Warning for v11+ boards
         # Routing state
         self.protected_nets: set[str] = set()  # Nets protected from rip-up (power/ground + user)
+        self.power_override_nets: set[str] = set()  # User-marked power membership (nets table ⚡);
+        # seeded from power-named KiCad netclasses on load, in-memory only
+        # (per-board net names must not leak into the global params file).
         self.cost_grid: Optional[np.ndarray] = None  # Persistent occupancy grid for incremental routing
         self.routing_grid: Optional[Any] = None  # Persistent RoutingGrid for reuse
         self.routing_model: Optional[Any] = None  # Updated BoardModel after routing
@@ -141,9 +152,13 @@ class BoardState:
                 self.cost_grid = None
                 self.routing_grid = None
                 self.routing_model = None
-                # Auto-detect protected nets (power/ground)
+                # Auto-detect protected nets (power/ground, incl. user-marked power)
                 self.protected_nets.clear()
-                power_nets, ground_nets, _ = identify_power_nets(self.model)
+                self.power_override_nets.clear()
+                self.power_override_nets.update(seed_power_nets_from_netclasses(self.model))
+                power_nets, ground_nets, _ = identify_power_nets(
+                    self.model, self.power_override_nets
+                )
                 self.protected_nets.update(power_nets)
                 self.protected_nets.update(ground_nets)
                 self.protected_nets.update({"GND", "GND_PWR", "VCC", "VDD", "VSS", "GROUND"})
@@ -326,11 +341,28 @@ class BoardState:
             self.version += 1
             return self.version
 
+    def get_power_override_nets(self) -> set[str]:
+        """Return copy of the user-marked power-membership set."""
+        with self._lock:
+            return set(self.power_override_nets)
+
+    def set_power_override_net(self, net_name: str, is_power: bool) -> int:
+        """Explicitly mark/unmark a net as power (no toggle quirk)."""
+        with self._lock:
+            if is_power:
+                self.power_override_nets.add(net_name)
+            else:
+                self.power_override_nets.discard(net_name)
+            self.version += 1
+            return self.version
+
     def auto_detect_protected_nets(self) -> int:
         """Auto-detect power/ground nets and add them to protected set."""
         if self.model is None:
             return self.version
-        power_nets, ground_nets, _ = identify_power_nets(self.model)
+        power_nets, ground_nets, _ = identify_power_nets(
+            self.model, self.get_power_override_nets()
+        )
         with self._lock:
             self.protected_nets.update(power_nets)
             self.protected_nets.update(ground_nets)
@@ -345,6 +377,7 @@ class BoardState:
                 "has_cost_grid": self.cost_grid is not None,
                 "has_routing_grid": self.routing_grid is not None,
                 "protected_nets": sorted(self.protected_nets),
+                "power_override_nets": sorted(self.power_override_nets),
             }
 
     def reset_routing_state(self) -> int:
@@ -845,7 +878,8 @@ class Handler(BaseHTTPRequestHandler):
                                     show_forces=forces_on,
                                     drc_violations=drc_violations,
                                     drc_stale=drc_stale,
-                                    include_force_markers=include_force_markers).encode()
+                                    include_force_markers=include_force_markers,
+                                    extra_power_nets=STATE.get_power_override_nets()).encode()
             self._send(200, svg, "image/svg+xml")
             return
         if parsed.path == "/api/placement/params":
@@ -914,7 +948,7 @@ class Handler(BaseHTTPRequestHandler):
             locked = {fp.uuid for fp in model.footprints if fp.locked and fp.uuid}
             # Footprints special-treated as decoupling caps (C*, 2 pads,
             # power+ground) — same rule as placement + svg_render halo.
-            decaps = decap_fp_uuids(model)
+            decaps = decap_fp_uuids(model, STATE.get_power_override_nets())
             footprints_data = []
             # Real footprints (padless graphical parts are hidden from the
             # UI for framerate: no pads, no physics, not sent — they stay
@@ -997,6 +1031,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(404, b"no board loaded", "text/plain")
                 return
             protected = STATE.get_protected_nets()
+            extra_power = STATE.get_power_override_nets()
+            rp = load_routing_params()
             # Count existing tracks/vias per net
             track_counts = {}
             via_counts = {}
@@ -1008,9 +1044,10 @@ class Handler(BaseHTTPRequestHandler):
                     via_counts[v.net_name] = via_counts.get(v.net_name, 0) + 1
             
             nets_data = []
-            colors = net_colors(model)
+            colors = net_colors(model, extra_power)
             # net -> decap refs using the same C*/power+ground rule as
-            # placement + svg_render (computed from real footprints).
+            # placement + svg_render (computed from real footprints;
+            # user-marked power counts as power).
             decap_by_net = {}
             for fp in model.footprints:
                 if not fp.uuid or not fp.pads:
@@ -1021,7 +1058,7 @@ class Handler(BaseHTTPRequestHandler):
                 if len(nets) != 2:
                     continue
                 sides = sorted(
-                    "power" if is_power_net(n) else ("ground" if is_ground_net(n) else "signal")
+                    "power" if is_power_net_effective(n, extra_power) else ("ground" if is_ground_net(n) else "signal")
                     for n in nets
                 )
                 if sides == ["ground", "power"]:
@@ -1038,8 +1075,18 @@ class Handler(BaseHTTPRequestHandler):
                     "track_count": track_counts.get(net_name, 0),
                     "via_count": via_counts.get(net_name, 0),
                     "protected": net_name in protected,
-                    "is_power": is_power_net(net_name),
+                    "is_power": is_power_net_effective(net_name, extra_power),
                     "is_ground": is_ground_net(net_name),
+                    "power_user": net_name in extra_power,
+                    "width_mm": round(resolve_track_width_mm(
+                        net_name,
+                        net_widths=rp.net_widths,
+                        net_netclass=model.net_netclass,
+                        net_classes=model.net_classes,
+                        default_mm=rp.track_width_mm,
+                        power_mm=rp.power_width_mm,
+                        extra_power=extra_power,
+                    ), 3),
                     "color": colors.get(net_name, "#8a93a0"),
                     "decap_refs": sorted(decap_by_net.get(net_name, [])),
                 })
@@ -1277,6 +1324,7 @@ class Handler(BaseHTTPRequestHandler):
                     record_frames=record_frames,
                     frame_stride=frame_stride,
                     max_frames=max_frames,
+                    extra_power_nets=STATE.get_power_override_nets(),
                 )
             except Exception as exc:
                 import traceback
@@ -1347,7 +1395,10 @@ class Handler(BaseHTTPRequestHandler):
                 movable_uuids = {u for u in movable_uuids if u not in pinned}
 
             try:
-                proposal = run_placement(model, params, movable_uuids)
+                proposal = run_placement(
+                    model, params, movable_uuids,
+                    extra_power_nets=STATE.get_power_override_nets(),
+                )
             except Exception as exc:
                 import traceback
                 traceback.print_exc()
@@ -1489,7 +1540,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps({"ok": True, "protected": sorted(protected)}).encode(), "application/json")
             return
         
-        # POST /api/nets/protected - toggle protected net
+        # POST /api/nets/protected - explicitly mark/unmark a protected net.
+        # (Fixed 2026-10-12: previously `protected: true` toggled instead
+        # of setting — unchecking a stale-checked box could unprotect.)
         if parsed.path == "/api/nets/protected" and self.command == "POST":
             length = int(self.headers.get("Content-Length") or 0)
             body_data = self.rfile.read(length) if length > 0 else b"{}"
@@ -1503,19 +1556,42 @@ class Handler(BaseHTTPRequestHandler):
             if not net_name:
                 self._send(400, b"net name required", "text/plain")
                 return
-            if protected_flag:
-                version = STATE.toggle_protected_net(net_name)
-            else:
-                # Explicit set
-                with STATE._lock:
-                    if protected_flag:
-                        STATE.protected_nets.add(net_name)
-                    else:
-                        STATE.protected_nets.discard(net_name)
-                    version = STATE.version + 1
-                    STATE.version = version
+            with STATE._lock:
+                if protected_flag:
+                    STATE.protected_nets.add(net_name)
+                else:
+                    STATE.protected_nets.discard(net_name)
+                version = STATE.version + 1
+                STATE.version = version
             protected = STATE.get_protected_nets()
             self._send(200, json.dumps({"ok": True, "protected": sorted(protected), "version": version}).encode(), "application/json")
+            return
+
+        # GET /api/nets/power - user-marked power membership
+        if parsed.path == "/api/nets/power" and self.command == "GET":
+            extra = STATE.get_power_override_nets()
+            self._send(200, json.dumps({"ok": True, "power_override": sorted(extra)}).encode(), "application/json")
+            return
+
+        # POST /api/nets/power - explicitly mark/unmark a net as power.
+        # Marked nets route first with wide tracks, join protection, and
+        # count for placement magnetism + decap detection. Explicit-set
+        # semantics both ways (no toggle quirk).
+        if parsed.path == "/api/nets/power" and self.command == "POST":
+            length = int(self.headers.get("Content-Length") or 0)
+            body_data = self.rfile.read(length) if length > 0 else b"{}"
+            try:
+                req = json.loads(body_data.decode("utf-8"))
+            except json.JSONDecodeError:
+                self._send(400, b"invalid JSON", "text/plain")
+                return
+            net_name = req.get("net")
+            if not net_name or "power" not in req:
+                self._send(400, b"net name and power flag required", "text/plain")
+                return
+            version = STATE.set_power_override_net(net_name, bool(req.get("power")))
+            extra = STATE.get_power_override_nets()
+            self._send(200, json.dumps({"ok": True, "power_override": sorted(extra), "version": version}).encode(), "application/json")
             return
         
         # ==================== Routing API ====================
@@ -1567,6 +1643,7 @@ class Handler(BaseHTTPRequestHandler):
                     routing_grid=STATE.routing_grid,
                     params=route_params,
                     original_pcb_tree=STATE.pcb_tree,
+                    extra_power_nets=STATE.get_power_override_nets(),
                 )
             except ValueError as exc:
                 # Client error (e.g. grid too large for the board): 400 with
@@ -1615,6 +1692,7 @@ class Handler(BaseHTTPRequestHandler):
                 "stitch_tracks_added": result.stitch_tracks_added,
                 "gnd_islands_before": result.gnd_islands_before,
                 "gnd_islands_after": result.gnd_islands_after,
+                "gnd_stripped": result.gnd_stripped,
                 "version": version,
             }
             # Include debug info if requested

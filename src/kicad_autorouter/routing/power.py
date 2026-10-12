@@ -2,34 +2,37 @@
 
 from __future__ import annotations
 
-from typing import List, Tuple
+from typing import Collection, List, Tuple
 
 import numpy as np
 
-from ..board_model import BoardModel, is_ground_net, is_power_net
+from ..board_model import BoardModel, is_ground_net, is_power_net_effective
 from .grid import RoutingGrid, board_to_grid
 from .router import SingleNetRouter
 
 
-def identify_power_nets(model: BoardModel) -> Tuple[List[str], List[str], List[str]]:
+def identify_power_nets(
+    model: BoardModel, extra_power: Collection[str] = ()
+) -> Tuple[List[str], List[str], List[str]]:
     """Classify nets into power rails, ground, and signal.
-    
+
     Returns (power_nets, ground_nets, signal_nets).
-    Keyword rules live in board_model.is_power_net / is_ground_net,
+    Power = keyword match OR user-marked membership (extra_power, toggled
+    in the app and seeded from power-named KiCad netclasses on load);
     shared with placement (power wins on overlap, e.g. "GND_PWR").
     """
     power = []
     ground = []
     signal = []
-    
+
     for net_name in model.nets:
-        if is_power_net(net_name):
+        if is_power_net_effective(net_name, extra_power):
             power.append(net_name)
         elif is_ground_net(net_name):
             ground.append(net_name)
         else:
             signal.append(net_name)
-    
+
     return power, ground, signal
 
 
