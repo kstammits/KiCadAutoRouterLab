@@ -136,8 +136,9 @@ class TestLockState:
         assert by_ref["MH3"].locked is True
         assert by_ref["MH1"].locked is False
 
-    def test_dccf_has_no_locked_footprints(self, dccf_tree):
-        assert all(not fp.locked for fp in footprints(dccf_tree))
+    def test_dccf_has_locked_footprints(self, dccf_tree):
+        locked = [fp for fp in footprints(dccf_tree) if fp.locked]
+        assert len(locked) == 33
 
     def test_aggregate_preserves_lock_state(self, minimal_tree):
         model = board_model(minimal_tree)
