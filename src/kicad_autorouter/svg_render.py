@@ -13,9 +13,18 @@ import html
 import math
 from typing import Dict, List, Optional, Set, Tuple
 
-from .board_model import BoardModel, Point, apply_deltas
+from .board_model import BoardModel, Point, apply_deltas, is_ground_net, is_power_net
 from .drc import DEFAULT_IGNORED_TYPES
 from .placement import PlacementProposal
+
+# Fixed hues for power/ground nets (override the golden-angle sweep in
+# net_colors so rails read instantly; mirrored in ui/index.html legend +
+# nets table badges and served via /api/nets color).
+POWER_NET_COLOR = "#f59e0b"  # amber
+GROUND_NET_COLOR = "#38bdf8"  # sky blue
+# Decoupling-cap halo (courtyard stroke when a footprint is special-treated
+# as a decap; distinct from lock/pin/select/movable + force palettes).
+DECAP_HALO_COLOR = "#2dd4bf"  # teal
 
 # Dark-theme palette (matches ui/index.html).
 OUTLINE = "#e8edf2"       # board outline
@@ -47,12 +56,47 @@ def _fmt(v: float) -> str:
 
 
 def net_colors(model: BoardModel) -> Dict[str, str]:
-    """Deterministic per-net colors; hues step by the golden angle."""
+    """Deterministic per-net colors; hues step by the golden angle.
+
+    Power/ground nets get fixed hues (POWER_NET_COLOR/GROUND_NET_COLOR,
+    power wins on overlap like identify_power_nets) so rails read
+    instantly regardless of net-list order.
+    """
     names = sorted(name for name in model.nets if name)
-    return {
+    colors = {
         name: f"hsl({(i * 137.508) % 360:.0f}, 75%, 62%)"
         for i, name in enumerate(names)
     }
+    for name in names:
+        if is_power_net(name):
+            colors[name] = POWER_NET_COLOR
+        elif is_ground_net(name):
+            colors[name] = GROUND_NET_COLOR
+    return colors
+
+
+def decap_fp_uuids(model: BoardModel) -> Set[str]:
+    """UUIDs of footprints special-treated as decoupling caps.
+
+    Same rule as placement._find_decap_pad_indices: ref C*, exactly 2
+    netted pads, one power + one ground side. Ghosts/padless excluded.
+    """
+    out: Set[str] = set()
+    for fp in model.footprints:
+        if not fp.uuid or not fp.pads:
+            continue
+        if not (fp.ref or "").upper().startswith("C"):
+            continue
+        nets = [p.net_name for p in fp.pads if p.net_name]
+        if len(nets) != 2:
+            continue
+        sides = sorted(
+            "power" if is_power_net(n) else ("ground" if is_ground_net(n) else "signal")
+            for n in nets
+        )
+        if sides == ["ground", "power"]:
+            out.add(fp.uuid)
+    return out
 
 
 def _bounds(model: BoardModel) -> Tuple[float, float, float, float]:
@@ -129,12 +173,20 @@ def _zones_svg(model: BoardModel) -> List[str]:
             if len(zone.polygon) < 3:
                 continue
             is_keepout = zone.uuid in keepout_uuids
-            fill = KEEPOUT_FILL if is_keepout else ZONE_FILL
+            if is_keepout:
+                fill = KEEPOUT_FILL
+            elif zone.net_name and is_power_net(zone.net_name):
+                fill = POWER_NET_COLOR
+            elif zone.net_name and is_ground_net(zone.net_name):
+                fill = GROUND_NET_COLOR
+            else:
+                fill = ZONE_FILL
             dash = ' stroke-dasharray="1.5 1"' if is_keepout else ""
             pts = " ".join(f"{_fmt(p.x_mm)} {_fmt(p.y_mm)}" for p in zone.polygon)
+            net_attr = f' data-net="{html.escape(zone.net_name or "")}"' if zone.net_name else ""
             out.append(
                 f'<polygon points="{pts}" fill="{fill}" fill-opacity="{opacity}" '
-                f'stroke="{fill}" stroke-width="0.2"{dash}/>'
+                f'stroke="{fill}" stroke-width="0.2"{dash}{net_attr}/>'
             )
         out.append("</g>")
     return out
@@ -146,9 +198,13 @@ def _footprint_courtyard_svg(
     is_pinned: bool,
     is_selected: bool,
     is_movable: bool,
+    is_decap: bool = False,
 ) -> str:
     """Generate courtyard lines for a single footprint with state-based styling."""
-    if is_locked:
+    if is_decap:
+        stroke = DECAP_HALO_COLOR
+        extras = ' stroke-width="0.15" stroke-dasharray="0.6 0.3" opacity="0.95"'
+    elif is_locked:
         stroke = FP_LOCKED_COLOR
         extras = ' stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"'
     elif is_pinned:
@@ -183,9 +239,22 @@ def _footprint_pads_svg(
     out = []
     for pad in fp.pads:
         color = colors.get(pad.net_name or "", NO_NET)
+        net = pad.net_name or ""
+        net_attr = f' data-net="{html.escape(net)}"' if net else ""
+        title = f"<title>{html.escape(net)}</title>" if net else ""
         px, py = pad.position.x_mm, pad.position.y_mm
         x, y = _fmt(px), _fmt(py)
         w, h = pad.size_mm
+        label = ""
+        # Close-zoom net labels for rails only (bounds DOM growth):
+        # hidden by default, shown via .zoom-close on the viewport.
+        if net and (is_power_net(net) or is_ground_net(net)):
+            label = (
+                f'<text class="pad-net-label" data-net="{html.escape(net)}" '
+                f'x="{x}" y="{_fmt(py - h / 2.0 - 0.4)}" text-anchor="middle" '
+                f'font-family="monospace" font-size="0.8" fill="{color}" '
+                f'pointer-events="none">{html.escape(net)}</text>'
+            )
 
         # Pad angle is the file's effective board orientation (pcbnew rewrites
         # pad angles when the footprint rotates — verified 2026-10-08 — so it
@@ -202,14 +271,20 @@ def _footprint_pads_svg(
         if pad.shape == "circle":
             out.append(
                 f'<circle cx="{x}" cy="{y}" r="{_fmt(w / 2.0)}" '
-                f'fill="{color}" stroke="{PAD_STROKE}" stroke-width="0.1"/>'
+                f'fill="{color}" stroke="{PAD_STROKE}" stroke-width="0.1"{net_attr}>'
+                f"{title}</circle>"
             )
+            if label:
+                out.append(label)
         else:
             out.append(
                 f'<rect x="{_fmt(px - w / 2.0)}" y="{_fmt(py - h / 2.0)}" '
                 f'width="{_fmt(w)}" height="{_fmt(h)}" fill="{color}" '
-                f'stroke="{PAD_STROKE}" stroke-width="0.1"{rot}/>'
+                f'stroke="{PAD_STROKE}" stroke-width="0.1"{rot}{net_attr}>'
+                f"{title}</rect>"
             )
+            if label:
+                out.append(label)
     return "\n".join(out)
 
 
@@ -261,6 +336,7 @@ def _footprints_svg(
     pivot and rotation direction as the writeback in ``io``) instead of a
     group-transform approximation.
     """
+    decaps = decap_fp_uuids(model)
     out = []
     for fp in model.footprints:
         # Graphical-only parts (no pads) are hidden: their imputed Fab/Silk
@@ -278,6 +354,7 @@ def _footprints_svg(
 
         # Build footprint group with state classes and data attribute
         cls_parts = ["footprint"]
+        is_decap = fp.uuid in decaps
         if is_locked:
             cls_parts.append("fp-locked")
         if is_pinned:
@@ -286,11 +363,13 @@ def _footprints_svg(
             cls_parts.append("fp-selected")
         if is_movable and not is_selected:
             cls_parts.append("fp-movable")
+        if is_decap:
+            cls_parts.append("fp-decap")
         cls = " ".join(cls_parts)
 
         fp_group = [
             f'<g class="{cls}" data-fp-uuid="{fp.uuid}">',
-            _footprint_courtyard_svg(fp, is_locked, is_pinned, is_selected, is_movable),
+            _footprint_courtyard_svg(fp, is_locked, is_pinned, is_selected, is_movable, is_decap),
             _footprint_pads_svg(fp, colors, flip, fp.angle_deg),
             _footprint_ref_svg(fp),
             "</g>",
@@ -651,6 +730,7 @@ def render_board_svg(
     drc_violations: Optional[List[dict]] = None,
     drc_ignored_types: Optional[Set[str]] = None,
     drc_stale: bool = False,
+    include_force_markers: bool = False,
 ) -> str:
     """Build the full SVG document for ``model`` (millimeter user units).
 
@@ -671,6 +751,9 @@ def render_board_svg(
         drc_violations: Optional list of DRC violation dicts for overlay.
         drc_ignored_types: Optional set of violation types to ignore in overlay.
         drc_stale: If True, the violations are from an older board version; draw dimmed.
+        include_force_markers: If True, include force marker definitions (arrowheads)
+            even when show_forces=False. Needed when motion frames exist so the
+            client can draw force vectors client-side with proper markers.
     """
     colors = net_colors(model)
     moved = bool(proposal is not None and proposal.deltas)
@@ -708,7 +791,7 @@ def render_board_svg(
         parts.append(f"<title>{html.escape(title)}</title>")
     if moved or (proposal is not None and show_forces):
         parts.append(_arrow_marker())
-    if proposal is not None and show_forces:
+    if show_forces or include_force_markers:
         parts.append(_force_markers())
 
     locked_uuids = {fp.uuid for fp in model.footprints if fp.locked and fp.uuid}

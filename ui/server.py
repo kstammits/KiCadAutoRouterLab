@@ -18,7 +18,7 @@ UI_DIR = Path(__file__).resolve().parent
 REPO_ROOT = UI_DIR.parent.resolve()
 sys.path.insert(0, str(UI_DIR.parent / "src"))
 
-from kicad_autorouter.board_model import apply_deltas, board_model, commit_placement
+from kicad_autorouter.board_model import apply_deltas, board_model, commit_placement, is_ground_net, is_power_net
 from kicad_autorouter.drc import TMP_DIR, run_drc_on_tree
 from kicad_autorouter.io import nudge_footprint_by_uuid, rip_up_nets
 from kicad_autorouter.pipeline import stages
@@ -32,7 +32,7 @@ from kicad_autorouter.routing.grid import create_grid_from_model
 from kicad_autorouter.routing.pour import gnd_islands
 from kicad_autorouter.routing.power import identify_power_nets
 from kicad_autorouter.sexpr import parse
-from kicad_autorouter.svg_render import render_board_svg
+from kicad_autorouter.svg_render import decap_fp_uuids, net_colors, render_board_svg
 
 # App version from pyproject.toml
 with open(REPO_ROOT / "pyproject.toml", "rb") as f:
@@ -832,11 +832,20 @@ class Handler(BaseHTTPRequestHandler):
                     drc_violations = STATE.get_drc_violations()
                     drc_stale = status["stale"] or status["running"]
 
+            # Include force markers when motion frames exist so the client
+            # can draw force vectors client-side during frame scrubbing.
+            # Read from STATE (not the overlay-gated `proposal` above, which
+            # is None when the scrub path requests overlay=0&forces=0).
+            _stored = STATE.current_proposal
+            _frames = getattr(_stored, "force_frames", None) or []
+            include_force_markers = len(_frames) > 0
+
             svg = render_board_svg(model, title=name, proposal=proposal,
-                                   pinned_uuids=pinned, selected_uuids=selected,
-                                   show_forces=forces_on,
-                                   drc_violations=drc_violations,
-                                   drc_stale=drc_stale).encode()
+                                    pinned_uuids=pinned, selected_uuids=selected,
+                                    show_forces=forces_on,
+                                    drc_violations=drc_violations,
+                                    drc_stale=drc_stale,
+                                    include_force_markers=include_force_markers).encode()
             self._send(200, svg, "image/svg+xml")
             return
         if parsed.path == "/api/placement/params":
@@ -903,6 +912,9 @@ class Handler(BaseHTTPRequestHandler):
             pinned = STATE.get_pinned_uuids()
             selected = STATE.get_selected_uuids()
             locked = {fp.uuid for fp in model.footprints if fp.locked and fp.uuid}
+            # Footprints special-treated as decoupling caps (C*, 2 pads,
+            # power+ground) — same rule as placement + svg_render halo.
+            decaps = decap_fp_uuids(model)
             footprints_data = []
             # Real footprints (padless graphical parts are hidden from the
             # UI for framerate: no pads, no physics, not sent — they stay
@@ -939,6 +951,7 @@ class Handler(BaseHTTPRequestHandler):
                     "nets": nets,
                     "bbox": [minx, miny, maxx, maxy],
                     "ghost": False,
+                    "is_decap": fp.uuid in decaps,
                     # Pads with nets drive placement cost (all-pairs repulsion
                     # is O(pads^2)); the UI pre-flight estimate uses this.
                     # Matches _collect_pad_nodes (pad.net_name is not None).
@@ -972,6 +985,7 @@ class Handler(BaseHTTPRequestHandler):
                     "nets": nets,
                     "bbox": [minx, miny, maxx, maxy],
                     "ghost": True,
+                    "is_decap": False,  # Ghosts are never decaps (no physics)
                     "pad_count": sum(1 for pad in fp.pads if pad.net_name is not None),
                 })
             self._send(200, json.dumps({"ok": True, "footprints": footprints_data}).encode(), "application/json")
@@ -994,6 +1008,25 @@ class Handler(BaseHTTPRequestHandler):
                     via_counts[v.net_name] = via_counts.get(v.net_name, 0) + 1
             
             nets_data = []
+            colors = net_colors(model)
+            # net -> decap refs using the same C*/power+ground rule as
+            # placement + svg_render (computed from real footprints).
+            decap_by_net = {}
+            for fp in model.footprints:
+                if not fp.uuid or not fp.pads:
+                    continue
+                if not (fp.ref or "").upper().startswith("C"):
+                    continue
+                nets = [p.net_name for p in fp.pads if p.net_name]
+                if len(nets) != 2:
+                    continue
+                sides = sorted(
+                    "power" if is_power_net(n) else ("ground" if is_ground_net(n) else "signal")
+                    for n in nets
+                )
+                if sides == ["ground", "power"]:
+                    for n in nets:
+                        decap_by_net.setdefault(n, []).append(fp.ref)
             for net_name, conns in model.nets.items():
                 footprint_refs = set()
                 for conn in conns:
@@ -1005,6 +1038,10 @@ class Handler(BaseHTTPRequestHandler):
                     "track_count": track_counts.get(net_name, 0),
                     "via_count": via_counts.get(net_name, 0),
                     "protected": net_name in protected,
+                    "is_power": is_power_net(net_name),
+                    "is_ground": is_ground_net(net_name),
+                    "color": colors.get(net_name, "#8a93a0"),
+                    "decap_refs": sorted(decap_by_net.get(net_name, [])),
                 })
             # Sort: protected first, then by pad count descending
             nets_data.sort(key=lambda n: (not n["protected"], -n["pad_count"]))

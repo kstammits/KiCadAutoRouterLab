@@ -192,10 +192,49 @@
   .footprint.fp-pinned text { fill: #e0a458; }
   .footprint.fp-selected text { fill: #7ee0a0; }
   .footprint.fp-movable text { fill: #4a8a4a; }
+
+  /* Motion force vectors — single source of truth for per-cause paint.
+     Specificity (0,3,2) beats .footprint.fp-* line (0,2,1) above, so vectors
+     keep their cause colors regardless of lock/pin/select/movable state.
+     JS only sets geometry + class + marker-end; never stroke attributes.
+     NOTE: stroke-width stays in board units (no vector-effect). Server
+     markers use default markerUnits="strokeWidth", so head size =
+     markerWidth(4) x stroke-width. 0.25mm gives ~1mm heads, matching the
+     static overlay (0.18mm -> ~0.7mm). A screen-constant width (e.g. 2px +
+     non-scaling-stroke) would blow heads up to ~8px and keep them huge
+     at far zoom. */
+  .footprint g.motion-force-vectors line { fill: none; stroke-width: 0.25; opacity: 1; }
+  .footprint g.motion-force-vectors line.force-repulsion { stroke: #22d3ee; }
+  .footprint g.motion-force-vectors line.force-attraction { stroke: #a3e635; }
+  .footprint g.motion-force-vectors line.force-courtyard { stroke: #f472b6; }
+  .footprint g.motion-force-vectors line.force-boundary { stroke: #e2e8f0; stroke-dasharray: 1.5 1.0; }
+  .footprint g.motion-force-vectors line.force-ghost { stroke: #c4b5fd; stroke-dasharray: 1 1.2; }
+
+  /* Decap footprints: server paints the courtyard halo (teal, svg_render
+     DECAP_HALO_COLOR) and adds .fp-decap to the group; no override needed.
+     Class exists for queries + future halo tweaks below motion vectors. */
+  .footprint.fp-decap { /* marker class from server; halo paint is inline SVG */ }
+
+  /* Close-zoom rail labels: server emits .pad-net-label text for power/
+     ground pads only (hidden default, shown when zoomed close). */
+  .pad-net-label { display: none; }
+  .zoom-close .pad-net-label { display: block; }
+
+  /* Nets table power/decap badges (read-only flags from /api/nets). */
+  .power-badge { display: inline-block; font-size: .58rem; font-weight: 700; border-radius: 3px; padding: 0 .3rem; margin-left: .35rem; vertical-align: middle; }
+  .power-badge.is-power { background: rgba(245,158,11,.15); color: #f59e0b; border: 1px solid rgba(245,158,11,.5); }
+  .power-badge.is-ground { background: rgba(56,189,248,.12); color: #38bdf8; border: 1px solid rgba(56,189,248,.5); }
+  .decap-badge { display: inline-block; font-size: .58rem; color: #2dd4bf; border: 1px solid rgba(45,212,191,.5); background: rgba(45,212,191,.1); border-radius: 3px; padding: 0 .3rem; white-space: nowrap; }
+  .net-legend-power { font-size: .55rem; font-weight: 700; margin-left: .2rem; }
+  .net-legend-power.is-power { color: #f59e0b; }
+  .net-legend-power.is-ground { color: #38bdf8; }
   
   /* Motion scrubber */
   #motion-bar input[type=range] { flex:1; min-width:6rem; }
-  #motion-readout { font-size:.65rem; color:#9fb0c0; white-space:nowrap; font-variant-numeric:tabular-nums; }
+  /* Readout always on its own line below the controls: flex-basis:100%
+     forces a consistent linebreak instead of sometimes fitting inline
+     (short "no frames") and sometimes wrapping (long frame/iter text). */
+  #motion-readout { flex-basis:100%; font-size:.65rem; color:#9fb0c0; white-space:nowrap; font-variant-numeric:tabular-nums; }
   #motion-speed { background:#161c22; border:1px solid #3a4a5a; color:#d7e0e9; border-radius:3px; padding:.1rem .25rem; font-family:inherit; font-size:.7rem; }
   .motion-trail { fill:none; stroke:#7ee0a0; stroke-width:0.12; opacity:0.7; }
   .motion-trail-dot { fill:#7ee0a0; opacity:0.9; }
@@ -406,6 +445,8 @@
                   <th style="width:5rem;">Footprints</th>
                   <th style="width:5rem;">Tracks</th>
                   <th style="width:4rem;">Vias</th>
+                  <th style="width:4rem;" title="Power status from server keyword rules (read-only)">Pwr</th>
+                  <th style="width:5rem;" title="Decoupling caps on this net (C*, power+ground)">Decap</th>
                   <th class="net-col-protect" style="width:4rem;" title="Protected nets are routed first and never ripped up">
                     <label class="chk"><input type="checkbox" id="nets-protect-all" title="Protect all visible">🔒</label>
                   </th>
@@ -698,6 +739,9 @@ function applyViewBox() {
   const svg = viewport.querySelector("svg");
   if (!svg || !viewBox) return;
   svg.setAttribute("viewBox", viewBox.join(" "));
+  // Close-zoom rail labels: show .pad-net-label text only when zoomed in
+  // (viewBox narrower than ~40mm board units).
+  viewport.classList.toggle("zoom-close", viewBox[2] < 40);
   updateZoomInfo();
 }
 
@@ -827,8 +871,14 @@ async function fetchAndInjectSVG(version) {
   const tpl = document.createElement("template");
   tpl.innerHTML = svgText;
   for (const node of tpl.content.childNodes) viewport.appendChild(node);
-  // Capture initial viewBox for zoom reference ONLY on first load
   const svg = viewport.querySelector("svg");
+  // Single force layer while motion is active: the server base SVG must not
+  // contribute absolute-coordinate static forces (they would stack under the
+  // per-footprint client vectors and flicker). Normally forces=0 above already
+  // excludes them; strip defensively for raced/cached injects.
+  if (svg && typeof motion !== "undefined" && motion.frames.length) {
+    svg.querySelectorAll('g[class^="forces-"]').forEach(el => el.remove());
+  }
   if (svg && viewBox === null) {
     const vbAttr = svg.getAttribute("viewBox");
     if (vbAttr) {
@@ -876,10 +926,10 @@ async function poll() {
   }
 }
 
-overlayToggle.addEventListener("change", () => {
+overlayToggle.addEventListener("change", async () => {
   if (lastVersion) {
-    fetchAndInjectSVG(lastVersion);
-    loadSelectionState();
+    await fetchAndInjectSVG(lastVersion);
+    await loadSelectionState();
   }
 });
 
@@ -906,8 +956,8 @@ async function refreshForces() {
     btn.textContent = originalText;
     btn.disabled = false;
   }
-  fetchAndInjectSVG(lastVersion);
-  loadSelectionState();
+  await fetchAndInjectSVG(lastVersion);
+  await loadSelectionState();
 }
 
 forcesToggle.addEventListener("change", async () => {
@@ -916,14 +966,12 @@ forcesToggle.addEventListener("change", async () => {
   if (forcesToggle.checked) {
     await refreshForces();
   } else {
-    fetchAndInjectSVG(lastVersion);
-    loadSelectionState();
+    await fetchAndInjectSVG(lastVersion);
+    await loadSelectionState();
   }
-  // Also update motion force vectors if motion frames are loaded
-  if (motion.frames.length) {
-    const svg = viewport.querySelector("svg");
-    if (svg) drawForceVectors(svg, motion.idx);
-  }
+  // No extra drawForceVectors here: fetchAndInjectSVG re-applies the motion
+  // frame (which draws vectors) after inject. Drawing on the pre-inject SVG
+  // would flash then be wiped by the inject response.
 });
 
 const drcRunBtn = document.getElementById("drc-run-btn");
@@ -953,7 +1001,7 @@ async function runDrc() {
     drcRunBtn.disabled = false;
     drcRunBtn.classList.remove("loading");
   }
-  fetchAndInjectSVG(lastVersion);
+  await fetchAndInjectSVG(lastVersion);
 }
 
 drcRunBtn.addEventListener("click", runDrc);
@@ -961,7 +1009,7 @@ drcRunBtn.addEventListener("click", runDrc);
 drcToggle.addEventListener("change", async () => {
   if (!lastVersion) return;
   if (!drcToggle.checked) {
-    fetchAndInjectSVG(lastVersion);
+    await fetchAndInjectSVG(lastVersion);
     return;
   }
   // Toggle-on: run DRC when the cache is empty, stale, or errored.
@@ -977,7 +1025,7 @@ drcToggle.addEventListener("change", async () => {
   } catch (err) {
     drcInfo.textContent = `DRC status failed: ${err.message}`;
   }
-  fetchAndInjectSVG(lastVersion);
+  await fetchAndInjectSVG(lastVersion);
 });
 
 function layerGroup(svg, layer, kind) {
@@ -1552,23 +1600,25 @@ function renderNetLegend() {
   const sortedNets = Object.entries(netCounts)
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
     .slice(0, 20); // Limit to top 20 nets
-  
-  // Generate deterministic colors (same as svg_render.py)
-  function netColor(net, idx) {
-    const hue = (idx * 137.508) % 360;
-    return `hsl(${hue}, 75%, 62%)`;
-  }
-  
+
   if (sortedNets.length > 0) {
     legendBar.hidden = false;
     legendHeader.hidden = false;
     legendItems.innerHTML = sortedNets.map(([net, count], idx) => {
-      const color = netColor(net, idx);
+      const color = netColorByName(net, idx);
+      const row = (typeof lastNetsByName !== "undefined") ? lastNetsByName.get(net) : null;
+      const flag = row && row.is_power
+        ? `<span class="net-legend-power is-power" title="Power net">⚡</span>`
+        : (row && row.is_ground
+          ? `<span class="net-legend-power is-ground" title="Ground net">⏚</span>`
+          : "");
+      const decaps = row && Array.isArray(row.decap_refs) ? row.decap_refs : [];
+      const decap = decaps.length ? `<span class="decap-badge" title="Decoupling caps: ${decaps.join(", ")}">◉${decaps.length}</span>` : "";
       return `
         <div class="net-legend-item" data-net="${net}" title="${net}: ${count} parts" style="--net-color: ${color};">
           <span class="net-legend-swatch" style="background: ${color};"></span>
-          <span class="net-legend-name">${net}</span>
-          <span class="net-legend-count">${count}</span>
+          <span class="net-legend-name">${net}</span>${flag}
+          <span class="net-legend-count">${count}</span>${decap}
         </div>
       `;
     }).join("");
@@ -1769,6 +1819,7 @@ const motion = {
   iterations: 0,
   idx: 0,
   basePos: {},         // {uuid: [x_mm, y_mm]} — rotation pivots, captured per load
+  forceAnchors: {},    // {uuid: [cx_board, cy_board]} — courtyard anchors (absolute)
   playing: false,
   timer: null,
 };
@@ -1814,19 +1865,9 @@ function motionFpNode(uuid) {
   return viewport.querySelector(`g.footprint[data-fp-uuid="${uuid}"]`);
 }
 
-// Per-cause force colors (match server-side FORCE_CAUSE_COLORS)
-const FORCE_CAUSE_COLORS = {
-  "repulsion": "#22d3ee",  // cyan
-  "attraction": "#a3e635", // lime
-  "courtyard": "#f472b6",  // pink
-  "boundary": "#e2e8f0",   // near-white
-  "ghost": "#c4b5fd",      // pale lavender
-};
+// Force cause order (paint lives in CSS: .motion-force-vectors line.force-<cause>).
+// Keep server svg_render.FORCE_CAUSE_COLORS and the #forces-legend chips in sync.
 const FORCE_CAUSE_ORDER = ["repulsion", "attraction", "courtyard", "boundary", "ghost"];
-const FORCE_CAUSE_DASH = {
-  "boundary": "1.5,1.0",
-  "ghost": "1,1.2",
-};
 
 function drawForceVectors(svg, frameIdx) {
   // Remove existing motion force vectors from footprint groups
@@ -1865,26 +1906,26 @@ function drawForceVectors(svg, frameIdx) {
       const [fx, fy] = vec;
       const mag = Math.hypot(fx, fy);
       if (mag < 1e-6) continue;
-      // Hide negligible causes (< 0.1% of strongest for this footprint)
-      if (mag < 0.001 * maxMag) continue;
+      // Hide negligible causes (< 1% of strongest for this footprint),
+      // matching the server _forces_overlay threshold to cut clutter.
+      if (mag < 0.01 * maxMag) continue;
 
-      // Log scale normalized to max across all visible, capped at 3mm to prevent off-board "sticks"
+      // Log scale normalized per-footprint, capped at 3mm to prevent off-board
+      // "sticks" inside transformed footprint groups (server static overlay
+      // uses 5mm caps at absolute coords; motion intentionally uses 3mm).
       const length = Math.min(Math.max(5.0 * Math.log1p(mag) / Math.log1p(maxMag), 0.5), 3.0);
       const ux = fx / mag, uy = fy / mag;
-      const color = FORCE_CAUSE_COLORS[cause];
-      const dash = FORCE_CAUSE_DASH[cause] || "none";
 
       const line = document.createElementNS(NS, "line");
-      // Force vectors in LOCAL coordinates at courtyard centroid.
-      // The footprint group transform will move/rotate them with the part.
-      const centroid = motion.forceCentroids?.[uuid] || [0.0, 0.0];
-      line.setAttribute("x1", centroid[0].toFixed(3));
-      line.setAttribute("y1", centroid[1].toFixed(3));
-      line.setAttribute("x2", (centroid[0] + ux * length).toFixed(3));
-      line.setAttribute("y2", (centroid[1] + uy * length).toFixed(3));
-      line.setAttribute("stroke", color);
-      line.setAttribute("stroke-width", "0.18");
-      if (dash !== "none") line.setAttribute("stroke-dasharray", dash);
+      // Absolute board coords at the courtyard anchor. Footprint children are
+      // absolute, so the group translate+rotate carries vectors with the part.
+      const anchor = motion.forceAnchors?.[uuid] || motion.basePos?.[uuid] || [0.0, 0.0];
+      line.setAttribute("x1", anchor[0].toFixed(3));
+      line.setAttribute("y1", anchor[1].toFixed(3));
+      line.setAttribute("x2", (anchor[0] + ux * length).toFixed(3));
+      line.setAttribute("y2", (anchor[1] + uy * length).toFixed(3));
+      // Paint comes from CSS (.motion-force-vectors line.force-<cause>).
+      line.setAttribute("class", `force-${cause}`);
       line.setAttribute("marker-end", `url(#force-${cause})`);
       forcesGroup.appendChild(line);
     }
@@ -1895,6 +1936,9 @@ function drawForceVectors(svg, frameIdx) {
 function applyMotionFrame(i) {
   const svg = viewport.querySelector("svg");
   if (!svg || !motion.frames.length) return;
+  // Motion owns forces: drop any server-rendered static layer so only the
+  // per-footprint client vectors below remain (prevents dual-layer flicker).
+  svg.querySelectorAll('g[class^="forces-"]').forEach(el => el.remove());
   motion.idx = Math.max(0, Math.min(motion.frames.length - 1, i));
   const frame = motion.frames[motion.idx];
   const seen = new Set();
@@ -1953,11 +1997,17 @@ function drawMotionTrails() {
     dot.setAttribute("class", "motion-trail-dot");
     g.appendChild(dot);
   }
-  svg.appendChild(g);
+  // Trails below footprints/vectors: appended top-level groups paint on top,
+  // which would cover per-footprint force arrowheads on overlap. Footprint
+  // groups (and their motion-force-vectors children) must paint last.
+  const anchor = svg.querySelector("g.footprint");
+  if (anchor) svg.insertBefore(g, anchor);
+  else svg.appendChild(g);
 }
 
 function clearMotionView() {
   viewport.querySelectorAll("g.footprint[transform]").forEach(g => g.removeAttribute("transform"));
+  viewport.querySelectorAll("g.footprint .motion-force-vectors").forEach(el => el.remove());
   viewport.querySelector("#motion-trails")?.remove();
 }
 
@@ -1965,7 +2015,7 @@ function resetMotionState() {
   pauseMotion();
   clearMotionView();
   motion.frames = []; motion.force_frames = []; motion.stride = 1; motion.iterations = 0;
-  motion.idx = 0; motion.basePos = {};
+  motion.idx = 0; motion.basePos = {}; motion.forceAnchors = {};
   const { slider } = motionEls();
   slider.max = "0"; slider.value = "0";
   motionReadout();
@@ -2012,24 +2062,26 @@ async function loadMotionFrames(silent) {
     const data = await res.json();
     if (!data.frames || !data.frames.length) { resetMotionState(); return; }
     // Rotation pivots: committed footprint centers.
-    // Also compute courtyard centroids in LOCAL coordinates (relative to footprint origin)
-    // so force vectors drawn at local centroid move correctly with the footprint transform.
+    // Force anchors: courtyard centroid in ABSOLUTE board coords (same space
+    // as footprint children, so the group translate+rotate carries vectors).
     const fpRes = await fetch("/api/footprints");
     const basePos = {};
-    const forceCentroids = {}; // {uuid: [cx_local, cy_local]}
+    const forceAnchors = {}; // {uuid: [cx_board, cy_board]}
     if (fpRes.ok) {
       const fpData = await fpRes.json();
       for (const fp of fpData.footprints || []) {
         if (fp.uuid != null && fp.x_mm != null) {
           basePos[fp.uuid] = [fp.x_mm, fp.y_mm];
-          // Compute courtyard centroid in local coords from bbox [minx, miny, maxx, maxy]
+          // Courtyard centroid from bbox [minx, miny, maxx, maxy].
           if (fp.bbox && fp.bbox.length === 4) {
-            const cx_board = (fp.bbox[0] + fp.bbox[1]) / 2;
-            const cy_board = (fp.bbox[2] + fp.bbox[3]) / 2;
-            forceCentroids[fp.uuid] = [cx_board - fp.x_mm, cy_board - fp.y_mm];
+            const cx = (fp.bbox[0] + fp.bbox[2]) / 2;
+            const cy = (fp.bbox[1] + fp.bbox[3]) / 2;
+            // Guard degenerate bboxes (e.g. [0,0,0,0]): fall back to origin.
+            forceAnchors[fp.uuid] = (Number.isFinite(cx) && Number.isFinite(cy) && (cx || cy))
+              ? [cx, cy] : [fp.x_mm, fp.y_mm];
           } else {
             // Fallback: footprint origin
-            forceCentroids[fp.uuid] = [0.0, 0.0];
+            forceAnchors[fp.uuid] = [fp.x_mm, fp.y_mm];
           }
         }
       }
@@ -2040,7 +2092,7 @@ async function loadMotionFrames(silent) {
     motion.stride = data.frame_stride || 1;
     motion.iterations = data.iterations || data.frames.length;
     motion.basePos = basePos;
-    motion.forceCentroids = forceCentroids;
+    motion.forceAnchors = forceAnchors;
     motion.idx = data.frames.length - 1; // rest on the final (proposal) pose
     // Re-inject the base SVG before applying: the live SVG may still show the
     // previous proposal (overlay=1 sits at apply_deltas poses), which would
@@ -2073,7 +2125,19 @@ document.getElementById("motion-reset-btn").addEventListener("click", () => {
 });
 document.getElementById("motion-slider").addEventListener("input", (e) => {
   pauseMotion();
-  applyMotionFrame(parseInt(e.target.value, 10) || 0);
+  // Debounce rapid scrub events via rAF: only the latest slider value paints
+  // per frame, preventing queued applyMotionFrame calls that flash stale
+  // vector layers.
+  const v = parseInt(e.target.value, 10) || 0;
+  if (motion._scrubQueued) { motion._scrubValue = v; return; }
+  motion._scrubQueued = true;
+  motion._scrubValue = v;
+  requestAnimationFrame(() => {
+    motion._scrubQueued = false;
+    const slider = document.getElementById("motion-slider");
+    if (slider) slider.value = String(motion._scrubValue);
+    applyMotionFrame(motion._scrubValue);
+  });
 });
 document.getElementById("motion-trails").addEventListener("change", drawMotionTrails);
 motionSetEnabled(false);
@@ -2265,10 +2329,26 @@ document.getElementById("reset-params-btn").addEventListener("click", async () =
 let selectedNets = new Set();  // Set of net names selected for routing
 let routingParams = {};  // Current routing parameters
 
-// Net color function (shared with net legend)
-function netColor(net, idx) {
-  const hue = (idx * 137.508) % 360;
+// Net color: single source is the server (/api/nets color, from
+// svg_render.net_colors with fixed power/ground hues). Fall back to the
+// sorted-names golden-angle sweep when the row carries no color (e.g.
+// synthetic selection-only rows).
+function netColorByName(net, idx) {
+  const row = (typeof lastNetsByName !== "undefined") ? lastNetsByName.get(net) : null;
+  if (row && row.color) return row.color;
+  let names = [];
+  if (typeof lastNetsByName !== "undefined" && lastNetsByName.size) {
+    names = [...lastNetsByName.keys()].filter(Boolean).sort();
+  } else if (typeof allFootprints !== "undefined" && allFootprints.length) {
+    names = [...new Set(allFootprints.flatMap(fp => fp.nets || []).filter(Boolean))].sort();
+  }
+  const i = names.indexOf(net);
+  const hue = (((i >= 0 ? i : idx) * 137.508) % 360);
   return `hsl(${hue}, 75%, 62%)`;
+}
+// Legacy alias (row-index callers migrated to netColorByName).
+function netColor(net, idx) {
+  return netColorByName(net, idx);
 }
 
 // Fetch all nets from server and render net table
@@ -2294,18 +2374,29 @@ function renderNetsTable(nets) {
   if (!tbody) return;
   
   tbody.innerHTML = nets.map((net, idx) => {
-    const color = netColor(net.name, idx);
+    const color = netColorByName(net.name, idx);
+    const pwr = net.is_power
+      ? `<span class="power-badge is-power" title="Power net (server keyword rules)">PWR</span>`
+      : (net.is_ground
+        ? `<span class="power-badge is-ground" title="Ground net (server keyword rules)">GND</span>`
+        : "");
+    const decaps = Array.isArray(net.decap_refs) ? net.decap_refs : [];
+    const decap = decaps.length
+      ? `<span class="decap-badge" title="Decoupling caps: ${decaps.join(", ")}">◉×${decaps.length}</span>`
+      : "";
     return `
       <tr class="${selectedNets.has(net.name) ? 'net-selected-row' : ''}" data-net="${net.name}" style="--net-color: ${color};">
         <td class="net-col-select"><input type="checkbox" class="net-col-select" ${selectedNets.has(net.name) ? 'checked' : ''} data-net="${net.name}"></td>
         <td class="net-col-name">
           <span class="net-swatch" style="background: ${color};"></span>
-          ${net.name}
+          ${net.name}${pwr}
         </td>
-        <td class="net-col-pads">${net.pad_count}</td>
-        <td class="net-col-fps">${net.footprint_count}</td>
-        <td class="net-col-tracks">${net.track_count}</td>
-        <td class="net-col-vias">${net.via_count}</td>
+        <td class="net-col-pads">${net.pad_count ?? ""}</td>
+        <td class="net-col-fps">${net.footprint_count ?? ""}</td>
+        <td class="net-col-tracks">${net.track_count ?? ""}</td>
+        <td class="net-col-vias">${net.via_count ?? ""}</td>
+        <td class="net-col-pwr">${pwr || ""}</td>
+        <td class="net-col-decap">${decap}</td>
         <td class="net-col-protect">
           <label class="chk"><input type="checkbox" class="net-protect-cb" ${net.protected ? 'checked' : ''} data-net="${net.name}" title="Protected nets are routed first and never ripped up"></label>
         </td>
