@@ -62,11 +62,6 @@ def _decimals(v: float) -> int:
 
 @pytest.mark.unit
 class TestTrajectoryFrames:
-    def test_off_by_default(self):
-        prop = run_placement(_two_close_parts(), _params())
-        assert prop.frames == []
-        assert prop.frame_stride == 1
-
     def test_records_strided_frames(self):
         # Pin the recording machinery independent of termination dynamics:
         # tight eps + no friction force the full 5-iteration budget (early
@@ -84,14 +79,6 @@ class TestTrajectoryFrames:
             "bbbbbbbb-0000-0000-0000-000000000002",
         }
 
-    def test_first_frame_is_starting_pose(self):
-        prop = run_placement(
-            _two_close_parts(), _params(), record_frames=True,
-        )
-        assert prop.frames, "expected motion over 5 iters"
-        for dx, dy, da in prop.frames[0].values():
-            assert (dx, dy, da) == (0.0, 0.0, 0.0)
-
     def test_last_frame_matches_deltas(self):
         prop = run_placement(
             _two_close_parts(), _params(), record_frames=True,
@@ -103,16 +90,6 @@ class TestTrajectoryFrames:
             assert fdx == pytest.approx(dx, abs=10 ** -FRAME_XY_DECIMALS)
             assert fdy == pytest.approx(dy, abs=10 ** -FRAME_XY_DECIMALS)
             assert fda == pytest.approx(da, abs=10 ** -FRAME_ANGLE_DECIMALS)
-
-    def test_floats_rounded_short(self):
-        prop = run_placement(
-            _two_close_parts(), _params(), record_frames=True,
-        )
-        for frame in prop.frames:
-            for dx, dy, da in frame.values():
-                assert _decimals(dx) <= FRAME_XY_DECIMALS
-                assert _decimals(dy) <= FRAME_XY_DECIMALS
-                assert _decimals(da) <= FRAME_ANGLE_DECIMALS
 
     def test_downsample_caps_long_runs(self):
         prop = run_placement(

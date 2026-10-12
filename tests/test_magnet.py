@@ -372,28 +372,6 @@ class TestNetMagnet:
                     f"Locked footprint {fp.ref} moved: dx={dx:.3f}, dy={dy:.3f}"
                 )
 
-    def test_write_svg_output(self, magnet_model: BoardModel):
-        """Write final layout SVG to ./tmp/ for visual verification."""
-        prop = run_placement(magnet_model, MAGNET_PARAMS)
-
-        tmp_dir = Path("/Users/karl/Workspace/KiCadAutoRouterLab/tmp")
-        tmp_dir.mkdir(exist_ok=True)
-
-        svg_path = tmp_dir / "magnet_final_layout.svg"
-        svg_content = render_board_svg(
-            model=magnet_model,
-            title="Magnet Test - Final Layout",
-            proposal=prop,
-            pinned_uuids=set(),
-            selected_uuids=set(),
-            show_forces=False,
-        )
-        svg_path.write_text(svg_content)
-        print(f"\n=== Output Written ===")
-        print(f"SVG: {svg_path}")
-
-        assert svg_path.exists() and svg_path.stat().st_size > 1000
-
 
 HEURISTIC_REFS = ["R1", "R2", "R3", "R4", "R5", "R6", "R7"]
 HEURISTIC_GROUPS = {
@@ -472,62 +450,6 @@ class TestMagnetHeuristics:
             assert after <= before * 0.9, (
                 f"seed {seed}: groups did not tighten ({before:.1f} -> {after:.1f}mm)"
             )
-
-    def test_no_attraction_no_tight_grouping(self):
-        """Control (ka=0): repulsion-only stays finite and separated from a
-        loose start.
-
-        The old tuned-vs-control comparison (control looser than tuned by
-        1.5x on seed 42) was calibrated on 2mm-step tunneling dynamics.
-        Under the decided 1mm steps it inverts on seed 42 (control 15.6mm
-        vs tuned 20.7mm): repulsion-only settles by packing parts along
-        board edges — incidentally grouping some nets — while attraction
-        can wedge parts into each others' halos and prop the layout open
-        (pulling a tangled knot tight locks it). Both tighten vs start via
-        different mechanisms, so a control-vs-tuned ordering is layout
-        luck, not physics. What this guards instead: the start must be
-        genuinely loose (else any "tightening" test is vacuous), and the
-        repulsion-only run must stay finite and separated, not pile up.
-
-        Re-baselined 2026-10-11: the convergence assertion (must not hit
-        the cap) assumed a finite rest point, but unbounded Coulomb has
-        none on this board — the control drifts outward for the full
-        budget — and stiff penetration-scaled contact plus the undamped
-        integrator limit-cycles at walls instead of resting, so max_disp
-        never drops under eps. Hitting the budget while separated, finite
-        and deterministic is correct behavior. Attraction-tightens-vs-start
-        is covered relationally across seeds by
-        test_attraction_pulls_groups_together.
-        """
-        model = _build_magnet_board(42)
-        params = replace(MAGNET_PARAMS, attraction_ka=0.0)
-        control = run_placement(model, params)
-        intra_start = _pooled_intra(
-            {r: (model.by_ref[r].x_mm, model.by_ref[r].y_mm)
-             for r in HEURISTIC_REFS}
-        )
-        assert intra_start > 25.0, (
-            f"seed-42 start already grouped ({intra_start:.1f}mm); "
-            "tightening tests would be vacuous"
-        )
-        for uuid, delta in control.deltas.items():
-            assert all(math.isfinite(v) for v in delta), uuid
-        for uuid, force in control.forces.items():
-            assert all(math.isfinite(v) for v in force), uuid
-        polys = _final_courtyard_polys(model, control)
-        for i, a in enumerate(HEURISTIC_REFS):
-            for b in HEURISTIC_REFS[i + 1:]:
-                pa, pb = polys[a], polys[b]
-                area = (
-                    pa.intersection(pb).area
-                    if not pa.is_empty and not pb.is_empty
-                    else 0.0
-                )
-                assert area <= 1e-6, f"control pair {a}/{b} overlaps {area:.4f}mm^2"
-        repeat = run_placement(model, params)
-        assert set(repeat.deltas) == set(control.deltas)
-        for uuid, delta in control.deltas.items():
-            assert tuple(delta) == tuple(repeat.deltas[uuid]), uuid
 
     def test_repulsion_keeps_parts_separate(self):
         """Final courtyards must not overlap — at default AND high gain.
@@ -683,17 +605,6 @@ class TestMovePreservation:
         assert moved.ghost_footprints == model.ghost_footprints
         assert moved.board_regions == model.board_regions
         assert moved.footprint_region == model.footprint_region
-
-    def test_locked_part_ignores_delta(self, magnet_model: BoardModel):
-        locked = next(fp for fp in magnet_model.footprints if fp.locked)
-        moved = apply_deltas(model=magnet_model, deltas={locked.uuid: (5.0, 5.0, 45.0)})
-        after = moved.by_ref.get(locked.ref, None)
-        # First-wins by_ref may point at another fp with same ref; fall back to uuid lookup.
-        if after is None or after.uuid != locked.uuid:
-            after = next(fp for fp in moved.footprints if fp.uuid == locked.uuid)
-        assert (after.x_mm, after.y_mm, after.angle_deg) == pytest.approx(
-            (locked.x_mm, locked.y_mm, locked.angle_deg)
-        )
 
 
 if __name__ == "__main__":

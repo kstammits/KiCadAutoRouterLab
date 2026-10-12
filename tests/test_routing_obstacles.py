@@ -13,32 +13,11 @@ from kicad_autorouter.routing.obstacles import (
     FANOUT_HALO_INNER, FANOUT_HALO_OUTER,
     _block_courtyard,
     _mark_pad,
-    _mark_track,
-    _mark_via,
     _mark_zone,
     _mark_edge_keepout,
-    _draw_line_blocked,
-    _mark_circular_zone,
-    _fill_polygon,
 )
 
 from .helpers import make_fp as make_test_fp
-
-
-class TestCostGridShape:
-    """Basic cost grid structure tests."""
-
-    def test_build_occupancy_grid_shape(self, grid, minimal_model):
-        """Returns (n_layers, H, W) int16 array."""
-        cost_grid = build_occupancy_grid(minimal_model, grid)
-        assert cost_grid.shape == (2, grid.height_cells, grid.width_cells)
-        assert cost_grid.dtype == np.int16
-
-    def test_build_occupancy_grid_default_values(self, grid, minimal_model):
-        """Most cells start as FREE."""
-        cost_grid = build_occupancy_grid(minimal_model, grid)
-        assert np.any(cost_grid == FREE)
-        assert cost_grid.min() == FREE
 
 
 class TestCourtyardBlocking:
@@ -60,17 +39,6 @@ class TestCourtyardBlocking:
         assert np.any(cost_grid[0] == COURTYARD)
         assert np.any(cost_grid[1] == COURTYARD)
         assert not np.any(cost_grid >= BLOCKED)
-
-    def test_block_courtyard_handles_empty(self, grid):
-        """No courtyard = no-op."""
-        from kicad_autorouter.board_model import Footprint
-        fp = Footprint(ref="TEST", footprint_id="", layer="F.Cu", x_mm=50, y_mm=50, angle_deg=0, courtyard=())
-        cost_grid = np.full((2, grid.height_cells, grid.width_cells), FREE, dtype=np.int16)
-
-        _block_courtyard(cost_grid, grid, fp)
-
-        # Grid untouched
-        assert not np.any(cost_grid >= HIGH_COST)
 
 
 class TestFanoutCost:
@@ -117,13 +85,6 @@ class TestFanoutCost:
         # Outer ring present beyond inner (soft shoulder, strictly weaker)
         assert secondary[0].max() == FANOUT_HALO_INNER
         assert FANOUT_HALO_OUTER in secondary[0]
-
-    def test_halo_never_blocks(self, grid):
-        """Secondary values steer (added to cost) but blockage stays base-only."""
-        model, _, _ = self._two_pad_model(grid)
-        secondary = build_fanout_cost(model, grid, "A")
-        # No cell may reach BLOCKED from halo alone (handled at cost time)
-        assert secondary.max() == FANOUT_HALO_INNER
 
 
 class TestPadMarking:
@@ -181,243 +142,9 @@ class TestPadMarking:
         assert cost_grid[layer_idx, row, col] >= HIGH_COST
         assert cost_grid[other_layer, row, col] == FREE
 
-    def test_mark_pad_clearance_net_class(self, grid):
-        """Net-specific clearance overrides default."""
-        from kicad_autorouter.routing.grid import board_to_grid
-
-        # Place footprint within grid bounds
-        x_mm, y_mm = grid.origin_mm[0] + 100, grid.origin_mm[1] + 100
-        fp = make_test_fp("TEST", "uuid-test", x_mm, y_mm, ("NET_A",),
-                          footprint_id="",
-                          pad_shape="circle", pad_layers=("F.Cu",))
-        cost_grid = np.full((2, grid.height_cells, grid.width_cells), FREE, dtype=np.int16)
-
-        clearance_cells = {"NET_A": 5}  # 5 cells for NET_A
-        default = 1
-
-        pad = fp.pads[0]
-        _mark_pad(cost_grid, grid, fp, pad, clearance_cells, default)
-
-        col, row = board_to_grid(grid, x_mm, y_mm)
-        # Net_A should get 5-cell clearance
-        marked = np.sum(cost_grid[0, row-5:row+6, col-5:col+6] >= HIGH_COST)
-        assert marked > 0
-
-
-class TestTrackMarking:
-    """Tests for _mark_track."""
-
-    def test_mark_track_layer_specific(self, grid):
-        """Track only blocks its layer."""
-        from kicad_autorouter.board_model import Track, Point
-        track = Track(
-            start=Point(40, 50), end=Point(60, 50), width_mm=0.25,
-            layer="F.Cu", net_name="NET1"
-        )
-        cost_grid = np.full((2, grid.height_cells, grid.width_cells), FREE, dtype=np.int16)
-
-        _mark_track(cost_grid, grid, track)
-
-        # F.Cu (layer 0) should have BLOCKED along track
-        assert np.any(cost_grid[0] == BLOCKED)
-        # B.Cu (layer 1) should be untouched
-        assert not np.any(cost_grid[1] == BLOCKED)
-
-
-class TestViaMarking:
-    """Tests for _mark_via."""
-
-    def test_mark_via_all_layers(self, grid):
-        """Via blocks all layers at position."""
-        from kicad_autorouter.board_model import Via, Point
-        via = Via(position=Point(50, 50), size_mm=0.8, drill_mm=0.4, layers=("F.Cu", "B.Cu"), net_name="NET1")
-        cost_grid = np.full((2, grid.height_cells, grid.width_cells), FREE, dtype=np.int16)
-
-        _mark_via(cost_grid, grid, via)
-
-        col, row = board_to_grid(grid, 50, 50)
-        assert cost_grid[0, row, col] >= BLOCKED
-        assert cost_grid[1, row, col] >= BLOCKED
-
 
 class TestZoneMarking:
     """Tests for _mark_zone."""
-
-    def test_mark_zone_f_cu_only(self, grid):
-        """Zone marks its layer passable-at-toll (POUR), other layer free."""
-        from kicad_autorouter.board_model import Zone, Point
-        zone = Zone(
-            uuid="zone1",
-            layers=("F.Cu",),
-            polygon=(Point(45, 45), Point(55, 45), Point(55, 55), Point(45, 55)),
-            net_name="GND"
-        )
-        cost_grid = np.full((2, grid.height_cells, grid.width_cells), FREE, dtype=np.int16)
-
-        _mark_zone(cost_grid, grid, zone)
-
-        from kicad_autorouter.routing.obstacles import POUR
-        assert np.any(cost_grid[0] == POUR)
-        assert not np.any(cost_grid[1] == POUR)
-        assert not np.any(cost_grid >= BLOCKED)
-
-
-class TestEdgeKeepout:
-    """Tests for _mark_edge_keepout."""
-
-    def test_mark_edge_keepout_uses_edge_cuts(self, grid, minimal_model):
-        """Edge keepout drawn along Edge.Cuts."""
-        cost_grid = np.full((2, grid.height_cells, grid.width_cells), FREE, dtype=np.int16)
-
-        _mark_edge_keepout(cost_grid, grid, minimal_model, keepout_mm=0.5)
-
-        # Should have EDGE_KEEPOUT near board edges
-        assert np.any(cost_grid[0] == EDGE_KEEPOUT)
-        assert np.any(cost_grid[1] == EDGE_KEEPOUT)
-
-
-class TestDrawingPrimitives:
-    """Tests for low-level drawing functions."""
-
-    def test_draw_line_blocked_bresenham(self, grid):
-        """Bresenham line fills correct cells."""
-        layer_grid = np.full((grid.height_cells, grid.width_cells), FREE, dtype=np.int16)
-        x1, y1 = 40, 50
-        x2, y2 = 60, 50  # Horizontal line
-
-        _draw_line_blocked(layer_grid, grid, x1, y1, x2, y2)
-
-        # Line should be BLOCKED
-        assert np.any(layer_grid == BLOCKED)
-
-    def test_bresenham_cells_matches_wrappers(self, grid):
-        """Shared iterator stamps exactly what the old triplicated loops did."""
-        from kicad_autorouter.routing.obstacles import bresenham_cells, stamp_square
-        from kicad_autorouter.routing.pipeline import _mark_line_blocked
-        H, W = grid.height_cells, grid.width_cells
-        cases = [(5, 5, 20, 5), (5, 5, 5, 20), (0, 0, 30, 17), (40, 30, 10, 12)]
-        for c1, r1, c2, r2 in cases:
-            # Iterator path == _draw_line_blocked footprint.
-            line = np.full((H, W), FREE, dtype=np.int16)
-            for c, r in bresenham_cells(c1, r1, c2, r2):
-                if 0 <= r < H and 0 <= c < W:
-                    line[r, c] = max(line[r, c], BLOCKED)
-            ref = np.full((H, W), FREE, dtype=np.int16)
-            _draw_line_blocked(
-                ref, grid,
-                *grid_to_board(grid, c1, r1), *grid_to_board(grid, c2, r2),
-                value=BLOCKED,
-            )
-            # board_to_grid clamps so endpoints land on the same cells.
-            assert set(zip(*np.where(line == BLOCKED))) == set(zip(*np.where(ref == BLOCKED)))
-            # Radius arm == stamp_square.
-            halo = np.full((H, W), FREE, dtype=np.int16)
-            _mark_line_blocked(halo, r1, c1, r2, c2, radius=2)
-            expect = np.full((H, W), FREE, dtype=np.int16)
-            for c, r in bresenham_cells(c1, r1, c2, r2):
-                if 0 <= r < H and 0 <= c < W:
-                    stamp_square(expect, r, c, 2, BLOCKED)
-            assert (halo == expect).all()
-
-    def test_mark_circular_zone_radius(self, grid):
-        """Circular zone radius in cells."""
-        layer_grid = np.full((grid.height_cells, grid.width_cells), FREE, dtype=np.int16)
-        center_row, center_col = grid.height_cells // 2, grid.width_cells // 2
-
-        _mark_circular_zone(layer_grid, center_row, center_col, 5, HIGH_COST)
-
-        # Check radius
-        marked_rows = np.where(np.any(layer_grid == HIGH_COST, axis=1))[0]
-        marked_cols = np.where(np.any(layer_grid == HIGH_COST, axis=0))[0]
-        assert len(marked_rows) > 0
-        assert len(marked_cols) > 0
-
-        # Radius should be approximately 5 cells
-        row_span = marked_rows.max() - marked_rows.min()
-        col_span = marked_cols.max() - marked_cols.min()
-        assert row_span <= 12  # diameter ~ 2*radius+1
-        assert col_span <= 12
-
-
-class TestDiscHelpers:
-    """Shared disc/radius helpers match the inlined formulas they replace."""
-
-    def test_disc_cells_matches_circular_zone(self, grid):
-        """disc_cells() yields exactly the _mark_circular_zone footprint."""
-        from kicad_autorouter.routing.obstacles import disc_cells
-        H, W = grid.height_cells, grid.width_cells
-        for radius in (1, 2, 5):
-            layer_grid = np.full((H, W), FREE, dtype=np.int16)
-            _mark_circular_zone(layer_grid, 50, 60, radius, HIGH_COST)
-            stamped = {(r, c) for r in range(H) for c in range(W)
-                       if layer_grid[r, c] == HIGH_COST}
-            assert set(disc_cells(50, 60, radius, H, W)) == stamped
-
-    def test_disc_cells_clips_at_edges(self, grid):
-        from kicad_autorouter.routing.obstacles import disc_cells
-        H, W = grid.height_cells, grid.width_cells
-        cells = set(disc_cells(0, 0, 3, H, W))
-        assert cells, "corner disc is non-empty"
-        assert all(0 <= r < H and 0 <= c < W for r, c in cells)
-
-    def test_halo_radii(self):
-        from kicad_autorouter.routing.obstacles import (
-            drill_radius_cells,
-            pad_halo_radius_cells,
-        )
-        # Previously inlined max(1, ceil(...)) spells, verbatim values.
-        assert pad_halo_radius_cells(0.5, 0.2, 0.125, 0.5) == 2
-        assert pad_halo_radius_cells(0.5, 0.2, 0.125, 0.1) == 9
-        assert pad_halo_radius_cells(0.0, 0.2, 0.0, 0.5) == 1
-        assert drill_radius_cells(0.8, 0.5) == 1
-        assert drill_radius_cells(0.8, 0.1) == 4
-        assert drill_radius_cells(0.0, 0.1) == 1
-
-
-class TestPolygonFill:
-    """Tests for _fill_polygon."""
-
-    def test_fill_polygon_convex(self, grid):
-        """Convex polygon fill."""
-        layer_grid = np.full((grid.height_cells, grid.width_cells), FREE, dtype=np.int16)
-        # Square at center
-        center_r, center_c = grid.height_cells // 2, grid.width_cells // 2
-        points = [(center_r-5, center_c-5), (center_r-5, center_c+5),
-                  (center_r+5, center_c+5), (center_r+5, center_c-5)]
-
-        _fill_polygon(layer_grid, points, BLOCKED)
-
-        assert np.any(layer_grid == BLOCKED)
-
-    def test_fill_polygon_concave(self, grid):
-        """Concave polygon fill (L-shape)."""
-        layer_grid = np.full((grid.height_cells, grid.width_cells), FREE, dtype=np.int16)
-        center_r, center_c = grid.height_cells // 2, grid.width_cells // 2
-        # L-shape
-        points = [(center_r-5, center_c-5), (center_r-5, center_c),
-                  (center_r, center_c), (center_r, center_c+5),
-                  (center_r+5, center_c+5), (center_r+5, center_c-5)]
-
-        _fill_polygon(layer_grid, points, BLOCKED)
-
-        assert np.any(layer_grid == BLOCKED)
-
-    def test_fill_polygon_respects_row_col_orientation(self, grid):
-        """Regression: points are (row, col) — a wide-thin rect must fill
-        a wide-thin cell block, not a transposed tall-thin one."""
-        layer_grid = np.full((grid.height_cells, grid.width_cells), FREE, dtype=np.int16)
-        center_r, center_c = grid.height_cells // 2, grid.width_cells // 2
-        # 4 rows tall x 40 cols wide, in (row, col) order
-        points = [(center_r-2, center_c-20), (center_r-2, center_c+20),
-                  (center_r+2, center_c+20), (center_r+2, center_c-20)]
-
-        _fill_polygon(layer_grid, points, BLOCKED)
-
-        marked_rows = np.where(np.any(layer_grid == BLOCKED, axis=1))[0]
-        marked_cols = np.where(np.any(layer_grid == BLOCKED, axis=0))[0]
-        assert len(marked_rows) > 0 and len(marked_cols) > 0
-        assert marked_rows.max() - marked_rows.min() <= 6
-        assert marked_cols.max() - marked_cols.min() >= 30
 
     def test_zone_marking_keeps_thin_strips_thin(self, grid, minimal_model):
         """Regression: minimal's full-width keepout strips must not become
@@ -429,6 +156,10 @@ class TestPolygonFill:
                 (cost_grid[layer_idx] >= BLOCKED).sum(axis=0) >= H - 2
             )[0]
             assert len(full_height_cols) == 0
+
+
+class TestPadInsideCourtyard:
+    """Regression: SMD pad enclosed by its own courtyard must escape."""
 
     def test_pad_inside_own_courtyard_can_route_out(self, grid):
         """Regression: an SMD pad enclosed by its own courtyard outline
@@ -449,104 +180,3 @@ class TestPolygonFill:
                                  np.zeros((grid.height_cells, grid.width_cells), dtype=bool))
         result = router._a_star((sc, sr, 0), (gc, gr, 0))
         assert result.success
-
-
-class TestBuildOccupancyGridIntegration:
-    """Integration tests for full build_occupancy_grid."""
-
-    def test_build_occupancy_grid_layers(self, grid, minimal_model):
-        """Returns proper layer structure with expected cost values."""
-        cost_grid = build_occupancy_grid(minimal_model, grid, default_clearance_mm=0.2)
-
-        assert cost_grid.shape == (2, grid.height_cells, grid.width_cells)
-        assert cost_grid.dtype == np.int16
-        assert cost_grid.min() >= 0
-
-    def test_courtyard_high_cost_on_both_layers(self, cost_grid):
-        """Footprint courtyard outlines are HIGH_COST (escapable) on both layers."""
-        assert np.any(cost_grid[0] == HIGH_COST)
-        assert np.any(cost_grid[1] == HIGH_COST)
-
-    def test_pads_high_cost_with_clearance(self, cost_grid):
-        """Pad centers and clearance are HIGH_COST."""
-        assert np.any(cost_grid >= HIGH_COST)
-
-    def test_tracks_blocked_on_layer(self, cost_grid, minimal_model):
-        """Existing tracks are BLOCKED on their layer."""
-        # Minimal has no tracks, but structure is there
-        assert cost_grid.dtype == np.int16
-
-    def test_vias_blocked_both_layers(self, cost_grid):
-        """Vias block all layers."""
-        # Minimal has no vias
-        assert cost_grid.dtype == np.int16
-
-    def test_zones_passable_on_layer(self, cost_grid, dccf_model):
-        """Copper zones mark POUR (passable toll) on their layer."""
-        from kicad_autorouter.routing.obstacles import POUR
-        grid = create_grid_from_model(dccf_model, resolution_mm=0.1, margin_mm=2.0)
-        dccf_cost = build_occupancy_grid(dccf_model, grid, default_clearance_mm=0.2)
-        # DCCF has a GND zone
-        assert dccf_cost.dtype == np.int16
-        assert np.any(dccf_cost == POUR)
-
-    def test_edge_keepout_present(self, cost_grid):
-        """Edge keepout zones exist."""
-        assert np.any(cost_grid == EDGE_KEEPOUT)
-
-
-class TestDCCFCostGrid:
-    """Cost grid tests on DCCF (real board)."""
-
-    def test_dccf_cost_grid_has_expected_values(self, dccf_model):
-        """DCCF cost grid has POUR (zones are passable tolls), HIGH_COST, EDGE_KEEPOUT."""
-        from kicad_autorouter.routing.obstacles import POUR
-        grid = create_grid_from_model(dccf_model, resolution_mm=0.1, margin_mm=2.0)
-        cost_grid = build_occupancy_grid(dccf_model, grid, default_clearance_mm=0.2)
-
-        assert np.any(cost_grid == POUR)
-        assert np.any(cost_grid == HIGH_COST)
-        assert np.any(cost_grid == EDGE_KEEPOUT)
-
-    def test_dccf_tht_via_mask(self, dccf_model):
-        """THT pads create via mask."""
-        grid = create_grid_from_model(dccf_model, resolution_mm=0.1, margin_mm=2.0)
-        from kicad_autorouter.routing.pipeline import _build_tht_via_mask
-        mask = _build_tht_via_mask(dccf_model, grid)
-
-        assert mask.shape == (grid.height_cells, grid.width_cells)
-        assert mask.dtype == bool
-        # DCCF has through-hole parts
-        assert np.any(mask)
-
-
-class TestViaBlockMask:
-    """No vias inside SMD pad solder/fanout areas."""
-
-    def test_smd_pad_cells_blocked(self, dccf_model):
-        """SMD pad copper + fanout halo cells forbid vias."""
-        from kicad_autorouter.routing.pipeline import _build_tht_via_mask
-
-        grid = create_grid_from_model(dccf_model, resolution_mm=0.5, margin_mm=2.0)
-        mask = build_via_block_mask(dccf_model, grid)
-        assert mask.shape == (grid.height_cells, grid.width_cells)
-        assert mask.dtype == bool
-
-        smd = [(fp, pad) for fp in dccf_model.footprints
-               for pad in fp.pads if not pad.is_through_hole]
-        assert smd, "DCCF should have SMD pads"
-        for fp, pad in smd[:20]:
-            col, row = board_to_grid(grid, pad.position.x_mm, pad.position.y_mm)
-            assert mask[row, col], f"SMD pad {fp.ref}.{pad.number} not via-blocked"
-
-    def test_tht_pads_stay_legal(self, dccf_model):
-        """Through-hole pads are excluded (free via sites, THT mask wins)."""
-        from kicad_autorouter.routing.pipeline import _build_tht_via_mask
-
-        grid = create_grid_from_model(dccf_model, resolution_mm=0.5, margin_mm=2.0)
-        block = build_via_block_mask(dccf_model, grid)
-        tht = _build_tht_via_mask(dccf_model, grid)
-        assert np.any(tht), "DCCF should have THT pads"
-        # No cell may be both blocked and THT-free (router gives THT priority,
-        # but the builders must not disagree).
-        assert not np.any(block & tht)

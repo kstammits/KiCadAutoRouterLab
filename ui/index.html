@@ -815,6 +815,10 @@ async function fetchAndInjectSVG(version) {
   // Step-1 looked fine, full Run flipped R8 out).
   if (typeof motion !== "undefined" && motion.frames.length) {
     src = src.replace("overlay=1", "overlay=0");
+    // Ensure force markers are present for motion force vector overlay
+    if (!src.includes("forces=1")) {
+      src = src.replace("forces=0", "forces=1");
+    }
   }
   const res = await fetch(src);
   if (!res.ok) return;
@@ -914,6 +918,11 @@ forcesToggle.addEventListener("change", async () => {
   } else {
     fetchAndInjectSVG(lastVersion);
     loadSelectionState();
+  }
+  // Also update motion force vectors if motion frames are loaded
+  if (motion.frames.length) {
+    const svg = viewport.querySelector("svg");
+    if (svg) drawForceVectors(svg, motion.idx);
   }
 });
 
@@ -1754,11 +1763,12 @@ function fmtDuration(ms) {
 // stride-sampled iterations, not wall-clock video, and fast playback hides
 // the direction reversals this player exists to debug.
 const motion = {
-  frames: [],      // [{uuid: [dx, dy, da]}]
+  frames: [],          // [{uuid: [dx, dy, da]}]
+  force_frames: [],    // [{uuid: {cause: [fx, fy]}}] — per-cause forces at each frame
   stride: 1,
   iterations: 0,
   idx: 0,
-  basePos: {},     // {uuid: [x_mm, y_mm]} — rotation pivots, captured per load
+  basePos: {},         // {uuid: [x_mm, y_mm]} — rotation pivots, captured per load
   playing: false,
   timer: null,
 };
@@ -1804,6 +1814,83 @@ function motionFpNode(uuid) {
   return viewport.querySelector(`g.footprint[data-fp-uuid="${uuid}"]`);
 }
 
+// Per-cause force colors (match server-side FORCE_CAUSE_COLORS)
+const FORCE_CAUSE_COLORS = {
+  "repulsion": "#22d3ee",  // cyan
+  "attraction": "#a3e635", // lime
+  "courtyard": "#f472b6",  // pink
+  "boundary": "#e2e8f0",   // near-white
+  "ghost": "#c4b5fd",      // pale lavender
+};
+const FORCE_CAUSE_ORDER = ["repulsion", "attraction", "courtyard", "boundary", "ghost"];
+const FORCE_CAUSE_DASH = {
+  "boundary": "1.5,1.0",
+  "ghost": "1,1.2",
+};
+
+function drawForceVectors(svg, frameIdx) {
+  // Remove existing motion force vectors from footprint groups
+  svg.querySelectorAll("g.footprint .motion-force-vectors").forEach(el => el.remove());
+  
+  // Use the sidebar forces toggle
+  const forcesToggle = document.getElementById("forces-toggle");
+  if (!forcesToggle?.checked) return;
+  if (!motion.force_frames.length) return;
+  const fframe = motion.force_frames[frameIdx];
+  if (!fframe) return;
+
+  const NS = "http://www.w3.org/2000/svg";
+
+  for (const [uuid, comps] of Object.entries(fframe)) {
+    const fpGroup = motionFpNode(uuid);
+    if (!fpGroup) continue;
+    if (!comps) continue;
+
+    // Find strongest cause for this footprint to scale others
+    let maxMag = 0;
+    for (const [cause, vec] of Object.entries(comps)) {
+      const mag = Math.hypot(vec[0], vec[1]);
+      if (mag > maxMag) maxMag = mag;
+    }
+    if (maxMag <= 0) continue;
+
+    // Create a group for this footprint's force vectors (inside the footprint group)
+    const forcesGroup = document.createElementNS(NS, "g");
+    forcesGroup.setAttribute("class", "motion-force-vectors");
+    forcesGroup.setAttribute("pointer-events", "none");
+
+    for (const cause of FORCE_CAUSE_ORDER) {
+      const vec = comps[cause];
+      if (!vec) continue;
+      const [fx, fy] = vec;
+      const mag = Math.hypot(fx, fy);
+      if (mag < 1e-6) continue;
+      // Hide negligible causes (< 1% of strongest)
+      if (mag < 0.01 * maxMag) continue;
+
+      // Log scale normalized to max across all visible
+      const length = Math.max(5.0 * Math.log1p(mag) / Math.log1p(maxMag), 0.5);
+      const ux = fx / mag, uy = fy / mag;
+      const color = FORCE_CAUSE_COLORS[cause];
+      const dash = FORCE_CAUSE_DASH[cause] || "none";
+
+      const line = document.createElementNS(NS, "line");
+      // Force vectors in LOCAL coordinates (relative to footprint center)
+      // The footprint group transform will move/rotate them with the part
+      line.setAttribute("x1", "0");
+      line.setAttribute("y1", "0");
+      line.setAttribute("x2", (ux * length).toFixed(3));
+      line.setAttribute("y2", (uy * length).toFixed(3));
+      line.setAttribute("stroke", color);
+      line.setAttribute("stroke-width", "0.18");
+      if (dash !== "none") line.setAttribute("stroke-dasharray", dash);
+      line.setAttribute("marker-end", `url(#force-${cause})`);
+      forcesGroup.appendChild(line);
+    }
+    fpGroup.appendChild(forcesGroup);
+  }
+}
+
 function applyMotionFrame(i) {
   const svg = viewport.querySelector("svg");
   if (!svg || !motion.frames.length) return;
@@ -1831,6 +1918,7 @@ function applyMotionFrame(i) {
     if (uuid && !seen.has(uuid)) g.removeAttribute("transform");
   });
   drawMotionTrails();
+  drawForceVectors(svg, motion.idx);
   motionReadout();
 }
 
@@ -1875,7 +1963,7 @@ function clearMotionView() {
 function resetMotionState() {
   pauseMotion();
   clearMotionView();
-  motion.frames = []; motion.stride = 1; motion.iterations = 0;
+  motion.frames = []; motion.force_frames = []; motion.stride = 1; motion.iterations = 0;
   motion.idx = 0; motion.basePos = {};
   const { slider } = motionEls();
   slider.max = "0"; slider.value = "0";
@@ -1933,6 +2021,7 @@ async function loadMotionFrames(silent) {
     }
     pauseMotion();
     motion.frames = data.frames;
+    motion.force_frames = data.force_frames || [];
     motion.stride = data.frame_stride || 1;
     motion.iterations = data.iterations || data.frames.length;
     motion.basePos = basePos;

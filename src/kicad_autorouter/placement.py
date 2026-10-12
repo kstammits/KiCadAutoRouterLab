@@ -171,6 +171,23 @@ def _round_frame_deltas(
     }
 
 
+def _round_sig3(x: float) -> float:
+    """Round to 3 significant figures."""
+    if x == 0.0 or not math.isfinite(x):
+        return 0.0
+    return round(x, 2 - int(math.floor(math.log10(abs(x)))))
+
+
+def _round_force_components(
+    comps: Dict[str, Tuple[float, float]],
+) -> Dict[str, Tuple[float, float]]:
+    """Round force component values to 3 significant figures."""
+    return {
+        cause: (_round_sig3(fx), _round_sig3(fy))
+        for cause, (fx, fy) in comps.items()
+    }
+
+
 def _thin_frames(
     frames: List[Dict[str, Tuple[float, float, float]]], max_frames: int
 ) -> List[Dict[str, Tuple[float, float, float]]]:
@@ -204,6 +221,11 @@ class PlacementProposal:
     completed iteration 0); frames[k] is the pose after k*stride completed
     iterations, except the last frame which is always the final pose after
     ``iterations`` completed iterations.
+
+    force_frames (parallel to frames): per-sampled-iteration force breakdown
+    for each movable footprint. Each frame is {uuid: {cause: (fx, fy)}} with
+    causes in {"repulsion", "attraction", "courtyard", "boundary", "ghost"}.
+    Values rounded to 3 significant figures for compact JSON.
     """
 
     deltas: Dict[str, Tuple[float, float, float]]
@@ -216,6 +238,7 @@ class PlacementProposal:
         default_factory=dict
     )
     frames: List[Dict[str, Tuple[float, float, float]]] = field(default_factory=list)
+    force_frames: List[Dict[str, Dict[str, Tuple[float, float]]]] = field(default_factory=list)
     frame_stride: int = 1
 
 
@@ -745,6 +768,7 @@ def _run_region_simulation(
     int,
     Dict[str, Dict[str, Tuple[float, float]]],
     List[Dict[str, Tuple[float, float, float]]],
+    List[Dict[str, Dict[str, Tuple[float, float]]]],
 ]:
     """Run force-spring simulation for a single board region.
 
@@ -758,6 +782,9 @@ def _run_region_simulation(
           frame always appended). frames[0] is the starting pose
           (iteration 0, all-zero deltas); frames[k] follows k*stride
           completed iterations; the last frame is the final pose.
+        - force_frames: parallel to frames; per-footprint force breakdown
+          {uuid: {cause: (fx, fy)}} with causes in {"repulsion", "attraction",
+          "courtyard", "boundary", "ghost"}, values rounded to 3 sig figs.
     """
     from .board_model import BoardRegion
 
@@ -767,7 +794,7 @@ def _run_region_simulation(
     # Filter pads for this region
     n_pads = len(region_pads)
     if n_pads == 0:
-        return {}, {}, 0, {}, []
+        return {}, {}, 0, {}, [], []
 
     # Build pad positions array
     pad_positions = np.zeros((n_pads, 2), dtype=np.float64)
@@ -803,7 +830,7 @@ def _run_region_simulation(
     ], dtype=bool)
 
     if not pad_movable.any():
-        return {}, {}, 0, {}, []
+        return {}, {}, 0, {}, [], []
 
     # Net attraction edges for this region. Same builder as the tests pin
     # (layer-blind by design: cross-layer electrical nearness keeps
@@ -1433,13 +1460,44 @@ def _run_region_simulation(
             )
         return frame
 
+    def _capture_force_frame(pos: np.ndarray) -> Dict[str, Dict[str, Tuple[float, float]]]:
+        """Capture per-footprint force breakdown at current positions.
+        
+        Recomputes forces with return_components=True at the current positions.
+        Returns {uuid: {cause: (fx, fy)}} with values rounded to 3 sig figs.
+        """
+        force, components = _compute_total_force(
+            pos, len(region_pads), pad_movable,
+            params, has_net_edges, src_idx, dst_idx, edge_weights,
+            ghost_attractions,
+            same_fp_mask,
+            return_components=True,
+        )
+        force_frame: Dict[str, Dict[str, Tuple[float, float]]] = {}
+        for _fp, _pi in _frame_fps:
+            if _fp.uuid not in region_fp_uuid_to_pad_indices:
+                continue
+            pad_indices = region_fp_uuid_to_pad_indices[_fp.uuid]
+            if not pad_indices:
+                continue
+            comp: Dict[str, Tuple[float, float]] = {}
+            for cause, arr in components.items():
+                s = arr[pad_indices].sum(axis=0)
+                if bool(np.all(np.isfinite(s))):
+                    comp[cause] = (float(s[0]), float(s[1]))
+            if comp:
+                force_frame[_fp.uuid] = _round_force_components(comp)
+        return force_frame
+
     _region_frames: List[Dict[str, Tuple[float, float, float]]] = []
+    _region_force_frames: List[Dict[str, Dict[str, Tuple[float, float]]]] = []
     # Frame 0: the committed starting pose (all-zero deltas) so the motion
     # player can scrub from the true start. Previously the first capture
     # happened only after iteration 1 completed, so playback never showed
     # step 0 and short Step budgets looked like they "jumped" on load.
     if record_frames and _frame_fps:
         _region_frames.append(_capture_frame(positions))
+        _region_force_frames.append(_capture_force_frame(positions))
     # Per-pad adaptive damping: saturated 1mm steps ping-pong across the
     # halo gradient (direction flips every iteration, scrub shows jitter
     # with no progress). Halve the budget on direction reversal, recover
@@ -1514,6 +1572,7 @@ def _run_region_simulation(
         if record_frames and _frame_fps and ((iteration + 1) % _frame_stride == 0):
             _frame = _capture_frame(positions)
             _region_frames.append(_frame)
+            _region_force_frames.append(_capture_force_frame(positions))
 
         # Convergence check
         max_disp = float(np.max(np.linalg.norm(positions - prev_positions, axis=1)))
@@ -1575,12 +1634,14 @@ def _run_region_simulation(
 
     if record_frames and _frame_fps:
         _final_frame = _capture_frame(positions)
+        _final_force_frame = _capture_force_frame(positions)
         # Avoid doubling the last sampled frame when the run ended exactly
         # on a stride boundary (same rounded values).
         if not _region_frames or _region_frames[-1] != _final_frame:
             _region_frames.append(_final_frame)
+            _region_force_frames.append(_final_force_frame)
 
-    return deltas, footprint_forces, iteration + 1, footprint_components, _region_frames
+    return deltas, footprint_forces, iteration + 1, footprint_components, _region_frames, _region_force_frames
 
 
 def _merge_region_frames(
@@ -1598,6 +1659,29 @@ def _merge_region_frames(
     merged: List[Dict[str, Tuple[float, float, float]]] = []
     for k in range(n):
         frame: Dict[str, Tuple[float, float, float]] = {}
+        for frames in per_region:
+            if not frames:
+                continue
+            frame.update(frames[min(k, len(frames) - 1)])
+        merged.append(frame)
+    return merged
+
+
+def _merge_region_force_frames(
+    per_region: List[List[Dict[str, Dict[str, Tuple[float, float]]]]],
+) -> List[Dict[str, Dict[str, Tuple[float, float]]]]:
+    """Merge per-region force frame lists into global force frames.
+
+    Regions converge independently, so lists differ in length; shorter
+    regions hold their last pose (parts at rest) while longer ones keep
+    moving. Union of uuids per index.
+    """
+    if not per_region:
+        return []
+    n = max(len(f) for f in per_region)
+    merged: List[Dict[str, Dict[str, Tuple[float, float]]]] = []
+    for k in range(n):
+        frame: Dict[str, Dict[str, Tuple[float, float]]] = {}
         for frames in per_region:
             if not frames:
                 continue
@@ -1675,6 +1759,7 @@ def run_placement(
         total_iterations = 0
         max_final_disp = 0.0
         all_region_frames: List[List[Dict[str, Tuple[float, float, float]]]] = []
+        all_region_force_frames: List[List[Dict[str, Dict[str, Tuple[float, float]]]]] = []
 
         for region_idx, region in enumerate(model.board_regions):
             # Collect pads for this region
@@ -1707,7 +1792,7 @@ def run_placement(
                     region_global_pad_idx_to_local[local_idx] = global_pad_idx_to_local[i]
 
             if region_pads:
-                region_deltas, region_forces, region_iters, region_comps, region_frames = _run_region_simulation(
+                region_deltas, region_forces, region_iters, region_comps, region_frames, region_force_frames = _run_region_simulation(
                     region_idx, model.board_regions[region_idx],
                     region_pad_indices, region_pads, region_pad_to_fp_idx,
                     region_fp_uuid_to_pad_indices, region_global_pad_idx_to_local,
@@ -1721,9 +1806,13 @@ def run_placement(
                 max_final_disp = max(max_final_disp, max((math.hypot(dx, dy) for dx, dy, _ in region_deltas.values()), default=0.0))
                 if record_frames and region_frames:
                     all_region_frames.append(region_frames)
+                    all_region_force_frames.append(region_force_frames)
 
         merged_frames = _thin_frames(
             _merge_region_frames(all_region_frames), max_frames
+        ) if record_frames else []
+        merged_force_frames = _thin_frames(
+            _merge_region_force_frames(all_region_force_frames), max_frames
         ) if record_frames else []
         return PlacementProposal(
             deltas=all_deltas,
@@ -1734,6 +1823,7 @@ def run_placement(
             forces=all_forces,
             force_components=all_components,
             frames=merged_frames,
+            force_frames=merged_force_frames,
             frame_stride=_eff_stride if record_frames else 1,
         )
 
@@ -1753,7 +1843,7 @@ def run_placement(
     region_global_pad_idx_to_local = global_pad_idx_to_local
     region_pad_is_ghost = pad_is_ghost
 
-    region_deltas, region_forces, region_iters, region_comps, region_frames = _run_region_simulation(
+    region_deltas, region_forces, region_iters, region_comps, region_frames, region_force_frames = _run_region_simulation(
         0, virtual_region,
         region_pad_indices, region_pads, region_pad_to_fp_idx,
         region_fp_uuid_to_pad_indices, region_global_pad_idx_to_local,
@@ -1762,6 +1852,7 @@ def run_placement(
     )
 
     thin_frames = _thin_frames(region_frames, max_frames) if record_frames else []
+    thin_force_frames = _thin_frames(region_force_frames, max_frames) if record_frames else []
     return PlacementProposal(
         deltas=region_deltas,
         iterations=region_iters,
@@ -1771,5 +1862,6 @@ def run_placement(
         forces=region_forces,
         force_components=region_comps,
         frames=thin_frames,
+        force_frames=thin_force_frames,
         frame_stride=_eff_stride if record_frames else 1,
     )

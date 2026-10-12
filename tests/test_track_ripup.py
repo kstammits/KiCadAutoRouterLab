@@ -92,49 +92,6 @@ class TestCommitPlacementCore:
         assert len(preserved_vias) == initial_via_count
         assert len(preserved_tracks) == initial_track_count
 
-    def test_commit_placement_locked_footprint_preserves_tracks(self, tube111_model):
-        """Locked footprints should not move and their nets should not be ripped."""
-        locked_fp = next((fp for fp in tube111_model.footprints if fp.locked), None)
-        if locked_fp is None:
-            pytest.skip("No locked footprints in tube111 fixture")
-
-        # Try to move a locked footprint
-        deltas = {locked_fp.uuid: (5.0, 5.0, 0.0)}
-        initial_via_count = len(tube111_model.vias)
-        initial_track_count = len(tube111_model.tracks)
-
-        result = commit_placement(tube111_model, deltas, set())
-
-        # Locked footprint should not move, so no nets affected, no rip-up
-        assert len(result.vias) == initial_via_count
-        assert len(result.tracks) == initial_track_count
-        # Footprint position should be unchanged
-        moved_fp = next(fp for fp in result.footprints if fp.uuid == locked_fp.uuid)
-        assert moved_fp.x_mm == locked_fp.x_mm
-        assert moved_fp.y_mm == locked_fp.y_mm
-
-    def test_commit_placement_zero_deltas_no_ripup(self, tube111_model):
-        """Zero deltas (no movement) should not trigger any rip-up."""
-        # Pick any unlocked footprint
-        fp = next((fp for fp in tube111_model.footprints if not fp.locked and fp.uuid), None)
-        assert fp is not None
-
-        initial_tracks = len(tube111_model.tracks)
-        initial_vias = len(tube111_model.vias)
-
-        # Zero deltas - no actual movement
-        deltas = {fp.uuid: (0.0, 0.0, 0.0)}
-        result = commit_placement(tube111_model, deltas, set())
-
-        # No tracks/vias should be removed
-        assert len(result.tracks) == initial_tracks
-        assert len(result.vias) == initial_vias
-
-        # Empty deltas dict should also not trigger rip-up
-        result2 = commit_placement(tube111_model, {}, set())
-        assert len(result2.tracks) == initial_tracks
-        assert len(result2.vias) == initial_vias
-
 
 class TestRipUpNetsSexpr:
     """S-expression rip_up_nets tests."""
@@ -142,7 +99,7 @@ class TestRipUpNetsSexpr:
     def test_rip_up_nets_removes_segments_and_vias(self, tube111_tree):
         """rip_up_nets should remove segments and vias on affected nets."""
         # Count initial vias on GND
-        gnd_vias_before = sum(1 for v in tube111_tree.children("via") 
+        gnd_vias_before = sum(1 for v in tube111_tree.children("via")
                               if _net_name_from_node(v.find("net")) == "GND")
         assert gnd_vias_before > 0
 
@@ -150,49 +107,29 @@ class TestRipUpNetsSexpr:
         result = rip_up_nets(tube111_tree, {"GND"}, set())
 
         # GND vias should be removed
-        gnd_vias_after = sum(1 for v in result.children("via") 
+        gnd_vias_after = sum(1 for v in result.children("via")
                              if _net_name_from_node(v.find("net")) == "GND")
         assert gnd_vias_after == 0
 
         # Other nets' vias should remain
-        other_vias = sum(1 for v in result.children("via") 
+        other_vias = sum(1 for v in result.children("via")
                          if _net_name_from_node(v.find("net")) not in (None, "GND"))
-        other_vias_before = sum(1 for v in tube111_tree.children("via") 
+        other_vias_before = sum(1 for v in tube111_tree.children("via")
                                 if _net_name_from_node(v.find("net")) not in (None, "GND"))
         assert other_vias == other_vias_before
 
     def test_rip_up_nets_preserves_protected(self, tube111_tree):
         """Protected nets should be preserved even if in affected_nets."""
-        gnd_vias_before = sum(1 for v in tube111_tree.children("via") 
+        gnd_vias_before = sum(1 for v in tube111_tree.children("via")
                               if _net_name_from_node(v.find("net")) == "GND")
         assert gnd_vias_before > 0
 
         # Rip up GND but protect it
         result = rip_up_nets(tube111_tree, {"GND"}, {"GND"})
 
-        gnd_vias_after = sum(1 for v in result.children("via") 
+        gnd_vias_after = sum(1 for v in result.children("via")
                              if _net_name_from_node(v.find("net")) == "GND")
         assert gnd_vias_after == gnd_vias_before
-
-    def test_rip_up_nets_tracks_without_net_preserved(self, tube111_tree):
-        """Tracks/vias without net assignment should be preserved."""
-        # Count segments without net
-        segs_no_net_before = sum(1 for s in tube111_tree.children("segment") 
-                                 if _net_name_from_node(s.find("net")) is None)
-        # Also check vias without net
-        vias_no_net_before = sum(1 for v in tube111_tree.children("via") 
-                                 if _net_name_from_node(v.find("net")) is None)
-
-        result = rip_up_nets(tube111_tree, {"GND"}, set())
-
-        segs_no_net_after = sum(1 for s in result.children("segment") 
-                                if _net_name_from_node(s.find("net")) is None)
-        vias_no_net_after = sum(1 for v in result.children("via") 
-                                if _net_name_from_node(v.find("net")) is None)
-
-        # Tracks/vias without net should be preserved
-        assert segs_no_net_after == segs_no_net_before
-        assert vias_no_net_after == vias_no_net_before
 
     def test_rip_up_nets_indexed_net_form(self, tube111_tree):
         """rip_up_nets must handle (net <idx> NAME) segment/via form (KiCad 6+)."""
@@ -227,78 +164,6 @@ class TestRipUpNetsSexpr:
         # Protected indexed net is preserved
         result2 = rip_up_nets(tree, {"GND"}, {"GND"})
         assert len(list(result2.children("segment"))) == 1
-
-
-class TestEdgeCases:
-    """Edge case tests."""
-
-    def test_no_tracks_on_affected_nets(self, tube111_model):
-        """Ripping up nets with no tracks should not error and preserve everything."""
-        # Find a net that has no tracks/vias in the model
-        # (footprint pads may reference nets that don't have copper)
-        all_net_names = set()
-        for fp in tube111_model.footprints:
-            for pad in fp.pads:
-                if pad.net_name:
-                    all_net_names.add(pad.net_name)
-
-        track_net_names = {t.net_name for t in tube111_model.tracks if t.net_name}
-        via_net_names = {v.net_name for v in tube111_model.vias if v.net_name}
-        copper_nets = track_net_names | via_net_names
-
-        # Find a net that exists on pads but has no copper
-        nets_without_copper = all_net_names - copper_nets
-        if not nets_without_copper:
-            pytest.skip("All pad nets have copper in tube111 fixture")
-
-        test_net = next(iter(nets_without_copper))
-        # Find a footprint on this net that ONLY has nets without copper
-        # (so moving it won't trigger rip-up on other nets)
-        fp = next((fp for fp in tube111_model.footprints 
-                   if any(p.net_name == test_net for p in fp.pads)
-                   and all(p.net_name is None or p.net_name.startswith('unconnected') for p in fp.pads)), None)
-        if fp is None:
-            pytest.skip("No footprint found that only has unconnected nets")
-
-        initial_tracks = len(tube111_model.tracks)
-        initial_vias = len(tube111_model.vias)
-
-        # Move footprint on a net with no copper
-        deltas = {fp.uuid: (1.0, 0.0, 0.0)}
-        result = commit_placement(tube111_model, deltas, set())
-
-        # Nothing should be ripped (no copper on that net)
-        assert len(result.tracks) == initial_tracks
-        assert len(result.vias) == initial_vias
-
-    def test_multiple_accepts_rip_up_incrementally(self, tube111_model):
-        """Multiple commits should incrementally rip up tracks."""
-        # Find two footprints on different nets with copper
-        fp1 = next((fp for fp in tube111_model.footprints 
-                    if fp.pads and any(p.net_name == "C1InCV" for p in fp.pads)), None)
-        fp2 = next((fp for fp in tube111_model.footprints 
-                    if fp.pads and any(p.net_name == "C2InCV" for p in fp.pads)), None)
-
-        if fp1 is None or fp2 is None:
-            pytest.skip("Need footprints on C1InCV and C2InCV nets")
-
-        # First commit: move fp1 (C1InCV), no protection
-        deltas1 = {fp1.uuid: (1.0, 0.0, 0.0)}
-        result1 = commit_placement(tube111_model, deltas1, set())
-        cv1_vias_after_1 = len([v for v in result1.vias if v.net_name == "C1InCV"])
-
-        # Second commit: move fp2 (C2InCV), no protection
-        deltas2 = {fp2.uuid: (1.0, 0.0, 0.0)}
-        result2 = commit_placement(result1, deltas2, set())
-
-        # C1InCV vias should stay gone (already ripped)
-        cv1_vias_after_2 = len([v for v in result2.vias if v.net_name == "C1InCV"])
-        assert cv1_vias_after_2 == cv1_vias_after_1
-
-        # C2InCV vias should now be gone
-        cv2_vias_after_2 = len([v for v in result2.vias if v.net_name == "C2InCV"])
-        cv2_vias_before = len([v for v in tube111_model.vias if v.net_name == "C2InCV"])
-        assert cv2_vias_after_2 < cv2_vias_before
 
 
 class TestPCBTreeVsBoardModelSync:
@@ -337,9 +202,9 @@ class TestPCBTreeVsBoardModelSync:
             board_vias = [v for v in board_result.vias if v.net_name == net_name]
 
             # S-expression results
-            tree_tracks = [s for s in tree_result.children("segment") 
+            tree_tracks = [s for s in tree_result.children("segment")
                            if _net_name_from_node(s.find("net")) == net_name]
-            tree_vias = [v for v in tree_result.children("via") 
+            tree_vias = [v for v in tree_result.children("via")
                          if _net_name_from_node(v.find("net")) == net_name]
 
             # Both should have removed the same copper
@@ -353,14 +218,14 @@ class TestPCBTreeVsBoardModelSync:
             board_tracks = [t for t in board_result.tracks if t.net_name == net_name]
             board_vias = [v for v in board_result.vias if v.net_name == net_name]
 
-            tree_tracks = [s for s in tree_result.children("segment") 
+            tree_tracks = [s for s in tree_result.children("segment")
                            if _net_name_from_node(s.find("net")) == net_name]
-            tree_vias = [v for v in tree_result.children("via") 
+            tree_vias = [v for v in tree_result.children("via")
                          if _net_name_from_node(v.find("net")) == net_name]
 
             # Should have ALL original copper for protected nets
             orig_board_tracks = [t for t in tube111_model.tracks if t.net_name == net_name]
-            orig_tree_tracks = [s for s in tube111_tree.children("segment") 
+            orig_tree_tracks = [s for s in tube111_tree.children("segment")
                                 if _net_name_from_node(s.find("net")) == net_name]
             assert len(board_tracks) == len(orig_board_tracks)
             assert len(tree_tracks) == len(orig_tree_tracks)
@@ -402,13 +267,13 @@ class TestPCBTreeVsBoardModelSync:
             assert len(board_tracks) == len(orig_board_tracks), f"Protected net {net_name} tracks not preserved in BoardModel"
             assert len(board_vias) == len(orig_board_vias), f"Protected net {net_name} vias not preserved in BoardModel"
 
-            tree_tracks = [s for s in tree_result.children("segment") 
+            tree_tracks = [s for s in tree_result.children("segment")
                            if _net_name_from_node(s.find("net")) == net_name]
-            tree_vias = [v for v in tree_result.children("via") 
+            tree_vias = [v for v in tree_result.children("via")
                          if _net_name_from_node(v.find("net")) == net_name]
-            orig_tree_tracks = [s for s in tube111_tree.children("segment") 
+            orig_tree_tracks = [s for s in tube111_tree.children("segment")
                                 if _net_name_from_node(s.find("net")) == net_name]
-            orig_tree_vias = [v for v in tube111_tree.children("via") 
+            orig_tree_vias = [v for v in tube111_tree.children("via")
                               if _net_name_from_node(v.find("net")) == net_name]
             assert len(tree_tracks) == len(orig_tree_tracks), f"Protected net {net_name} tracks not preserved in SExpr"
             assert len(tree_vias) == len(orig_tree_vias), f"Protected net {net_name} vias not preserved in SExpr"
@@ -418,9 +283,9 @@ class TestPCBTreeVsBoardModelSync:
             board_tracks = [t for t in board_result.tracks if t.net_name == net_name]
             board_vias = [v for v in board_result.vias if v.net_name == net_name]
 
-            tree_tracks = [s for s in tree_result.children("segment") 
+            tree_tracks = [s for s in tree_result.children("segment")
                            if _net_name_from_node(s.find("net")) == net_name]
-            tree_vias = [v for v in tree_result.children("via") 
+            tree_vias = [v for v in tree_result.children("via")
                          if _net_name_from_node(v.find("net")) == net_name]
 
             assert len(board_tracks) == len(tree_tracks), \

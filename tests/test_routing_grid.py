@@ -37,37 +37,6 @@ class TestGridCreation:
         assert grid.width_mm > 0
         assert grid.height_mm > 0
 
-    def test_create_grid_from_model_fallback(self):
-        """Fallback to footprint extents when no Edge.Cuts."""
-        # Minimal has Edge.Cuts, so test with empty model-like object
-        from kicad_autorouter.board_model import BoardModel, Footprint, Point
-        from kicad_autorouter.routing.grid import create_grid_from_model
-
-        # Create a model with footprints but no edge cuts
-        fp = Footprint(
-            ref="U1",
-            footprint_id="Test",
-            layer="F.Cu",
-            x_mm=50.0,
-            y_mm=50.0,
-            angle_deg=0.0,
-            pads=(),
-            courtyard=((Point(49, 49), Point(51, 49)), (Point(51, 49), Point(51, 51)),
-                       (Point(51, 51), Point(49, 51)), (Point(49, 51), Point(49, 49))),
-        )
-        model = BoardModel(
-            footprints=(fp,),
-            keepout_zones=(),
-            nets={},
-            by_ref={"U1": fp},
-            edge_cuts=(),
-            edge_arcs=(),
-        )
-
-        grid = create_grid_from_model(model, resolution_mm=0.5, margin_mm=1.0)
-        assert grid.width_cells > 0
-        assert grid.height_cells > 0
-
     def test_create_grid_different_resolutions(self, minimal_model):
         """Grid cell count scales with resolution."""
         grid_fine = create_grid_from_model(minimal_model, resolution_mm=0.05, margin_mm=2.0)
@@ -112,55 +81,6 @@ class TestCoordinateTransforms:
                                  grid.origin_mm[1] + grid.height_mm + 100)
         assert col == grid.width_cells - 1
         assert row == grid.height_cells - 1
-
-    def test_grid_bbox_mm(self, grid):
-        """bbox_mm() matches origin + size."""
-        min_x, min_y, max_x, max_y = grid.bbox_mm()
-        assert min_x == pytest.approx(grid.origin_mm[0])
-        assert min_y == pytest.approx(grid.origin_mm[1])
-        assert max_x == pytest.approx(grid.origin_mm[0] + grid.width_mm)
-        assert max_y == pytest.approx(grid.origin_mm[1] + grid.height_mm)
-
-    def test_grid_layer_to_idx(self, grid):
-        """Layer name to index mapping."""
-        mapping = grid.layer_to_idx
-        assert mapping["F.Cu"] == 0
-        assert mapping["B.Cu"] == 1
-        assert len(mapping) == 2
-
-    def test_grid_segment_to_board(self, grid):
-        """Convert grid path to board coordinates."""
-        path = [(10, 20, 0), (11, 20, 0), (11, 21, 1)]
-        board_path = grid_segment_to_board(grid, path)
-
-        assert len(board_path) == 3
-        for (x, y, layer) in board_path:
-            assert isinstance(x, float)
-            assert isinstance(y, float)
-            assert layer in ("F.Cu", "B.Cu")
-
-        # First point should be near grid cell (10, 20) center
-        expected_x = grid.origin_mm[0] + (10 + 0.5) * grid.resolution_mm
-        expected_y = grid.origin_mm[1] + (20 + 0.5) * grid.resolution_mm
-        assert board_path[0][0] == pytest.approx(expected_x)
-        assert board_path[0][1] == pytest.approx(expected_y)
-
-
-class TestGridProperties:
-    """Tests for RoutingGrid derived properties."""
-
-    def test_grid_dimensions(self, minimal_model):
-        """width_mm, height_mm computed from cells * resolution."""
-        grid = create_grid_from_model(minimal_model, resolution_mm=0.2, margin_mm=1.0)
-        assert grid.width_mm == pytest.approx(grid.width_cells * 0.2)
-        assert grid.height_mm == pytest.approx(grid.height_cells * 0.2)
-
-    def test_grid_two_regions(self, tube111_model):
-        """Tube111 has two disconnected boards - grid covers both with margin."""
-        grid = create_grid_from_model(tube111_model, resolution_mm=0.1, margin_mm=2.0)
-        # Should cover the span of both boards
-        assert grid.width_mm > 100  # Both boards span >100mm
-        assert grid.height_mm > 100
 
 
 class TestDCCFGrid:

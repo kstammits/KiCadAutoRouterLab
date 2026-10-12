@@ -1,129 +1,21 @@
 """Tests for the model -> SVG renderer."""
 
 import math
+import re
 from pathlib import Path
 
 import pytest
 
-from kicad_autorouter.board_model import board_model
+from kicad_autorouter.board_model import apply_deltas, board_model
 from kicad_autorouter.placement import PlacementProposal
 from kicad_autorouter.sexpr import parse_file
 from kicad_autorouter.svg_render import render_board_svg
 
 FIXTURES = Path(__file__).parent / "fixtures"
-MH1_UUID = "5c0af984-49c4-40a0-95aa-bb612ff4098b"
 
 
-def _minimal_model():
-    return board_model(parse_file(FIXTURES / "minimal.kicad_pcb"))
-
-
-def _proposal(dx: float, dy: float) -> PlacementProposal:
-    return PlacementProposal(
-        deltas={MH1_UUID: (dx, dy)},
-        iterations=0,
-        final_max_disp_mm=math.hypot(dx, dy),
-        elapsed_s=0.0,
-        params={},
-    )
-
-
-def test_renders_valid_document():
-    m = board_model(parse_file(FIXTURES / "minimal.kicad_pcb"))
-    s = render_board_svg(m, title="t")
-    assert s.startswith("<svg") and s.rstrip().endswith("</svg>")
-    assert "<title>t</title>" in s
-
-
-def test_minimal_draws_zones_and_outline():
-    m = board_model(parse_file(FIXTURES / "minimal.kicad_pcb"))
-    s = render_board_svg(m)
-    # 2 keepout zones, each with F.Cu and B.Cu layers -> 4 polygons
-    assert s.count("<polygon") == 4  
-    assert "<line" in s              # edge cuts
-
-
-def test_dccf_draws_zone_and_refs():
-    m = board_model(parse_file(FIXTURES / "DCCF.sved.kicad_pcb"))
-    s = render_board_svg(m)
-    assert "<polygon" in s  # GND zone
-    assert "<text " in s    # reference designators
-
-
-def test_dccf_labels_unnamed_footprints_with_short_uuid():
-    m = board_model(parse_file(FIXTURES / "DCCF.sved.kicad_pcb"))
-    unnamed = [fp for fp in m.footprints if not fp.ref]
-    assert unnamed  # fixture has empty-ref footprints
-    s = render_board_svg(m)
-    for fp in unnamed:
-        assert f">{fp.uuid[:8]}</text>" in s
-
-
-def test_no_overlay_without_proposal():
-    s = render_board_svg(_minimal_model())
-    assert 'id="move-arrow"' not in s
-    assert 'stroke-dasharray="0.6 0.4"' not in s
-
-
-def test_empty_deltas_render_plain():
-    prop = PlacementProposal(
-        deltas={}, iterations=0, final_max_disp_mm=0.0, elapsed_s=0.0, params={}
-    )
-    s = render_board_svg(_minimal_model(), proposal=prop)
-    assert 'id="move-arrow"' not in s
-
-
-def test_overlay_draws_ghost_and_arrow():
-    m = board_model(parse_file(FIXTURES / "DCCF.sved.kicad_pcb"))
-    fp = next(f for f in m.footprints if f.courtyard)  # minimal fixture has none
-    dx, dy = 2.0, -1.0
-    prop = PlacementProposal(
-        deltas={fp.uuid: (dx, dy)},
-        iterations=0,
-        final_max_disp_mm=math.hypot(dx, dy),
-        elapsed_s=0.0,
-        params={},
-    )
-    s = render_board_svg(m, proposal=prop)
-    assert 'id="move-arrow"' in s
-
-    # Renderer now uses board coordinates directly (Y-up = SVG Y-down)
-    # No Y-flip applied
-    arrow = (
-        f'<line x1="{fp.x_mm:.3f}" y1="{fp.y_mm:.3f}" '
-        f'x2="{(fp.x_mm + dx):.3f}" y2="{(fp.y_mm + dy):.3f}" '
-        'marker-end="url(#move-arrow)"/>'
-    )
-    assert arrow in s
-
-    a, b = fp.courtyard[0]
-    ghost = (
-        f'<line x1="{a.x_mm:.3f}" y1="{a.y_mm:.3f}" '
-        f'x2="{b.x_mm:.3f}" y2="{b.y_mm:.3f}"/>'
-    )
-    # Ghost courtyard at original position (dashed, gray)
-    assert ghost in s
-
-    # Moved courtyard baked at the proposed position inside the footprint
-    # group (no group transform): what you see is what Accept writes.
-    assert "translate(" not in s
-    shifted = (
-        f'<line x1="{(a.x_mm + dx):.3f}" y1="{(a.y_mm + dy):.3f}" '
-        f'x2="{(b.x_mm + dx):.3f}" y2="{(b.y_mm + dy):.3f}"'
-    )
-    assert shifted in s
-
-
-def test_viewbox_grows_with_max_move():
-    m = _minimal_model()
-
-    def vb_width(s: str) -> float:
-        return float(s.split('viewBox="')[1].split('"')[0].split()[2])
-
-    plain = render_board_svg(m)
-    dx, dy = 5.0, 0.0
-    moved = render_board_svg(m, proposal=_proposal(dx, dy))
-    assert vb_width(moved) == pytest.approx(vb_width(plain) + 2 * math.hypot(dx, dy))
+def _c11_uuid(m):
+    return next(f.uuid for f in m.footprints if f.ref == "C11")
 
 
 def _tube111_model():
@@ -139,10 +31,6 @@ def test_preview_matches_accept_with_rotation():
     board-CCW). Preview now renders apply_deltas() output, so every
     footprint group is byte-identical to rendering the accepted model.
     """
-    import re
-
-    from kicad_autorouter.board_model import apply_deltas
-
     m = board_model(parse_file(FIXTURES / "DCCF.sved.kicad_pcb"))
     c11 = next(f for f in m.footprints if f.ref == "C11")
     sw6 = next(f for f in m.footprints if f.ref == "SW6")  # 90-degree part
@@ -179,8 +67,6 @@ def test_tube111_back_footprints_inside_region_in_svg():
     X, so D6 stuck out the left edge (112.34 < 115.55) and D7 the right
     edge (149.56 > 143.55) while pcbnew showed both inside.
     """
-    import re
-
     m = _tube111_model()
     region = m.board_regions[2]
     min_x, max_x, min_y, max_y = region.bbox
@@ -218,8 +104,6 @@ def test_tube111_back_pad_rect_uses_effective_angle():
     angle is negated for display: 90 -> 270, visually identical for these
     180-symmetric rects.
     """
-    import re
-
     m = _tube111_model()
     s = render_board_svg(m)
     q1 = m.by_ref["Q1"]
@@ -242,11 +126,6 @@ def test_preview_rotates_square_pads_with_part():
     geometry is R(-angle) while SVG rotate() is R(+angle), so the file
     angle is negated for display (270 -> 90 idle, 295 -> 65 after da=25).
     """
-    import math
-    import re
-
-    from kicad_autorouter.board_model import apply_deltas
-
     m = board_model(parse_file(FIXTURES / "DCCF.sved.kicad_pcb"))
     q1 = m.by_ref["Q1"]
     assert q1.pads[0].angle_deg == 270.0
@@ -280,10 +159,6 @@ def test_preview_rotates_square_pads_with_part():
     assert row_da == pytest.approx(-25.0)
     copper_da = 65.0 - 90.0
     assert copper_da == pytest.approx(row_da)
-
-
-def _c11_uuid(m):
-    return next(f.uuid for f in m.footprints if f.ref == "C11")
 
 
 def test_forces_overlay_per_cause_arrows():

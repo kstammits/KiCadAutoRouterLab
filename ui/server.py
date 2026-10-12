@@ -709,6 +709,9 @@ def proposal_to_json(proposal, include_frames=True) -> dict:
         ]
         out["frame_stride"] = getattr(proposal, "frame_stride", 1)
         out["frame_count"] = len(frames)
+    force_frames = getattr(proposal, "force_frames", None) or []
+    if include_frames and force_frames:
+        out["force_frames"] = force_frames
     return out
 
 
@@ -855,6 +858,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(404, b"no proposal", "text/plain")
                 return
             frames = getattr(proposal, "frames", None) or []
+            force_frames = getattr(proposal, "force_frames", None) or []
             if not frames:
                 self._send(404, b"no frames (re-run with record_frames)", "text/plain")
                 return
@@ -864,6 +868,7 @@ class Handler(BaseHTTPRequestHandler):
                 "frame_stride": getattr(proposal, "frame_stride", 1),
                 "frame_count": len(frames),
                 "frames": proposal_to_json(proposal)["frames"],
+                "force_frames": force_frames,
             }).encode()
             self._send(200, body, "application/json")
             return
@@ -1442,13 +1447,7 @@ class Handler(BaseHTTPRequestHandler):
         
         # ==================== Nets API ====================
         
-        if parsed.path == "/api/nets/protected":
-            if parsed.query_string and "GET" in parsed.query_string:
-                pass  # handled by query method
-            # Handle via query string method
-            pass
-        
-        if parsed.path == "/api/nets/protected":
+        if parsed.path == "/api/nets/protected" and self.command == "GET":
             protected = STATE.get_protected_nets()
             self._send(200, json.dumps({"ok": True, "protected": sorted(protected)}).encode(), "application/json")
             return

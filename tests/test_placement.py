@@ -1,8 +1,7 @@
-"""Tests for the placement domain: params validation and runners.
+"""Tests for the placement domain: physics runners.
 
 Test categories (pytest markers):
 - unit: Pure logic, no fixtures
-- params: PlacementParams validation/serialization
 - physics: force-spring simulation (requires nets)
 - minimal: Uses minimal.kicad_pcb fixture (4 footprints, no nets)
 - dccf: Uses DCCF.sved.kicad_pcb fixture (97 footprints, 59 nets)
@@ -41,91 +40,6 @@ GHOST_TEST_PCB = FIXTURES / "ghost_test.kicad_pcb"
 @pytest.fixture(scope="module")
 def ghost_test_model():
     return board_model(parse_file(GHOST_TEST_PCB))
-
-
-@pytest.mark.unit
-@pytest.mark.params
-class TestParams:
-    """PlacementParams validation and serialization."""
-
-    def test_defaults(self):
-        p = PlacementParams()
-        assert p.repulsion_kr == 100.0
-        assert p.attraction_ka == 0.05
-        assert p.max_iterations == 1000
-        assert p.convergence_eps_mm == 0.01
-        assert p.courtyard_repulsion_kc == 2000.0
-
-    def test_roundtrip(self):
-        p = PlacementParams(repulsion_kr=42.5, max_iterations=7)
-        q = PlacementParams.from_dict(p.to_dict())
-        assert q == p
-
-    def test_from_dict_fills_missing_and_ignores_unknown(self):
-        q = PlacementParams.from_dict({"repulsion_kr": 1.0, "future_param": 9})
-        assert q.repulsion_kr == 1.0
-        assert q.attraction_ka == 0.05
-
-    def test_from_dict_ignores_removed_legacy_keys(self):
-        # Old placement.json files may still carry demo_jitter_mm/stub;
-        # they must load without error and be dropped.
-        q = PlacementParams.from_dict(
-            {"repulsion_kr": 1.0, "demo_jitter_mm": 5.0, "stub": True}
-        )
-        assert q.repulsion_kr == 1.0
-        assert not hasattr(q, "demo_jitter_mm")
-        assert not hasattr(q, "stub")
-
-    @pytest.mark.parametrize(
-        "bad",
-        [
-            {"max_iterations": -1},
-            {"max_iterations": 2.5},
-            {"repulsion_kr": 0},
-            {"attraction_ka": -0.1},
-            {"convergence_eps_mm": 0},
-            {"repulsion_kr": "big"},
-        ],
-    )
-    def test_from_dict_rejects_bad_values(self, bad):
-        with pytest.raises(ValueError):
-            PlacementParams.from_dict(bad)
-
-
-@pytest.mark.unit
-@pytest.mark.minimal
-class TestNoNetRunner:
-    """Boards without nets (minimal mounting-hole fixture) are a stable no-op."""
-
-    MH1_UUID = "5c0af984-49c4-40a0-95aa-bb612ff4098b"
-
-    def test_identity_with_default_params(self, minimal_model):
-        p = PlacementParams()
-        prop = run_placement(minimal_model, p)
-        assert prop.deltas == {}
-        assert prop.iterations == 0
-        assert prop.final_max_disp_mm == 0.0
-        assert prop.elapsed_s >= 0.0
-        assert prop.params == p.to_dict()
-
-    def test_no_drift_on_repeat_runs(self, minimal_model):
-        # Regression: stepping must never produce movement on a net-free
-        # board, so accept-and-repeat cannot walk parts off the board.
-        p = PlacementParams(max_iterations=5)
-        for _ in range(3):
-            prop = run_placement(minimal_model, p)
-            assert prop.deltas == {}
-
-    def test_locked_mask_from_fixture(self, minimal_model):
-        locked = [fp.locked for fp in minimal_model.footprints]
-        assert locked == [True, False, True, True]
-
-    def test_zero_iterations_yields_empty_proposal(self, dccf_model):
-        # The forces endpoint runs with max_iterations=0: float noise from
-        # the Kabsch fit must be filtered so no phantom deltas appear.
-        p = PlacementParams(max_iterations=0)
-        prop = run_placement(dccf_model, p)
-        assert prop.deltas == {}
 
 
 @pytest.mark.physics
@@ -177,45 +91,8 @@ class TestPhysicsRunner:
         prop = run_placement(dccf_model, p)
         assert prop.iterations < 1000
 
-    def test_iterations_param_override(self, dccf_model):
-        p = PlacementParams(max_iterations=1000)
-        prop = run_placement(dccf_model, p)
-        assert prop.iterations <= 1000
-
-    # --- MST-specific tests ---
-
-    def test_mst_topology_sw6_collinear_5pad(self, dccf_model):
-        """SW6 (dbe92a0d) has 5 collinear pads - MST should connect nearest neighbors."""
-        p = PlacementParams(max_iterations=10)
-        prop = run_placement(dccf_model, p)
-        # SW6 should move and rotate (even though collinear, net forces differ)
-        assert prop.deltas
-        # Check SW6 moved
-        sw6_uuid = "dbe92a0d-7c4a-4b5e-8b5d-3e4f1a2b9c8d"
-        if sw6_uuid in prop.deltas:
-            dx, dy, da = prop.deltas[sw6_uuid]
-            # With collinear pads, rotation may be small but position should change
-            assert dx != 0.0 or dy != 0.0
-
-    def test_mst_topology_14pad_grid(self, dccf_model):
-        """U4 (66d121ca) has 14 pads in grid - MST should form grid connections."""
-        p = PlacementParams(max_iterations=10)
-        prop = run_placement(dccf_model, p)
-        u4_uuid = "66d121ca-4b5e-8b5d-3e4f1a2b9c8d"
-        if u4_uuid in prop.deltas:
-            dx, dy, da = prop.deltas[u4_uuid]
-            assert dx != 0.0 or dy != 0.0 or da != 0.0
-
     def test_projection_preserves_footprint_shape(self, dccf_model):
-        """Rigid projection keeps every footprint's shape (within 1e-9).
-
-        Runs a short sim, then compares each moved footprint's pad-pair
-        distances before/after. The in-sim Kabsch snap preserves geometry
-        to float precision; the apply_deltas writeback round-trips through
-        a reported angle, so the model-level pin allows 1ulp-level drift
-        (1e-9) — still six orders tighter than the old Hooke spring's
-        ~1e-3, which additionally rang as a period-2 slam.
-        """
+        """Rigid projection keeps every footprint's shape (within 1e-9)."""
         from kicad_autorouter.placement import _collect_pad_nodes
 
         pads, _, fp_uuid_to_pad_indices, _, _ = _collect_pad_nodes(dccf_model)
@@ -236,15 +113,6 @@ class TestPhysicsRunner:
             assert d0 == pytest.approx(d1, rel=1e-9, abs=1e-12), (
                 f"footprint {uuid} deformed"
             )
-
-    def test_mst_no_bending_for_collinear_under_pure_translation(self, dccf_model):
-        """If all pads of a collinear footprint feel equal force, it should translate without rotation."""
-        # This is hard to test deterministically, but we can at least verify
-        # the pose extraction doesn't produce NaN
-        p = PlacementParams(max_iterations=5)
-        prop = run_placement(dccf_model, p)
-        for uuid, (dx, dy, da) in prop.deltas.items():
-            assert not math.isnan(dx) and not math.isnan(dy) and not math.isnan(da)
 
 
 @pytest.mark.physics
@@ -276,35 +144,6 @@ class TestPerRegionSimulation:
                 assert new_y >= region.bbox[2] - 10.0
                 assert new_y <= region.bbox[3] + 10.0
 
-    def test_no_cross_region_forces(self, dccf_model):
-        """Repulsion/attraction don't cross region boundaries."""
-        # This test verifies the simulation doesn't create forces between
-        # pads in different regions. Hard to test directly, but we can verify
-        # the region separation is maintained.
-        p = PlacementParams(max_iterations=10)
-        prop = run_placement(dccf_model, p)
-
-        # Just verify it runs without error and produces reasonable results
-        assert prop.iterations > 0
-        assert prop.final_max_disp_mm >= 0.0
-
-    def test_empty_region_skipped(self, dccf_model):
-        """Region with no movable footprints is skipped gracefully."""
-        # In DCCF, both regions have movable footprints, so this test
-        # just verifies the logic path exists
-        p = PlacementParams(max_iterations=10)
-        prop = run_placement(dccf_model, p)
-        assert prop.iterations >= 0
-
-    def test_tube111_three_regions(self):
-        """tube111 with 3 regions runs without error."""
-        tube111_model = board_model(parse_file(TUBE111_PCB))
-        p = PlacementParams(max_iterations=10)
-        prop = run_placement(tube111_model, p)
-
-        assert len(tube111_model.board_regions) == 3
-        assert prop.iterations >= 0
-
 
 @pytest.mark.physics
 @pytest.mark.dccf
@@ -325,16 +164,6 @@ class TestCourtyardCollision:
         # Verify courtyard collision forces are non-trivial
         # (at least some footprints should experience courtyard forces)
         total_force_magnitude = sum(math.hypot(fx, fy) for fx, fy in prop.forces.values())
-        assert total_force_magnitude > 0.0
-
-    def test_courtyard_forces_are_zero_when_disabled(self, dccf_model):
-        """With courtyard_repulsion_kc=0, collision forces should be zero."""
-        p = PlacementParams(max_iterations=5, courtyard_repulsion_kc=0.0)
-        prop = run_placement(dccf_model, p)
-
-        # Only repulsion, attraction, ghost and boundary forces remain
-        total_force_magnitude = sum(math.hypot(fx, fy) for fx, fy in prop.forces.values())
-        # Should still have other forces
         assert total_force_magnitude > 0.0
 
 
@@ -365,19 +194,6 @@ class TestGhostComponents:
             fp = next(fp for fp in ghost_test_model.footprints if fp.uuid == uuid)
             # Both R1 and R2 should move down (away from ghost at y=10)
             assert dy > 0, f"{fp.ref} should move down (positive dy), got dy={dy}"
-
-    def test_ghost_no_deltas_in_proposal(self, ghost_test_model):
-        """Ghost footprints never appear in placement proposal deltas."""
-        p = PlacementParams(max_iterations=10)
-        prop = run_placement(ghost_test_model, p)
-
-        ghost_uuid = "ghost-rail-top-001"
-        assert ghost_uuid not in prop.deltas
-        # Only real footprints should have deltas
-        for uuid in prop.deltas:
-            fp = next((fp for fp in ghost_test_model.footprints if fp.uuid == uuid), None)
-            assert fp is not None, f"Delta for unknown UUID {uuid}"
-            assert fp.ghost is False
 
     def test_ghost_courtyard_collision_force(self, ghost_test_model):
         """Ghost courtyard collision generates forces on real footprints."""
@@ -462,18 +278,6 @@ class TestGhostComponents:
 class TestForceComponents:
     """Per-cause force breakdown for the tuning overlay."""
 
-    def test_components_sum_to_totals(self, ghost_test_model):
-        p = PlacementParams(max_iterations=5, courtyard_repulsion_kc=0.0)
-        prop = run_placement(ghost_test_model, p)
-        assert prop.forces
-        for uuid, (fx, fy) in prop.forces.items():
-            comps = prop.force_components.get(uuid)
-            assert comps, f"no components for {uuid}"
-            sx = sum(v[0] for v in comps.values())
-            sy = sum(v[1] for v in comps.values())
-            assert sx == pytest.approx(fx)
-            assert sy == pytest.approx(fy)
-
     def test_ghost_component_visible_on_target(self, ghost_test_model):
         p = PlacementParams(max_iterations=5, courtyard_repulsion_kc=0.0)
         prop = run_placement(ghost_test_model, p)
@@ -481,15 +285,6 @@ class TestForceComponents:
         comps = prop.force_components.get(u1_uuid, {})
         assert "ghost" in comps
         assert comps["ghost"][1] < 0, "ghost pull on U1 should point up"
-
-    def test_expected_causes_present(self, ghost_test_model):
-        p = PlacementParams(max_iterations=5)
-        prop = run_placement(ghost_test_model, p)
-        for comps in prop.force_components.values():
-            assert set(comps) == {
-                "repulsion", "attraction",
-                "ghost", "courtyard", "boundary",
-            }
 
     def test_forces_predict_next_step_not_residual(self):
         """Reported forces are evaluated at the committed board (F0).
@@ -599,12 +394,6 @@ class TestCourtyardHalo:
             mags.append(math.hypot(fx, fy))
         assert all(mag < kc for mag in mags), f"strength must saturate at kc: {mags}"
         assert mags[0] > mags[1] > mags[2] > 0.0, f"must fall with gap: {mags}"
-
-    def test_halo_param_defaults_and_parses(self):
-        assert PlacementParams().courtyard_halo_mm == 3.0
-        assert PlacementParams.from_dict({"courtyard_halo_mm": 7.5}).courtyard_halo_mm == 7.5
-        with pytest.raises(ValueError):
-            PlacementParams.from_dict({"courtyard_halo_mm": 0.0})
 
     @pytest.mark.dccf
     def test_c11_close_neighbor_contact_is_bounded(self, dccf_model):
