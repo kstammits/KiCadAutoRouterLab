@@ -67,55 +67,66 @@ def routes_to_tracks_vias(
     for net_name, result in routes.items():
         if not result.success or not result.path:
             continue
-        
+
         # Determine track width for this net (shared effective-power rule)
         track_width = width_map.get(net_name, default_width_mm)
         if is_power_net_effective(net_name, extra_power):
             track_width = max(track_width, power_width_mm)
-        
-        path = result.path
-        if len(path) < 2:
-            continue
-        
-        # Convert grid path to board coordinates
-        board_path = grid_segment_to_board(grid, path)
-        
-        # Process segments
-        for i in range(len(board_path) - 1):
-            c1, r1, l1 = path[i]
-            c2, r2, l2 = path[i + 1]
-            
-            x1, y1 = board_path[i][0], board_path[i][1]
-            x2, y2 = board_path[i + 1][0], board_path[i + 1][1]
-            layer1 = board_path[i][2]
-            layer2 = board_path[i + 1][2]
-            
-            if l1 == l2:
-                # Same layer - track segment
-                if x1 == x2 and y1 == y2:
-                    continue
-                tracks.append(Track(
-                    start=(x1, y1),
-                    end=(x2, y2),
-                    width_mm=track_width,
-                    layer=layer1,
-                    net_name=net_name,
-                ))
-            else:
-                # Layer transition: a hop on the net's own THT drill hole
-                # reuses the plated barrel — no new via drilled. (Hops
-                # never move within a cell: c1 == c2 and r1 == r2 here.)
-                if tht_sites and (c1, r1) in tht_sites.get(net_name, ()):
-                    continue
-                via_x = (x1 + x2) / 2
-                via_y = (y1 + y2) / 2
-                vias.append(Via(
-                    position=(via_x, via_y),
-                    size_mm=via_size_mm,
-                    drill_mm=via_drill_mm,
-                    layers=("F.Cu", "B.Cu"),
-                    net_name=net_name,
-                ))
+
+        # Branch geometry: one continuous terminal-to-terminal path per
+        # MST edge. The flattened ``result.path`` union is NOT a polyline
+        # for multi-branch nets (emitting it would draw teleport tracks
+        # between spokes) — so emit each branch separately. Legacy
+        # single-path results fall back to ``[result.path]``.
+        branch_paths = getattr(result, "branches", ())
+        if branch_paths:
+            branches = [list(b) for b in branch_paths]
+        else:
+            branches = [result.path]
+
+        for path in branches:
+            if len(path) < 2:
+                continue
+
+            # Convert grid path to board coordinates
+            board_path = grid_segment_to_board(grid, path)
+
+            # Process segments
+            for i in range(len(board_path) - 1):
+                c1, r1, l1 = path[i]
+                c2, r2, l2 = path[i + 1]
+
+                x1, y1 = board_path[i][0], board_path[i][1]
+                x2, y2 = board_path[i + 1][0], board_path[i + 1][1]
+                layer1 = board_path[i][2]
+                layer2 = board_path[i + 1][2]
+
+                if l1 == l2:
+                    # Same layer - track segment
+                    if x1 == x2 and y1 == y2:
+                        continue
+                    tracks.append(Track(
+                        start=(x1, y1),
+                        end=(x2, y2),
+                        width_mm=track_width,
+                        layer=layer1,
+                        net_name=net_name,
+                    ))
+                else:
+                    # Layer transition: a hop on the net's own THT drill hole
+                    # reuses the plated barrel — no new via drilled. (Hops
+                    # never move within a cell: c1 == c2 and r1 == r2 here.)
+                    if tht_sites and (c1, r1) in tht_sites.get(net_name, ()):
+                        continue
+                    via_x = (x1 + x2) / 2
+                    via_y = (y1 + y2) / 2
+                    vias.append(Via(
+                        position=(via_x, via_y),
+                        size_mm=via_size_mm,
+                        drill_mm=via_drill_mm,
+                        layers=("F.Cu", "B.Cu"),
+                        net_name=net_name,
+                    ))
 
     # Dedupe exact-duplicate vias per net (MST-merge revisit artifacts can
     # emit two layer changes at the same cell → drill-on-drill DRC).

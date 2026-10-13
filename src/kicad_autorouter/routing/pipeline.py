@@ -81,6 +81,9 @@ class RoutingParams:
     stitch_bridge_max_mm: float = 30.0  # Longest single bridge track
     pour_severance_weight: float = 30.0  # Soft cost for tracks severing a pour (0 disables)
     fanout_margin_mm: float = 0.0  # Extra steering push around foreign pads (soft outer halo + smoother corridor + reservation); 0 = DRC clearance only
+    window_margin_cells: int = 32  # Initial A* bbox dilation around a pair (cells)
+    window_growth: float = 2.0  # Search-window expansion factor per retry
+    window_retries: int = 3  # Window attempts per pair (last = full board)
 
     def to_dict(self) -> dict:
         return {
@@ -105,6 +108,9 @@ class RoutingParams:
             "stitch_bridge_max_mm": self.stitch_bridge_max_mm,
             "pour_severance_weight": self.pour_severance_weight,
             "fanout_margin_mm": self.fanout_margin_mm,
+            "window_margin_cells": self.window_margin_cells,
+            "window_growth": self.window_growth,
+            "window_retries": self.window_retries,
         }
 
     @classmethod
@@ -117,6 +123,7 @@ class RoutingParams:
             "net_widths", "heuristic_weight", "max_expansions",
             "stitch_gnd_vias", "strip_gnd_blockers", "stitch_vias_max", "stitch_bridges_max",
             "stitch_bridge_max_mm", "pour_severance_weight", "fanout_margin_mm",
+            "window_margin_cells", "window_growth", "window_retries",
         }
         filtered = {k: v for k, v in d.items() if k in valid_keys}
         return cls(**filtered)
@@ -175,6 +182,21 @@ def _width_cells(width_mm: float, resolution_mm: float) -> int:
     return max(1, int(math.ceil(width_mm / resolution_mm / 2.0)))
 
 
+def _branch_paths(result) -> List[List[int]]:
+    """Branch geometries for a route (fallback to ``[result.path]``).
+
+    Legacy/foreign ``RouteResult``-likes without ``branches`` (e.g. the
+    ``run_routing`` rip-up path, direct ``_a_star`` results) carry a single
+    continuous path; multi-terminal routes carry one branch per MST edge.
+    """
+    branches = getattr(result, "branches", ())
+    if branches:
+        return [list(b) for b in branches]
+    if getattr(result, "path", None):
+        return [list(result.path)]
+    return []
+
+
 def _apply_route_to_grid(
     result,
     cost_grid: np.ndarray,
@@ -188,10 +210,12 @@ def _apply_route_to_grid(
     the centerline so emitted tracks reserve their true footprint *plus*
     clearance to neighboring copper for subsequent nets. Via landings
     stamp the same halo on both layers (via annulus needs clearance too).
-    Updates the cost_grid in-place.
+    Every MST branch is reserved (not just a flattened union), so later
+    nets keep clearance to the actual copper. Updates the cost_grid
+    in-place.
 
     Args:
-        result: RouteResult containing the path [(col, row, layer_idx)]
+        result: RouteResult containing branch paths [(col, row, layer_idx)]
         cost_grid: (n_layers, H, W) int16 array to update
         grid: RoutingGrid for coordinate transforms
         half_width_cells: corridor half-width in cells (>= 1)
@@ -200,27 +224,27 @@ def _apply_route_to_grid(
     if not result.success or not result.path:
         return
 
-    path = result.path
     n_layers = cost_grid.shape[0]
     H, W = cost_grid.shape[1], cost_grid.shape[2]
     radius = max(max(0, half_width_cells - 1), max(0, extra_radius))
 
-    for i in range(len(path) - 1):
-        c1, r1, l1 = path[i]
-        c2, r2, l2 = path[i + 1]
+    for path in _branch_paths(result):
+        for i in range(len(path) - 1):
+            c1, r1, l1 = path[i]
+            c2, r2, l2 = path[i + 1]
 
-        # Mark the segment cells as blocked
-        if l1 == l2:
-            # Same layer - mark track corridor along the line
-            _mark_line_blocked(cost_grid[l1], r1, c1, r2, c2, radius)
-        else:
-            # Layer transition - mark via halo at both layers
-            for _l, _r, _c in ((l1, r1, c1), (l2, r2, c2)):
-                if 0 <= _l < n_layers and 0 <= _r < H and 0 <= _c < W:
-                    if radius:
-                        stamp_square(cost_grid[_l], _r, _c, radius, BLOCKED)
-                    else:
-                        cost_grid[_l, _r, _c] = BLOCKED
+            # Mark the segment cells as blocked
+            if l1 == l2:
+                # Same layer - mark track corridor along the line
+                _mark_line_blocked(cost_grid[l1], r1, c1, r2, c2, radius)
+            else:
+                # Layer transition - mark via halo at both layers
+                for _l, _r, _c in ((l1, r1, c1), (l2, r2, c2)):
+                    if 0 <= _l < n_layers and 0 <= _r < H and 0 <= _c < W:
+                        if radius:
+                            stamp_square(cost_grid[_l], _r, _c, radius, BLOCKED)
+                        else:
+                            cost_grid[_l, _r, _c] = BLOCKED
 
 
 def _mark_line_blocked(layer_grid: np.ndarray, r1: int, c1: int, r2: int, c2: int, radius: int = 0) -> None:
@@ -242,9 +266,11 @@ def _smooth_result(result, cost_grid, routing_grid, corridor: int, blocked_thres
 
     Smoothing runs against the pre-route grid (which must NOT yet contain
     this path's own corridor) so shortcuts are clearance-checked against
-    real obstacles. Returns a result with the smoothed path and recomputed
-    wire length; via nodes/layers and ``pinned`` terminals are preserved
-    by ``smooth_grid_path``.
+    real obstacles. Each MST branch is smoothed independently (branch
+    endpoints are terminals, so no spoke can be skipped and no teleport
+    segment is ever created); via nodes/layers and ``pinned`` terminals
+    are preserved by ``smooth_grid_path``. Returns a result with smoothed
+    branches, rebuilt union path, and recomputed wire length.
 
     The shortcut footprint covers ``max(corridor - 1, clearance_radius)``
     so smoothed copper keeps clearance to neighboring tracks, and
@@ -253,21 +279,39 @@ def _smooth_result(result, cost_grid, routing_grid, corridor: int, blocked_thres
     the per-net hard exclusion (foreign-THT rings): shortcuts may never
     cross it, with no soft exemption.
     """
-    smoothed = smooth_grid_path(
-        result.path,
-        cost_grid,
-        blocked_threshold=blocked_threshold,
-        corridor_radius=max(max(0, corridor - 1), max(0, clearance_radius)),
-        pinned=pinned,
-        soft_mask=soft_mask,
-        blocked_mask=blocked_mask,
-    )
-    if len(smoothed) == len(result.path):
+    corridor_radius = max(max(0, corridor - 1), max(0, clearance_radius))
+    new_branches = []
+    changed = False
+    for branch in _branch_paths(result):
+        smoothed = smooth_grid_path(
+            branch,
+            cost_grid,
+            blocked_threshold=blocked_threshold,
+            corridor_radius=corridor_radius,
+            pinned=pinned,
+            soft_mask=soft_mask,
+            blocked_mask=blocked_mask,
+        )
+        new_branches.append(smoothed)
+        if len(smoothed) != len(branch):
+            changed = True
+    if not changed:
         return result
+    seen = set()
+    union_path = []
+    for branch in new_branches:
+        for cell in branch:
+            if cell not in seen:
+                seen.add(cell)
+                union_path.append(cell)
+    wire_mm = sum(
+        smoothed_wire_mm(b, routing_grid.resolution_mm) for b in new_branches
+    )
     return replace(
         result,
-        path=smoothed,
-        wire_mm=smoothed_wire_mm(smoothed, routing_grid.resolution_mm),
+        path=union_path,
+        branches=tuple(tuple(b) for b in new_branches),
+        wire_mm=wire_mm,
     )
 
 
@@ -438,6 +482,9 @@ def route_nets(
     router = SingleNetRouter(
         routing_grid, cost_grid, cost_map, tht_via_mask, via_block_mask,
         max_expansions=params.max_expansions,
+        window_margin_cells=params.window_margin_cells,
+        window_growth=params.window_growth,
+        window_retries=params.window_retries,
     )
     
     # 5. Identify net classes (user-marked power membership included)
@@ -505,6 +552,13 @@ def route_nets(
         router.via_clearance_cells = via_halo_radius_cells(
             params.via_size_mm, clearance_mm, width_mm / 2.0,
             params.grid_resolution_mm,
+        )
+        # The window must admit at least a halo-width detour around both
+        # terminals, or every pair pays a growth retry.
+        router.window_margin_cells = max(
+            params.window_margin_cells,
+            router.via_clearance_cells,
+            clearance_radius,
         )
         soft_mask = own_net_soft_mask(
             model, routing_grid, net_name,
@@ -767,6 +821,7 @@ def run_routing(
         router.via_clearance_cells = via_halo_radius_cells(
             via_size_mm, 0.2, width_mm / 2.0, grid_resolution_mm,
         )
+        router.window_margin_cells = max(32, router.via_clearance_cells, clearance_radius)
         soft_mask = own_net_soft_mask(
             model, grid, net_name,
             clearance_mm=0.2, track_half_mm=width_mm / 2.0,

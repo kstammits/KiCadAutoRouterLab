@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import math
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
 import numpy as np
 
 from .grid import RoutingGrid
 from .obstacles import POUR
+from .pair_cost import kruskal_connect
+from .search_window import Window, for_pair, full_board, grow
+from .via_sites import build_via_ok_mask
 
 
 @dataclass(frozen=True)
@@ -22,6 +25,13 @@ class RouteResult:
     cost: float
     success: bool
     expansions: int = 0  # A* node expansions spent (0 when trivially resolved)
+    # Per-edge MST branch paths (one terminal-to-terminal A* path each).
+    # ``path`` is the deduped union of these (first-seen order) for cell
+    # blocking / terminal-coverage checks — NOT a continuous polyline when
+    # >1 branch exists. Geometry consumers (smoothing, track emission,
+    # corridor reservation) must iterate ``branches`` to avoid teleport
+    # segments between spokes of a star.
+    branches: Tuple[Tuple[int, int, int], ...] = ()
 
 
 @dataclass
@@ -80,6 +90,9 @@ class SingleNetRouter:
         via_block_mask: Optional[np.ndarray] = None,
         max_expansions: int = 2_000_000,
         via_clearance_cells: int = 0,
+        window_margin_cells: int = 32,
+        window_growth: float = 2.0,
+        window_retries: int = 3,
     ):
         self.grid = grid
         self.cost_grid = cost_grid
@@ -102,6 +115,11 @@ class SingleNetRouter:
         # clearance to foreign copper. 0 = legacy single-cell check.
         # Set per-net by the pipeline from via OD + clearance + track half.
         self.via_clearance_cells = max(0, int(via_clearance_cells))
+        # Search-window policy: initial bbox dilation, growth factor per
+        # retry, and retry count before the full-board fallback.
+        self.window_margin_cells = max(0, int(window_margin_cells))
+        self.window_growth = max(1.0, float(window_growth))
+        self.window_retries = max(0, int(window_retries))
 
     def route(
         self,
@@ -131,14 +149,13 @@ class SingleNetRouter:
         if should_cancel is not None and should_cancel():
             raise RoutingCancelled("cancelled before first pair")
 
-        # Build complete graph with A* distances
+        # Pairs are searched in cheap Manhattan order (Kruskal) with one
+        # via mask per net and a grown search window per pair: typical cost
+        # is ~n-1 searches, not n*(n-1)/2 full-board floods.
         n = len(terminals)
         pairs_total = n * (n - 1) // 2
         pairs_done = 0
         expansions_total = 0
-        dist_matrix = np.full((n, n), np.inf, dtype=np.float32)
-        path_matrix = [[None] * n for _ in range(n)]
-        cost_matrix = np.full((n, n), np.inf, dtype=np.float32)  # Store actual A* costs
 
         def _report():
             if progress_cb is not None:
@@ -147,13 +164,35 @@ class SingleNetRouter:
                 except Exception:
                     pass
 
-        for i in range(n):
-            for j in range(i + 1, n):
-                if should_cancel is not None and should_cancel():
-                    raise RoutingCancelled(f"cancelled after {pairs_done}/{pairs_total} pairs")
-                # Live per-search progress: report completed pairs plus the
-                # running expansion total (base = prior pairs).
-                base = expansions_total
+        via_ok = None
+        if self.via_clearance_cells > 0:
+            via_ok = build_via_ok_mask(
+                self.cost_grid,
+                self.via_block_mask,
+                self.tht_via_mask,
+                secondary,
+                self.via_clearance_cells,
+                self.cost_map.blocked_threshold,
+                SECONDARY_BLOCKED,
+            )
+
+        def _search_pair(i: int, j: int):
+            """Windowed A* with growth + full-board fallback; (ok, path, cost)."""
+            nonlocal pairs_done, expansions_total
+            if should_cancel is not None and should_cancel():
+                raise RoutingCancelled(f"cancelled before pair {(i, j)}")
+            si, sj = terminals[i], terminals[j]
+            window = for_pair(
+                si[0], si[1], sj[0], sj[1], self.W, self.H,
+                self.window_margin_cells,
+            )
+            windows = [window]
+            for _ in range(max(0, self.window_retries - 1)):
+                windows.append(grow(windows[-1], self.W, self.H, self.window_growth))
+            windows.append(full_board(self.W, self.H))
+            base = expansions_total
+            result = None
+            for window in windows:
                 search_cb = None
                 if progress_cb is not None:
                     def search_cb(e, _base=base):
@@ -162,59 +201,50 @@ class SingleNetRouter:
                         except Exception:
                             pass
                 result = self._a_star(
-                    terminals[i], terminals[j], secondary,
+                    si, sj, secondary,
                     progress_cb=search_cb,
                     should_cancel=should_cancel,
+                    window=window,
+                    via_ok=via_ok,
                 )
                 expansions_total += result.expansions
+                base += result.expansions
                 pairs_done += 1
                 _report()
                 if result.success:
-                    dist_matrix[i, j] = dist_matrix[j, i] = result.cost
-                    path_matrix[i][j] = path_matrix[j][i] = result.path
-                    cost_matrix[i, j] = cost_matrix[j, i] = result.cost
+                    break
+            return result.success, result.path, result.cost
 
-        # Check connectivity (ignore diagonal)
-        if np.any(np.isinf(dist_matrix[np.triu_indices(n, k=1)])):
+        mst_edges, path_matrix, cost_matrix, connected = None, {}, {}, False
+        mst_edges, path_matrix, cost_matrix, _, connected = kruskal_connect(
+            terminals, _search_pair
+        )
+        if not connected:
             return RouteResult([], 0.0, 0, 0.0, False, expansions_total)
-
-        # Prim's MST
-        mst_edges = self._prim_mst(dist_matrix)
         if not mst_edges:
             return RouteResult([], 0.0, 0, 0.0, False, expansions_total)
 
-        # Route MST edges sequentially, merging paths
-        full_path = []
+        # Branch model: keep each MST edge path separate. A single
+        # polyline cannot represent a degree-3+ star without either a
+        # teleport jump (the old endpoint-only merge) or wasteful
+        # backtracking over the hub. Branches share hub cells; each is
+        # individually continuous terminal-to-terminal copper.
+        branches: List[List[Tuple[int, int, int]]] = []
         total_cost = 0.0
         total_wire = 0.0
         total_vias = 0
 
         for i, j in mst_edges:
-            edge_path = path_matrix[i][j]
+            edge_path = path_matrix.get((i, j))
             if not edge_path:
                 return RouteResult([], 0.0, 0, 0.0, False, expansions_total)
-            
-            # Merge with full path (avoid duplicating endpoints)
-            if not full_path:
-                full_path.extend(edge_path)
-            else:
-                # Check if edge_path[0] matches full_path[-1]
-                if edge_path[0] == full_path[-1]:
-                    full_path.extend(edge_path[1:])
-                elif edge_path[-1] == full_path[-1]:
-                    full_path.extend(list(reversed(edge_path))[:-1])
-                elif edge_path[0] == full_path[0]:
-                    full_path = list(reversed(edge_path))[:-1] + full_path
-                elif edge_path[-1] == full_path[0]:
-                    full_path = edge_path[:-1] + full_path
-                else:
-                    # Disconnected - should not happen with MST
-                    full_path.extend(edge_path[1:])
+
+            branches.append(list(edge_path))
 
             # Use the A* cost for this edge (includes free via handling)
-            edge_cost = cost_matrix[i, j]
+            edge_cost = cost_matrix[(i, j)]
             total_cost += edge_cost
-            
+
             # Count wire length and vias for reporting
             for k in range(len(edge_path) - 1):
                 c1, r1, l1 = edge_path[k]
@@ -225,13 +255,25 @@ class SingleNetRouter:
 
         wire_mm = total_wire * self.grid.resolution_mm
 
+        # Deduped union (first-seen order) for cell blocking and
+        # terminal-coverage checks. NOT a routable polyline for >1
+        # branch — geometry consumers must use ``branches``.
+        seen = set()
+        union_path: List[Tuple[int, int, int]] = []
+        for branch in branches:
+            for cell in branch:
+                if cell not in seen:
+                    seen.add(cell)
+                    union_path.append(cell)
+
         return RouteResult(
-            path=full_path,
+            path=union_path,
             wire_mm=wire_mm,
             via_count=total_vias,
             cost=total_cost,
             success=True,
             expansions=expansions_total,
+            branches=tuple(tuple(b) for b in branches),
         )
 
     def _secondary_blocked(
@@ -311,6 +353,8 @@ class SingleNetRouter:
         secondary: Optional[np.ndarray] = None,
         progress_cb=None,  # fn(expansions) — called every 4096 pops, best-effort
         should_cancel=None,  # fn() -> bool — checked every 4096 pops
+        window: Optional[Window] = None,  # search clip; None = full board
+        via_ok: Optional[np.ndarray] = None,  # precomputed landing mask (H, W)
     ) -> RouteResult:
         """A* search on 3D grid with via transitions."""
         sc, sr, sl = start
@@ -340,10 +384,17 @@ class SingleNetRouter:
         start_h = heuristic(sc, sr, sl)
         heapq.heappush(open_set, (start_h, 0, sc, sr, sl, None))
 
-        # g_score array: [layer, row, col]
+        # g_score array clipped to the window: [layer, row - r0, col - c0].
+        # Small windows shrink both the allocation and the expansion flood.
         INF = 1 << 30
-        g_score = np.full((self.n_layers, self.H, self.W), INF, dtype=np.int32)
-        g_score[sl, sr, sc] = 0
+        if window is None:
+            c0, r0, c1, r1 = 0, 0, self.W - 1, self.H - 1
+        else:
+            c0, r0, c1, r1 = window.c0, window.r0, window.c1, window.r1
+        g_score = np.full(
+            (self.n_layers, r1 - r0 + 1, c1 - c0 + 1), INF, dtype=np.int32
+        )
+        g_score[sl, sr - r0, sc - c0] = 0
 
         # Parent pointers for path reconstruction
         parent = {}
@@ -372,13 +423,13 @@ class SingleNetRouter:
                 path.reverse()
                 return RouteResult(path, 0.0, 0, g, True, expansions)
 
-            if g > g_score[l, r, c]:
+            if g > g_score[l, r - r0, c - c0]:
                 continue
 
             # 4 neighbors on same layer
             for dc, dr in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
                 nc, nr = c + dc, r + dr
-                if not (0 <= nc < self.W and 0 <= nr < self.H):
+                if not (c0 <= nc <= c1 and r0 <= nr <= r1):
                     continue
                 if self._is_blocked(nr, nc, l):
                     continue
@@ -386,8 +437,8 @@ class SingleNetRouter:
                     continue
                 cell_cost = self._cell_cost(nr, nc, l) + self._secondary_at(secondary, nr, nc, l)
                 ng = g + cell_cost
-                if ng < g_score[l, nr, nc]:
-                    g_score[l, nr, nc] = ng
+                if ng < g_score[l, nr - r0, nc - c0]:
+                    g_score[l, nr - r0, nc - c0] = ng
                     parent[(nc, nr, l)] = (c, r, l)
                     nf = ng + heuristic(nc, nr, l)
                     heapq.heappush(open_set, (nf, ng, nc, nr, l, (c, r, l)))
@@ -406,18 +457,22 @@ class SingleNetRouter:
                         cell_cost = 0
                     elif self.via_block_mask[r, c]:
                         continue
+                    elif via_ok is not None:
+                        # Precomputed clearance halo (same disc semantics as
+                        # _via_landing_blocked, evaluated once per net).
+                        if not via_ok[r, c]:
+                            continue
+                        cell_cost = self._via_cost_cells
                     else:
-                        # Hard block: via annulus + clearance halo must not
-                        # overlap foreign copper (prior tracks/vias, THT
-                        # rings, solder areas). Prevents DRC shorts like
-                        # NET_B via on a NET_A track.
+                        # Fallback for direct _a_star callers without a mask:
+                        # scan the halo now (slow, exact).
                         if self._via_landing_blocked(r, c, secondary):
                             continue
                         cell_cost = self._via_cost_cells
                     cell_cost += self._secondary_at(secondary, r, c, nl)
                     ng = g + cell_cost
-                    if ng < g_score[nl, r, c]:
-                        g_score[nl, r, c] = ng
+                    if ng < g_score[nl, r - r0, c - c0]:
+                        g_score[nl, r - r0, c - c0] = ng
                         parent[(c, r, nl)] = (c, r, l)
                         nf = ng + heuristic(c, r, nl)
                         heapq.heappush(open_set, (nf, ng, c, r, nl, (c, r, l)))
@@ -444,30 +499,3 @@ class SingleNetRouter:
         elif cell_val >= 25:  # COURTYARD
             base += self.cost_map.courtyard_penalty
         return base
-
-    def _prim_mst(self, dist_matrix: np.ndarray) -> List[Tuple[int, int]]:
-        """Prim's algorithm for MST on complete graph."""
-        n = dist_matrix.shape[0]
-        in_mst = np.zeros(n, dtype=bool)
-        min_edge = np.full(n, np.inf, dtype=np.float32)
-        parent = np.full(n, -1, dtype=np.int32)
-        min_edge[0] = 0
-
-        for _ in range(n):
-            # Find vertex with minimum edge weight
-            v = -1
-            for j in range(n):
-                if not in_mst[j] and (v == -1 or min_edge[j] < min_edge[v]):
-                    v = j
-            if min_edge[v] == np.inf:
-                break  # disconnected
-            in_mst[v] = True
-
-            if parent[v] != -1:
-                yield (parent[v], v)
-
-            # Update edges
-            for to in range(n):
-                if not in_mst[to] and dist_matrix[v, to] < min_edge[to]:
-                    min_edge[to] = dist_matrix[v, to]
-                    parent[to] = v
