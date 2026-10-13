@@ -12,7 +12,6 @@ import pytest
 from kicad_autorouter.routing.grid import RoutingGrid
 from kicad_autorouter.routing.output import routes_to_tracks_vias
 from kicad_autorouter.routing.pair_cost import (
-    chain_edges,
     kruskal_connect,
     manhattan,
     ordered_pairs,
@@ -121,13 +120,6 @@ class TestKruskalPairs:
         assert len(pairs) == 6
         dists = [manhattan(terms[i], terms[j]) for i, j in pairs]
         assert dists == sorted(dists)
-        chained = chain_edges([(0, 1), (2, 3), (1, 2)])
-        # DFS walk from 0 covers all 4 nodes with 3 edges.
-        seen = {0}
-        for i, j in chained:
-            assert i in seen
-            seen |= {i, j}
-        assert seen == {0, 1, 2, 3}
 
     def test_kruskal_stops_at_tree_complete(self):
         """5 terminals connect with 4 searches, not 10."""

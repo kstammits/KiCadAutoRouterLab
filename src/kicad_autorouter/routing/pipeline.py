@@ -5,19 +5,16 @@ from __future__ import annotations
 import math
 import time
 from dataclasses import dataclass, field, replace
-from pathlib import Path
 from typing import Collection, Optional, Tuple, List, Set, Dict
 
 import numpy as np
 
-from ..board_model import BoardModel, Point, Track, Via, board_model, is_ground_net, netclass_clearance, resolve_track_width_mm
-from ..io import nudge_footprint_by_uuid, save_pair, parse_file, load_pair, rip_up_nets
-from ..placement import PlacementParams, PlacementProposal, run_placement
-from ..drc import run_drc_on_tree, DRCResult, write_pcb_tree
+from ..board_model import BoardModel, Point, Track, Via, is_ground_net, netclass_clearance, resolve_track_width_mm
+from ..io import rip_up_nets
+from ..drc import run_drc_on_tree, DRCResult
 from . import (
     build_occupancy_grid,
     create_grid_from_model,
-    order_nets,
     RipUpManager,
     RoutingCancelled,
     SingleNetRouter,
@@ -27,7 +24,7 @@ from .output import routes_to_tracks_vias, apply_routes_to_tree
 from .output import Track as OutputTrack, Via as OutputVia
 from .smooth import own_net_soft_mask, smooth_grid_path, smoothed_wire_mm
 from .router import SECONDARY_BLOCKED
-from .power import identify_power_nets, route_power_rails, route_decap_fanout
+from .power import identify_power_nets
 from .grid import RoutingGrid, board_to_grid
 from .pour import pour_corridors, pour_net_names, severance_cost
 from .stitch import plan_stitches
@@ -185,9 +182,9 @@ def _width_cells(width_mm: float, resolution_mm: float) -> int:
 def _branch_paths(result) -> List[List[int]]:
     """Branch geometries for a route (fallback to ``[result.path]``).
 
-    Legacy/foreign ``RouteResult``-likes without ``branches`` (e.g. the
-    ``run_routing`` rip-up path, direct ``_a_star`` results) carry a single
-    continuous path; multi-terminal routes carry one branch per MST edge.
+    Legacy/foreign ``RouteResult``-likes without ``branches`` (e.g. direct
+    ``_a_star`` results) carry a single continuous path; multi-terminal
+    routes carry one branch per MST edge.
     """
     branches = getattr(result, "branches", ())
     if branches:
@@ -730,210 +727,6 @@ def route_nets(
     ), cost_grid, routing_grid
 
 
-def run_routing(
-    model: BoardModel,
-    grid_resolution_mm: float = 0.1,
-    margin_mm: float = 2.0,
-    via_cost: float = 5.0,
-    track_width_mm: float = 0.25,
-    power_width_mm: float = 0.5,
-    via_size_mm: float = 0.8,
-    via_drill_mm: float = 0.4,
-    max_attempts_per_net: int = 3,
-    run_drc: bool = True,
-    original_pcb_tree: Optional = None,
-    extra_power_nets: Collection[str] = (),
-) -> RoutingResult:
-    """Run complete routing on a board model.
-
-    Returns routing statistics and modifies model's track/via lists.
-    ``extra_power_nets``: user-marked power membership (see route_nets).
-    """
-    # 1. Create grid
-    grid = create_grid_from_model(model, grid_resolution_mm, margin_mm)
-    
-    # 2. Build occupancy grid
-    cost_grid = build_occupancy_grid(model, grid)
-    
-    # 3. Create THT via mask for free layer transitions at through-hole pads
-    tht_via_mask = _build_tht_via_mask(model, grid)
-
-    # 3b. Via-block mask: no vias inside SMD pad solder/fanout areas
-    via_block_mask = build_via_block_mask(model, grid)
-
-    # 4. Create router (via_cost is already mm wire equivalent)
-    cost_map = CostMap(
-        base_cost=1,
-        via_cost_mm=via_cost,
-        blocked_threshold=100,
-        heuristic_weight=3.0,
-    )
-    router = SingleNetRouter(grid, cost_grid, cost_map, tht_via_mask, via_block_mask)
-    
-    # 4. Identify net classes (user-marked power membership included)
-    power_nets, ground_nets, signal_nets = identify_power_nets(model, extra_power_nets)
-
-    # 5. Route power rails first
-    power_results = route_power_rails(
-        model, grid, cost_grid, router, power_nets, power_width_mm
-    )
-
-    # 6. Route decoupling caps
-    decap_refs = [fp.ref for fp in model.footprints if fp.ref.startswith("C") and len(fp.pads) == 2]
-    decap_results = route_decap_fanout(
-        model, grid, cost_grid, router, decap_refs
-    )
-    
-    # 8. Route remaining nets with rip-up
-    all_nets = list(model.nets.keys())
-    ordered = [n for n in signal_nets if n in all_nets]  # signal nets last
-    
-    ripup = RipUpManager(max_attempts=max_attempts_per_net)
-
-    # Width resolution for the legacy signature (file netclass → heuristic).
-    legacy_params = RoutingParams(
-        track_width_mm=track_width_mm, power_width_mm=power_width_mm
-    )
-
-    for net_name in ordered:
-        if net_name in power_nets or net_name in ground_nets:
-            continue  # already routed
-
-        conns = model.nets.get(net_name, [])
-        if len(conns) < 2:
-            continue
-
-        terminals = _terminals_for_net(model, grid, net_name)
-
-        if len(terminals) < 2:
-            continue
-
-        width_mm = resolve_track_width(model, legacy_params, net_name, extra_power_nets)
-        secondary = build_fanout_cost(
-            model, grid, net_name,
-            clearance_mm=0.2,
-            track_half_mm=width_mm / 2.0,
-        )
-        corridor = _width_cells(width_mm, grid_resolution_mm)
-        clearance_radius = track_corridor_radius_cells(
-            width_mm, 0.2, grid_resolution_mm,
-        )
-        router.via_clearance_cells = via_halo_radius_cells(
-            via_size_mm, 0.2, width_mm / 2.0, grid_resolution_mm,
-        )
-        router.window_margin_cells = max(32, router.via_clearance_cells, clearance_radius)
-        soft_mask = own_net_soft_mask(
-            model, grid, net_name,
-            clearance_mm=0.2, track_half_mm=width_mm / 2.0,
-        )
-        blocked_mask = secondary >= SECONDARY_BLOCKED
-
-        # Try routing with retries
-        success = False
-        while ripup.can_retry(net_name):
-            result = router.route(terminals, secondary)
-            if result.success:
-                pinned = {(c, r) for c, r, _ in terminals}
-                result = _smooth_result(
-                    result, cost_grid, grid, corridor, pinned=pinned,
-                    soft_mask=soft_mask, clearance_radius=clearance_radius,
-                    blocked_mask=blocked_mask,
-                )
-                # Apply to cost grid
-                _apply_route_to_grid(
-                    result, cost_grid, grid, corridor,
-                    extra_radius=clearance_radius,
-                )
-                ripup.record_success(net_name, result.path)
-                success = True
-                break
-            else:
-                ripup.record_failure(net_name, "no path found")
-        
-        if not success:
-            ripup.record_failure(net_name, "max attempts exceeded")
-    
-    # 9. Combine all results
-    all_results = {}
-    all_results.update(power_results)
-    all_results.update(decap_results)
-    all_results.update({n: ripup.routed_paths[n] for n in ripup.routed_paths})
-
-    # Convert to tracks/vias (own-THT hops reuse the barrel)
-    tracks, vias = routes_to_tracks_vias(
-        all_results,
-        grid,
-        default_width_mm=track_width_mm,
-        power_width_mm=power_width_mm,
-        via_size_mm=via_size_mm,
-        via_drill_mm=via_drill_mm,
-        tht_sites=_tht_sites_by_net(model, grid),
-        extra_power=extra_power_nets,
-    )
-
-    # 9b. GND continuity repair (stitching vias + bridge tracks), as in
-    # route_nets step 10b. Supersedes the old centroid ground stitching.
-    routed_model = replace(
-        model,
-        tracks=model.tracks + tuple(
-            Track(start=Point(*t.start), end=Point(*t.end),
-                  width_mm=t.width_mm, layer=t.layer, net_name=t.net_name)
-            for t in tracks
-        ),
-        vias=model.vias + tuple(
-            Via(position=Point(*v.position), size_mm=v.size_mm,
-                drill_mm=v.drill_mm, layers=tuple(v.layers), net_name=v.net_name)
-            for v in vias
-        ),
-    )
-    stitch_plan = plan_stitches(
-        routed_model, grid,
-        size_mm=via_size_mm, drill_mm=via_drill_mm, clearance_mm=0.2,
-        bridge_width_mm=power_width_mm,
-    )
-    for sv in stitch_plan.vias:
-        vias.append(OutputVia(
-            position=(sv.position.x_mm, sv.position.y_mm),
-            size_mm=sv.size_mm, drill_mm=sv.drill_mm,
-            layers=tuple(sv.layers), net_name=sv.net_name or "",
-        ))
-    for st in stitch_plan.tracks:
-        tracks.append(OutputTrack(
-            start=(st.start.x_mm, st.start.y_mm),
-            end=(st.end.x_mm, st.end.y_mm),
-            width_mm=st.width_mm, layer=st.layer, net_name=st.net_name or "",
-        ))
-
-    # 10. Apply routes to PCB tree
-    pcb_tree = None
-    if original_pcb_tree is not None:
-        pcb_tree = apply_routes_to_tree(original_pcb_tree, tracks, vias)
-
-    # 11. Run DRC if requested
-    drc_result = None
-    if run_drc and pcb_tree is not None:
-        drc_result = run_drc_on_tree(pcb_tree, prefix="route_")
-
-    # Stats
-    nets_routed = len(ripup.routed_paths) + len(power_results)
-    nets_failed = len(ripup.get_failed_nets())
-
-    return RoutingResult(
-        tracks_added=len(tracks),
-        vias_added=len(vias),
-        nets_routed=nets_routed,
-        nets_failed=nets_failed,
-        drc_clean=drc_result.clean if drc_result else True,
-        drc_violations=drc_result.total_issues if drc_result else 0,
-        drc_result=drc_result,
-        pcb_tree=pcb_tree,
-        stitch_vias_added=len(stitch_plan.vias),
-        stitch_tracks_added=len(stitch_plan.tracks),
-        gnd_islands_before=stitch_plan.islands_before,
-        gnd_islands_after=stitch_plan.islands_after,
-    )
-
-
 def _tht_sites_by_net(model, grid) -> dict:
     """Map net name -> drill-hole ``{(col, row)}`` for its own THT pads.
 
@@ -1019,72 +812,3 @@ def _strip_gnd_blockers_from_model(model: BoardModel) -> Tuple[BoardModel, int]:
     if removed == 0:
         return model, 0
     return replace(model, tracks=kept_tracks, vias=kept_vias), removed
-
-
-def run_full_pipeline(
-    pcb_path: Path,
-    sch_path: Optional[Path] = None,
-    output_pcb: Optional[Path] = None,
-    output_sch: Optional[Path] = None,
-    params: Optional = None,
-    validate: bool = True,
-) -> Tuple[BoardModel, RoutingResult]:
-    """Complete pipeline: load → place → route → writeback → optional DRC."""
-    from ..placement import PlacementParams, run_placement
-    
-    # Load
-    if sch_path:
-        pair = load_pair(pcb_path, sch_path)
-        model = board_model(pair.pcb)
-        original_pcb_tree = pair.pcb
-    else:
-        pcb_tree = parse_file(pcb_path)
-        model = board_model(pcb_tree)
-        original_pcb_tree = pcb_tree
-    
-    # Placement
-    if params is None:
-        params = PlacementParams()
-    proposal = run_placement(model, params)
-    
-    # Apply placement
-    from ..board_model import apply_deltas
-    model = apply_deltas(model, proposal.deltas)
-    
-    # Route (with original PCB tree for writeback)
-    result = run_routing(model, original_pcb_tree=original_pcb_tree, run_drc=validate)
-    
-    # Writeback
-    if output_pcb and result.pcb_tree is not None:
-        result.pcb_tree = write_pcb_tree(result.pcb_tree, output_pcb, "final_")
-    
-    return model, result
-
-
-def route_single_board(
-    pcb_path: Path,
-    output_path: Path,
-    params: Optional = None,
-    validate: bool = True,
-) -> RoutingResult:
-    """Convenience: route a single board file."""
-    pcb_tree = parse_file(pcb_path)
-    model = board_model(pcb_tree)
-    
-    if params is None:
-        from ..placement import PlacementParams
-        params = PlacementParams()
-    
-    # Place
-    proposal = run_placement(model, params)
-    from ..board_model import apply_deltas
-    model = apply_deltas(model, proposal.deltas)
-    
-    # Route
-    result = run_routing(model, original_pcb_tree=pcb_tree, run_drc=validate)
-    
-    # Write output
-    if result.pcb_tree is not None:
-        write_pcb_tree(result.pcb_tree, output_path, "final_")
-    
-    return result

@@ -84,30 +84,3 @@ def kruskal_connect(
             paths[(i, j)] = paths[(j, i)] = path
             costs[(i, j)] = costs[(j, i)] = cost
     return edges, paths, costs, searches, uf.components == 1
-
-
-def chain_edges(edges: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
-    """Reorder Kruskal edges into a DFS walk from node 0.
-
-    Kruskal merges disjoint components, but path merging needs each new
-    edge to touch the already-joined walk. A DFS over the tree yields such
-    an order (stars revisit the hub, which the merger handles by reversal).
-    """
-    if not edges:
-        return []
-    adj: Dict[int, List[int]] = {}
-    for i, j in edges:
-        adj.setdefault(i, []).append(j)
-        adj.setdefault(j, []).append(i)
-    start = edges[0][0]
-    seen = {start}
-    order: List[Tuple[int, int]] = []
-    stack = [start]
-    while stack:
-        u = stack.pop()
-        for v in adj.get(u, []):
-            if v not in seen:
-                seen.add(v)
-                order.append((u, v))
-                stack.append(v)
-    return order

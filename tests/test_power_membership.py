@@ -14,7 +14,6 @@ from kicad_autorouter.board_model import (
     seed_power_nets_from_netclasses,
 )
 from kicad_autorouter.routing.power import identify_power_nets
-from kicad_autorouter.routing.scheduler import order_nets
 
 from .helpers import make_fp
 from .test_pour import _board
@@ -48,10 +47,6 @@ class TestEffectiveClassifier:
         assert set(signal) == {"MOTOR_A", "N1"}
         power, _, signal = identify_power_nets(_model(), {"MOTOR_A"})
         assert set(power) == {"VCC", "MOTOR_A"} and signal == ["N1"]
-
-    def test_order_puts_marked_first(self):
-        ordered = order_nets(_model(), {"MOTOR_A"})
-        assert ordered.index("MOTOR_A") < ordered.index("N1")
 
 
 @pytest.mark.unit

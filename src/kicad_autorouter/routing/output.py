@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Collection, List, Optional, Tuple
+from typing import Collection, List, Tuple
 
-import numpy as np
-
-from ..board_model import BoardModel, is_power_net_effective
+from ..board_model import is_power_net_effective
 from .grid import RoutingGrid, grid_segment_to_board
 from .router import RouteResult
 
@@ -202,33 +200,6 @@ def _segments_adjacent(t1: Track, t2: Track, tolerance: float) -> bool:
     
     cross = dx1 * dy2 - dy1 * dx2
     return abs(cross) < tolerance
-
-
-def tracks_vias_to_sexpr(
-    tracks: List[Track],
-    vias: List[Via],
-    existing_pcb: str = None,
-) -> str:
-    """Generate S-expression fragments for tracks and vias."""
-    lines = []
-    
-    for t in tracks:
-        lines.append(
-            f'(segment (start {t.start[0]:.3f} {t.start[1]:.3f}) '
-            f'(end {t.end[0]:.3f} {t.end[1]:.3f}) '
-            f'(width {t.width_mm:.3f}) (layer {t.layer}) '
-            f'(net {t.net_name}))'
-        )
-    
-    for v in vias:
-        layers_str = " ".join(v.layers)
-        lines.append(
-            f'(via (at {v.position[0]:.3f} {v.position[1]:.3f}) '
-            f'(size {v.size_mm:.3f}) (drill {v.drill_mm:.3f}) '
-            f'(layers {layers_str}) (net {v.net_name}))'
-        )
-    
-    return "\n".join(lines)
 
 
 def apply_routes_to_tree(
