@@ -274,9 +274,14 @@ def _smooth_result(result, cost_grid, routing_grid, corridor: int, blocked_thres
     penalized cells (other nets' pad rings, edge keepout) block shortcuts
     except inside ``soft_mask`` (this net's own pads). ``blocked_mask`` is
     the per-net hard exclusion (foreign-THT rings): shortcuts may never
-    cross it, with no soft exemption.
+    cross it, with no soft exemption. The exclusion disc already bakes pad
+    copper + clearance + track half-width, so it is tested with the track
+    copper half-width (``corridor - 1``) rather than the full clearance
+    halo — otherwise clearance is counted twice and no detour chord is
+    ever walkable. The cost grid keeps the full halo.
     """
     corridor_radius = max(max(0, corridor - 1), max(0, clearance_radius))
+    hard_radius = max(0, corridor - 1)
     new_branches = []
     changed = False
     for branch in _branch_paths(result):
@@ -288,6 +293,7 @@ def _smooth_result(result, cost_grid, routing_grid, corridor: int, blocked_thres
             pinned=pinned,
             soft_mask=soft_mask,
             blocked_mask=blocked_mask,
+            hard_radius=hard_radius,
         )
         new_branches.append(smoothed)
         if len(smoothed) != len(branch):
