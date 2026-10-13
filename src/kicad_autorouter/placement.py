@@ -607,17 +607,31 @@ def _courtyard_outline_polygon(segments: Tuple[Segment, ...]) -> Optional[Polygo
     netted-pad bbox. Returns the largest closed ring by area, or None when
     nothing closes (open polylines, degenerate input) — callers keep the
     pad-bbox fallback for that case.
+
+    Segment endpoints may have sub-micron floating-point gaps (e.g. -1.55
+    vs -1.550001) that prevent polygonize from closing rings. We snap
+    coordinates to a 1μm grid via ``set_precision(grid_size=0.001)`` before
+    polygonizing to close these without creating false rings at
+    near-junctions (buffer-based approaches do).
     """
-    lines: list[tuple[tuple[float, float], tuple[float, float]]] = []
+    from shapely import set_precision
+    from shapely.geometry import LineString
+
+    linestrings: list[LineString] = []
     for a, b in segments or ():
         p = (a.x_mm, a.y_mm)
         q = (b.x_mm, b.y_mm)
         if math.hypot(q[0] - p[0], q[1] - p[1]) > 1e-9:
-            lines.append((p, q))
-    if not lines:
+            linestrings.append(LineString([p, q]))
+    if not linestrings:
         return None
+
+    # Snap coordinates to 1μm grid to close floating-point gaps.
+    # 0.001mm << manufacturing tolerance, << routing grid (0.1mm).
+    linestrings = [set_precision(ls, grid_size=0.001) for ls in linestrings]
+
     try:
-        rings = [r for r in polygonize(lines) if r.is_valid and r.area > 0]
+        rings = [r for r in polygonize(linestrings) if r.is_valid and r.area > 0]
     except Exception:
         return None
     if not rings:
