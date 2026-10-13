@@ -2657,21 +2657,16 @@ async function saveRoutingParams() {
   }
 }
 
-// Route selected nets — ONE NET PER REQUEST ("chunked").
+// Route selected nets — ONE NET PER BACKGROUND JOB.
 //
-// DESIGN DECISION (2026-10-09): /api/routing/run is synchronous and takes
-// 1s–30min, during which the UI showed only a static "Routing...". The
-// alternatives were (a) chunk here in the UI, or (b) a server job model
-// (background thread + poll + cancel endpoints). Chunking was chosen: each
-// one-net call rebuilds grids from the current model, which already holds
-// prior nets' copper, so cross-net blocking is preserved with NO server
-// threading changes (equivalence covered by tests/test_routing_chunked.py).
-// Tradeoffs accepted: N HTTP round trips + N grid rebuilds (~0.1s each),
-// negligible next to A* time; cancel keeps already-routed nets (no
-// rollback — surfaced in the summary line); per-net failures don't abort
-// the batch, except HTTP 400 (bad params, e.g. oversize grid) which would
-// fail every net identically.
+// Each net starts POST /api/routing/jobs and is polled (1s) for pair-level
+// progress; Cancel posts .../cancel so the server actually stops searching
+// (already-routed nets are kept — surfaced in the summary line). Per-net
+// failures don't abort the batch, except HTTP 400 (bad params, e.g.
+// oversize grid) which would fail every net identically. Per-net cap is
+// 10min: on cap the job is cancelled server-side and the batch continues.
 let routeCancelRequested = false;
+let routeCurrentJobId = null;
 
 // Pre-flight cost estimate: pairwise A* searches per net = k*(k-1)/2 over
 // pad counts (upper bound on terminals). Shown before the run so a 66-pad
@@ -2687,6 +2682,97 @@ function estimateRoutingWork(netNames) {
     if (p > worst.pairs) worst = { net: name, pairs: p };
   }
   return { pairs, worst };
+}
+
+function fmtExpansions(e) {
+  e = Number(e) || 0;
+  if (e >= 1e6) return `${(e / 1e6).toFixed(1)}M expansions`;
+  if (e >= 1e3) return `${Math.round(e / 1e3)}k expansions`;
+  return `${e} expansions`;
+}
+
+// Per-net server cap: the job keeps searching for quality, but a single
+// net never blocks the batch forever — on cap it is cancelled server-side
+// (partial routes kept) and recorded as a failure.
+const ROUTE_JOB_CAP_S = 600;
+const ROUTE_JOB_POLL_MS = 1000;
+
+async function startRoutingJob(net, params) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const res = await fetch("/api/routing/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ net_names: [net], params }),
+    });
+    if (res.status === 409 && attempt === 0) {
+      // Another job still finishing — wait, then retry once.
+      await new Promise(r => setTimeout(r, 5000));
+      continue;
+    }
+    if (!res.ok) {
+      const msg = await res.text();
+      const err = new Error(msg);
+      err.status = res.status;
+      throw err;
+    }
+    const data = await res.json();
+    if (!data.job_id) throw new Error("server did not return a job id");
+    return data.job_id;
+  }
+  throw new Error("another routing job is running");
+}
+
+async function cancelRoutingJob(jobId) {
+  try {
+    await fetch(`/api/routing/jobs/${encodeURIComponent(jobId)}/cancel`, { method: "POST" });
+  } catch (err) {
+    console.error("Cancel failed:", err);
+  }
+}
+
+async function pollRoutingJob(jobId, net, idx, total, diag, progress, estNote, t0) {
+  const elapsed = () => `${Math.round((performance.now() - t0) / 1000)}s`;
+  const deadline = performance.now() + ROUTE_JOB_CAP_S * 1000;
+  for (;;) {
+    if (routeCancelRequested) {
+      await cancelRoutingJob(jobId);
+      // Fall through to one final poll below to collect the outcome.
+      const res = await fetch(`/api/routing/jobs/${encodeURIComponent(jobId)}`);
+      if (res.ok) {
+        const job = await res.json();
+        if (job.state === "done" && job.result) return { result: job.result, userCancelled: true };
+      }
+      return { result: null, userCancelled: true };
+    }
+    const res = await fetch(`/api/routing/jobs/${encodeURIComponent(jobId)}`);
+    if (!res.ok) throw new Error(await res.text());
+    const job = await res.json();
+    const p = job.progress || {};
+    const frac = (p.pairs_total > 0) ? (p.pairs_done / p.pairs_total) : 0;
+    progress.value = (idx + Math.min(1, frac)) / total;
+    const pairTxt = p.pairs_total > 0 ? `pair ${Math.min(p.pairs_total, p.pairs_done + 1)}/${p.pairs_total}` : "starting";
+    diag.textContent = `net ${idx + 1}/${total} (${net}) — ${pairTxt} · ${fmtExpansions(p.expansions)} · ${elapsed()} — ${estNote}`;
+    if (job.state === "done") return { result: job.result, userCancelled: false };
+    if (job.state === "failed") {
+      const err = new Error(job.error || "routing job failed");
+      err.status = 500;
+      throw err;
+    }
+    if (performance.now() > deadline) {
+      await cancelRoutingJob(jobId);
+      // Collect the (partial) outcome after the cancel lands.
+      for (let k = 0; k < 10; k++) {
+        await new Promise(r => setTimeout(r, ROUTE_JOB_POLL_MS));
+        const r2 = await fetch(`/api/routing/jobs/${encodeURIComponent(jobId)}`);
+        if (!r2.ok) break;
+        const j2 = await r2.json();
+        if (j2.state === "done") return { result: j2.result, timedOut: true };
+        if (j2.state === "failed") break;
+      }
+      return { result: null, timedOut: true };
+    }
+    await new Promise(r => setTimeout(r, ROUTE_JOB_POLL_MS));
+  }
 }
 
 async function routeSelectedNets() {
@@ -2714,7 +2800,7 @@ async function routeSelectedNets() {
   progress.value = 0;
   routeCancelRequested = false;
 
-  const totals = { tracks: 0, vias: 0, routed: 0, failed: 0 };
+  const totals = { tracks: 0, vias: 0, routed: 0, failed: 0, expansions: 0, astarS: 0 };
   const failures = [];
   let doneCount = 0;
   let lastBoardVersion = lastVersion;
@@ -2724,40 +2810,38 @@ async function routeSelectedNets() {
   for (let i = 0; i < nets.length; i++) {
     if (routeCancelRequested) break;
     const net = nets[i];
-    diag.textContent = `net ${i + 1}/${nets.length} (${net}) — ${elapsed()} — ${estNote}`;
+    diag.textContent = `net ${i + 1}/${nets.length} (${net}) — starting — ${elapsed()} — ${estNote}`;
     progress.value = i / nets.length;
 
-    // Per-request backstop: the server has no cancel, so abort the fetch
-    // client-side rather than spinning forever on a hard net. The failed
-    // net is recorded and the batch continues with the next net.
-    const ctrl = new AbortController();
-    const timeoutMs = 150000;
-    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    let jobId = null;
     try {
-      const res = await fetch("/api/routing/run", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ net_names: [net], params }),
-        signal: ctrl.signal,
-      });
-      if (!res.ok) {
-        const msg = await res.text();
-        if (res.status === 400) {
-          // Bad params (e.g. oversize grid): every remaining net would fail
-          // the same way — abort the whole batch, keep what's routed.
-          failures.push(`${net}: ${msg}`);
-          totals.failed += nets.length - i;
-          doneCount = nets.length;
-          diag.textContent = `aborted: ${msg} — kept ${totals.routed}/${nets.length} nets`;
-          break;
+      jobId = await startRoutingJob(net, params);
+      routeCurrentJobId = jobId;
+      const { result: r, userCancelled, timedOut } = await pollRoutingJob(jobId, net, i, nets.length, diag, progress, estNote, t0);
+      routeCurrentJobId = null;
+      if (userCancelled) break;
+      if (timedOut) {
+        if (r) {
+          totals.tracks += r.tracks_added || 0;
+          totals.vias += r.vias_added || 0;
+          totals.routed += r.nets_routed || 0;
+          if (r.version) {
+            lastBoardVersion = r.version;
+            lastVersion = r.version;
+            await fetchAndInjectSVG(r.version);
+          }
         }
-        throw new Error(msg);
+        failures.push(`${net}: hit ${ROUTE_JOB_CAP_S / 60}min cap (cancelled server-side, partial kept)`);
+        totals.failed += 1;
+        continue;
       }
-      const r = await res.json();
+      if (!r) throw new Error("empty job result");
       totals.tracks += r.tracks_added || 0;
       totals.vias += r.vias_added || 0;
       totals.routed += r.nets_routed || 0;
       totals.failed += r.nets_failed || 0;
+      totals.expansions += r.expansions || 0;
+      if (r.timings?.astar_s) totals.astarS += r.timings.astar_s;
       totals.stitchVias = (totals.stitchVias || 0) + (r.stitch_vias_added || 0);
       totals.stitchTracks = (totals.stitchTracks || 0) + (r.stitch_tracks_added || 0);
       totals.gndStripped = (totals.gndStripped || 0) + (r.gnd_stripped || 0);
@@ -2773,11 +2857,19 @@ async function routeSelectedNets() {
         await fetchAndInjectSVG(r.version);
       }
     } catch (err) {
-      const why = err?.name === "AbortError" ? `timed out after ${timeoutMs / 1000}s` : err.message;
-      failures.push(`${net}: ${why}`);
+      routeCurrentJobId = null;
+      if (err?.status === 400) {
+        // Bad params (e.g. oversize grid): every remaining net would fail
+        // the same way — abort the whole batch, keep what's routed.
+        failures.push(`${net}: ${err.message}`);
+        totals.failed += nets.length - i;
+        doneCount = nets.length;
+        diag.textContent = `aborted: ${err.message} — kept ${totals.routed}/${nets.length} nets`;
+        break;
+      }
+      failures.push(`${net}: ${err.message}`);
       totals.failed += 1;
     } finally {
-      clearTimeout(timer);
       doneCount = i + 1;
       progress.value = doneCount / nets.length;
     }
@@ -2787,7 +2879,8 @@ async function routeSelectedNets() {
   await fetchNets();
 
   const kept = `v${lastBoardVersion} — ${totals.tracks} tracks, ${totals.vias} vias, ` +
-    `${totals.routed} routed, ${totals.failed} failed (${elapsed()})` +
+    `${totals.routed} routed, ${totals.failed} failed (${elapsed()} · ${fmtExpansions(totals.expansions)}` +
+    (totals.astarS ? `, ${totals.astarS.toFixed(0)}s A*` : "") + `)` +
     (totals.stitchVias || totals.stitchTracks
       ? ` — GND stitch: ${totals.stitchVias || 0} vias, ${totals.stitchTracks || 0} bridges` +
         (totals.gndBefore ? ` (islands ${totals.gndBefore}→${totals.gndAfter})` : "")
@@ -2854,9 +2947,11 @@ async function ripSelectedNets() {
 }
 
 document.getElementById("route-cancel-btn").addEventListener("click", () => {
-  // Cooperative cancel: the in-flight request finishes (the server can't be
-  // interrupted mid-search), then the loop stops. Routed nets are kept.
+  // Cooperative cancel: the in-flight job stops between pairs/attempts
+  // server-side (already-routed nets are kept). The poll loop observes the
+  // flag, posts the cancel, then collects the partial outcome.
   routeCancelRequested = true;
+  if (routeCurrentJobId) cancelRoutingJob(routeCurrentJobId);
 });
 
 // Route all unprotected nets

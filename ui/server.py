@@ -4,7 +4,9 @@ import json
 import signal
 import sys
 import threading
+import time
 import tomllib
+import uuid as uuidlib
 from dataclasses import replace
 from typing import Dict, Tuple, Set, Optional, Any
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -521,6 +523,157 @@ STATE = BoardState()
 _drc_lock = threading.Lock()
 DRC_PCB_PATH = TMP_DIR / "drc_current.kicad_pcb"
 DRC_REPORT_PATH = TMP_DIR / "drc_report_current.json"
+
+# Async routing jobs: POST /api/routing/jobs starts a background thread per
+# job (the UI routes one net per job); GET polls progress; POST .../cancel
+# sets a cooperative flag honored between nets/attempts/pairs and inside A*
+# (every 4096 expansions). Only one routing job runs at a time — a second
+# start gets 409 busy — because jobs share STATE.cost_grid/routing_grid.
+# The synchronous POST /api/routing/run is unchanged for back-compat/tests.
+_JOBS: Dict[str, dict] = {}
+_JOBS_LOCK = threading.Lock()
+_ROUTING_JOB_LOCK = threading.Lock()
+_MAX_JOBS = 20
+
+
+def _prune_jobs_locked() -> None:
+    """Drop oldest finished jobs past the cap (call with _JOBS_LOCK held)."""
+    if len(_JOBS) <= _MAX_JOBS:
+        return
+    finished = sorted(
+        ((jid, j) for jid, j in _JOBS.items() if j.get("state") in ("done", "failed")),
+        key=lambda kv: kv[1].get("finished", 0),
+    )
+    for jid, _ in finished[: len(_JOBS) - _MAX_JOBS]:
+        del _JOBS[jid]
+
+
+def _run_routing_job(job_id: str) -> None:
+    """Background worker: route the job's nets, then apply to STATE."""
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if job is None:
+            _ROUTING_JOB_LOCK.release()
+            return
+    t0 = time.perf_counter()
+    model, _, _, _, _, _ = STATE.snapshot
+    tree, _ = STATE.snapshot_pcb()
+    protected_nets = STATE.get_protected_nets()
+    extra_power = STATE.get_power_override_nets()
+    with _JOBS_LOCK:
+        job["state"] = "running"
+        job["started"] = t0
+        params_dict = dict(job.get("params_dict") or {})
+        net_names = list(job.get("net_names") or [])
+
+    def _should_cancel() -> bool:
+        with _JOBS_LOCK:
+            j = _JOBS.get(job_id)
+            return bool(j and j.get("cancel_requested"))
+
+    def _on_progress(net_name: str, done: int, total: int, expansions: int) -> None:
+        with _JOBS_LOCK:
+            j = _JOBS.get(job_id)
+            if j is None:
+                return
+            j["progress"] = {
+                "stage": "astar",
+                "net": net_name,
+                "pairs_done": done,
+                "pairs_total": total,
+                "expansions": expansions,
+                "elapsed_s": round(time.perf_counter() - t0, 1),
+            }
+
+    try:
+        route_params = RoutingParams.from_dict(params_dict)
+    except ValueError as exc:
+        with _JOBS_LOCK:
+            job["state"] = "failed"
+            job["error"] = f"bad params: {exc}"
+            job["finished"] = time.perf_counter()
+        _ROUTING_JOB_LOCK.release()
+        return
+    try:
+        result, cost_grid, routing_grid = route_nets(
+            model=model,
+            net_names=net_names,
+            protected_nets=protected_nets,
+            cost_grid=STATE.cost_grid,
+            routing_grid=STATE.routing_grid,
+            params=route_params,
+            original_pcb_tree=tree,
+            extra_power_nets=extra_power,
+            progress_cb=_on_progress,
+            should_cancel=_should_cancel,
+        )
+    except ValueError as exc:
+        with _JOBS_LOCK:
+            job["state"] = "failed"
+            job["error"] = f"routing rejected: {exc}"
+            job["finished"] = time.perf_counter()
+        _ROUTING_JOB_LOCK.release()
+        return
+    except Exception as exc:  # noqa: BLE001 — surfaced via poll, never a hang
+        import traceback
+        traceback.print_exc()
+        with _JOBS_LOCK:
+            job["state"] = "failed"
+            job["error"] = f"routing failed: {exc}"
+            job["finished"] = time.perf_counter()
+        _ROUTING_JOB_LOCK.release()
+        return
+
+    # Apply to shared state (same writeback as the sync endpoint: rebuild the
+    # model from the updated tree so /api/board.svg and /api/nets see copper).
+    with STATE._lock:
+        STATE.cost_grid = cost_grid
+        STATE.routing_grid = routing_grid
+        if result.pcb_tree is not None:
+            STATE.pcb_tree = result.pcb_tree
+            try:
+                STATE.model = board_model(result.pcb_tree)
+            except Exception:
+                STATE.routing_model = model
+            else:
+                STATE.routing_model = STATE.model
+        else:
+            STATE.routing_model = model
+        STATE.version += 1
+        version = STATE.version
+    payload = {
+        "ok": True,
+        "tracks_added": result.tracks_added,
+        "vias_added": result.vias_added,
+        "nets_routed": result.nets_routed,
+        "nets_failed": result.nets_failed,
+        "drc_clean": result.drc_clean,
+        "drc_violations": result.drc_violations,
+        "stitch_vias_added": result.stitch_vias_added,
+        "stitch_tracks_added": result.stitch_tracks_added,
+        "gnd_islands_before": result.gnd_islands_before,
+        "gnd_islands_after": result.gnd_islands_after,
+        "gnd_stripped": result.gnd_stripped,
+        "cancelled": result.cancelled,
+        "expansions": result.expansions,
+        "timings": result.timings,
+        "version": version,
+    }
+    if route_params.debug:
+        payload["debug"] = _cost_grid_to_debug(cost_grid, routing_grid)
+    with _JOBS_LOCK:
+        job["state"] = "done"
+        job["result"] = payload
+        job["finished"] = time.perf_counter()
+        job["progress"] = {
+            "stage": "done",
+            "net": (net_names or [""])[0],
+            "pairs_done": 0,
+            "pairs_total": 0,
+            "expansions": result.expansions,
+            "elapsed_s": round(time.perf_counter() - t0, 1),
+        }
+    _ROUTING_JOB_LOCK.release()
 
 
 def _run_drc_now(tree, for_version: int) -> dict:
@@ -1165,7 +1318,23 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self._send(500, f"PNG generation failed: {exc}".encode(), "text/plain")
             return
-        
+
+        # GET /api/routing/jobs/<job_id> - poll an async routing job.
+        if parsed.path.startswith("/api/routing/jobs/"):
+            job_id = parsed.path[len("/api/routing/jobs/"):]
+            with _JOBS_LOCK:
+                job = _JOBS.get(job_id)
+                snapshot = dict(job) if job else None
+                if snapshot is not None:
+                    snapshot["progress"] = dict(job.get("progress") or {})
+                    if job.get("result") is not None:
+                        snapshot["result"] = job["result"]
+            if snapshot is None:
+                self._send(404, b"unknown job", "text/plain")
+                return
+            self._send(200, json.dumps(snapshot).encode(), "application/json")
+            return
+
         rel_path = parsed.path.lstrip("/")
         rel = Path(rel_path) if rel_path else Path("index.html")
         full = (UI_DIR / rel).resolve()
@@ -1612,6 +1781,72 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps({"ok": True, "params": params.to_dict()}).encode(), "application/json")
             return
         
+        # POST /api/routing/jobs - start an async routing job (one net per
+        # job from the chunked UI). Returns {job_id} immediately; poll via
+        # GET /api/routing/jobs/<id>. Only one routing job runs at a time
+        # (409 busy otherwise) because jobs share the routing grids.
+        if parsed.path == "/api/routing/jobs":
+            model, _, _, _, _, _ = STATE.snapshot
+            if model is None:
+                self._send(404, b"no board loaded", "text/plain")
+                return
+            length = int(self.headers.get("Content-Length") or 0)
+            body_data = self.rfile.read(length) if length > 0 else b"{}"
+            try:
+                req = json.loads(body_data.decode("utf-8"))
+            except json.JSONDecodeError:
+                self._send(400, b"invalid JSON", "text/plain")
+                return
+            net_names = req.get("net_names", [])
+            if not isinstance(net_names, list) or not net_names:
+                self._send(400, b"net_names required (non-empty list)", "text/plain")
+                return
+            if not _ROUTING_JOB_LOCK.acquire(blocking=False):
+                self._send(409, b"another routing job is running", "text/plain")
+                return
+            job_id = uuidlib.uuid4().hex[:12]
+            with _JOBS_LOCK:
+                _prune_jobs_locked()
+                _JOBS[job_id] = {
+                    "job_id": job_id,
+                    "state": "queued",
+                    "net_names": [n for n in net_names if isinstance(n, str) and n],
+                    "params_dict": req.get("params", {}),
+                    "cancel_requested": False,
+                    "created": time.time(),
+                    "started": None,
+                    "finished": None,
+                    "progress": {
+                        "stage": "queued",
+                        "net": "",
+                        "pairs_done": 0,
+                        "pairs_total": 0,
+                        "expansions": 0,
+                        "elapsed_s": 0.0,
+                    },
+                    "result": None,
+                    "error": None,
+                }
+            worker = threading.Thread(target=_run_routing_job, args=(job_id,), daemon=True)
+            worker.start()
+            self._send(200, json.dumps({"ok": True, "job_id": job_id, "state": "queued"}).encode(), "application/json")
+            return
+
+        # POST /api/routing/jobs/<job_id>/cancel - cooperative cancel. The
+        # worker stops between nets/attempts/pairs (partial routes are kept);
+        # poll the job to observe completion.
+        if parsed.path.startswith("/api/routing/jobs/") and parsed.path.endswith("/cancel"):
+            job_id = parsed.path[len("/api/routing/jobs/"): -len("/cancel")]
+            with _JOBS_LOCK:
+                job = _JOBS.get(job_id)
+                if job is None:
+                    self._send(404, b"unknown job", "text/plain")
+                    return
+                job["cancel_requested"] = True
+                state = job.get("state")
+            self._send(200, json.dumps({"ok": True, "job_id": job_id, "state": state}).encode(), "application/json")
+            return
+
         # POST /api/routing/run - route selected nets
         if parsed.path == "/api/routing/run":
             model, _, _, _, _, _ = STATE.snapshot
@@ -1693,8 +1928,12 @@ class Handler(BaseHTTPRequestHandler):
                 "gnd_islands_before": result.gnd_islands_before,
                 "gnd_islands_after": result.gnd_islands_after,
                 "gnd_stripped": result.gnd_stripped,
+                "cancelled": result.cancelled,
+                "expansions": result.expansions,
+                "timings": result.timings,
                 "version": version,
             }
+            # Include debug info if requested (sync /api/routing/run)
             # Include debug info if requested
             if route_params.debug:
                 payload["debug"] = _cost_grid_to_debug(cost_grid, routing_grid)

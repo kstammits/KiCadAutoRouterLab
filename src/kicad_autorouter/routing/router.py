@@ -21,6 +21,7 @@ class RouteResult:
     via_count: int
     cost: float
     success: bool
+    expansions: int = 0  # A* node expansions spent (0 when trivially resolved)
 
 
 @dataclass
@@ -59,6 +60,12 @@ class CostMap:
 # rings). Soft halos (INNER 500 / OUTER 100) stay below, so they steer
 # without ever trapping — see build_fanout_cost.
 SECONDARY_BLOCKED = 1000
+
+
+# Raised when a routing search is cancelled via ``should_cancel``.
+# Caught by the pipeline/server job layer; never surfaces as a 500.
+class RoutingCancelled(Exception):
+    pass
 
 
 class SingleNetRouter:
@@ -100,6 +107,8 @@ class SingleNetRouter:
         self,
         terminals: List[Tuple[int, int, int]],  # [(col, row, layer_idx)]
         secondary: Optional[np.ndarray] = None,  # per-net fanout halo, same shape as cost_grid
+        progress_cb=None,  # fn(pairs_done, pairs_total, expansions) — best-effort
+        should_cancel=None,  # fn() -> bool — checked between pairs + inside A*
     ) -> RouteResult:
         """Route a net connecting all terminals.
 
@@ -111,19 +120,55 @@ class SingleNetRouter:
         and via landings (foreign-THT exclusion rings). The routed net's
         own pads are excluded at build time, so its terminals stay
         reachable.
+
+        ``progress_cb``/``should_cancel`` are optional job hooks: cancel is
+        honored between pair-searches (raising :class:`RoutingCancelled`)
+        and inside each A* run; progress reports completed pairs plus the
+        running expansion total.
         """
         if len(terminals) < 2:
             return RouteResult([], 0.0, 0, 0.0, False)
+        if should_cancel is not None and should_cancel():
+            raise RoutingCancelled("cancelled before first pair")
 
         # Build complete graph with A* distances
         n = len(terminals)
+        pairs_total = n * (n - 1) // 2
+        pairs_done = 0
+        expansions_total = 0
         dist_matrix = np.full((n, n), np.inf, dtype=np.float32)
         path_matrix = [[None] * n for _ in range(n)]
         cost_matrix = np.full((n, n), np.inf, dtype=np.float32)  # Store actual A* costs
 
+        def _report():
+            if progress_cb is not None:
+                try:
+                    progress_cb(pairs_done, pairs_total, expansions_total)
+                except Exception:
+                    pass
+
         for i in range(n):
             for j in range(i + 1, n):
-                result = self._a_star(terminals[i], terminals[j], secondary)
+                if should_cancel is not None and should_cancel():
+                    raise RoutingCancelled(f"cancelled after {pairs_done}/{pairs_total} pairs")
+                # Live per-search progress: report completed pairs plus the
+                # running expansion total (base = prior pairs).
+                base = expansions_total
+                search_cb = None
+                if progress_cb is not None:
+                    def search_cb(e, _base=base):
+                        try:
+                            progress_cb(pairs_done, pairs_total, _base + e)
+                        except Exception:
+                            pass
+                result = self._a_star(
+                    terminals[i], terminals[j], secondary,
+                    progress_cb=search_cb,
+                    should_cancel=should_cancel,
+                )
+                expansions_total += result.expansions
+                pairs_done += 1
+                _report()
                 if result.success:
                     dist_matrix[i, j] = dist_matrix[j, i] = result.cost
                     path_matrix[i][j] = path_matrix[j][i] = result.path
@@ -131,12 +176,12 @@ class SingleNetRouter:
 
         # Check connectivity (ignore diagonal)
         if np.any(np.isinf(dist_matrix[np.triu_indices(n, k=1)])):
-            return RouteResult([], 0.0, 0, 0.0, False)
+            return RouteResult([], 0.0, 0, 0.0, False, expansions_total)
 
         # Prim's MST
         mst_edges = self._prim_mst(dist_matrix)
         if not mst_edges:
-            return RouteResult([], 0.0, 0, 0.0, False)
+            return RouteResult([], 0.0, 0, 0.0, False, expansions_total)
 
         # Route MST edges sequentially, merging paths
         full_path = []
@@ -147,7 +192,7 @@ class SingleNetRouter:
         for i, j in mst_edges:
             edge_path = path_matrix[i][j]
             if not edge_path:
-                return RouteResult([], 0.0, 0, 0.0, False)
+                return RouteResult([], 0.0, 0, 0.0, False, expansions_total)
             
             # Merge with full path (avoid duplicating endpoints)
             if not full_path:
@@ -186,6 +231,7 @@ class SingleNetRouter:
             via_count=total_vias,
             cost=total_cost,
             success=True,
+            expansions=expansions_total,
         )
 
     def _secondary_blocked(
@@ -263,6 +309,8 @@ class SingleNetRouter:
         start: Tuple[int, int, int],
         goal: Tuple[int, int, int],
         secondary: Optional[np.ndarray] = None,
+        progress_cb=None,  # fn(expansions) — called every 4096 pops, best-effort
+        should_cancel=None,  # fn() -> bool — checked every 4096 pops
     ) -> RouteResult:
         """A* search on 3D grid with via transitions."""
         sc, sr, sl = start
@@ -305,7 +353,15 @@ class SingleNetRouter:
             f, g, c, r, l, p = heapq.heappop(open_set)
             expansions += 1
             if expansions > self.max_expansions:
-                return RouteResult([], 0.0, 0, 0.0, False)
+                return RouteResult([], 0.0, 0, 0.0, False, expansions)
+            if expansions % 4096 == 0:
+                if should_cancel is not None and should_cancel():
+                    raise RoutingCancelled(f"cancelled at {expansions} expansions")
+                if progress_cb is not None:
+                    try:
+                        progress_cb(expansions)
+                    except Exception:
+                        pass
 
             if (c, r, l) == (gc, gr, gl):
                 # Reconstruct path
@@ -314,7 +370,7 @@ class SingleNetRouter:
                     path.append(p[:3])
                     p = parent.get(p[:3])
                 path.reverse()
-                return RouteResult(path, 0.0, 0, g, True)
+                return RouteResult(path, 0.0, 0, g, True, expansions)
 
             if g > g_score[l, r, c]:
                 continue
@@ -366,7 +422,7 @@ class SingleNetRouter:
                         nf = ng + heuristic(c, r, nl)
                         heapq.heappush(open_set, (nf, ng, c, r, nl, (c, r, l)))
 
-        return RouteResult([], 0.0, 0, 0.0, False)
+        return RouteResult([], 0.0, 0, 0.0, False, expansions)
 
     def _is_blocked(self, row: int, col: int, layer: int) -> bool:
         if not (0 <= row < self.H and 0 <= col < self.W and 0 <= layer < self.n_layers):

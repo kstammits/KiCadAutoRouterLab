@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Collection, Optional, Tuple, List, Set, Dict
@@ -18,6 +19,7 @@ from . import (
     create_grid_from_model,
     order_nets,
     RipUpManager,
+    RoutingCancelled,
     SingleNetRouter,
     CostMap,
 )
@@ -48,6 +50,9 @@ class RoutingResult:
     gnd_islands_before: int = 0
     gnd_islands_after: int = 0
     gnd_stripped: int = 0  # GND vias+tracks evicted as blockers (rebuilt by stitcher)
+    cancelled: bool = False  # True when should_cancel fired mid-run
+    expansions: int = 0  # Total A* node expansions across all pair-searches
+    timings: Dict[str, float] = field(default_factory=dict)  # Stage seconds + grid cells
 
 
 @dataclass
@@ -275,6 +280,8 @@ def route_nets(
     params: Optional[RoutingParams] = None,
     original_pcb_tree: Optional = None,
     extra_power_nets: Collection[str] = (),
+    progress_cb=None,  # fn(net_name, pairs_done, pairs_total, expansions) — best-effort
+    should_cancel=None,  # fn() -> bool — checked between nets/attempts/pairs
 ) -> Tuple[RoutingResult, np.ndarray, RoutingGrid]:
     """Route a specific list of nets.
 
@@ -293,12 +300,31 @@ def route_nets(
             seeded from power-named KiCad netclasses on load). Marked nets
             route first with wide tracks and join the protected family via
             the caller's protected set.
+        progress_cb: Optional per-pair progress hook for job UIs. Called as
+            ``progress_cb(net_name, pairs_done, pairs_total, expansions)``.
+            Exceptions are swallowed (reporting must never break routing).
+        should_cancel: Optional cooperative-cancel predicate. Checked
+            between nets, between retry attempts, and inside A* (every 4096
+            expansions). Firing sets ``RoutingResult.cancelled`` and stops
+            with partial results — already-routed nets are kept.
 
     Returns:
         Tuple of (RoutingResult, updated_cost_grid, routing_grid)
     """
     if params is None:
         params = RoutingParams()
+    t_total = time.perf_counter()
+    timings: Dict[str, float] = {}
+    expansions_total = 0
+    cancelled = False
+
+    def _report(net_name: str, done: int, total: int, expansions: int) -> None:
+        if progress_cb is None:
+            return
+        try:
+            progress_cb(net_name, done, total, expansions)
+        except Exception:
+            pass
     
     # 0. Rip up selected nets from model so router can find new paths
     # (Existing tracks for these nets would block routing). Protected nets
@@ -337,6 +363,7 @@ def route_nets(
     # the requested resolution AND covers the same board area: a resolution
     # or margin change must rebuild, otherwise the new params are silently
     # ignored (and stale BLOCKED cells from the previous route persist).
+    t_grid = time.perf_counter()
     if routing_grid is None:
         routing_grid = create_grid_from_model(model, params.grid_resolution_mm, params.margin_mm)
     else:
@@ -353,6 +380,9 @@ def route_nets(
     # across 2 layers; each A* also allocates a ~4 byte/cell g-score array).
     # Fail fast with an actionable message instead of hanging for minutes.
     total_cells = len(routing_grid.layers) * routing_grid.width_cells * routing_grid.height_cells
+    timings["grid_build_s"] = time.perf_counter() - t_grid
+    timings["grid_cells"] = float(total_cells)
+    timings["grid_resolution_mm"] = float(params.grid_resolution_mm)
     if total_cells > MAX_GRID_CELLS_TOTAL:
         raise ValueError(
             f"routing grid too large: {routing_grid.width_cells}x{routing_grid.height_cells}"
@@ -379,10 +409,14 @@ def route_nets(
     if cost_grid is None or cost_grid.shape != (
         len(routing_grid.layers), routing_grid.height_cells, routing_grid.width_cells
     ):
+        t_occ = time.perf_counter()
         cost_grid = build_occupancy_grid(model, routing_grid, default_clearance_mm=params.clearance_mm)
+        timings["occupancy_s"] = time.perf_counter() - t_occ
     else:
+        t_occ = time.perf_counter()
         fresh = build_occupancy_grid(model, routing_grid, default_clearance_mm=params.clearance_mm)
         cost_grid[:] = fresh
+        timings["occupancy_s"] = time.perf_counter() - t_occ
     
     # 3. Create THT via mask for free layer transitions at through-hole pads
     tht_via_mask = _build_tht_via_mask(model, routing_grid)
@@ -432,15 +466,19 @@ def route_nets(
         """Route one net with its resolved width/clearance + fanout halo.
 
         Records into all_results/ripup, reserves the emitted-width corridor
-        on success. Returns True on success.
+        on success. Returns True on success. Raises :class:`RoutingCancelled`
+        when ``should_cancel`` fires (partial per-net results are kept by
+        the caller).
         """
-        nonlocal nets_routed, nets_failed
+        nonlocal nets_routed, nets_failed, expansions_total
         conns = model.nets.get(net_name, [])
         if len(conns) < 2:
             return False
         terminals = _terminals_for_net(model, routing_grid, net_name)
         if len(terminals) < 2:
             return False
+        pairs_total = len(terminals) * (len(terminals) - 1) // 2
+        _report(net_name, 0, pairs_total, expansions_total)
         width_mm = resolve_track_width(model, params, net_name, extra_power_nets)
         width_map[net_name] = width_mm
         margin_mm = max(0.0, float(getattr(params, "fanout_margin_mm", 0.0) or 0.0))
@@ -477,8 +515,23 @@ def route_nets(
         blocked_mask = secondary >= SECONDARY_BLOCKED
         success = False
         while ripup.can_retry(net_name):
-            result = router.route(terminals, secondary)
+            if should_cancel is not None and should_cancel():
+                raise RoutingCancelled(f"cancelled before attempt for {net_name}")
+
+            def _pair_cb(done: int, total: int, exp: int, _net: str = net_name) -> None:
+                _report(_net, done, total, expansions_total + exp)
+
+            t_astar = time.perf_counter()
+            result = router.route(
+                terminals, secondary,
+                progress_cb=_pair_cb if progress_cb is not None else None,
+                should_cancel=should_cancel,
+            )
+            timings["astar_s"] = timings.get("astar_s", 0.0) + (time.perf_counter() - t_astar)
+            expansions_total += result.expansions
+            _report(net_name, pairs_total, pairs_total, expansions_total)
             if result.success:
+                t_smooth = time.perf_counter()
                 pinned = {(c, r) for c, r, _ in terminals}
                 result = _smooth_result(
                     result, cost_grid, routing_grid, corridor,
@@ -486,6 +539,7 @@ def route_nets(
                     clearance_radius=clearance_radius,
                     blocked_mask=blocked_mask,
                 )
+                timings["smooth_s"] = timings.get("smooth_s", 0.0) + (time.perf_counter() - t_smooth)
                 _apply_route_to_grid(
                     result, cost_grid, routing_grid, corridor,
                     extra_radius=clearance_radius,
@@ -500,18 +554,30 @@ def route_nets(
         if not success:
             nets_failed += 1
         return success
-    
-    # 7. Route requested power nets (respects pad layers)
-    for net_name in requested_power:
-        _route_one_net(net_name)
-    
-    # 8. Route requested ground nets
-    for net_name in requested_ground:
-        _route_one_net(net_name)
-    
-    # 9. Route signal nets
-    for net_name in requested_signal:
-        _route_one_net(net_name)
+
+    # 7-9. Route requested nets by class (power, then ground, then signal).
+    # Cooperative cancel stops with partial results: already-routed nets
+    # are kept, unreached nets count as failed with reason "cancelled".
+    t_route = time.perf_counter()
+    try:
+        # 7. Route requested power nets (respects pad layers)
+        for net_name in requested_power:
+            _route_one_net(net_name)
+
+        # 8. Route requested ground nets
+        for net_name in requested_ground:
+            _route_one_net(net_name)
+
+        # 9. Route signal nets
+        for net_name in requested_signal:
+            _route_one_net(net_name)
+    except RoutingCancelled:
+        cancelled = True
+        for net_name in net_names:
+            if net_name not in all_results and net_name not in ripup.get_failed_nets():
+                ripup.record_failure(net_name, "cancelled")
+                nets_failed += 1
+    timings["route_s"] = time.perf_counter() - t_route
     
     # 10. Convert all results to tracks/vias (per-net resolved widths;
     # own-THT hops reuse the barrel: no Via emitted there)
@@ -588,6 +654,8 @@ def route_nets(
     if params.run_drc and pcb_tree is not None:
         drc_result = run_drc_on_tree(pcb_tree, prefix="route_")
 
+    timings["expansions"] = float(expansions_total)
+    timings["total_s"] = time.perf_counter() - t_total
     return RoutingResult(
         tracks_added=len(tracks),
         vias_added=len(vias),
@@ -602,6 +670,9 @@ def route_nets(
         gnd_islands_before=islands_before,
         gnd_islands_after=islands_after,
         gnd_stripped=gnd_stripped,
+        cancelled=cancelled,
+        expansions=expansions_total,
+        timings=timings,
     ), cost_grid, routing_grid
 
 
