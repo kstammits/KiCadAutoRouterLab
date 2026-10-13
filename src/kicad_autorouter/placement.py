@@ -543,15 +543,18 @@ def _contact_weights(proj: np.ndarray) -> np.ndarray:
 
     ``proj`` is ``((pad - centroid) . u) / radius`` per pad (~[-1, 1];
     negative on the contact side, which takes more: ``w = 1 - proj``).
-    Weights average exactly 1, so the footprint total is conserved and no
+    Weights sum exactly to 1, so the footprint total is conserved and no
     force is created or destroyed -- only its moment arm changes. A single
     pad gets exactly 1.
     """
     w = 1.0 - np.asarray(proj, dtype=np.float64)
-    m = float(w.mean()) if len(w) else 1.0
-    if math.isfinite(m) and abs(m) > 1e-9:
-        return w / m
-    return np.ones_like(w)
+    s = float(w.sum()) if len(w) else 1.0
+    if math.isfinite(s) and abs(s) > 1e-9:
+        return w / s
+    n = len(w)
+    if n > 0:
+        return np.ones_like(w) / n
+    return w
 
 
 def _board_bbox(model: BoardModel) -> Tuple[float, float, float, float]:
@@ -1210,8 +1213,10 @@ def _run_region_simulation(
                     return
                 r = float(radius)
                 if not math.isfinite(r) or r < 1e-9:
-                    poly_force[rows, 0] += fx
-                    poly_force[rows, 1] += fy
+                    n = len(rows)
+                    if n > 0:
+                        poly_force[rows, 0] += fx / n
+                        poly_force[rows, 1] += fy / n
                     return
                 proj = ((pos[rows, 0] - cx) * ux + (pos[rows, 1] - cy) * uy) / r
                 w = _contact_weights(proj)
@@ -1253,11 +1258,11 @@ def _run_region_simulation(
                     )
                     ux, uy = dx / _gap, dy / _gap
                     fx, fy = strength * ux, strength * uy
-                    poly_force[fp_local_to_rows[li], 0] += fx
-                    poly_force[fp_local_to_rows[li], 1] += fy
+                    _spread(fp_local_to_rows[li], fp_centroids_arr[li, 0], fp_centroids_arr[li, 1],
+                            fp_radii_arr[li], ux, uy, fx, fy)
                     if fp_movable_arr[lj]:
-                        poly_force[fp_local_to_rows[lj], 0] -= fx
-                        poly_force[fp_local_to_rows[lj], 1] -= fy
+                        _spread(fp_local_to_rows[lj], fp_centroids_arr[lj, 0], fp_centroids_arr[lj, 1],
+                                fp_radii_arr[lj], -ux, -uy, -fx, -fy)
 
             # Compute collision forces per footprint pair, then distribute to pads.
             for i in range(n_fp):

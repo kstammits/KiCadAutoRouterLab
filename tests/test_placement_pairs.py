@@ -199,8 +199,9 @@ def test_contact_weighting_conserves_total():
     """F4: the contact-weighted spread conserves the footprint total.
 
     B (2 pads) and a single-pad probe S share the identical courtyard
-    layout relative to locked A, so S must feel exactly half of B's
-    courtyard component (weights average 1 by construction). Repulsion
+    layout relative to locked A, so S must feel exactly the SAME total
+    courtyard force as B (weights sum to 1 by construction, distributing
+    the pair force across pads while preserving the total). Repulsion
     differs by pad count, so only courtyard components are compared.
     """
     from .helpers import make_fp as _make_fp
@@ -239,23 +240,23 @@ def test_contact_weighting_conserves_total():
     prop1 = run_placement(model1, params, movable_uuids={"uuid-s"})
     cy_b = prop.force_components["uuid-b"]["courtyard"][0]
     cy_s = prop1.force_components["uuid-s"]["courtyard"][0]
-    assert cy_s == pytest.approx(cy_b / 2.0, rel=1e-9), (
-        f"weighting changed the total: single={cy_s}, half-of-B={cy_b / 2.0}"
+    assert cy_s == pytest.approx(cy_b, rel=1e-9), (
+        f"weighting changed the total: single={cy_s}, B={cy_b}"
     )
 
 
 @pytest.mark.regression
 def test_contact_weights_unit():
-    """_contact_weights: contact side loaded, mean exactly 1, single -> 1."""
+    """_contact_weights: contact side loaded, sum exactly 1, single -> 1."""
     import numpy as np
 
     from kicad_autorouter.placement import _contact_weights
 
     w = _contact_weights(np.array([-0.5, 0.5]))
     assert w[0] > w[1]  # contact side (negative proj) takes more
-    assert sum(w) == pytest.approx(2.0)  # mean exactly 1: total conserved
+    assert sum(w) == pytest.approx(1.0)  # sum exactly 1: total conserved
     assert _contact_weights(np.array([0.0])) == pytest.approx([1.0])
-    assert sum(_contact_weights(np.array([-0.9, -0.1, 0.4]))) == pytest.approx(3.0)
+    assert sum(_contact_weights(np.array([-0.9, -0.1, 0.4]))) == pytest.approx(1.0)
 
 
 @pytest.mark.regression
