@@ -428,6 +428,7 @@
             <span class="num">Route</span>
             <button id="route-selected-btn" class="primary" title="Route selected nets">Route Selected Nets</button>
             <button id="route-all-btn" title="Route all unprotected nets">Route All Unprotected</button>
+            <button id="rip-selected-btn" title="Rip up (remove) copper for selected nets without re-routing">Rip Selected Nets</button>
             <button id="route-cancel-btn" hidden title="Stop after the current net (already-routed nets are kept)">Cancel</button>
             <progress id="route-progress" hidden max="1" value="0" style="width:8rem;" title="Per-net routing progress"></progress>
             <button id="gnd-islands-btn" title="Analyze GND pour continuity (islands per layer)">GND Islands</button>
@@ -1368,17 +1369,9 @@ function selectNetFromCopper(net, additive) {
     selectedNets.add(net);
   }
   // Net-only: never touch selectedUuids / footprints.
-  updateNetSelectionUI();
   highlightSelectedNets();
-  // Sync nets table rows if rendered
-  document.querySelectorAll("#nets-tbody tr").forEach(tr => {
-    const n = tr.dataset.net;
-    if (!n) return;
-    const on = selectedNets.has(n);
-    const cb = tr.querySelector("input.net-col-select");
-    if (cb) cb.checked = on;
-    tr.classList.toggle("net-selected-row", on);
-  });
+  // Sync nets table rows if rendered (single helper: rows + header + counts)
+  syncNetRowSelection();
   const diag = document.getElementById("route-diag");
   if (diag) {
     diag.textContent = selectedNets.size
@@ -2412,7 +2405,7 @@ function renderNetsTable(nets) {
     `;
   }).join("");
   
-  // Add click handlers for checkboxes
+  // Add click handlers for checkboxes (in-place highlight, no re-render)
   tbody.querySelectorAll('input.net-col-select[type="checkbox"]').forEach(cb => {
     cb.addEventListener("change", e => {
       const net = e.target.dataset.net;
@@ -2421,7 +2414,7 @@ function renderNetsTable(nets) {
       } else {
         selectedNets.delete(net);
       }
-      updateNetSelectionUI();
+      syncNetRowSelection();
     });
   });
   
@@ -2471,20 +2464,22 @@ function renderNetsTable(nets) {
     });
   });
   
-  // Row click to select/deselect
+  // Row click to select/deselect (in-place: never re-render the table here —
+  // renderNetsTable replaces tbody, so a synthetic subset would "vanish" rows).
   tbody.querySelectorAll("tr").forEach(tr => {
     tr.addEventListener("click", e => {
       if (e.target.type === "checkbox") return;
+      if (e.target.closest("td[data-power-cell]")) return;
       const net = tr.dataset.net;
       if (!net) return;
-      
+
       if (e.shiftKey || e.ctrlKey || e.metaKey) {
-        toggleNetSelection(net).then(() => renderNetsTable(Array.from(selectedNets).map(n => ({name: n}))));
+        toggleNetSelection(net);
       } else {
         selectedNets.clear();
         selectedNets.add(net);
-        renderNetsTable(Array.from(selectedNets).map(n => ({name: n})));
       }
+      syncNetRowSelection();
     });
   });
   
@@ -2494,14 +2489,37 @@ function renderNetsTable(nets) {
     selectAllCb.checked = nets.length > 0 && nets.every(n => selectedNets.has(n.name));
     selectAllCb.indeterminate = nets.some(n => selectedNets.has(n.name)) && !nets.every(n => selectedNets.has(n.name));
   }
+  // Counts must match the selection after every (full-data) render.
+  updateNetSelectionUI();
 }
 
-async function toggleNetSelection(net) {
+function toggleNetSelection(net) {
   if (selectedNets.has(net)) {
     selectedNets.delete(net);
   } else {
     selectedNets.add(net);
   }
+}
+
+// Single place that mirrors selectedNets into the rendered rows + header
+// checkbox + action-button counts. Never re-renders the table (full data
+// only comes from fetchNets), so the list can't "vanish" on click.
+function syncNetRowSelection() {
+  document.querySelectorAll("#nets-tbody tr").forEach(tr => {
+    const n = tr.dataset.net;
+    if (!n) return;
+    const on = selectedNets.has(n);
+    const cb = tr.querySelector("input.net-col-select");
+    if (cb) cb.checked = on;
+    tr.classList.toggle("net-selected-row", on);
+  });
+  const selectAllCb = document.getElementById("nets-select-all");
+  if (selectAllCb) {
+    const rows = [...document.querySelectorAll("#nets-tbody tr")].map(tr => tr.dataset.net).filter(Boolean);
+    selectAllCb.checked = rows.length > 0 && rows.every(n => selectedNets.has(n));
+    selectAllCb.indeterminate = rows.some(n => selectedNets.has(n)) && !rows.every(n => selectedNets.has(n));
+  }
+  updateNetSelectionUI();
 }
 
 function updateNetSelectionUI() {
@@ -2510,6 +2528,11 @@ function updateNetSelectionUI() {
   if (routeBtn) {
     routeBtn.disabled = count === 0;
     routeBtn.textContent = count > 0 ? `Route ${count} Selected Net${count > 1 ? 's' : ''}` : "Route Selected Nets";
+  }
+  const ripBtn = document.getElementById("rip-selected-btn");
+  if (ripBtn) {
+    ripBtn.disabled = count === 0;
+    ripBtn.textContent = count > 0 ? `Rip Selected (${count})` : "Rip Selected Nets";
   }
 }
 
@@ -2536,6 +2559,7 @@ function renderRoutingParams(params) {
     { key: "track_width_mm", label: "Track Width (mm)", min: 0.1, max: 2.0, step: 0.05, default: 0.25 },
     { key: "power_width_mm", label: "Power Width (mm)", min: 0.2, max: 3.0, step: 0.05, default: 0.5 },
     { key: "clearance_mm", label: "Clearance (mm)", min: 0.1, max: 1.0, step: 0.05, default: 0.2 },
+    { key: "fanout_margin_mm", label: "Push away from foreign pins (mm, steering only)", min: 0, max: 1.0, step: 0.05, default: 0 },
     { key: "via_cost_mm", label: "Via Cost (mm)", min: 1, max: 20, step: 0.5, default: 5 },
     { key: "pour_severance_weight", label: "Pour Severance Weight (0 disables)", min: 0, max: 200, step: 5, default: 30 },
     { key: "grid_resolution_mm", label: "Grid Resolution (mm) — 0.05 is 4x cells, may be rejected on large boards", min: 0.05, max: 0.5, step: 0.05, default: 0.1 },
@@ -2670,6 +2694,7 @@ async function routeSelectedNets() {
   const diag = document.getElementById("route-diag");
   const routeBtn = document.getElementById("route-selected-btn");
   const routeAllBtn = document.getElementById("route-all-btn");
+  const ripBtn = document.getElementById("rip-selected-btn");
   const cancelBtn = document.getElementById("route-cancel-btn");
   const progress = document.getElementById("route-progress");
 
@@ -2681,6 +2706,7 @@ async function routeSelectedNets() {
 
   routeBtn.disabled = true;
   routeAllBtn.disabled = true;
+  if (ripBtn) ripBtn.disabled = true;
   routeBtn.classList.add("loading");
   routeAllBtn.classList.add("loading");
   cancelBtn.hidden = false;
@@ -2783,6 +2809,50 @@ async function routeSelectedNets() {
   updateNetSelectionUI();
 }
 
+// Rip up selected nets: remove their copper without re-routing.
+// Protected nets are skipped server-side and reported in the diag line.
+async function ripSelectedNets() {
+  if (selectedNets.size === 0) return;
+  const diag = document.getElementById("route-diag");
+  const ripBtn = document.getElementById("rip-selected-btn");
+  const routeBtn = document.getElementById("route-selected-btn");
+  const routeAllBtn = document.getElementById("route-all-btn");
+  const nets = Array.from(selectedNets);
+  for (const b of [ripBtn, routeBtn, routeAllBtn]) {
+    if (b) { b.disabled = true; b.classList.add("loading"); }
+  }
+  try {
+    diag.textContent = `ripping ${nets.length} net${nets.length > 1 ? "s" : ""}…`;
+    const res = await fetch("/api/routing/ripup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ net_names: nets }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const r = await res.json();
+    const ripped = r.ripped || {};
+    const names = Object.keys(ripped);
+    const txt = names.length
+      ? names.map(n => `${n}: ${ripped[n].tracks || 0} tracks/${ripped[n].vias || 0} vias`).join(", ")
+      : "no copper removed";
+    const skipped = (r.skipped_protected || []).join(", ");
+    diag.textContent = `ripped ${txt}` + (skipped ? `; kept protected ${skipped}` : "") + ` (v${r.version})`;
+    document.getElementById("undo-btn").disabled = false;
+    if (r.version) {
+      lastVersion = r.version;
+      await fetchAndInjectSVG(r.version);
+    }
+    await fetchNets();
+  } catch (err) {
+    diag.textContent = `rip-up failed: ${err.message}`;
+  } finally {
+    for (const b of [ripBtn, routeBtn, routeAllBtn]) {
+      if (b) b.classList.remove("loading");
+    }
+    updateNetSelectionUI();
+  }
+}
+
 document.getElementById("route-cancel-btn").addEventListener("click", () => {
   // Cooperative cancel: the in-flight request finishes (the server can't be
   // interrupted mid-search), then the loop stops. Routed nets are kept.
@@ -2794,9 +2864,11 @@ async function routeAllNets() {
   const diag = document.getElementById("route-diag");
   const routeBtn = document.getElementById("route-selected-btn");
   const routeAllBtn = document.getElementById("route-all-btn");
+  const ripBtn = document.getElementById("rip-selected-btn");
   
   routeBtn.disabled = true;
   routeAllBtn.disabled = true;
+  if (ripBtn) ripBtn.disabled = true;
   routeBtn.classList.add("loading");
   routeAllBtn.classList.add("loading");
   diag.textContent = "Routing...";
@@ -2808,10 +2880,9 @@ async function routeAllNets() {
     const unprotected = (data.nets || []).filter(n => !n.protected).map(n => n.name);
     if (unprotected.length === 0) return;
     
-    // Temporarily select all unprotected
-    const originalSelected = new Set(selectedNets);
+    // Select all unprotected, keep the full table rendered.
     selectedNets = new Set(unprotected);
-    renderNetsTable(Array.from(selectedNets).map(n => ({name: n})));
+    renderNetsTable(data.nets || []);
     await routeSelectedNets();
   } catch (err) {
     diag.textContent = `routing failed: ${err.message}`;
@@ -2820,12 +2891,14 @@ async function routeAllNets() {
     routeAllBtn.disabled = false;
     routeBtn.classList.remove("loading");
     routeAllBtn.classList.remove("loading");
+    updateNetSelectionUI();
   }
 }
 
 // Event listeners for routing panel
 document.getElementById("route-selected-btn").addEventListener("click", routeSelectedNets);
 document.getElementById("route-all-btn").addEventListener("click", routeAllNets);
+document.getElementById("rip-selected-btn").addEventListener("click", ripSelectedNets);
 document.getElementById("gnd-islands-btn").addEventListener("click", fetchGndIslands);
 
 // GND pour continuity overlay (Phase 1 diagnostics): bbox per island,
@@ -2913,7 +2986,7 @@ async function fetchGndIslands() {
   }
 }
 
-// Select all checkbox in nets table
+// Select all checkbox in nets table (in-place: full list stays rendered)
 document.getElementById("nets-select-all").addEventListener("change", e => {
   const rows = document.querySelectorAll("#nets-tbody tr");
   if (e.target.checked) {
@@ -2922,9 +2995,12 @@ document.getElementById("nets-select-all").addEventListener("change", e => {
       if (net) selectedNets.add(net);
     });
   } else {
-    selectedNets.clear();
+    rows.forEach(tr => {
+      const net = tr.dataset.net;
+      if (net) selectedNets.delete(net);
+    });
   }
-  renderNetsTable(Array.from(selectedNets).map(n => ({name: n})));
+  syncNetRowSelection();
 });
 
 // Protect all checkbox

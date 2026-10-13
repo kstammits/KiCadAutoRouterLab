@@ -52,9 +52,14 @@ def own_net_soft_mask(model, grid, net_name: str, clearance_mm: float, track_hal
             if not pad.net_name or pad.net_name != net_name:
                 continue
             try:
-                pad_half = max(float(s) for s in pad.size_mm) / 2.0
-            except (TypeError, ValueError):
-                pad_half = 0.0
+                w, h = float(pad.size_mm[0]), float(pad.size_mm[1])
+            except (TypeError, ValueError, IndexError):
+                w, h = 0.0, 0.0
+            shape = (getattr(pad, "shape", "") or "").lower()
+            if shape in ("rect", "roundrect", "chamfered", "trapezoid", "custom"):
+                pad_half = math.hypot(w, h) / 2.0
+            else:
+                pad_half = max(w, h) / 2.0
             radius = max(1, int(math.ceil((pad_half + clearance_mm + track_half_mm) / res_mm)))
             col, row = board_to_grid(grid, pad.position.x_mm, pad.position.y_mm)
             layers = (0, 1) if pad.is_through_hole else (0 if fp.layer == "F.Cu" else 1,)
@@ -74,12 +79,17 @@ def _footprint_clear(
     r_f: float,
     radius: int,
     blocked_threshold: int,
+    blocked_layer=None,
 ) -> bool:
     """Check the ``(2*radius+1)`` square footprint around a sample point.
 
     Cells >= ``blocked_threshold`` are always impassable. Penalized cells
     (>= SOFT_THRESHOLD: pad rings, edge keepout) are impassable unless
     covered by ``soft_layer`` (the routed net's own pad areas).
+    ``blocked_layer`` is an optional boolean mask of per-net hard exclusion
+    (foreign-THT rings from the secondary grid): any True cell in the
+    footprint blocks the shortcut with no soft exemption, since the A*
+    router itself treats those cells as impassable.
     """
     H, W = cost_layer.shape
     c0 = int(math.floor(c_f))
@@ -90,12 +100,30 @@ def _footprint_clear(
         for cc in range(c0 - radius, c0 + radius + 1):
             if cc < 0 or cc >= W:
                 return False
+            if blocked_layer is not None and bool(blocked_layer[rr, cc]):
+                return False
             val = int(cost_layer[rr, cc])
             if val >= blocked_threshold:
                 return False
             if val >= SOFT_THRESHOLD and (soft_layer is None or not soft_layer[rr, cc]):
                 return False
     return True
+
+
+def _blocked_footprint_hit(blocked_layer, c_f: float, r_f: float, radius: int) -> bool:
+    """True when the corridor footprint around a sample touches exclusion."""
+    H, W = blocked_layer.shape
+    c0 = int(math.floor(c_f))
+    r0 = int(math.floor(r_f))
+    for rr in range(r0 - radius, r0 + radius + 1):
+        if rr < 0 or rr >= H:
+            return True
+        for cc in range(c0 - radius, c0 + radius + 1):
+            if cc < 0 or cc >= W:
+                return True
+            if bool(blocked_layer[rr, cc]):
+                return True
+    return False
 
 
 def _line_walkable(
@@ -107,22 +135,40 @@ def _line_walkable(
     soft_layer,
     blocked_threshold: int,
     corridor_radius: int,
+    blocked_layer=None,
 ) -> bool:
     """Check an any-angle straight line between two grid cells.
 
     Samples at half-cell steps; each sample's corridor footprint must be
-    clear, except near the endpoints (pad allowance).
+    clear, except near the endpoints (pad allowance). ``blocked_layer``
+    (foreign-THT exclusion) is enforced at every sample including the
+    endpoint allowance: the routed net's own pads are excluded at build
+    time, so any exclusion hit means clipping foreign copper.
     """
     dist = math.hypot(c2 - c1, r2 - r1)
     if dist == 0:
+        if blocked_layer is not None:
+            H, W = blocked_layer.shape
+            if 0 <= r1 < H and 0 <= c1 < W and bool(blocked_layer[r1, c1]):
+                return False
         return True
     steps = max(1, int(math.ceil(dist * 2)))
     for s in range(steps + 1):
         t = s / steps
         c_f = c1 + (c2 - c1) * t
         r_f = r1 + (r2 - r1) * t
-        # Terminal allowance: skip the blockage check within one cell of
-        # either endpoint (pads live on blocked cells).
+        if blocked_layer is not None and not (
+            math.hypot(c_f - c1, r_f - r1) < 0.5
+            or math.hypot(c_f - c2, r_f - r2) < 0.5
+        ):
+            # Hard exclusion (foreign-THT rings) has no endpoint
+            # allowance: the routed net's own pads read 0 in this mask,
+            # so any footprint hit means clipping foreign copper. The
+            # cost grid keeps its own 1-cell allowance below.
+            if _blocked_footprint_hit(blocked_layer, c_f, r_f, corridor_radius):
+                return False
+        # Terminal allowance for the cost grid: pads live on blocked
+        # cells, so skip within one cell of either endpoint.
         if (
             math.hypot(c_f - c1, r_f - r1) < 1.0
             or math.hypot(c_f - c2, r_f - r2) < 1.0
@@ -139,6 +185,7 @@ def _smooth_run(
     soft_layer,
     blocked_threshold: int,
     corridor_radius: int,
+    blocked_layer=None,
 ) -> List[Tuple[int, int, int]]:
     """Greedy furthest-visible shortcutting over one same-layer run."""
     n = len(run)
@@ -153,6 +200,7 @@ def _smooth_run(
             if _line_walkable(
                 run[i][0], run[i][1], run[j][0], run[j][1],
                 cost_layer, soft_layer, blocked_threshold, corridor_radius,
+                blocked_layer,
             ):
                 break
             j -= 1
@@ -168,6 +216,7 @@ def smooth_grid_path(
     corridor_radius: int = 0,
     pinned: Optional[Set[Tuple[int, int]]] = None,
     soft_mask=None,
+    blocked_mask=None,
 ) -> List[Tuple[int, int, int]]:
     """Shortcut a routed grid path within each same-layer run.
 
@@ -185,6 +234,10 @@ def smooth_grid_path(
         soft_mask: optional ``(n_layers, H, W)`` boolean array (see
             :func:`own_net_soft_mask`). Penalized cells are crossable only
             where it is True. When None, every penalized cell blocks.
+        blocked_mask: optional ``(n_layers, H, W)`` boolean array of
+            per-net hard exclusion (foreign-THT rings, i.e. ``secondary >=
+            SECONDARY_BLOCKED``). Shortcuts may never cross True cells;
+            the routed net's own pads read False by construction.
 
     Returns:
         New path with identical endpoints, identical via nodes/layers, all
@@ -224,7 +277,8 @@ def smooth_grid_path(
         else:
             cost_layer = cost_grid[layer]
             soft_layer = soft_mask[layer] if soft_mask is not None else None
-            new_run = _smooth_run(run, cost_layer, soft_layer, blocked_threshold, max(0, corridor_radius))
+            blocked_layer = blocked_mask[layer] if blocked_mask is not None else None
+            new_run = _smooth_run(run, cost_layer, soft_layer, blocked_threshold, max(0, corridor_radius), blocked_layer)
         if smoothed and new_run and new_run[0] == smoothed[-1]:
             # Shared pinned node: dedupe. (Via boundaries are disjoint
             # node pairs, so they are never merged here.)

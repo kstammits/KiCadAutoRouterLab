@@ -100,14 +100,21 @@ def build_fanout_cost(
     current_net: str,
     clearance_mm: float = 0.2,
     track_half_mm: float = 0.125,
+    extra_margin_mm: float = 0.0,
 ) -> np.ndarray:
     """Build the per-net secondary (fanout) cost grid for ``current_net``.
 
     Returns a ``(n_layers, H, W)`` int16 grid of soft-shoulder halos over
     every *other* net's pads: ``FANOUT_HALO_INNER`` within pad extent +
     clearance + half track width, ``FANOUT_HALO_OUTER`` for one further
-    clearance-width ring. The current net's own pads are excluded so its
-    terminals can still escape. All other cells are 0.
+    clearance-width ring plus ``extra_margin_mm`` of steering push. The
+    current net's own pads are excluded so its terminals can still escape.
+    All other cells are 0.
+
+    ``extra_margin_mm`` is steering-only (never DRC): it widens the soft
+    outer shoulder without touching the hard inner ring, so dense escapes
+    (e.g. between DIP pins) stay routable while the search prefers a wider
+    berth around foreign copper.
 
     Soft halos are added to the entry cost (never to blockage), so they
     steer around foreign copper without ever trapping a route. The one
@@ -125,6 +132,8 @@ def build_fanout_cost(
         return secondary
 
     outer_extra = pad_halo_radius_cells(0.0, clearance_mm, 0.0, res_mm)
+    if extra_margin_mm > 0:
+        outer_extra += max(0, int(math.ceil(extra_margin_mm / res_mm)))
     for fp in model.footprints:
         for pad in fp.pads:
             if not pad.net_name or pad.net_name == current_net:
@@ -230,11 +239,24 @@ def _block_courtyard(cost_grid: np.ndarray, grid, fp):
 
 
 def _pad_half_extent_mm(pad: Pad) -> float:
-    """Largest half-extent of a pad (covers rect/circle/trapezoid footprints)."""
+    """Half-extent of a pad covering its copper in every direction.
+
+    Round pads (``circle``, ``oval`` with equal w/h): circular radius
+    ``max/2`` is exact. Rectangular pads (``rect`` pin 1 on DIP sockets,
+    ``roundrect``/``chamfered``/``trapezoid``/``custom``): the corner sticks
+    out to the half-diagonal ``hypot(w,h)/2``, so a circular halo must use
+    that radius or diagonals clip the corner. Non-rect shapes keep the
+    tighter circular radius (oval capsules are already conservatively
+    covered along their length by the ``max/2`` disc).
+    """
     try:
-        return max(float(s) for s in pad.size_mm) / 2.0
-    except (TypeError, ValueError):
+        w, h = float(pad.size_mm[0]), float(pad.size_mm[1])
+    except (TypeError, ValueError, IndexError):
         return 0.0
+    shape = (getattr(pad, "shape", "") or "").lower()
+    if shape in ("rect", "roundrect", "chamfered", "trapezoid", "custom"):
+        return math.hypot(w, h) / 2.0
+    return max(w, h) / 2.0
 
 
 def pad_halo_radius_cells(

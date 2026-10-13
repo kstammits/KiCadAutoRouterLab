@@ -1700,7 +1700,80 @@ class Handler(BaseHTTPRequestHandler):
                 payload["debug"] = _cost_grid_to_debug(cost_grid, routing_grid)
             self._send(200, json.dumps(payload).encode(), "application/json")
             return
-        
+
+        # POST /api/routing/ripup - strip copper for selected nets, no re-route.
+        # Explicit per-net rip-up: removes (segment)/(via) nodes for the
+        # requested nets while leaving everything else (incl. protected nets)
+        # untouched. Pushes undo first so the existing Undo button restores.
+        if parsed.path == "/api/routing/ripup":
+            model, _, _, _, _, _ = STATE.snapshot
+            if model is None:
+                self._send(404, b"no board loaded", "text/plain")
+                return
+            length = int(self.headers.get("Content-Length") or 0)
+            body_data = self.rfile.read(length) if length > 0 else b"{}"
+            try:
+                req = json.loads(body_data.decode("utf-8"))
+            except json.JSONDecodeError:
+                self._send(400, b"invalid JSON", "text/plain")
+                return
+            net_names = req.get("net_names", [])
+            if not isinstance(net_names, list) or not net_names:
+                self._send(400, b"net_names required (non-empty list)", "text/plain")
+                return
+            protected_nets = STATE.get_protected_nets()
+            requested = [n for n in net_names if isinstance(n, str) and n]
+            skipped_protected = sorted({n for n in requested if n in protected_nets})
+            rippable = sorted({n for n in requested if n not in protected_nets})
+            if not rippable:
+                self._send(
+                    200,
+                    json.dumps({
+                        "ok": True,
+                        "ripped": {},
+                        "skipped_protected": skipped_protected,
+                        "version": STATE.snapshot[3],
+                    }).encode(),
+                    "application/json",
+                )
+                return
+            from collections import Counter as _Counter
+            tracks_before = _Counter(t.net_name for t in model.tracks if t.net_name)
+            vias_before = _Counter(v.net_name for v in model.vias if v.net_name)
+            STATE.push_undo()
+            with STATE._lock:
+                STATE.pcb_tree = rip_up_nets(STATE.pcb_tree, set(rippable), protected_nets)
+                try:
+                    STATE.model = board_model(STATE.pcb_tree)
+                except Exception:
+                    # Keep the old model rather than dropping the board;
+                    # undo stack still holds the pre-rip state.
+                    pass
+                else:
+                    STATE.routing_model = STATE.model
+                # Copper changed -> cached occupancy grids are stale.
+                STATE.cost_grid = None
+                STATE.routing_grid = None
+                STATE.version += 1
+                version = STATE.version
+                new_model = STATE.model
+            tracks_after = _Counter(t.net_name for t in new_model.tracks if t.net_name)
+            vias_after = _Counter(v.net_name for v in new_model.vias if v.net_name)
+            ripped: dict = {}
+            for net in rippable:
+                dt = tracks_before.get(net, 0) - tracks_after.get(net, 0)
+                dv = vias_before.get(net, 0) - vias_after.get(net, 0)
+                if dt or dv:
+                    ripped[net] = {"tracks": dt, "vias": dv}
+            payload = {
+                "ok": True,
+                "ripped": ripped,
+                "skipped_protected": skipped_protected,
+                "version": version,
+            }
+            self._send(200, json.dumps(payload).encode(), "application/json")
+            return
+
         self._send(404, b"not found", "text/plain")
 
     def log_message(self, fmt, *args):  # keep console quiet

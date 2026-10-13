@@ -24,6 +24,7 @@ from . import (
 from .output import routes_to_tracks_vias, apply_routes_to_tree
 from .output import Track as OutputTrack, Via as OutputVia
 from .smooth import own_net_soft_mask, smooth_grid_path, smoothed_wire_mm
+from .router import SECONDARY_BLOCKED
 from .power import identify_power_nets, route_power_rails, route_decap_fanout
 from .grid import RoutingGrid, board_to_grid
 from .pour import pour_corridors, pour_net_names, severance_cost
@@ -74,6 +75,7 @@ class RoutingParams:
     stitch_bridges_max: int = 16      # Cap on auto GND bridge tracks (repairs)
     stitch_bridge_max_mm: float = 30.0  # Longest single bridge track
     pour_severance_weight: float = 30.0  # Soft cost for tracks severing a pour (0 disables)
+    fanout_margin_mm: float = 0.0  # Extra steering push around foreign pads (soft outer halo + smoother corridor + reservation); 0 = DRC clearance only
 
     def to_dict(self) -> dict:
         return {
@@ -97,6 +99,7 @@ class RoutingParams:
             "stitch_bridges_max": self.stitch_bridges_max,
             "stitch_bridge_max_mm": self.stitch_bridge_max_mm,
             "pour_severance_weight": self.pour_severance_weight,
+            "fanout_margin_mm": self.fanout_margin_mm,
         }
 
     @classmethod
@@ -108,7 +111,7 @@ class RoutingParams:
             "via_drill_mm", "max_attempts_per_net", "run_drc", "debug",
             "net_widths", "heuristic_weight", "max_expansions",
             "stitch_gnd_vias", "strip_gnd_blockers", "stitch_vias_max", "stitch_bridges_max",
-            "stitch_bridge_max_mm", "pour_severance_weight",
+            "stitch_bridge_max_mm", "pour_severance_weight", "fanout_margin_mm",
         }
         filtered = {k: v for k, v in d.items() if k in valid_keys}
         return cls(**filtered)
@@ -228,7 +231,8 @@ def _mark_line_blocked(layer_grid: np.ndarray, r1: int, c1: int, r2: int, c2: in
 
 
 def _smooth_result(result, cost_grid, routing_grid, corridor: int, blocked_threshold: int = 100,
-                   pinned=None, soft_mask=None, clearance_radius: int = 0):
+                   pinned=None, soft_mask=None, clearance_radius: int = 0,
+                   blocked_mask=None):
     """String-pull a successful route before corridor reservation.
 
     Smoothing runs against the pre-route grid (which must NOT yet contain
@@ -240,7 +244,9 @@ def _smooth_result(result, cost_grid, routing_grid, corridor: int, blocked_thres
     The shortcut footprint covers ``max(corridor - 1, clearance_radius)``
     so smoothed copper keeps clearance to neighboring tracks, and
     penalized cells (other nets' pad rings, edge keepout) block shortcuts
-    except inside ``soft_mask`` (this net's own pads).
+    except inside ``soft_mask`` (this net's own pads). ``blocked_mask`` is
+    the per-net hard exclusion (foreign-THT rings): shortcuts may never
+    cross it, with no soft exemption.
     """
     smoothed = smooth_grid_path(
         result.path,
@@ -249,6 +255,7 @@ def _smooth_result(result, cost_grid, routing_grid, corridor: int, blocked_thres
         corridor_radius=max(max(0, corridor - 1), max(0, clearance_radius)),
         pinned=pinned,
         soft_mask=soft_mask,
+        blocked_mask=blocked_mask,
     )
     if len(smoothed) == len(result.path):
         return result
@@ -436,10 +443,12 @@ def route_nets(
             return False
         width_mm = resolve_track_width(model, params, net_name, extra_power_nets)
         width_map[net_name] = width_mm
+        margin_mm = max(0.0, float(getattr(params, "fanout_margin_mm", 0.0) or 0.0))
         secondary = build_fanout_cost(
             model, routing_grid, net_name,
             clearance_mm=resolve_clearance(model, params, net_name),
             track_half_mm=width_mm / 2.0,
+            extra_margin_mm=margin_mm,
         )
         if corridors is not None and net_name not in pour_nets:
             # Pour-severance toll: tracks may still cross narrow pour
@@ -453,7 +462,7 @@ def route_nets(
         corridor = _width_cells(width_mm, params.grid_resolution_mm)
         clearance_mm = resolve_clearance(model, params, net_name)
         clearance_radius = track_corridor_radius_cells(
-            width_mm, clearance_mm, params.grid_resolution_mm,
+            width_mm, clearance_mm + margin_mm, params.grid_resolution_mm,
         )
         router.via_clearance_cells = via_halo_radius_cells(
             params.via_size_mm, clearance_mm, width_mm / 2.0,
@@ -463,6 +472,9 @@ def route_nets(
             model, routing_grid, net_name,
             clearance_mm=clearance_mm, track_half_mm=width_mm / 2.0,
         )
+        # Hard exclusion the smoother must respect: foreign-THT rings.
+        # Own pads read 0 by construction, so terminals stay reachable.
+        blocked_mask = secondary >= SECONDARY_BLOCKED
         success = False
         while ripup.can_retry(net_name):
             result = router.route(terminals, secondary)
@@ -472,6 +484,7 @@ def route_nets(
                     result, cost_grid, routing_grid, corridor,
                     pinned=pinned, soft_mask=soft_mask,
                     clearance_radius=clearance_radius,
+                    blocked_mask=blocked_mask,
                 )
                 _apply_route_to_grid(
                     result, cost_grid, routing_grid, corridor,
@@ -687,6 +700,7 @@ def run_routing(
             model, grid, net_name,
             clearance_mm=0.2, track_half_mm=width_mm / 2.0,
         )
+        blocked_mask = secondary >= SECONDARY_BLOCKED
 
         # Try routing with retries
         success = False
@@ -697,6 +711,7 @@ def run_routing(
                 result = _smooth_result(
                     result, cost_grid, grid, corridor, pinned=pinned,
                     soft_mask=soft_mask, clearance_radius=clearance_radius,
+                    blocked_mask=blocked_mask,
                 )
                 # Apply to cost grid
                 _apply_route_to_grid(

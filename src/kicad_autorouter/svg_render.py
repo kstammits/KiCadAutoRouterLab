@@ -277,11 +277,29 @@ def _footprint_pads_svg(
         # `flip`/`fp_angle_deg` are retained in the signature for callers.
         angle = (-pad.angle_deg) % 360.0 if pad.angle_deg else 0.0
         rot = f' transform="rotate({_fmt(angle)} {x} {y})"' if angle else ""
-        if pad.shape == "circle":
+        shape = (pad.shape or "").lower()
+        if shape == "circle" or (shape == "oval" and w == h):
+            # Round annulus (DIP pins other than pin 1): true circle in
+            # pcbnew. Oval with equal w/h is circular too.
             out.append(
                 f'<circle cx="{x}" cy="{y}" r="{_fmt(w / 2.0)}" '
                 f'fill="{color}" stroke="{PAD_STROKE}" stroke-width="0.1"{net_attr}>'
                 f"{title}</circle>"
+            )
+            if label:
+                out.append(label)
+        elif shape in ("oval", "roundrect"):
+            # Capsule (oval) or soft rect (roundrect): KiCad draws these
+            # round, but the old code fell through to sharp <rect>, making
+            # round DIP pins look square. rx=min/2 gives the stadium
+            # silhouette for ovals; roundrect uses a smaller corner radius
+            # (model stores no rratio, ~0.25 is KiCad's default).
+            rx = _fmt(min(w, h) / 2.0 if shape == "oval" else min(w, h) / 4.0)
+            out.append(
+                f'<rect x="{_fmt(px - w / 2.0)}" y="{_fmt(py - h / 2.0)}" '
+                f'width="{_fmt(w)}" height="{_fmt(h)}" rx="{rx}" fill="{color}" '
+                f'stroke="{PAD_STROKE}" stroke-width="0.1"{rot}{net_attr}>'
+                f"{title}</rect>"
             )
             if label:
                 out.append(label)
@@ -423,7 +441,8 @@ def _ghost_footprints_svg(
             # centred on the pad position.
             angle = (-pad.angle_deg) % 360.0 if pad.angle_deg else 0.0
             rot = f' transform="rotate({_fmt(angle)} {x} {y})"' if angle else ""
-            if pad.shape == "circle":
+            gshape = (pad.shape or "").lower()
+            if gshape == "circle" or (gshape == "oval" and w == h):
                 r = w / 2.0
                 out.append(
                     f'<circle cx="{x}" cy="{y}" r="{_fmt(r * 0.7)}" '
@@ -432,9 +451,12 @@ def _ghost_footprints_svg(
                 )
             else:
                 gw, gh = w * 0.7, h * 0.7
+                rx_attr = ""
+                if gshape in ("oval", "roundrect"):
+                    rx_attr = f' rx="{_fmt(min(gw, gh) / 2.0 if gshape == "oval" else min(gw, gh) / 4.0)}"'
                 out.append(
                     f'<rect x="{_fmt(px - gw / 2.0)}" y="{_fmt(py - gh / 2.0)}" '
-                    f'width="{_fmt(gw)}" height="{_fmt(gh)}" '
+                    f'width="{_fmt(gw)}" height="{_fmt(gh)}"{rx_attr} '
                     f'fill="{GHOST_FOOTPRINT}" fill-opacity="0.4" '
                     f'stroke="{GHOST_FOOTPRINT}" stroke-width="0.1"{rot}/>'
                 )
