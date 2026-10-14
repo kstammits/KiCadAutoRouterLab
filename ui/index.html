@@ -56,6 +56,25 @@
   
   .sidebar-footer { padding:.5rem .75rem; border-top:1px solid #2a3540; display:flex; gap:.4rem; flex-wrap:wrap; }
   .sidebar-footer button { flex:1; min-width:0; padding:.3rem .5rem; font-size:.65rem; }
+  .nudge-pad { padding:.5rem .75rem; border-top:1px solid #2a3540; font-size:.7rem; color:#9fb0c0; }
+  .nudge-title { font-weight:600; color:#d7e0e9; font-size:.72rem; margin-bottom:.35rem; }
+  .nudge-title #nudge-count { color:#7ee0a0; font-variant-numeric:tabular-nums; }
+  .nudge-grid { display:grid; grid-template-columns:repeat(3, 2rem); grid-template-rows:repeat(2, 1.7rem); gap:.2rem; justify-content:center; align-items:center; }
+  .nudge-grid button { padding:.15rem 0; font-size:.8rem; }
+  .nudge-hint { font-size:.62rem; color:#5b6b7a; margin-top:.3rem; text-align:center; }
+  .ghost-panel { padding:.5rem .75rem; border-top:1px solid #2a3540; font-size:.7rem; color:#9fb0c0; display:flex; flex-direction:column; gap:.35rem; }
+  .ghost-title { font-weight:600; color:#d7e0e9; font-size:.72rem; }
+  .ghost-form-row { display:flex; gap:.35rem; align-items:center; flex-wrap:wrap; }
+  .ghost-form-row input, .ghost-form-row select { background:#101418; border:1px solid #3a4a5a; color:#d7e0e9; border-radius:3px; padding:.15rem .4rem; font-family:inherit; font-size:.7rem; min-width:0; }
+  .ghost-form-row input[type=number] { width:4.2rem; }
+  .ghost-form-row input[type=text] { flex:1; min-width:5rem; }
+  .ghost-form-row select { max-width:9rem; }
+  #ghost-diag { font-size:.62rem; color:#7d8b99; }
+  .ghost-sel { border:1px solid #5a2a5a; border-radius:4px; padding:.35rem .5rem; display:flex; gap:.4rem; align-items:center; flex-wrap:wrap; background:#1a1420; }
+  .ghost-sel-ref { color:#a85cf5; font-weight:600; }
+  .ghost-sel .nudge-grid { grid-template-columns:repeat(3, 1.7rem); grid-template-rows:repeat(2, 1.5rem); }
+  .sidebar.collapsed .nudge-pad,
+  .sidebar.collapsed .ghost-panel { display:none; }
   .sidebar.collapsed { width:40px; min-width:40px; }
   .sidebar.collapsed .sidebar-title,
   .sidebar.collapsed .sidebar-search,
@@ -332,6 +351,64 @@
       <button id="sidebar-clear-sel" title="Clear selection">Clear</button>
       <button id="sidebar-pin-sel" title="Pin selected">Pin</button>
       <button id="sidebar-unpin-sel" title="Unpin selected">Unpin</button>
+    </div>
+    <div class="nudge-pad" id="nudge-pad">
+      <div class="nudge-title">Move selected (<span id="nudge-count">0</span>)</div>
+      <div class="nudge-grid">
+        <button id="nudge-ccw" title="Rotate selected +15° CCW (Shift: 90°)">⟲</button>
+        <button id="nudge-up" title="Move selected up 1mm (Shift: 10mm)">↑</button>
+        <button id="nudge-cw" title="Rotate selected −15° CW (Shift: 90°)">⟳</button>
+        <button id="nudge-left" title="Move selected left 1mm (Shift: 10mm)">←</button>
+        <button id="nudge-down" title="Move selected down 1mm (Shift: 10mm)">↓</button>
+        <button id="nudge-right" title="Move selected right 1mm (Shift: 10mm)">→</button>
+      </div>
+      <div class="nudge-hint">Arrow keys nudge selection when no motion frames are loaded. Copper on moved nets is ripped (protected kept); Undo restores.</div>
+    </div>
+    <div class="ghost-panel" id="ghost-panel">
+      <div class="ghost-title">Ghosts <span style="font-weight:400; color:#7d8b99;">(keepout walls / attractors)</span></div>
+      <div class="ghost-form-row">
+        <select id="ghost-kind" title="Wall pushes parts away; attractor pulls a ref">
+          <option value="wall">Wall</option>
+          <option value="attractor">Attractor</option>
+        </select>
+        <input type="text" id="ghost-ref" placeholder="GHOST_*" title="Reference (must be unique)">
+      </div>
+      <div class="ghost-form-row" id="ghost-pos-row" title="Center in board mm (defaults to view center)">
+        <label>X <input type="number" id="ghost-x" step="0.5"></label>
+        <label>Y <input type="number" id="ghost-y" step="0.5"></label>
+      </div>
+      <div class="ghost-form-row" id="ghost-wall-row" title="Wall size in mm">
+        <label>W <input type="number" id="ghost-w" value="20" min="0.5" step="0.5"></label>
+        <label>H <input type="number" id="ghost-h" value="5" min="0.5" step="0.5"></label>
+      </div>
+      <div class="ghost-form-row" id="ghost-attr-row" hidden title="Attractor target and spring strength">
+        <select id="ghost-target" title="Target footprint ref"></select>
+        <label>k <input type="number" id="ghost-ka" value="0.1" min="0" step="0.05" title="Attraction strength ka"></label>
+        <label>size <input type="number" id="ghost-size" value="4" min="0.5" step="0.5" title="Ghost square edge mm"></label>
+      </div>
+      <div class="ghost-form-row">
+        <button id="ghost-create-btn" title="Create ghost at X/Y (empty = view center)">Add ghost</button>
+        <span id="ghost-diag"></span>
+      </div>
+      <div class="ghost-sel" id="ghost-sel" hidden>
+        <span class="ghost-sel-ref" id="ghost-sel-ref"></span>
+        <div class="nudge-grid">
+          <button id="ghost-ccw" title="Rotate ghost +15° CCW (Shift: 90°)">⟲</button>
+          <button id="ghost-up" title="Move ghost up 1mm (Shift: 10mm)">↑</button>
+          <button id="ghost-cw" title="Rotate ghost −15° CW (Shift: 90°)">⟳</button>
+          <button id="ghost-left" title="Move ghost left 1mm (Shift: 10mm)">←</button>
+          <button id="ghost-down" title="Move ghost down 1mm (Shift: 10mm)">↓</button>
+          <button id="ghost-right" title="Move ghost right 1mm (Shift: 10mm)">→</button>
+        </div>
+        <div class="ghost-form-row" style="justify-content:center;" title="Resize courtyard outline (Shift: 5mm steps)">
+          <span id="ghost-size-label" style="font-variant-numeric:tabular-nums;"></span>
+          <button id="ghost-w-minus" title="Narrower 1mm">W−</button>
+          <button id="ghost-w-plus" title="Wider 1mm">W+</button>
+          <button id="ghost-h-minus" title="Shorter 1mm">H−</button>
+          <button id="ghost-h-plus" title="Taller 1mm">H+</button>
+        </div>
+        <button id="ghost-delete-btn" title="Delete selected ghost">Delete</button>
+      </div>
     </div>
   </aside>
   <div class="resizer" id="resizer" aria-label="Resize sidebar"></div>
@@ -1211,7 +1288,7 @@ window.addEventListener("mouseup", e => {
             const cx = fp.x_mm;
             const cy = fp.y_mm;
             if (cx >= minX && cx <= maxX && cy >= minY && cy <= maxY) {
-              if (!fp.locked && !fp.pinned) {
+              if (!fp.locked && !fp.pinned && !fp.ghost) {
                 if (e.shiftKey) {
                   selectedUuids.add(uuid);
                 } else {
@@ -1256,12 +1333,13 @@ fitBtn.addEventListener("click", fitToView);
 // --- Selection state ---
 let selectedUuids = new Set();
 let pinnedUuids = new Set();
+let selectedGhostUuid = null; // Ghost selected for move/delete (never in selectedUuids)
 
 function updateSelectionUI() {
   const selToolbar = document.getElementById("sel-toolbar");
   const selCount = document.getElementById("sel-count");
   const pinBtn = document.getElementById("pin-btn");
-  
+
   if (selectedUuids.size > 0 || pinnedUuids.size > 0) {
     selToolbar.hidden = false;
   } else {
@@ -1270,6 +1348,13 @@ function updateSelectionUI() {
   selCount.textContent = `${selectedUuids.size} selected, ${pinnedUuids.size} pinned`;
   pinBtn.textContent = selectedUuids.size > 0 ? "Pin" : "Unpin";
   pinBtn.disabled = selectedUuids.size === 0;
+  // Nudge pad mirrors the placement selection (ghosts excluded).
+  const nudgeCount = document.getElementById("nudge-count");
+  if (nudgeCount) nudgeCount.textContent = String(selectedUuids.size);
+  for (const id of ["nudge-up", "nudge-down", "nudge-left", "nudge-right", "nudge-ccw", "nudge-cw"]) {
+    const btn = document.getElementById(id);
+    if (btn) btn.disabled = selectedUuids.size === 0;
+  }
 }
 
 async function fetchPinned() {
@@ -1300,7 +1385,7 @@ function updateFootprintVisuals() {
   svg.querySelectorAll(".footprint").forEach(el => {
     const uuid = el.dataset.fpUuid;
     if (!uuid) return;
-    el.classList.toggle("fp-selected", selectedUuids.has(uuid));
+    el.classList.toggle("fp-selected", selectedUuids.has(uuid) || uuid === selectedGhostUuid);
     el.classList.toggle("fp-pinned", pinnedUuids.has(uuid));
   });
 }
@@ -1325,6 +1410,8 @@ async function togglePin(uuid) {
 
 async function toggleSelect(uuid) {
   if (pinnedUuids.has(uuid)) return; // Can't select pinned
+  const fp = allFootprints.find(f => f.uuid === uuid);
+  if (fp && fp.ghost) return; // Ghosts use selectGhost, never placement selection
   if (selectedUuids.has(uuid)) {
     selectedUuids.delete(uuid);
   } else {
@@ -1357,10 +1444,13 @@ async function selectAllUnlocked() {
 
 async function clearSelection() {
   selectedUuids.clear();
+  selectedGhostUuid = null;
   try {
     await fetch("/api/placement/clear_selection", { method: "POST" });
     updateFootprintVisuals();
     updateSelectionUI();
+    renderFootprintTable();
+    updateGhostSelUI();
   } catch (err) {
     console.error("Clear selection failed:", err);
   }
@@ -1374,13 +1464,22 @@ viewport.addEventListener("click", e => {
     const uuid = fpEl.dataset.fpUuid;
     if (!uuid) return;
 
+    // Ghosts select into the ghost panel (move/delete), never into the
+    // placement selection that Step/Run operates on.
+    const clickedFp = allFootprints.find(f => f.uuid === uuid);
+    if (clickedFp && clickedFp.ghost) {
+      selectGhost(uuid);
+      return;
+    }
     if (e.shiftKey) {
+      selectGhost(null); // switching back to parts clears ghost focus
       toggleSelect(uuid);
     } else if (e.altKey) {
       togglePin(uuid);
     } else {
       // Single select: clear others, select this
       if (!pinnedUuids.has(uuid)) {
+        selectGhost(null); // switching back to parts clears ghost focus
         selectedUuids.clear();
         selectedUuids.add(uuid);
         updateFootprintVisuals();
@@ -1481,6 +1580,11 @@ async function fetchFootprints() {
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
     allFootprints = data.footprints || [];
+    // Drop ghost focus when its ghost is gone (deleted/reset/undo).
+    if (selectedGhostUuid && !allFootprints.some(fp => fp.uuid === selectedGhostUuid)) {
+      selectedGhostUuid = null;
+      updateGhostSelUI();
+    }
     renderFootprintTable();
   } catch (err) {
     console.error("Failed to fetch footprints:", err);
@@ -1552,8 +1656,9 @@ function renderFootprintTable() {
   tbody.innerHTML = filtered.map(fp => {
     const netsStr = fp.nets.slice(0, 3).join(", ") + (fp.nets.length > 3 ? ` +${fp.nets.length - 3}` : "");
     const layerClass = fp.layer === "B" ? "B" : "F";
+    const isGhostSel = fp.ghost && selectedGhostUuid === fp.uuid;
     return `
-      <tr class="${fp.selected ? 'fp-selected-row' : ''} ${fp.locked ? 'fp-locked-row' : ''} ${fp.pinned ? 'fp-pinned-row' : ''} ${fp.ghost ? 'fp-ghost-row' : ''}" data-uuid="${fp.uuid}">
+      <tr class="${fp.selected || isGhostSel ? 'fp-selected-row' : ''} ${fp.locked ? 'fp-locked-row' : ''} ${fp.pinned ? 'fp-pinned-row' : ''} ${fp.ghost ? 'fp-ghost-row' : ''}" data-uuid="${fp.uuid}">
         <td class="fp-col-select"><input type="checkbox" ${fp.selected ? 'checked' : ''} ${fp.locked || fp.pinned || fp.ghost ? 'disabled' : ''} data-uuid="${fp.uuid}"></td>
         <td class="fp-col-ref" title="${fp.ref}">${fp.ref}</td>
         <td class="fp-col-footprint" title="${fp.footprint_id}">${fp.footprint_id}</td>
@@ -1592,7 +1697,9 @@ function renderFootprintTable() {
       const uuid = tr.dataset.uuid;
       if (!uuid) return;
       const fp = allFootprints.find(f => f.uuid === uuid);
-      if (!fp || fp.locked || fp.pinned) return;
+      if (!fp) return;
+      if (fp.ghost) { selectGhost(selectedGhostUuid === uuid ? null : uuid); return; }
+      if (fp.locked || fp.pinned) return;
       
       if (e.shiftKey) {
         // Range select not implemented yet - just toggle
@@ -1623,6 +1730,9 @@ function renderFootprintTable() {
   
   // Update net legend
   renderNetLegend();
+  // Keep ghost target options + selected-ghost panel in sync with the cache.
+  refreshGhostTargets();
+  updateGhostSelUI();
 }
 
 function renderNetLegend() {
@@ -1682,7 +1792,7 @@ function renderNetLegend() {
 async function selectByNet(net) {
   // Find all footprints that have this net
   const uuidsToSelect = allFootprints
-    .filter(fp => fp.nets.includes(net) && !fp.locked && !fp.pinned)
+    .filter(fp => fp.nets.includes(net) && !fp.locked && !fp.pinned && !fp.ghost)
     .map(fp => fp.uuid);
   
   if (uuidsToSelect.length === 0) return;
@@ -1756,13 +1866,13 @@ document.querySelectorAll("#fp-table th.sortable").forEach(th => {
 document.getElementById("sidebar-select-visible").addEventListener("click", () => {
   const filtered = getFilteredFootprints();
   filtered.forEach(fp => {
-    if (!fp.locked && !fp.pinned) {
+    if (!fp.locked && !fp.pinned && !fp.ghost) {
       selectedUuids.add(fp.uuid);
     }
   });
   // Update server for each
   filtered.forEach(fp => {
-    if (!fp.locked && !fp.pinned) {
+    if (!fp.locked && !fp.pinned && !fp.ghost) {
       fetch("/api/placement/select", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1794,7 +1904,7 @@ document.getElementById("fp-select-all").addEventListener("change", e => {
   const filtered = getFilteredFootprints();
   if (e.target.checked) {
     filtered.forEach(fp => {
-      if (!fp.locked && !fp.pinned) {
+      if (!fp.locked && !fp.pinned && !fp.ghost) {
         selectedUuids.add(fp.uuid);
       }
     });
@@ -1803,7 +1913,7 @@ document.getElementById("fp-select-all").addEventListener("change", e => {
   }
   // Update server
   filtered.forEach(fp => {
-    if (!fp.locked && !fp.pinned) {
+    if (!fp.locked && !fp.pinned && !fp.ghost) {
       fetch("/api/placement/select", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1817,6 +1927,245 @@ document.getElementById("fp-select-all").addEventListener("change", e => {
 });
 
 document.getElementById("refresh-forces-btn").addEventListener("click", refreshForces);
+
+// ==================== Manual nudge (selected parts, 1mm) ====================
+// Shifts the placement selection via POST /api/placement/nudge (same
+// dual-write + rip-up + undo semantics as Accept). Ghosts are never in
+// selectedUuids (see selectGhost), so they can't be nudged from here.
+
+async function nudgeSelected(dx_mm, dy_mm, da_deg = 0) {
+  if (!selectedUuids.size || !lastVersion) return;
+  if (motion.frames.length) pauseMotion();
+  try {
+    const res = await fetch("/api/placement/nudge", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dx_mm, dy_mm, da_deg }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const r = await res.json();
+    const what = da_deg ? `rotate ${da_deg}°` : `move (${dx_mm}, ${dy_mm})`;
+    diagEl.textContent = `nudged ${(r.moved || []).length}: ${what} → v${r.version} (Undo restores)`;
+    document.getElementById("undo-btn").disabled = false;
+    resetMotionState(); // server cleared the proposal; cached deltas are stale
+    await poll();
+  } catch (err) {
+    diagEl.textContent = `nudge failed: ${err.message}`;
+  }
+}
+
+for (const [id, dx, dy] of [["nudge-up", 0, -1], ["nudge-down", 0, 1], ["nudge-left", -1, 0], ["nudge-right", 1, 0]]) {
+  document.getElementById(id).addEventListener("click", e => {
+    const step = e.shiftKey ? 10 : 1;
+    nudgeSelected(dx * step, dy * step);
+  });
+}
+for (const [id, da] of [["nudge-ccw", 15], ["nudge-cw", -15]]) {
+  document.getElementById(id).addEventListener("click", e => {
+    nudgeSelected(0, 0, e.shiftKey ? Math.sign(da) * 90 : da);
+  });
+}
+
+// ==================== Ghost management ====================
+// Ghost selection is client-side only (selectedGhostUuid): ghosts are fixed
+// anchors, never part of the placement selection that Step/Run/Accept use.
+
+function selectGhost(uuid) {
+  if (selectedGhostUuid === uuid) return;
+  selectedGhostUuid = uuid;
+  updateFootprintVisuals();
+  renderFootprintTable();
+  updateGhostSelUI();
+}
+
+function updateGhostSelUI() {
+  const panel = document.getElementById("ghost-sel");
+  const refEl = document.getElementById("ghost-sel-ref");
+  const sizeEl = document.getElementById("ghost-size-label");
+  const fp = allFootprints.find(f => f.uuid === selectedGhostUuid);
+  if (!fp) {
+    panel.hidden = true;
+    return;
+  }
+  panel.hidden = false;
+  const attrs = (fp.ghost_attractions || []).map(([t, ka]) => `${t},${ka}`).join("; ");
+  refEl.textContent = `${fp.ref}${attrs ? ` → ${attrs}` : ""}`;
+  refEl.title = fp.uuid;
+  if (sizeEl && fp.bbox && fp.bbox.length === 4) {
+    const w = fp.bbox[2] - fp.bbox[0];
+    const h = fp.bbox[3] - fp.bbox[1];
+    sizeEl.textContent = `${w.toFixed(1)}×${h.toFixed(1)}mm`;
+    sizeEl.title = fp.angle_deg
+      ? `Board-space extents (ghost rotated ${fp.angle_deg}°; resize writes local W/H)`
+      : "Courtyard size (board mm)";
+  }
+}
+
+function refreshGhostTargets() {
+  const sel = document.getElementById("ghost-target");
+  if (!sel) return;
+  const prev = sel.value;
+  const refs = allFootprints.filter(fp => !fp.ghost && fp.ref).map(fp => fp.ref).sort();
+  sel.innerHTML = refs.map(r => `<option value="${r}">${r}</option>`).join("");
+  if (refs.includes(prev)) sel.value = prev;
+}
+
+function ghostViewCenter() {
+  if (viewBox) return [viewBox[0] + viewBox[2] / 2, viewBox[1] + viewBox[3] / 2];
+  return [50, 50];
+}
+
+function suggestGhostRef(kind) {
+  const existing = new Set(allFootprints.map(fp => fp.ref));
+  const prefix = kind === "attractor" ? "GHOST_ATTR_" : "GHOST_WALL_";
+  for (let i = 1; i < 1000; i++) {
+    const ref = `${prefix}${i}`;
+    if (!existing.has(ref)) return ref;
+  }
+  return `${prefix}${Date.now() % 100000}`;
+}
+
+async function createGhost() {
+  if (!lastVersion) return;
+  const diag = document.getElementById("ghost-diag");
+  const kind = document.getElementById("ghost-kind").value;
+  const refInput = document.getElementById("ghost-ref").value.trim();
+  const ref = refInput || suggestGhostRef(kind);
+  const [cx, cy] = ghostViewCenter();
+  const xRaw = document.getElementById("ghost-x").value;
+  const yRaw = document.getElementById("ghost-y").value;
+  const body = {
+    kind, ref,
+    x_mm: xRaw === "" ? Math.round(cx * 2) / 2 : Number(xRaw),
+    y_mm: yRaw === "" ? Math.round(cy * 2) / 2 : Number(yRaw),
+    courtyard_layer: "F.CrtYd",
+  };
+  if (kind === "wall") {
+    body.w_mm = Number(document.getElementById("ghost-w").value);
+    body.h_mm = Number(document.getElementById("ghost-h").value);
+  } else {
+    body.target_ref = document.getElementById("ghost-target").value;
+    body.ka = Number(document.getElementById("ghost-ka").value);
+    body.size_mm = Number(document.getElementById("ghost-size").value);
+  }
+  try {
+    const res = await fetch("/api/ghosts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const r = await res.json();
+    diag.textContent = `ghost ${ref} added (v${r.version})`;
+    document.getElementById("ghost-ref").value = "";
+    document.getElementById("undo-btn").disabled = false;
+    if (motion.frames.length) pauseMotion();
+    resetMotionState();
+    await poll();
+    selectGhost(r.uuid);
+  } catch (err) {
+    diag.textContent = `add failed: ${err.message}`;
+  }
+}
+
+async function moveGhost(dx_mm, dy_mm, da_deg = 0) {
+  if (!selectedGhostUuid || !lastVersion) return;
+  const diag = document.getElementById("ghost-diag");
+  try {
+    const res = await fetch("/api/ghosts/move", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ uuid: selectedGhostUuid, dx_mm, dy_mm, da_deg }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const r = await res.json();
+    diag.textContent = da_deg
+      ? `ghost rotated ${da_deg}° → v${r.version}`
+      : `ghost moved (${dx_mm}, ${dy_mm}) → v${r.version}`;
+    document.getElementById("undo-btn").disabled = false;
+    if (motion.frames.length) pauseMotion();
+    resetMotionState();
+    await poll();
+  } catch (err) {
+    diag.textContent = `move failed: ${err.message}`;
+  }
+}
+
+async function resizeGhost(dw_mm, dh_mm) {
+  if (!selectedGhostUuid || !lastVersion) return;
+  const diag = document.getElementById("ghost-diag");
+  const fp = allFootprints.find(f => f.uuid === selectedGhostUuid);
+  if (!fp || !fp.bbox || fp.bbox.length !== 4) {
+    diag.textContent = "resize failed: ghost extents unknown";
+    return;
+  }
+  const w_mm = Math.max(0.5, (fp.bbox[2] - fp.bbox[0]) + dw_mm);
+  const h_mm = Math.max(0.5, (fp.bbox[3] - fp.bbox[1]) + dh_mm);
+  try {
+    const res = await fetch("/api/ghosts/resize", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ uuid: selectedGhostUuid, w_mm, h_mm }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const r = await res.json();
+    diag.textContent = `ghost resized ${w_mm.toFixed(1)}×${h_mm.toFixed(1)} → v${r.version}`;
+    document.getElementById("undo-btn").disabled = false;
+    if (motion.frames.length) pauseMotion();
+    resetMotionState();
+    await poll();
+  } catch (err) {
+    diag.textContent = `resize failed: ${err.message}`;
+  }
+}
+
+async function deleteGhost() {
+  if (!selectedGhostUuid || !lastVersion) return;
+  const diag = document.getElementById("ghost-diag");
+  try {
+    const res = await fetch("/api/ghosts/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ uuid: selectedGhostUuid }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const r = await res.json();
+    diag.textContent = `ghost deleted (v${r.version})`;
+    selectedGhostUuid = null;
+    document.getElementById("undo-btn").disabled = false;
+    if (motion.frames.length) pauseMotion();
+    resetMotionState();
+    await poll();
+  } catch (err) {
+    diag.textContent = `delete failed: ${err.message}`;
+  }
+}
+
+document.getElementById("ghost-create-btn").addEventListener("click", createGhost);
+document.getElementById("ghost-delete-btn").addEventListener("click", deleteGhost);
+for (const [id, dx, dy] of [["ghost-up", 0, -1], ["ghost-down", 0, 1], ["ghost-left", -1, 0], ["ghost-right", 1, 0]]) {
+  document.getElementById(id).addEventListener("click", e => {
+    const step = e.shiftKey ? 10 : 1;
+    moveGhost(dx * step, dy * step);
+  });
+}
+for (const [id, da] of [["ghost-ccw", 15], ["ghost-cw", -15]]) {
+  document.getElementById(id).addEventListener("click", e => {
+    moveGhost(0, 0, e.shiftKey ? Math.sign(da) * 90 : da);
+  });
+}
+for (const [id, dw, dh] of [["ghost-w-minus", -1, 0], ["ghost-w-plus", 1, 0], ["ghost-h-minus", 0, -1], ["ghost-h-plus", 0, 1]]) {
+  document.getElementById(id).addEventListener("click", e => {
+    const step = e.shiftKey ? 5 : 1;
+    resizeGhost(dw * step, dh * step);
+  });
+}
+document.getElementById("ghost-kind").addEventListener("change", e => {
+  const isWall = e.target.value === "wall";
+  document.getElementById("ghost-wall-row").hidden = !isWall;
+  document.getElementById("ghost-attr-row").hidden = isWall;
+  if (!isWall) refreshGhostTargets();
+});
 
 // Common function to run placement.
 // iterations == null → omit the key so the server runs to convergence
@@ -3464,6 +3813,15 @@ document.addEventListener("keydown", e => {
     if (tag === "input" || tag === "select" || tag === "textarea") return;
     e.preventDefault();
     stepMotion(e.key === "ArrowLeft" ? -1 : 1);
+  } else if (e.key.startsWith("Arrow") && !motion.frames.length && selectedUuids.size > 0) {
+    // Manual 1mm nudge of the placement selection (Shift: 10mm). Only when
+    // no motion frames are loaded — otherwise arrows scrub the trajectory.
+    e.preventDefault();
+    const step = e.shiftKey ? 10 : 1;
+    if (e.key === "ArrowLeft") nudgeSelected(-step, 0);
+    else if (e.key === "ArrowRight") nudgeSelected(step, 0);
+    else if (e.key === "ArrowUp") nudgeSelected(0, -step);
+    else if (e.key === "ArrowDown") nudgeSelected(0, step);
   }
 });
 

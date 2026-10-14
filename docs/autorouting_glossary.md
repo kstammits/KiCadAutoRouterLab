@@ -144,6 +144,17 @@ Treat footprints as nodes and nets as edges; run a physical simulation until equ
 - **Convergence**: iterate until positions stop changing; damping/step-size schedules
   control stability (Fruchterman–Reingold temperature schedule). Simulated annealing or
   stress majorization are alternatives if plain simulation stalls in a bad local minimum.
+- **Ghost (pseudo-part)**: a fixed anchor that participates in placement forces but is
+  never moved or written as copper — a **wall** (courtyard-only obstacle that pushes
+  parts away, e.g. a keepout) or an **attractor** (pulls specific refs via
+  `(property "ghost_attract_N" "TARGET,ka")` springs). Serialized as a regular
+  `(footprint ...)` plus `(property "ghost" "yes")`, courtyard on `F.CrtYd` (or `F.Fab`,
+  which the parser falls back to); created with `ghost.make_ghost_wall /
+  make_ghost_attractor` + `io.add_ghost_to_tree`, fully managed from the UI Ghosts panel
+  (move / rotate ±15°, resize W/H steppers, delete; rotation pivots about the anchor).
+- **Manual nudge**: hand-shift the placement selection by 1 mm (arrow keys / nudge pad,
+  Shift for 10 mm) and rotate it ±15° (Shift for 90°) via `POST /api/placement/nudge` —
+  same dual-write, rip-up (protected kept), and Undo semantics as Accept.
 - **Complexity budget (vectorized)**: naive all-pairs repulsion is O(n²) per iteration,
   O(n³) total — at n=500 that is ≈125k pairs/iteration, tens of seconds in pure Python.
   Computing it as numpy broadcasting over the dense (n,n) distance matrix costs ≈1–2 ms

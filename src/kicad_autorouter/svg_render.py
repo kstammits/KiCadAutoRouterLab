@@ -409,21 +409,31 @@ def _footprints_svg(
 def _ghost_footprints_svg(
     model: BoardModel,
     colors: Dict[str, str],
+    selected_ghost_uuids: Collection[str] = (),
 ) -> List[str]:
     """Generate ghost footprint elements (courtyards, pads, refs) for pseudo-components.
-    
+
     Ghost footprints are rendered with a distinct purple color, dashed style,
-    and semi-transparency to distinguish them from real footprints.
+    and semi-transparency to distinguish them from real footprints. Each
+    ghost gets its own ``g.footprint.fp-ghost[data-fp-uuid]`` group (mirroring
+    real footprints) so click-to-select, motion transforms, and per-footprint
+    force vectors reuse the same client code paths.
     """
     out = []
     if not model.ghost_footprints:
         return out
-    
+
+    selected = set(selected_ghost_uuids or ())
     out.append(
         f'<g stroke="{GHOST_FOOTPRINT}" stroke-width="0.15" '
         f'stroke-dasharray="4 3" opacity="0.7" fill="none">'
     )
     for fp in model.ghost_footprints:
+        is_selected = fp.uuid and fp.uuid in selected
+        cls = "footprint fp-ghost" + (" fp-selected" if is_selected else "")
+        # data-fp-uuid reuses the real-footprint client paths
+        # (click-select, motion transforms, force vectors).
+        out.append(f'<g class="{cls}" data-fp-uuid="{fp.uuid or ""}">')
         # Courtyard lines
         for a, b in fp.courtyard:
             out.append(
@@ -468,6 +478,7 @@ def _ghost_footprints_svg(
                 f'fill="{GHOST_FOOTPRINT}" font-family="monospace" font-size="1" opacity="0.7">'
                 f'{html.escape(fp.ref)}</text>'
             )
+        out.append("</g>")
     out.append("</g>")
     return out
 

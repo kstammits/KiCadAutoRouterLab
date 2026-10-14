@@ -297,12 +297,15 @@ def _reference_text_to_sexpr(ref: str, x_mm: float = 0.0, y_mm: float = 0.0, lay
     ))
 
 
-def footprint_to_sexpr(fp, footprint_library_id: str = "Test:R_0805") -> SExpr:
+def footprint_to_sexpr(fp, footprint_library_id: str = "Test:R_0805", courtyard_layer: str = "F.CrtYd") -> SExpr:
     """Convert a Footprint dataclass to KiCad footprint S-expression.
     
     Args:
         fp: Footprint dataclass from board_model (pads/courtyard in board coords)
         footprint_library_id: Library identifier like "Resistor_SMD:R_0805"
+        courtyard_layer: Graphics layer for the courtyard outline (``F.CrtYd``
+            default; ``F.Fab`` keeps ghosts on a non-copper layer — the
+            parser falls back crt > fab > silk, so physics still sees it)
     
     Returns:
         SExpr representing the footprint with pads/courtyard in LOCAL coordinates
@@ -370,6 +373,29 @@ def footprint_to_sexpr(fp, footprint_library_id: str = "Test:R_0805") -> SExpr:
         _format_effects(font_size=(1.27, 1.27)),
     )))
     
+    # Ghost marker + attraction springs (parsed by board_model
+    # _is_ghost / _parse_ghost_attractions; ignored by KiCad itself).
+    if getattr(fp, 'ghost', False):
+        args.append(SExpr("property", (
+            "ghost",
+            "yes",
+            _format_at(0, 0, 0.0),
+            SExpr("layer", (Symbol("F.SilkS"),)),
+            SExpr("hide", (Symbol("yes"),)),
+            SExpr("uuid", (__import__("uuid").uuid4().hex,)),
+            _format_effects(),
+        )))
+        for i, (target_ref, ka) in enumerate(getattr(fp, 'ghost_attractions', ()) or (), start=1):
+            args.append(SExpr("property", (
+                f"ghost_attract_{i}",
+                f"{target_ref},{ka}",
+                _format_at(0, 0, 0.0),
+                SExpr("layer", (Symbol("F.SilkS"),)),
+                SExpr("hide", (Symbol("yes"),)),
+                SExpr("uuid", (__import__("uuid").uuid4().hex,)),
+                _format_effects(),
+            )))
+
     # Attributes
     args.append(SExpr("attr", (Symbol("exclude_from_pos_files"), Symbol("exclude_from_bom"))))
     
@@ -381,7 +407,7 @@ def footprint_to_sexpr(fp, footprint_library_id: str = "Test:R_0805") -> SExpr:
             SExpr("start", (local_start.x_mm, local_start.y_mm)),
             SExpr("end", (local_end.x_mm, local_end.y_mm)),
             _format_stroke(0.05),
-            SExpr("layer", (Symbol("F.CrtYd"),)),
+            SExpr("layer", (Symbol(courtyard_layer),)),
             SExpr("uuid", (__import__("uuid").uuid4().hex,)),
         )))
     
@@ -409,17 +435,117 @@ def footprint_to_sexpr(fp, footprint_library_id: str = "Test:R_0805") -> SExpr:
     return SExpr("footprint", tuple(args))
 
 
-def add_footprint_to_tree(tree: SExpr, fp, footprint_library_id: str = "Test:R_0805") -> SExpr:
+def add_footprint_to_tree(tree: SExpr, fp, footprint_library_id: str = "Test:R_0805", courtyard_layer: str = "F.CrtYd") -> SExpr:
     """Add a footprint to a PCB S-expression tree.
     
     Args:
         tree: PCB SExpr tree (head="kicad_pcb")
         fp: Footprint dataclass
         footprint_library_id: Library identifier
+        courtyard_layer: Graphics layer for the courtyard outline
     
     Returns:
         New tree with footprint added
     """
-    new_fp = footprint_to_sexpr(fp, footprint_library_id)
+    new_fp = footprint_to_sexpr(fp, footprint_library_id, courtyard_layer)
     new_args = list(tree.args) + [new_fp]
     return SExpr(tree.head, tuple(new_args))
+
+
+def add_ghost_to_tree(tree: SExpr, fp, footprint_library_id: str = "Ghost:GHOST", courtyard_layer: str = "F.CrtYd") -> SExpr:
+    """Add a ghost (pseudo-part) footprint to a PCB S-expression tree.
+
+    Args:
+        tree: PCB SExpr tree (head="kicad_pcb")
+        fp: Footprint dataclass with ``ghost=True``
+        footprint_library_id: Library identifier written to the footprint head
+        courtyard_layer: Graphics layer for the ghost outline (``F.CrtYd``
+            default; ``F.Fab`` for a non-courtyard persistence layer)
+
+    Returns:
+        New tree with the ghost footprint appended
+
+    Raises:
+        ValueError: if ``fp`` is not marked as a ghost
+    """
+    if not getattr(fp, 'ghost', False):
+        raise ValueError("add_ghost_to_tree requires fp.ghost=True")
+    return add_footprint_to_tree(tree, fp, footprint_library_id, courtyard_layer)
+
+
+def remove_ghost_from_tree(tree: SExpr, uuid: str) -> SExpr:
+    """Return the board tree with the ghost footprint carrying ``uuid`` removed.
+
+    Only removes the node when it carries ``(property "ghost" "yes")``;
+    real footprints are never removed by this helper.
+
+    Raises:
+        KeyError: if no footprint carries ``uuid``, or it is not a ghost
+    """
+    from .board_model import _is_ghost as _is_ghost_node
+    target = find_footprint_by_uuid(tree, uuid)
+    if not _is_ghost_node(target):
+        raise KeyError(f"footprint with uuid {uuid!r} is not a ghost")
+    return SExpr(tree.head, tuple(a for a in tree.args if a is not target))
+
+
+def resize_ghost_in_tree(tree: SExpr, uuid: str, w_mm: float, h_mm: float) -> SExpr:
+    """Return the board tree with a ghost's outline resized to ``w_mm`` x ``h_mm``.
+
+    The outline is rewritten as a 4-segment rect centered on the footprint
+    origin in *local* coordinates, so it stays correct regardless of the
+    ghost's board position or angle. The existing graphics layer and stroke
+    are preserved (falling back to ``F.CrtYd``). Pads and properties pass
+    through untouched.
+
+    Only ``fp_line`` outlines are supported (everything this project
+    creates); ghosts with other graphic kinds are refused.
+
+    Raises:
+        KeyError: if no footprint carries ``uuid``, or it is not a ghost
+        ValueError: for non-positive sizes, missing outlines, or
+            non-``fp_line`` graphics
+    """
+    import math
+
+    for name, val in (("w_mm", w_mm), ("h_mm", h_mm)):
+        if not isinstance(val, (int, float)) or not math.isfinite(val) or val <= 0:
+            raise ValueError(f"ghost {name} must be > 0, got {val!r}")
+    from .board_model import _GRAPHIC_KINDS, _is_ghost as _is_ghost_node
+    target = find_footprint_by_uuid(tree, uuid)
+    if not _is_ghost_node(target):
+        raise KeyError(f"footprint with uuid {uuid!r} is not a ghost")
+    graphics = [
+        c for c in target.args
+        if isinstance(c, SExpr) and c.head in _GRAPHIC_KINDS
+    ]
+    if not graphics:
+        raise ValueError(f"ghost with uuid {uuid!r} has no outline graphics")
+    if any(g.head != "fp_line" for g in graphics):
+        kinds = sorted({g.head for g in graphics})
+        raise ValueError(f"ghost outline uses {kinds}; only fp_line can be resized")
+    first_layer = graphics[0].find("layer")
+    layer_name = (
+        str(first_layer.args[0])
+        if first_layer is not None and first_layer.args
+        else "F.CrtYd"
+    )
+    first_stroke = graphics[0].find("stroke")
+    stroke = first_stroke if first_stroke is not None else _format_stroke(0.05)
+    hw, hh = float(w_mm) / 2.0, float(h_mm) / 2.0
+    corners = [(-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh)]
+    new_lines = []
+    for (x0, y0), (x1, y1) in zip(corners, corners[1:] + corners[:1]):
+        new_lines.append(SExpr("fp_line", (
+            SExpr("start", (x0, y0)),
+            SExpr("end", (x1, y1)),
+            stroke,
+            SExpr("layer", (Symbol(layer_name),)),
+            SExpr("uuid", (__import__("uuid").uuid4().hex,)),
+        )))
+    graphic_ids = {id(g) for g in graphics}
+    new_fp_args = tuple(
+        c for c in target.args if id(c) not in graphic_ids
+    ) + tuple(new_lines)
+    new_fp = replace(target, args=new_fp_args)
+    return replace(tree, args=tuple(new_fp if a is target else a for a in tree.args))

@@ -27,7 +27,14 @@ from kicad_autorouter.board_model import (
     seed_power_nets_from_netclasses,
 )
 from kicad_autorouter.drc import TMP_DIR, run_drc_on_tree
-from kicad_autorouter.io import nudge_footprint_by_uuid, rip_up_nets
+from kicad_autorouter.ghost import make_ghost_attractor, make_ghost_wall
+from kicad_autorouter.io import (
+    add_ghost_to_tree,
+    nudge_footprint_by_uuid,
+    remove_ghost_from_tree,
+    resize_ghost_in_tree,
+    rip_up_nets,
+)
 from kicad_autorouter.pipeline import stages
 from kicad_autorouter.placement import (
     PlacementParams,
@@ -507,10 +514,184 @@ class BoardState:
             self.version += 1
             return self.version
 
+    def nudge_footprints(
+        self, uuids: Set[str], dx_mm: float, dy_mm: float, da_deg: float = 0.0
+    ) -> tuple[int, list[str]]:
+        """Manually shift footprints by (dx, dy, da); shared by the UI nudge pad.
+
+        Locked/pinned footprints and unknown UUIDs are skipped (ghosts live
+        outside ``model.footprints`` so they never match). Mirrors
+        :meth:`accept_proposal` dual-write: the BoardModel moves via
+        ``commit_placement`` (rips affected-net copper, keeps protected) and
+        the S-expression tree moves via ``rip_up_nets`` +
+        ``nudge_footprint_by_uuid``. Any pending proposal is discarded —
+        its deltas are posed against the pre-nudge board.
+        """
+        import math
+
+        for name, val in (("dx_mm", dx_mm), ("dy_mm", dy_mm), ("da_deg", da_deg)):
+            if not isinstance(val, (int, float)) or not math.isfinite(val):
+                raise ValueError(f"{name} must be finite, got {val!r}")
+        if dx_mm == 0.0 and dy_mm == 0.0 and da_deg == 0.0:
+            raise ValueError("nudge is a no-op (all deltas zero)")
+        with self._lock:
+            if self.model is None or self.pcb_tree is None:
+                raise ValueError("no board loaded")
+            pinned = set(self.pinned_uuids)
+            movable = [
+                fp.uuid for fp in self.model.footprints
+                if fp.uuid and fp.uuid in uuids and not fp.locked
+                and fp.uuid not in pinned
+            ]
+            if not movable:
+                raise ValueError("nothing movable in nudge set (locked/pinned/unknown)")
+            self.push_undo()
+            protected_nets = set(self.protected_nets)
+            affected_nets = self._get_affected_nets(set(movable))
+            deltas = {u: (dx_mm, dy_mm, da_deg) for u in movable}
+            self.model = commit_placement(self.model, deltas, protected_nets)
+            self.pcb_tree = rip_up_nets(self.pcb_tree, affected_nets, protected_nets)
+            for u in movable:
+                self.pcb_tree = nudge_footprint_by_uuid(
+                    self.pcb_tree, u, dx_mm, dy_mm, da_deg
+                )
+            self.proposal = None
+            self.version += 1
+            return self.version, movable
+
     def get_pcb_tree(self):
         """Get the current PCB S-expression tree for download."""
         with self._lock:
             return self.pcb_tree
+
+    def ghost_create(
+        self,
+        kind: str,
+        ref: str,
+        x_mm: float,
+        y_mm: float,
+        w_mm: float | None = None,
+        h_mm: float | None = None,
+        target_ref: str | None = None,
+        ka: float | None = None,
+        size_mm: float = 4.0,
+        courtyard_layer: str = "F.CrtYd",
+    ) -> tuple[int, str]:
+        """Create a wall/attractor ghost, persist it in the PCB tree + model."""
+        import math
+
+        if kind not in ("wall", "attractor"):
+            raise ValueError(f"kind must be 'wall' or 'attractor', got {kind!r}")
+        if courtyard_layer not in ("F.CrtYd", "F.Fab"):
+            raise ValueError(
+                f"courtyard_layer must be F.CrtYd or F.Fab, got {courtyard_layer!r}"
+            )
+        with self._lock:
+            if self.model is None or self.pcb_tree is None:
+                raise ValueError("no board loaded")
+            taken_refs = {fp.ref for fp in self.model.footprints if fp.ref}
+            taken_refs |= {fp.ref for fp in self.model.ghost_footprints if fp.ref}
+            if ref in taken_refs:
+                raise ValueError(f"ref {ref!r} already exists on the board")
+            if kind == "wall":
+                if w_mm is None or h_mm is None:
+                    raise ValueError("wall ghosts require w_mm and h_mm")
+                fp = make_ghost_wall(ref, x_mm, y_mm, w_mm, h_mm)
+                library_id = "Ghost:Wall"
+            else:
+                if not target_ref:
+                    raise ValueError("attractor ghosts require target_ref")
+                if ka is None:
+                    raise ValueError("attractor ghosts require ka")
+                if target_ref not in (self.model.by_ref or {}):
+                    valid = sorted(self.model.by_ref or {})[:20]
+                    raise ValueError(
+                        f"target {target_ref!r} not found on board"
+                        + (f" (e.g. {', '.join(valid)})" if valid else "")
+                    )
+                try:
+                    size_f = float(size_mm)
+                except (TypeError, ValueError):
+                    raise ValueError(f"size_mm must be numeric, got {size_mm!r}")
+                if not math.isfinite(size_f) or size_f <= 0:
+                    raise ValueError(f"size_mm must be > 0, got {size_mm!r}")
+                fp = make_ghost_attractor(ref, x_mm, y_mm, target_ref, ka, size_mm=size_f)
+                library_id = "Ghost:Attractor"
+            self.push_undo()
+            self.pcb_tree = add_ghost_to_tree(
+                self.pcb_tree, fp, library_id, courtyard_layer
+            )
+            self.model = board_model(self.pcb_tree)
+            self.proposal = None
+            self.version += 1
+            return self.version, fp.uuid
+
+    def ghost_move(
+        self, uuid: str, dx_mm: float, dy_mm: float, da_deg: float = 0.0
+    ) -> int:
+        """Shift a ghost anchor by (dx, dy) and/or rotate it by da_deg.
+
+        Ghosts carry no copper to rip. Rotation pivots about the ghost
+        anchor (graphics are footprint-local, so the courtyard spins in
+        place — a 90° turn swaps a wall's W/H extents).
+        """
+        import math
+
+        for name, val in (("dx_mm", dx_mm), ("dy_mm", dy_mm), ("da_deg", da_deg)):
+            if not isinstance(val, (int, float)) or not math.isfinite(val):
+                raise ValueError(f"{name} must be finite, got {val!r}")
+        if dx_mm == 0.0 and dy_mm == 0.0 and da_deg == 0.0:
+            raise ValueError("ghost move is a no-op (all deltas zero)")
+        with self._lock:
+            if self.model is None or self.pcb_tree is None:
+                raise ValueError("no board loaded")
+            if not any(fp.uuid == uuid for fp in self.model.ghost_footprints):
+                raise ValueError(f"no ghost with uuid {uuid!r}")
+            self.push_undo()
+            self.pcb_tree = nudge_footprint_by_uuid(
+                self.pcb_tree, uuid, dx_mm, dy_mm, da_deg
+            )
+            self.model = board_model(self.pcb_tree)
+            self.proposal = None
+            self.version += 1
+            return self.version
+
+    def ghost_delete(self, uuid: str) -> int:
+        """Remove a ghost footprint from the PCB tree + model."""
+        with self._lock:
+            if self.model is None or self.pcb_tree is None:
+                raise ValueError("no board loaded")
+            if not any(fp.uuid == uuid for fp in self.model.ghost_footprints):
+                raise ValueError(f"no ghost with uuid {uuid!r}")
+            self.push_undo()
+            self.pcb_tree = remove_ghost_from_tree(self.pcb_tree, uuid)
+            self.model = board_model(self.pcb_tree)
+            self.proposal = None
+            self.version += 1
+            return self.version
+
+    def ghost_resize(self, uuid: str, w_mm: float, h_mm: float) -> int:
+        """Resize a ghost's courtyard outline to ``w_mm`` x ``h_mm``.
+
+        Position, angle, pads, and attraction springs are preserved; only
+        the ``fp_line`` outline is rewritten (centered on the ghost anchor).
+        """
+        with self._lock:
+            if self.model is None or self.pcb_tree is None:
+                raise ValueError("no board loaded")
+            if not any(fp.uuid == uuid for fp in self.model.ghost_footprints):
+                raise ValueError(f"no ghost with uuid {uuid!r}")
+            try:
+                new_tree = resize_ghost_in_tree(
+                    self.pcb_tree, uuid, float(w_mm), float(h_mm))
+            except (KeyError, ValueError, TypeError) as exc:
+                raise ValueError(f"{exc}")
+            self.push_undo()
+            self.pcb_tree = new_tree
+            self.model = board_model(self.pcb_tree)
+            self.proposal = None
+            self.version += 1
+            return self.version
 
 
 STATE = BoardState()
@@ -1119,6 +1300,7 @@ class Handler(BaseHTTPRequestHandler):
                     "nets": nets,
                     "bbox": [minx, miny, maxx, maxy],
                     "ghost": True,
+                    "ghost_attractions": [[t, ka] for t, ka in (fp.ghost_attractions or ())],
                     "is_decap": False,  # Ghosts are never decaps (no physics)
                     "pad_count": sum(1 for pad in fp.pads if pad.net_name is not None),
                 })
@@ -1544,6 +1726,169 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/placement/undo":
             version = STATE.undo()
+            self._send(
+                200,
+                json.dumps({"ok": True, "version": version}).encode(),
+                "application/json",
+            )
+            return
+        if parsed.path == "/api/placement/nudge":
+            model, _, _, _, _, _ = STATE.snapshot
+            if model is None:
+                self._send(404, b"no board loaded", "text/plain")
+                return
+            length = int(self.headers.get("Content-Length") or 0)
+            body_data = self.rfile.read(length) if length > 0 else b"{}"
+            try:
+                req = json.loads(body_data.decode("utf-8"))
+            except json.JSONDecodeError:
+                self._send(400, b"invalid JSON", "text/plain")
+                return
+            try:
+                dx_mm = float(req.get("dx_mm", 0.0))
+                dy_mm = float(req.get("dy_mm", 0.0))
+                da_deg = float(req.get("da_deg", 0.0))
+            except (TypeError, ValueError):
+                self._send(400, b"dx_mm/dy_mm/da_deg must be numbers", "text/plain")
+                return
+            uuids = req.get("uuids")
+            if uuids is None:
+                uuids = STATE.get_selected_uuids()
+            elif isinstance(uuids, list):
+                uuids = set(uuids)
+            else:
+                self._send(400, b"uuids must be a list", "text/plain")
+                return
+            try:
+                version, moved = STATE.nudge_footprints(
+                    set(uuids), dx_mm, dy_mm, da_deg
+                )
+            except ValueError as exc:
+                self._send(400, f"{exc}".encode(), "text/plain")
+                return
+            self._send(
+                200,
+                json.dumps({
+                    "ok": True, "version": version, "moved": moved,
+                    "dx_mm": dx_mm, "dy_mm": dy_mm, "da_deg": da_deg,
+                }).encode(),
+                "application/json",
+            )
+            return
+        if parsed.path == "/api/ghosts" and self.command == "POST":
+            model, _, _, _, _, _ = STATE.snapshot
+            if model is None:
+                self._send(404, b"no board loaded", "text/plain")
+                return
+            length = int(self.headers.get("Content-Length") or 0)
+            body_data = self.rfile.read(length) if length > 0 else b"{}"
+            try:
+                req = json.loads(body_data.decode("utf-8"))
+            except json.JSONDecodeError:
+                self._send(400, b"invalid JSON", "text/plain")
+                return
+            try:
+                version, uuid = STATE.ghost_create(
+                    kind=req.get("kind", "wall"),
+                    ref=req.get("ref", ""),
+                    x_mm=float(req.get("x_mm", 0.0)),
+                    y_mm=float(req.get("y_mm", 0.0)),
+                    w_mm=req.get("w_mm"),
+                    h_mm=req.get("h_mm"),
+                    target_ref=req.get("target_ref"),
+                    ka=req.get("ka"),
+                    size_mm=req.get("size_mm", 4.0),
+                    courtyard_layer=req.get("courtyard_layer", "F.CrtYd"),
+                )
+            except (ValueError, TypeError) as exc:
+                self._send(400, f"{exc}".encode(), "text/plain")
+                return
+            self._send(
+                200,
+                json.dumps({"ok": True, "version": version, "uuid": uuid}).encode(),
+                "application/json",
+            )
+            return
+        if parsed.path == "/api/ghosts/move":
+            model, _, _, _, _, _ = STATE.snapshot
+            if model is None:
+                self._send(404, b"no board loaded", "text/plain")
+                return
+            length = int(self.headers.get("Content-Length") or 0)
+            body_data = self.rfile.read(length) if length > 0 else b"{}"
+            try:
+                req = json.loads(body_data.decode("utf-8"))
+            except json.JSONDecodeError:
+                self._send(400, b"invalid JSON", "text/plain")
+                return
+            if not req.get("uuid"):
+                self._send(400, b"uuid required", "text/plain")
+                return
+            try:
+                version = STATE.ghost_move(
+                    req["uuid"],
+                    float(req.get("dx_mm", 0.0)),
+                    float(req.get("dy_mm", 0.0)),
+                    float(req.get("da_deg", 0.0)),
+                )
+            except (ValueError, TypeError) as exc:
+                self._send(400, f"{exc}".encode(), "text/plain")
+                return
+            self._send(
+                200,
+                json.dumps({"ok": True, "version": version}).encode(),
+                "application/json",
+            )
+            return
+        if parsed.path == "/api/ghosts/delete":
+            model, _, _, _, _, _ = STATE.snapshot
+            if model is None:
+                self._send(404, b"no board loaded", "text/plain")
+                return
+            length = int(self.headers.get("Content-Length") or 0)
+            body_data = self.rfile.read(length) if length > 0 else b"{}"
+            try:
+                req = json.loads(body_data.decode("utf-8"))
+            except json.JSONDecodeError:
+                self._send(400, b"invalid JSON", "text/plain")
+                return
+            if not req.get("uuid"):
+                self._send(400, b"uuid required", "text/plain")
+                return
+            try:
+                version = STATE.ghost_delete(req["uuid"])
+            except ValueError as exc:
+                self._send(400, f"{exc}".encode(), "text/plain")
+                return
+            self._send(
+                200,
+                json.dumps({"ok": True, "version": version}).encode(),
+                "application/json",
+            )
+            return
+        if parsed.path == "/api/ghosts/resize":
+            model, _, _, _, _, _ = STATE.snapshot
+            if model is None:
+                self._send(404, b"no board loaded", "text/plain")
+                return
+            length = int(self.headers.get("Content-Length") or 0)
+            body_data = self.rfile.read(length) if length > 0 else b"{}"
+            try:
+                req = json.loads(body_data.decode("utf-8"))
+            except json.JSONDecodeError:
+                self._send(400, b"invalid JSON", "text/plain")
+                return
+            if not req.get("uuid"):
+                self._send(400, b"uuid required", "text/plain")
+                return
+            if req.get("w_mm") is None or req.get("h_mm") is None:
+                self._send(400, b"w_mm and h_mm required", "text/plain")
+                return
+            try:
+                version = STATE.ghost_resize(req["uuid"], req["w_mm"], req["h_mm"])
+            except ValueError as exc:
+                self._send(400, f"{exc}".encode(), "text/plain")
+                return
             self._send(
                 200,
                 json.dumps({"ok": True, "version": version}).encode(),
