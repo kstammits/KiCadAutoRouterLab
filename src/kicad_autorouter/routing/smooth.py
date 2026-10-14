@@ -27,6 +27,24 @@ from typing import List, Optional, Set, Tuple
 
 import numpy as np
 
+try:
+    from numba import njit
+except ImportError:  # pragma: no cover - Numba is a hard dependency.
+
+    def njit(*args, **kwargs):
+        """No-op fallback when Numba is unavailable (slow but correct)."""
+        if len(args) == 1 and callable(args[0]) and not kwargs:
+            return args[0]
+
+        def wrap(fn):
+            return fn
+
+        return wrap
+
+# Shared dummy for absent optional masks (Numba has no None-arrays: the
+# accompanying ``has_*`` flag short-circuits before any indexing).
+_EMPTY_BOOL_2D = np.zeros((0, 0), dtype=bool)
+
 # Cost bands (mirrors routing/obstacles.py + router.CostMap).
 BLOCKED_THRESHOLD = 100  # impassable: tracks, vias, drilled holes (pours are passable)
 SOFT_THRESHOLD = 50  # HIGH_COST pad rings / EDGE_KEEPOUT: no shortcut through
@@ -72,6 +90,53 @@ def own_net_soft_mask(model, grid, net_name: str, clearance_mm: float, track_hal
     return mask
 
 
+@njit(cache=True)
+def _footprint_clear_nb(
+    cost_layer,
+    has_soft: bool,
+    soft_layer,
+    c_f: float,
+    r_f: float,
+    radius: int,
+    blocked_threshold: int,
+    soft_threshold: int,
+    has_blocked: bool,
+    blocked_layer,
+    hr: int,
+) -> bool:
+    """Compiled corridor-footprint check (see :func:`_footprint_clear`).
+
+    Same scan with the same square-BLOCKED / Euclidean-soft semantics;
+    ``None`` masks arrive as ``(0, 0)`` dummies guarded by ``has_*``
+    short-circuits (never indexed when False).
+    """
+    H, W = cost_layer.shape
+    c0 = int(math.floor(c_f))
+    r0 = int(math.floor(r_f))
+    hr2 = hr * hr
+    for rr in range(r0 - radius, r0 + radius + 1):
+        if rr < 0 or rr >= H:
+            return False
+        dr = rr - r0
+        for cc in range(c0 - radius, c0 + radius + 1):
+            if cc < 0 or cc >= W:
+                return False
+            dc = cc - c0
+            # Plain BLOCKED copper keeps the conservative square footprint
+            # (see _footprint_clear).
+            if int(cost_layer[rr, cc]) >= blocked_threshold:
+                return False
+            dd = dr * dr + dc * dc
+            if has_blocked and dd <= hr2 and bool(blocked_layer[rr, cc]):
+                return False
+            if dd > hr2:
+                continue
+            val = int(cost_layer[rr, cc])
+            if val >= soft_threshold and (not has_soft or not soft_layer[rr, cc]):
+                return False
+    return True
+
+
 def _footprint_clear(
     cost_layer,
     soft_layer,
@@ -100,48 +165,29 @@ def _footprint_clear(
     ``radius``) to avoid counting clearance twice; the cost grid keeps the
     full ``radius``.
     """
-    H, W = cost_layer.shape
-    c0 = int(math.floor(c_f))
-    r0 = int(math.floor(r_f))
     hr = radius if hard_radius is None else hard_radius
-    hr2 = hr * hr
-    for rr in range(r0 - radius, r0 + radius + 1):
-        if rr < 0 or rr >= H:
-            return False
-        dr = rr - r0
-        for cc in range(c0 - radius, c0 + radius + 1):
-            if cc < 0 or cc >= W:
-                return False
-            dc = cc - c0
-            # Plain BLOCKED copper (prior tracks/vias/holes, unknown halo)
-            # keeps the conservative square footprint: on diagonals a
-            # Euclidean disc would leave only ~0.4 cells of copper gap to a
-            # neighboring centerline. Clearance is kept here deliberately
-            # (tight-space revisit later).
-            if int(cost_layer[rr, cc]) >= blocked_threshold:
-                return False
-            dd = dr * dr + dc * dc
-            if blocked_layer is not None and dd <= hr2 and bool(blocked_layer[rr, cc]):
-                return False
-            # Penalized rings (HIGH_COST pad clearance, EDGE_KEEPOUT) already
-            # encode copper + clearance (+ track half for pads) with circular
-            # geometry, so they are tested with the Euclidean track-copper
-            # disc (hard_radius), not the full clearance halo — otherwise
-            # clearance is counted twice and no detour chord around a
-            # foreign pad is ever walkable.
-            if dd > hr2:
-                continue
-            val = int(cost_layer[rr, cc])
-            if val >= SOFT_THRESHOLD and (soft_layer is None or not soft_layer[rr, cc]):
-                return False
-    return True
+    has_soft = soft_layer is not None
+    has_blocked = blocked_layer is not None
+    return bool(
+        _footprint_clear_nb(
+            np.asarray(cost_layer),
+            has_soft,
+            np.asarray(soft_layer) if has_soft else _EMPTY_BOOL_2D,
+            float(c_f),
+            float(r_f),
+            int(radius),
+            int(blocked_threshold),
+            int(SOFT_THRESHOLD),
+            has_blocked,
+            np.asarray(blocked_layer) if has_blocked else _EMPTY_BOOL_2D,
+            int(hr),
+        )
+    )
 
 
-def _blocked_footprint_hit(blocked_layer, c_f: float, r_f: float, radius: int) -> bool:
-    """True when the corridor footprint around a sample touches exclusion.
-
-    Euclidean disc (``dr²+dc² <= radius²``); see :func:`_footprint_clear`.
-    """
+@njit(cache=True)
+def _blocked_footprint_hit_nb(blocked_layer, c_f: float, r_f: float, radius: int) -> bool:
+    """Compiled exclusion-footprint check (see :func:`_blocked_footprint_hit`)."""
     H, W = blocked_layer.shape
     c0 = int(math.floor(c_f))
     r0 = int(math.floor(r_f))
@@ -158,6 +204,83 @@ def _blocked_footprint_hit(blocked_layer, c_f: float, r_f: float, radius: int) -
             if bool(blocked_layer[rr, cc]):
                 return True
     return False
+
+
+def _blocked_footprint_hit(blocked_layer, c_f: float, r_f: float, radius: int) -> bool:
+    """True when the corridor footprint around a sample touches exclusion.
+
+    Euclidean disc (``dr²+dc² <= radius²``); see :func:`_footprint_clear`.
+    """
+    return bool(
+        _blocked_footprint_hit_nb(
+            np.asarray(blocked_layer), float(c_f), float(r_f), int(radius)
+        )
+    )
+
+
+@njit(cache=True)
+def _line_walkable_nb(
+    c1: int,
+    r1: int,
+    c2: int,
+    r2: int,
+    cost_layer,
+    has_soft: bool,
+    soft_layer,
+    blocked_threshold: int,
+    soft_threshold: int,
+    corridor_radius: int,
+    has_blocked: bool,
+    blocked_layer,
+    hr: int,
+) -> bool:
+    """Compiled any-angle line check (see :func:`_line_walkable`)."""
+    dist = math.hypot(float(c2 - c1), float(r2 - r1))
+    if dist == 0.0:
+        if has_blocked:
+            H, W = blocked_layer.shape
+            if 0 <= r1 < H and 0 <= c1 < W and bool(blocked_layer[r1, c1]):
+                return False
+        return True
+    steps = int(math.ceil(dist * 2.0))
+    if steps < 1:
+        steps = 1
+    for s in range(steps + 1):
+        t = float(s) / float(steps)
+        c_f = float(c1) + float(c2 - c1) * t
+        r_f = float(r1) + float(r2 - r1) * t
+        if has_blocked and not (
+            math.hypot(c_f - float(c1), r_f - float(r1)) < 0.5
+            or math.hypot(c_f - float(c2), r_f - float(r2)) < 0.5
+        ):
+            # Hard exclusion (foreign-THT rings) has no endpoint
+            # allowance: the routed net's own pads read 0 in this mask,
+            # so any footprint hit means clipping foreign copper. The
+            # cost grid keeps its own 1-cell allowance below.
+            if _blocked_footprint_hit_nb(blocked_layer, c_f, r_f, hr):
+                return False
+        # Terminal allowance for the cost grid: pads live on blocked
+        # cells, so skip within one cell of either endpoint.
+        if (
+            math.hypot(c_f - float(c1), r_f - float(r1)) < 1.0
+            or math.hypot(c_f - float(c2), r_f - float(r2)) < 1.0
+        ):
+            continue
+        if not _footprint_clear_nb(
+            cost_layer,
+            has_soft,
+            soft_layer,
+            c_f,
+            r_f,
+            corridor_radius,
+            blocked_threshold,
+            soft_threshold,
+            has_blocked,
+            blocked_layer,
+            hr,
+        ):
+            return False
+    return True
 
 
 def _line_walkable(
@@ -184,38 +307,25 @@ def _line_walkable(
     the cost grid keeps the full ``corridor_radius``.
     """
     hr = corridor_radius if hard_radius is None else hard_radius
-    dist = math.hypot(c2 - c1, r2 - r1)
-    if dist == 0:
-        if blocked_layer is not None:
-            H, W = blocked_layer.shape
-            if 0 <= r1 < H and 0 <= c1 < W and bool(blocked_layer[r1, c1]):
-                return False
-        return True
-    steps = max(1, int(math.ceil(dist * 2)))
-    for s in range(steps + 1):
-        t = s / steps
-        c_f = c1 + (c2 - c1) * t
-        r_f = r1 + (r2 - r1) * t
-        if blocked_layer is not None and not (
-            math.hypot(c_f - c1, r_f - r1) < 0.5
-            or math.hypot(c_f - c2, r_f - r2) < 0.5
-        ):
-            # Hard exclusion (foreign-THT rings) has no endpoint
-            # allowance: the routed net's own pads read 0 in this mask,
-            # so any footprint hit means clipping foreign copper. The
-            # cost grid keeps its own 1-cell allowance below.
-            if _blocked_footprint_hit(blocked_layer, c_f, r_f, hr):
-                return False
-        # Terminal allowance for the cost grid: pads live on blocked
-        # cells, so skip within one cell of either endpoint.
-        if (
-            math.hypot(c_f - c1, r_f - r1) < 1.0
-            or math.hypot(c_f - c2, r_f - r2) < 1.0
-        ):
-            continue
-        if not _footprint_clear(cost_layer, soft_layer, c_f, r_f, corridor_radius, blocked_threshold, blocked_layer, hr):
-            return False
-    return True
+    has_soft = soft_layer is not None
+    has_blocked = blocked_layer is not None
+    return bool(
+        _line_walkable_nb(
+            int(c1),
+            int(r1),
+            int(c2),
+            int(r2),
+            np.asarray(cost_layer),
+            has_soft,
+            np.asarray(soft_layer) if has_soft else _EMPTY_BOOL_2D,
+            int(blocked_threshold),
+            int(SOFT_THRESHOLD),
+            int(corridor_radius),
+            has_blocked,
+            np.asarray(blocked_layer) if has_blocked else _EMPTY_BOOL_2D,
+            int(hr),
+        )
+    )
 
 
 def _point_clear(

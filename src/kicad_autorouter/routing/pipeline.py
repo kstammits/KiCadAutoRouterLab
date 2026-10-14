@@ -28,7 +28,7 @@ from .power import identify_power_nets
 from .grid import RoutingGrid, board_to_grid
 from .pour import pour_corridors, pour_net_names, severance_cost
 from .stitch import plan_stitches
-from .obstacles import BLOCKED, bresenham_cells, build_fanout_cost, build_via_block_mask, stamp_square, tht_drill_cells, track_corridor_radius_cells, via_halo_radius_cells
+from .obstacles import BLOCKED, bresenham_cells, build_fanout_cost, build_via_block_mask, drill_radius_cells, stamp_discs, stamp_square, tht_drill_cells, track_corridor_radius_cells, via_halo_radius_cells
 
 
 @dataclass
@@ -761,14 +761,19 @@ def _build_tht_via_mask(model, grid) -> np.ndarray:
     Returns (H, W) boolean array where True = free transition site.
     """
     H, W = grid.height_cells, grid.width_cells
+    res_mm = grid.resolution_mm
     mask = np.zeros((H, W), dtype=bool)
-
+    rows, cols, radii = [], [], []
     for fp in model.footprints:
         for pad in fp.pads:
             if pad.is_through_hole:
-                for (c, r) in tht_drill_cells(pad, grid):
-                    mask[r, c] = True
-
+                col, row = board_to_grid(
+                    grid, pad.position.x_mm, pad.position.y_mm
+                )
+                rows.append(row)
+                cols.append(col)
+                radii.append(drill_radius_cells(pad.drill_mm, res_mm))
+    stamp_discs(mask, rows, cols, radii, True)
     return mask
 
 

@@ -10,6 +10,20 @@ import numpy as np
 from ..board_model import BoardModel, Footprint, Pad, sample_quadratic_bezier
 from .grid import RoutingGrid, board_to_grid
 
+try:
+    from numba import njit
+except ImportError:  # pragma: no cover - Numba is a hard dependency.
+
+    def njit(*args, **kwargs):
+        """No-op fallback when Numba is unavailable (slow but correct)."""
+        if len(args) == 1 and callable(args[0]) and not kwargs:
+            return args[0]
+
+        def wrap(fn):
+            return fn
+
+        return wrap
+
 
 # Cell cost values (int8)
 FREE = 0
@@ -199,29 +213,34 @@ def build_via_block_mask(
     so the two builders never disagree on hole cells.
     """
     H, W = grid.height_cells, grid.width_cells
-    mask = np.zeros((H, W), dtype=bool)
     res_mm = grid.resolution_mm
     if res_mm <= 0:
-        return mask
+        return np.zeros((H, W), dtype=bool)
 
+    mask = np.zeros((H, W), dtype=bool)
+    rows, cols, radii = [], [], []
+    carve_rows, carve_cols, carve_radii = [], [], []
     for fp in model.footprints:
         for pad in fp.pads:
-            if pad.is_through_hole:
-                continue
             col, row = board_to_grid(grid, pad.position.x_mm, pad.position.y_mm)
-            radius = pad_halo_radius_cells(
-                _pad_half_extent_mm(pad), clearance_mm, track_half_mm, res_mm
-            )
-            for (r, c) in disc_cells(row, col, radius, H, W):
-                mask[r, c] = True
+            if pad.is_through_hole:
+                carve_rows.append(row)
+                carve_cols.append(col)
+                carve_radii.append(drill_radius_cells(pad.drill_mm, res_mm))
+            else:
+                rows.append(row)
+                cols.append(col)
+                radii.append(
+                    pad_halo_radius_cells(
+                        _pad_half_extent_mm(pad), clearance_mm,
+                        track_half_mm, res_mm,
+                    )
+                )
+    stamp_discs(mask, rows, cols, radii, True)
 
     # Carve drill holes back out: a pre-drilled hole is a legal hop site
     # even when an adjacent SMD halo overlaps it (THT wins ties).
-    for fp in model.footprints:
-        for pad in fp.pads:
-            if pad.is_through_hole:
-                for (c, r) in tht_drill_cells(pad, grid):
-                    mask[r, c] = False
+    stamp_discs(mask, carve_rows, carve_cols, carve_radii, False)
     return mask
 
 
@@ -336,6 +355,72 @@ def disc_cells(row: int, col: int, radius: int, H: int, W: int):
         dc_max = int(math.sqrt(max(0, r2 - dr * dr)))
         for c in range(max(0, col - dc_max), min(W, col + dc_max + 1)):
             yield r, c
+
+
+@njit(cache=True)
+def _stamp_discs_nb(
+    mask: np.ndarray,
+    rows: np.ndarray,
+    cols: np.ndarray,
+    radii: np.ndarray,
+    value: bool,
+) -> None:
+    """Stamp (``value=True``) or carve (``value=False``) Euclidean discs.
+
+    Compiled twin of the ``disc_cells`` scan (``dr²+dc² ≤ r²`` with
+    ``int()`` truncation): same loop bounds, same per-row ``dc_max``,
+    bound-clipped. Operates in place.
+    """
+    H, W = mask.shape
+    n = rows.shape[0]
+    for k in range(n):
+        r0 = rows[k]
+        c0 = cols[k]
+        rad = radii[k]
+        r2 = rad * rad
+        rmin = r0 - rad
+        if rmin < 0:
+            rmin = 0
+        rmax = r0 + rad + 1
+        if rmax > H:
+            rmax = H
+        for r in range(rmin, rmax):
+            dr = r - r0
+            rem = r2 - dr * dr
+            if rem < 0:
+                rem = 0
+            dc_max = int(np.sqrt(float(rem)))
+            cmin = c0 - dc_max
+            if cmin < 0:
+                cmin = 0
+            cmax = c0 + dc_max + 1
+            if cmax > W:
+                cmax = W
+            for c in range(cmin, cmax):
+                mask[r, c] = value
+
+
+def stamp_discs(
+    mask: np.ndarray,
+    rows,
+    cols,
+    radii,
+    value: bool,
+) -> None:
+    """Stamp/carve Euclidean discs at ``(rows[i], cols[i])`` (in place).
+
+    Batches all centers into one :func:`_stamp_discs_nb` call (Numba fast
+    path); falls back to the ``disc_cells`` Python loop when Numba is
+    unavailable. Results are identical either way.
+    """
+    rows = np.asarray(rows, dtype=np.int64)
+    cols = np.asarray(cols, dtype=np.int64)
+    radii = np.asarray(radii, dtype=np.int64)
+    if rows.size == 0:
+        return
+    # With Numba this is the compiled kernel; without it (no-op
+    # decorator) the same body runs interpreted — identical results.
+    _stamp_discs_nb(mask, rows, cols, radii, bool(value))
 
 
 def _mark_pad(
