@@ -258,7 +258,7 @@ def _mark_line_blocked(layer_grid: np.ndarray, r1: int, c1: int, r2: int, c2: in
 
 def _smooth_result(result, cost_grid, routing_grid, corridor: int, blocked_threshold: int = 100,
                    pinned=None, soft_mask=None, clearance_radius: int = 0,
-                   blocked_mask=None):
+                   blocked_mask=None, angle_step_rad: float = math.pi / 18):
     """String-pull a successful route before corridor reservation.
 
     Smoothing runs against the pre-route grid (which must NOT yet contain
@@ -294,6 +294,7 @@ def _smooth_result(result, cost_grid, routing_grid, corridor: int, blocked_thres
             soft_mask=soft_mask,
             blocked_mask=blocked_mask,
             hard_radius=hard_radius,
+            angle_step_rad=angle_step_rad,
         )
         new_branches.append(smoothed)
         if len(smoothed) != len(branch):
@@ -595,6 +596,7 @@ def route_nets(
                     pinned=pinned, soft_mask=soft_mask,
                     clearance_radius=clearance_radius,
                     blocked_mask=blocked_mask,
+                    angle_step_rad=math.pi / 18,
                 )
                 timings["smooth_s"] = timings.get("smooth_s", 0.0) + (time.perf_counter() - t_smooth)
                 _apply_route_to_grid(

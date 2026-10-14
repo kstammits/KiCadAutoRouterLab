@@ -246,6 +246,7 @@ def _greedy_pass(
     corridor_radius: int,
     blocked_layer=None,
     hard_radius: Optional[int] = None,
+    angle_step_rad: float = math.pi / 18,
 ) -> List[Tuple[int, int, int]]:
     """One greedy furthest-visible pass over a same-layer run."""
     n = len(run)
@@ -255,25 +256,34 @@ def _greedy_pass(
     i = 0
     while i < n - 1:
         # Furthest reachable node wins (fewest, longest segments).
+        # Among equally-far nodes, prefer angle closest to step_rad multiple.
         j = n - 1
+        best_j = None
+        best_penalty = float('inf')
         while j > i + 1:
             if _line_walkable(
                 run[i][0], run[i][1], run[j][0], run[j][1],
                 cost_layer, soft_layer, blocked_threshold, corridor_radius,
                 blocked_layer, hard_radius,
             ):
-                break
+                dist = math.hypot(run[j][0] - run[i][0], run[j][1] - run[i][1])
+                if best_j is None or dist > best_dist or (dist == best_dist and _angle_penalty(run[i][0], run[i][1], run[j][0], run[j][1], angle_step_rad) < best_penalty):
+                    best_j = j
+                    best_dist = dist
+                    best_penalty = _angle_penalty(run[i][0], run[i][1], run[j][0], run[j][1], angle_step_rad)
             j -= 1
-        out.append(run[j])
-        i = j
+        if best_j is None:
+            best_j = i + 1
+        out.append(run[best_j])
+        i = best_j
     return out
 
 
-def _angle_45_penalty(c1: int, r1: int, c2: int, r2: int) -> float:
-    """Distance of a leg's angle to the nearest 45° multiple, in radians."""
+def _angle_penalty(c1: int, r1: int, c2: int, r2: int, step_rad: float) -> float:
+    """Distance of a leg's angle to the nearest step_rad multiple, in radians."""
     ang = math.atan2(r2 - r1, c2 - c1)
-    eighth = round(ang / (math.pi / 4)) * (math.pi / 4)
-    return abs(ang - eighth)
+    nearest = round(ang / step_rad) * step_rad
+    return abs(ang - nearest)
 
 
 def _steiner_candidates(
@@ -355,6 +365,7 @@ def _repair_lumps(
     corridor_radius: int,
     blocked_layer=None,
     hard_radius: Optional[int] = None,
+    angle_step_rad: float = math.pi / 18,
 ) -> List[Tuple[int, int, int]]:
     """Replace residual stairstep lumps with outward 2–3 leg detours.
 
@@ -407,8 +418,8 @@ def _repair_lumps(
                                       blocked_threshold, corridor_radius, blocked_layer, hard_radius):
                     continue
                 length = (math.hypot(pc - a_c, pr - a_r) + math.hypot(b_c - pc, b_r - pr))
-                score = length + 0.5 * (_angle_45_penalty(a_c, a_r, pc, pr)
-                                        + _angle_45_penalty(pc, pr, b_c, b_r))
+                score = length + 0.5 * (_angle_penalty(a_c, a_r, pc, pr, angle_step_rad)
+                                        + _angle_penalty(pc, pr, b_c, b_r, angle_step_rad))
                 if best is None or score < best[0]:
                     best = (score, [(pc, pr)])
             if best is None and len(cands) >= 2:
@@ -438,9 +449,9 @@ def _repair_lumps(
                         length = (math.hypot(pc - a_c, pr - a_r)
                                   + math.hypot(qc - pc, qr - pr)
                                   + math.hypot(b_c - qc, b_r - qr))
-                        score = length + 0.5 * (_angle_45_penalty(a_c, a_r, pc, pr)
-                                                + _angle_45_penalty(pc, pr, qc, qr)
-                                                + _angle_45_penalty(qc, qr, b_c, b_r))
+                        score = length + 0.5 * (_angle_penalty(a_c, a_r, pc, pr, angle_step_rad)
+                                                + _angle_penalty(pc, pr, qc, qr, angle_step_rad)
+                                                + _angle_penalty(qc, qr, b_c, b_r, angle_step_rad))
                         if best is None or score < best[0]:
                             best = (score, [(pc, pr), (qc, qr)])
             if best is not None:
@@ -450,7 +461,7 @@ def _repair_lumps(
                 changed = True
                 # Re-collapse around the insertion; restart scan just after.
                 nodes = _greedy_pass(nodes, cost_layer, soft_layer, blocked_threshold,
-                                     corridor_radius, blocked_layer, hard_radius)
+                                     corridor_radius, blocked_layer, hard_radius, angle_step_rad)
                 i += 1
             else:
                 i += 1
@@ -465,6 +476,7 @@ def _smooth_run(
     corridor_radius: int,
     blocked_layer=None,
     hard_radius: Optional[int] = None,
+    angle_step_rad: float = math.pi / 18,
 ) -> List[Tuple[int, int, int]]:
     """Iterative bidirectional greedy + outward lump repair.
 
@@ -479,18 +491,18 @@ def _smooth_run(
     if n < 3:
         return list(run)
     cur = _greedy_pass(run, cost_layer, soft_layer, blocked_threshold,
-                       corridor_radius, blocked_layer, hard_radius)
+                       corridor_radius, blocked_layer, hard_radius, angle_step_rad)
     for _ in range(3):
         rev = list(reversed(cur))
         back = _greedy_pass(rev, cost_layer, soft_layer, blocked_threshold,
-                            corridor_radius, blocked_layer, hard_radius)
+                            corridor_radius, blocked_layer, hard_radius, angle_step_rad)
         nxt = list(reversed(back))
         if len(nxt) >= len(cur):
             cur = nxt if len(nxt) < len(cur) else cur
             break
         cur = nxt
     cur = _repair_lumps(cur, cost_layer, soft_layer, blocked_threshold,
-                        corridor_radius, blocked_layer, hard_radius)
+                        corridor_radius, blocked_layer, hard_radius, angle_step_rad)
     return cur
 
 
@@ -503,6 +515,7 @@ def smooth_grid_path(
     soft_mask=None,
     blocked_mask=None,
     hard_radius: Optional[int] = None,
+    angle_step_rad: float = math.pi / 18,
 ) -> List[Tuple[int, int, int]]:
     """Shortcut a routed grid path within each same-layer run.
 
@@ -565,7 +578,8 @@ def smooth_grid_path(
             soft_layer = soft_mask[layer] if soft_mask is not None else None
             blocked_layer = blocked_mask[layer] if blocked_mask is not None else None
             new_run = _smooth_run(run, cost_layer, soft_layer, blocked_threshold, max(0, corridor_radius), blocked_layer,
-                                  max(0, corridor_radius) if hard_radius is None else max(0, hard_radius))
+                                   max(0, corridor_radius) if hard_radius is None else max(0, hard_radius),
+                                   angle_step_rad)
         if smoothed and new_run and new_run[0] == smoothed[-1]:
             # Shared pinned node: dedupe. (Via boundaries are disjoint
             # node pairs, so they are never merged here.)
