@@ -72,9 +72,11 @@ def build_occupancy_grid(
         for pad in fp.pads:
             _mark_pad(cost_grid, grid, fp, pad, clearance_cells, default_clearance_cells)
 
-    # 3. Existing tracks -> blocked on their layer
+    # 3. Existing tracks -> blocked on their layer with width + clearance
     for track in model.tracks:
-        _mark_track(cost_grid, grid, track)
+        clr = clearance_cells.get(track.net_name, default_clearance_cells) if track.net_name else default_clearance_cells
+        clearance_mm = clr * grid.resolution_mm
+        _mark_track(cost_grid, grid, track, clearance_mm)
 
     # 4. Vias -> blocked on both layers at location
     for via in model.vias:
@@ -376,14 +378,21 @@ def _mark_pad(
             _mark_circular_zone(cost_grid[layer_idx], row, col, radius, HIGH_COST)
 
 
-def _mark_track(cost_grid: np.ndarray, grid, track):
-    """Mark track segment as blocked on its layer."""
+def _mark_track(cost_grid: np.ndarray, grid, track, clearance_mm: float = 0.2):
+    """Mark track segment as blocked on its layer with width + clearance halo."""
     layer_idx = 0 if track.layer == "F.Cu" else 1
     if layer_idx >= cost_grid.shape[0]:
         return
+    radius = track_corridor_radius_cells(track.width_mm, clearance_mm, grid.resolution_mm)
     c1, r1 = board_to_grid(grid, track.start.x_mm, track.start.y_mm)
     c2, r2 = board_to_grid(grid, track.end.x_mm, track.end.y_mm)
-    _draw_line_blocked(cost_grid[layer_idx], grid, track.start.x_mm, track.start.y_mm, track.end.x_mm, track.end.y_mm)
+    layer_grid = cost_grid[layer_idx]
+    for c, r in bresenham_cells(c1, r1, c2, r2):
+        if 0 <= r < layer_grid.shape[0] and 0 <= c < layer_grid.shape[1]:
+            if radius:
+                stamp_square(layer_grid, r, c, radius, BLOCKED)
+            else:
+                layer_grid[r, c] = BLOCKED
 
 
 def _mark_via(cost_grid: np.ndarray, grid, via):

@@ -13,9 +13,19 @@ THT-free / via-block checks the search still applies per cell).
 
 from __future__ import annotations
 
-import math
-
 import numpy as np
+from scipy import ndimage
+
+
+def _disc_structure(radius: int) -> np.ndarray:
+    """Boolean ``(2*radius+1, 2*radius+1)`` disc (``dr²+dc² <= r²``).
+
+    Matches the historical per-cell ``_stamp`` scan exactly (integer
+    arithmetic, no float error): a via center is forbidden when an
+    obstacle cell lies within the Euclidean ``radius`` disc.
+    """
+    y, x = np.ogrid[-radius : radius + 1, -radius : radius + 1]
+    return (x * x + y * y <= radius * radius)
 
 
 def build_via_ok_mask(
@@ -33,30 +43,27 @@ def build_via_ok_mask(
     if radius <= 0:
         return np.ones((H, W), dtype=bool)
 
-    forbidden = np.zeros((H, W), dtype=bool)
-    r2 = radius * radius
-
-    def _stamp(rr: int, cc: int) -> None:
-        for r in range(max(0, rr - radius), min(H, rr + radius + 1)):
-            dr = r - rr
-            dc_max = int(math.sqrt(max(0, r2 - dr * dr)))
-            c0 = max(0, cc - dc_max)
-            c1 = min(W - 1, cc + dc_max)
-            forbidden[r, c0 : c1 + 1] = True
-
+    # Union of all obstacle sources across layers (2D): a via halo on
+    # any layer forbids the (row, col) center on every layer. OR-then-
+    # dilate equals dilate-then-OR, so one dilation replaces the old
+    # per-obstacle-cell Python ``_stamp`` loop with identical results.
+    obstacle = np.zeros((H, W), dtype=bool)
     for l in range(n_layers):
         layer = cost_grid[l]
         sec = secondary[l] if secondary is not None else None
-        rows, cols = np.nonzero(
-            (layer >= blocked_threshold)
-            | ((sec >= secondary_blocked) if sec is not None else False)
-        )
-        for rr, cc in zip(rows.tolist(), cols.tolist()):
-            _stamp(int(rr), int(cc))
+        if sec is not None:
+            obstacle |= (layer >= blocked_threshold) | (sec >= secondary_blocked)
+        else:
+            obstacle |= layer >= blocked_threshold
+    obstacle |= np.asarray(via_block_mask, dtype=bool)
 
-    rows, cols = np.nonzero(np.asarray(via_block_mask, dtype=bool))
-    for rr, cc in zip(rows.tolist(), cols.tolist()):
-        _stamp(int(rr), int(cc))
+    if not obstacle.any():
+        forbidden = np.zeros((H, W), dtype=bool)
+    else:
+        forbidden = ndimage.binary_dilation(
+            obstacle, structure=_disc_structure(radius)
+        )
+        forbidden = np.asarray(forbidden, dtype=bool)
 
     ok = ~forbidden
     # Drilled holes stay legal hop sites (the barrel already exists).
