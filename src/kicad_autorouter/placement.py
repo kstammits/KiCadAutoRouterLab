@@ -51,6 +51,11 @@ class PlacementParams:
     attraction_ka: float = 0.05
     max_iterations: int = 1000
     convergence_eps_mm: float = 0.01
+    # Force-based early termination: stop when max force magnitude across
+    # all movable pads < threshold (N). Complements displacement check to
+    # avoid false convergence when step capping clamps large forces.
+    # 0 disables (default for backward compatibility).
+    force_convergence_threshold: float = 0.0
     # Courtyard collision repulsion force constant. Deliberately modest:
     # the integrator caps every step, so extra magnitude only buys
     # overshoot oscillation, not faster separation (2026-10-10).
@@ -125,13 +130,14 @@ def _validate(params: PlacementParams) -> None:
         "repulsion_kr",
         "attraction_ka",
         "convergence_eps_mm",
+        "force_convergence_threshold",
         "courtyard_repulsion_kc",
         "courtyard_halo_mm",
         "boundary_repulsion_kb",
         "max_step_mm",
     ):
-        if getattr(params, name) <= 0:
-            raise ValueError(f"{name} must be > 0")
+        if getattr(params, name) < 0:
+            raise ValueError(f"{name} must be >= 0")
     if params.friction_threshold_mm < 0:
         raise ValueError("friction_threshold_mm must be >= 0")
     if params.power_attraction_scale < 0:
@@ -556,6 +562,276 @@ def _contact_weights(proj: np.ndarray) -> np.ndarray:
     if n > 0:
         return np.ones_like(w) / n
     return w
+
+
+
+# ============================================================
+# Analytical contact detection (Phase 3: SAT-based collision)
+# ============================================================
+
+class ShapeType:
+    """Shape classification for analytical collision."""
+    EMPTY = "empty"
+    RECTANGLE = "rectangle"
+    CIRCLE = "circle"
+    POLYGON = "polygon"
+
+
+def _classify_rectangle(verts: np.ndarray) -> Optional[dict]:
+    """Classify vertices as rectangle, return params or None.
+    
+    Args:
+        verts: (n, 2) array of vertices, may or may not be closed (last == first)
+    
+    Returns:
+        dict with center, half_extents, angle, or None if not rectangle
+    """
+    if len(verts) < 4:
+        return None
+    
+    # Handle closed ring (last == first)
+    if np.allclose(verts[0], verts[-1]):
+        corners = verts[:-1]
+    else:
+        corners = verts
+    
+    if len(corners) != 4:
+        return None
+    
+    center = corners.mean(axis=0)
+    
+    # Edge vectors
+    edges = np.roll(corners, -1, axis=0) - corners
+    edge_lengths = np.linalg.norm(edges, axis=1)
+    
+    # For rectangle, opposite edges have equal length (2 unique lengths).
+    # Use relative tolerance (0.1%) to handle floating-point drift after
+    # transformation and hand-drawn courtyards with slight edge mismatches.
+    def group_lengths(lengths, rel_tol=1e-3):
+        groups = []
+        for l in lengths:
+            for g in groups:
+                if abs(l - g) / g <= rel_tol:
+                    break
+            else:
+                groups.append(l)
+        return np.array(groups)
+    
+    unique_lengths = group_lengths(edge_lengths)
+    if len(unique_lengths) != 2:
+        return None
+    
+    # Find angle from first edge of first unique length
+    idx = np.where(np.isclose(edge_lengths, unique_lengths[0], rtol=1e-3))[0][0]
+    edge0 = edges[idx]
+    angle = math.atan2(edge0[1], edge0[0])
+    
+    # Normalize angle to [-pi/2, pi/2] (180 degrees symmetry)
+    angle = (angle + math.pi/2) % math.pi - math.pi/2
+    
+    # Half extents in local frame
+    ca, sa = math.cos(angle), math.sin(angle)
+    v = corners - center
+    local_x = v[:, 0] * ca + v[:, 1] * sa
+    local_y = -v[:, 0] * sa + v[:, 1] * ca
+    hx = float(abs(local_x).max())
+    hy = float(abs(local_y).max())
+    
+    # Verify right angles
+    angles = np.arctan2(edges[:, 1], edges[:, 0])
+    angle_diffs = np.diff(angles)
+    angle_diffs = (angle_diffs + np.pi) % (2 * np.pi) - np.pi
+    if not np.allclose(np.abs(angle_diffs), np.pi / 2, atol=0.05):
+        return None
+    
+    return {
+        "type": ShapeType.RECTANGLE,
+        "center": (float(center[0]), float(center[1])),
+        "half_extents": (hx, hy),
+        "angle": angle,
+    }
+
+
+def _classify_circle(poly: Polygon) -> Optional[dict]:
+    """Classify polygon as circle, return params or None."""
+    if poly.is_empty:
+        return None
+    
+    coords = list(poly.exterior.coords)
+    n_verts = len(coords) - 1  # exclude closure
+    
+    if n_verts < 8:
+        return None
+    
+    centroid = np.array([poly.centroid.x, poly.centroid.y])
+    verts = np.array(coords[:-1])
+    radii = np.linalg.norm(verts - centroid, axis=1)
+    mean_r = float(radii.mean())
+    std_r = float(radii.std())
+    
+    # Circle: low variation in radius (< 5%)
+    if mean_r > 0 and std_r / mean_r < 0.05:
+        return {
+            "type": ShapeType.CIRCLE,
+            "center": (float(centroid[0]), float(centroid[1])),
+            "radius": mean_r,
+        }
+    return None
+
+
+def _classify_shape(poly: Polygon) -> tuple[str, dict]:
+    """Classify polygon shape for analytical collision.
+    
+    Returns: (shape_type, params_dict)
+    shape_type: "rectangle", "circle", "polygon", or "empty"
+    params_dict: parameters for analytical collision
+    """
+    if poly.is_empty:
+        return ShapeType.EMPTY, {}
+    
+    # Try rectangle first
+    coords = list(poly.exterior.coords)
+    verts = np.array(coords, dtype=np.float64)
+    rect = _classify_rectangle(verts)
+    if rect:
+        return ShapeType.RECTANGLE, rect
+    
+    # Try circle
+    circle = _classify_circle(poly)
+    if circle:
+        return ShapeType.CIRCLE, circle
+    
+    return ShapeType.POLYGON, {"polygon": poly}
+
+
+# SAT collision for two rectangles
+def _sat_rect_rect(rect1: dict, rect2: dict) -> tuple[bool, np.ndarray, float]:
+    """SAT collision for two rectangles.
+    
+    Returns: (overlaps, normal, penetration_depth)
+    normal points from rect1 to rect2 (pushes rect1 away from rect2).
+    Returns True for touching (penetration = 0) as well as overlapping.
+    For non-overlapping, returns the separation axis normal (min overlap axis).
+    """
+    c1 = np.array(rect1["center"])
+    c2 = np.array(rect2["center"])
+    hx1, hy1 = rect1["half_extents"]
+    hx2, hy2 = rect2["half_extents"]
+    a1 = rect1["angle"]
+    a2 = rect2["angle"]
+    
+    ca1, sa1 = math.cos(a1), math.sin(a1)
+    ca2, sa2 = math.cos(a2), math.sin(a2)
+    R1 = np.array([[ca1, -sa1], [sa1, ca1]])
+    R2 = np.array([[ca2, -sa2], [sa2, ca2]])
+    
+    # Local axes for both rectangles (4 axes total)
+    axes = np.array([
+        [ca1, sa1],    # rect1 x-axis
+        [-sa1, ca1],   # rect1 y-axis
+        [ca2, sa2],    # rect2 x-axis
+        [-sa2, ca2],   # rect2 y-axis
+    ])
+    
+    min_overlap = float('inf')
+    best_axis = None
+    
+    for axis in axes:
+        # Project rect1 onto axis
+        r1_proj = abs(hx1 * (R1[0] @ axis)) + abs(hy1 * (R1[1] @ axis))
+        # Project rect2 onto axis
+        r2_proj = abs(hx2 * (R2[0] @ axis)) + abs(hy2 * (R2[1] @ axis))
+        # Distance between centers along axis
+        center_dist = abs((c2 - c1) @ axis)
+        
+        overlap = r1_proj + r2_proj - center_dist
+        
+        if overlap < min_overlap:
+            min_overlap = overlap
+            best_axis = axis
+    
+    # No valid axis found (shouldn't happen)
+    if best_axis is None:
+        return False, np.zeros(2), 0.0
+    
+    # Normal points from rect1 to rect2
+    if ((c2 - c1) @ best_axis) < 0:
+        best_axis = -best_axis
+    
+    overlaps = min_overlap >= -1e-10
+    return overlaps, best_axis, max(0.0, min_overlap)
+
+
+def _circle_circle_contact(c1: dict, c2: dict) -> tuple[bool, np.ndarray, float]:
+    """Circle-circle collision."""
+    center1 = np.array(c1["center"])
+    center2 = np.array(c2["center"])
+    r1 = c1["radius"]
+    r2 = c2["radius"]
+    
+    diff = center2 - center1
+    dist = np.linalg.norm(diff)
+    
+    if dist < 1e-10:
+        return True, np.array([1.0, 0.0]), r1 + r2  # Arbitrary direction
+    
+    normal = diff / dist
+    penetration = r1 + r2 - dist
+    overlaps = penetration >= -1e-10
+    return overlaps, normal, max(0.0, penetration)
+
+
+def _rect_circle_contact(rect: dict, circle: dict) -> tuple[bool, np.ndarray, float]:
+    """Rectangle-circle collision using SAT.
+    
+    Normal points from rect to circle.
+    For non-overlapping, returns the separation axis normal (direction to closest point).
+    """
+    c_rect = np.array(rect["center"])
+    c_circle = np.array(circle["center"])
+    hx, hy = rect["half_extents"]
+    angle = rect["angle"]
+    r = circle["radius"]
+    
+    # Rotate circle center into rect local space
+    ca, sa = math.cos(angle), math.sin(angle)
+    R = np.array([[ca, -sa], [sa, ca]])
+    local_circle = R.T @ (c_circle - c_rect)
+    
+    # Clamp to rectangle bounds
+    clamped = np.array([
+        np.clip(local_circle[0], -hx, hx),
+        np.clip(local_circle[1], -hy, hy),
+    ])
+    
+    # Distance from circle center to closest point on rect
+    diff_local = local_circle - clamped
+    dist = np.linalg.norm(diff_local)
+    
+    if dist < 1e-10:
+        # Circle center inside rect - use axis of minimum penetration
+        px = hx - abs(local_circle[0])
+        py = hy - abs(local_circle[1])
+        if px < py:
+            normal_local = np.array([1.0 if local_circle[0] >= 0 else -1.0, 0.0])
+            penetration = px
+        else:
+            normal_local = np.array([0.0, 1.0 if local_circle[1] >= 0 else -1.0])
+            penetration = py
+    else:
+        normal_local = diff_local / dist
+        penetration = r - dist
+    
+    # Transform normal back to world space
+    normal_world = R @ normal_local
+    
+    # Ensure normal points from rect to circle
+    if (normal_world @ (c_circle - c_rect)) < 0:
+        normal_world = -normal_world
+    
+    overlaps = penetration >= -1e-10
+    return overlaps, normal_world, max(0.0, penetration)
+
 
 
 def _board_bbox(model: BoardModel) -> Tuple[float, float, float, float]:
@@ -1243,6 +1519,9 @@ def _run_region_simulation(
                             fp_pins.append((pin_poly, (local_cx, local_cy), pin["radius"]))
                     pins_data[fp_uuid] = fp_pins
                     
+                    # Classify shape for analytical collision
+                    shape_type, shape_params = _classify_shape(body_poly)
+                    
                     # Update cache
                     centroid = body_poly.centroid
                     body_centroids.append([centroid.x, centroid.y])
@@ -1263,6 +1542,8 @@ def _run_region_simulation(
                         "layer": body.get("layer", ""),
                         "last_centroid": [curr_centroid[0], curr_centroid[1]],
                         "last_angle": curr_angle,
+                        "shape_type": shape_type,
+                        "shape_params": shape_params,
                     }
                 else:
                     # Use cached polygons
@@ -1447,6 +1728,67 @@ def _run_region_simulation(
                     _spread(fp_local_to_rows[lj], fp_centroids_arr[lj, 0], fp_centroids_arr[lj, 1],
                             fp_radii_arr[lj], -ux, -uy, -fx, -fy)
 
+            def _apply_contact_push_analytical(
+                li: int, lj: int,
+                shape_i_type: str, shape_i_params: dict,
+                shape_j_type: str, shape_j_params: dict,
+                intersection_area: float,  # >= 0: overlap area; < 0: gap (for halo)
+            ) -> bool:
+                """Analytical contact push using SAT for rectangles/circles.
+                
+                Returns True if analytical collision was used, False if fallback needed.
+                
+                Normal convention: points from j to i (same as shapely nearest_points).
+                Force on i (li) is in normal direction; force on j (lj) is opposite.
+                """
+                # Determine collision type and call appropriate SAT function
+                overlap = False
+                normal = None
+                penetration = 0.0
+                
+                if shape_i_type == ShapeType.RECTANGLE and shape_j_type == ShapeType.RECTANGLE:
+                    overlap, normal, penetration = _sat_rect_rect(shape_i_params, shape_j_params)
+                    # SAT normal points from i to j; flip to match shapely (j to i)
+                    normal = -normal
+                elif shape_i_type == ShapeType.CIRCLE and shape_j_type == ShapeType.CIRCLE:
+                    overlap, normal, penetration = _circle_circle_contact(shape_i_params, shape_j_params)
+                    # circle_circle normal points from c1 to c2 (i to j); flip
+                    normal = -normal
+                elif shape_i_type == ShapeType.RECTANGLE and shape_j_type == ShapeType.CIRCLE:
+                    overlap, normal, penetration = _rect_circle_contact(shape_i_params, shape_j_params)
+                    # rect_circle normal points from rect to circle (i to j); flip
+                    normal = -normal
+                elif shape_i_type == ShapeType.CIRCLE and shape_j_type == ShapeType.RECTANGLE:
+                    overlap, normal, penetration = _rect_circle_contact(shape_j_params, shape_i_params)
+                    # rect_circle normal points from rect to circle (j to i); already correct
+                    # (rect=j, circle=i -> normal from j to i)
+                else:
+                    # Fall back to shapely for polygon-polygon, polygon-rectangle, etc.
+                    return False
+                
+                # Compute force magnitude
+                if intersection_area >= 0:
+                    # Overlap: fall back to shapely for force direction (centroid-to-centroid
+                    # or intersection centroid) to preserve original behavior.
+                    return False
+                else:
+                    # Halo: gap = -intersection_area, linear falloff to 0 at halo_reach
+                    # Use SAT normal (separation axis) for halo force direction
+                    gap = -intersection_area
+                    halo_reach = float(_halo_matrix[li, lj])
+                    if gap >= halo_reach:
+                        return True  # Outside halo, no force
+                    force_mag = params.courtyard_repulsion_kc * (1.0 - gap / halo_reach)
+                
+                ux, uy = normal[0], normal[1]
+                fx, fy = force_mag * ux, force_mag * uy
+                _spread(fp_local_to_rows[li], fp_centroids_arr[li, 0], fp_centroids_arr[li, 1],
+                        fp_radii_arr[li], ux, uy, fx, fy)
+                if fp_movable_arr[lj]:
+                    _spread(fp_local_to_rows[lj], fp_centroids_arr[lj, 0], fp_centroids_arr[lj, 1],
+                            fp_radii_arr[lj], -ux, -uy, -fx, -fy)
+                return True
+
             # Compute collision forces per footprint pair, then distribute to pads.
             # Check: body-body (same layer), pins-body (all layers), body-pins (all layers), pins-pins (all layers)
             # Iterate only over candidate pairs from grid broadphase
@@ -1463,58 +1805,136 @@ def _run_region_simulation(
                 # 1. Body-body collision (same layer only) - already filtered by layer in broadphase
                 if _close[i, j]:
                     if not body_i.is_empty and not body_j.is_empty:
+                        # Try analytical collision first
+                        cached_i = poly_cache.get(fp_i_uuid, {})
+                        cached_j = poly_cache.get(fp_j_uuid, {})
+                        shape_i_type = cached_i.get("shape_type", ShapeType.POLYGON)
+                        shape_j_type = cached_j.get("shape_type", ShapeType.POLYGON)
+                        shape_i_params = cached_i.get("shape_params", {})
+                        shape_j_params = cached_j.get("shape_params", {})
+                        
+                        used_analytical = False
                         if body_i.intersects(body_j):
                             intersection = body_i.intersection(body_j)
-                            _apply_contact_push(i, j, body_i, body_j, intersection.area)
+                            if shape_i_type in (ShapeType.RECTANGLE, ShapeType.CIRCLE) and \
+                               shape_j_type in (ShapeType.RECTANGLE, ShapeType.CIRCLE):
+                                used_analytical = _apply_contact_push_analytical(
+                                    i, j, shape_i_type, shape_i_params,
+                                    shape_j_type, shape_j_params,
+                                    intersection.area)
+                            if not used_analytical:
+                                _apply_contact_push(i, j, body_i, body_j, intersection.area)
                         else:
                             body_dist = body_i.distance(body_j)
                             halo_reach = float(_halo_matrix[i, j])
                             if body_dist < halo_reach:
-                                _apply_contact_push(i, j, body_i, body_j, -body_dist)
+                                if shape_i_type in (ShapeType.RECTANGLE, ShapeType.CIRCLE) and \
+                                   shape_j_type in (ShapeType.RECTANGLE, ShapeType.CIRCLE):
+                                    used_analytical = _apply_contact_push_analytical(
+                                        i, j, shape_i_type, shape_i_params,
+                                        shape_j_type, shape_j_params,
+                                        -body_dist)
+                                if not used_analytical:
+                                    _apply_contact_push(i, j, body_i, body_j, -body_dist)
                 
-                # 2. Pins_i vs body_j (all layers)
+                # 2. Pins_i vs body_j (all layers) - pins are circles
                 if pins_i and not body_j.is_empty:
                     for pin_poly, pin_center, pin_radius in pins_i:
                         if pin_poly.is_empty:
                             continue
+                        # Pin is a circle
+                        pin_shape_params = {"center": pin_center, "radius": pin_radius}
+                        cached_j = poly_cache.get(fp_j_uuid, {})
+                        shape_j_type = cached_j.get("shape_type", ShapeType.POLYGON)
+                        shape_j_params = cached_j.get("shape_params", {})
+                        
+                        used_analytical = False
                         if pin_poly.intersects(body_j):
                             intersection = pin_poly.intersection(body_j)
-                            _apply_contact_push(i, j, pin_poly, body_j, intersection.area)
+                            if shape_j_type in (ShapeType.RECTANGLE, ShapeType.CIRCLE):
+                                used_analytical = _apply_contact_push_analytical(
+                                    i, j, ShapeType.CIRCLE, pin_shape_params,
+                                    shape_j_type, shape_j_params,
+                                    intersection.area)
+                            if not used_analytical:
+                                _apply_contact_push(i, j, pin_poly, body_j, intersection.area)
                         else:
                             pin_dist = pin_poly.distance(body_j)
-                            # Pin halo reach = min(1.5*(pin_r + body_r), halo_mm)
                             pin_halo = min(1.5 * (pin_radius + body_radii_arr[j]), params.courtyard_halo_mm)
                             if pin_dist < pin_halo:
-                                _apply_contact_push(i, j, pin_poly, body_j, -pin_dist)
+                                if shape_j_type in (ShapeType.RECTANGLE, ShapeType.CIRCLE):
+                                    used_analytical = _apply_contact_push_analytical(
+                                        i, j, ShapeType.CIRCLE, pin_shape_params,
+                                        shape_j_type, shape_j_params,
+                                        -pin_dist)
+                                if not used_analytical:
+                                    _apply_contact_push(i, j, pin_poly, body_j, -pin_dist)
                 
                 # 3. Body_i vs pins_j (all layers)
                 if pins_j and not body_i.is_empty:
                     for pin_poly, pin_center, pin_radius in pins_j:
                         if pin_poly.is_empty:
                             continue
+                        # Pin is a circle
+                        pin_shape_params = {"center": pin_center, "radius": pin_radius}
+                        cached_i = poly_cache.get(fp_i_uuid, {})
+                        shape_i_type = cached_i.get("shape_type", ShapeType.POLYGON)
+                        shape_i_params = cached_i.get("shape_params", {})
+                        
+                        used_analytical = False
                         if body_i.intersects(pin_poly):
                             intersection = body_i.intersection(pin_poly)
-                            _apply_contact_push(i, j, body_i, pin_poly, intersection.area)
+                            if shape_i_type in (ShapeType.RECTANGLE, ShapeType.CIRCLE):
+                                used_analytical = _apply_contact_push_analytical(
+                                    i, j, shape_i_type, shape_i_params,
+                                    ShapeType.CIRCLE, pin_shape_params,
+                                    intersection.area)
+                            if not used_analytical:
+                                _apply_contact_push(i, j, body_i, pin_poly, intersection.area)
                         else:
                             pin_dist = body_i.distance(pin_poly)
                             pin_halo = min(1.5 * (body_radii_arr[i] + pin_radius), params.courtyard_halo_mm)
                             if pin_dist < pin_halo:
-                                _apply_contact_push(i, j, body_i, pin_poly, -pin_dist)
+                                if shape_i_type in (ShapeType.RECTANGLE, ShapeType.CIRCLE):
+                                    used_analytical = _apply_contact_push_analytical(
+                                        i, j, shape_i_type, shape_i_params,
+                                        ShapeType.CIRCLE, pin_shape_params,
+                                        -pin_dist)
+                                if not used_analytical:
+                                    _apply_contact_push(i, j, body_i, pin_poly, -pin_dist)
                 
-                # 4. Pins_i vs pins_j (all layers)
+                # 4. Pins_i vs pins_j (all layers) - both circles
                 if pins_i and pins_j:
                     for pin_i_poly, pin_i_center, pin_i_radius in pins_i:
                         for pin_j_poly, pin_j_center, pin_j_radius in pins_j:
                             if pin_i_poly.is_empty or pin_j_poly.is_empty:
                                 continue
+                            # Both are circles - use analytical
+                            pin_i_params = {"center": pin_i_center, "radius": pin_i_radius}
+                            pin_j_params = {"center": pin_j_center, "radius": pin_j_radius}
+                            
+                            used_analytical = False
                             if pin_i_poly.intersects(pin_j_poly):
                                 intersection = pin_i_poly.intersection(pin_j_poly)
-                                _apply_contact_push(i, j, pin_i_poly, pin_j_poly, intersection.area)
+                                used_analytical = _apply_contact_push_analytical(
+                                    i, j, ShapeType.CIRCLE, pin_i_params,
+                                    ShapeType.CIRCLE, pin_j_params,
+                                    intersection.area)
+                            if not used_analytical:
+                                # Need to recompute intersection for fallback
+                                if pin_i_poly.intersects(pin_j_poly):
+                                    intersection = pin_i_poly.intersection(pin_j_poly)
+                                    _apply_contact_push(i, j, pin_i_poly, pin_j_poly, intersection.area)
                             else:
                                 pin_dist = pin_i_poly.distance(pin_j_poly)
                                 pin_halo = min(1.5 * (pin_i_radius + pin_j_radius), params.courtyard_halo_mm)
                                 if pin_dist < pin_halo:
-                                    _apply_contact_push(i, j, pin_i_poly, pin_j_poly, -pin_dist)
+                                    used_analytical = _apply_contact_push_analytical(
+                                        i, j, ShapeType.CIRCLE, pin_i_params,
+                                        ShapeType.CIRCLE, pin_j_params,
+                                        -pin_dist)
+                                    if not used_analytical:
+                                        _apply_contact_push(i, j, pin_i_poly, pin_j_poly, -pin_dist)
 
             # Courtyard pushes were spread directly onto pads above
             # (overlap-weighted, halo uniform; totals conserved); nothing
@@ -1737,6 +2157,13 @@ def _run_region_simulation(
             cache_rebuild_threshold_mm=cache_rebuild_threshold_mm,
             cache_rebuild_threshold_rad=cache_rebuild_threshold_rad,
         )
+
+        # Force-based early termination: stop when all movable pad forces
+        # are below threshold (not just step-capped displacement).
+        if params.force_convergence_threshold > 0:
+            max_force = float(np.max(np.linalg.norm(force[pad_movable], axis=1)))
+            if max_force < params.force_convergence_threshold:
+                break
 
         # Displacement = force * step_cap
         disp = force * step_cap
