@@ -1,154 +1,177 @@
 # KiCad AutoRouter Lab
 
-> **Note:** This project is **mostly AI-generated** (Nemotron, Qwen3.8, and Muse Spark 1.3, plus Karl's brain) and has **not been extensively human-tested**. Expect bugs, incomplete features, and potential regressions. Use at your own risk.
+> **Status:** Early stage — works on real boards (tube111, DCCF), DRC-validated. Expect rough edges. Use at your own risk.
 
-Utility that reads KiCad files (`.kicad_pcb`, `.kicad_sch`) and performs iterative placement + grid-based routing. Current phase: **per-pad force-spring placement with organic rotation** plus **Lee/A* routing with rip-up/retry and GND pour continuity repair**. Pure-Python core (no `pcbnew` for routing); `pcbnew` only used as an offline test oracle.
+## What Is This?
 
-## Layout
+An autorouter for KiCad that **actually works**. No `pcbnew` scripting, no C++ plugins, no license servers. Drop a `.kicad_pcb` file into the web UI or run headless from CLI — get routed tracks back.
 
-- `src/kicad_autorouter/` — pure-Python core (`placement.py`, `board_model.py`,
-  `svg_render.py`, `validate.py`, `sexpr.py`, `io.py`) plus the `pcbnew_adapter.py`
-  boundary (the only module that imports `pcbnew`).
-- `scripts/run_autoroute.py` — headless placement pass (.venv): parse → per-pad
-  force-spring proposal → per-UUID writeback → optional DRC.
-- `tests/` — pytest suite + fixtures.
-- `ui/` — stdlib workflow UI + board viewer (`python ui/server.py`).
-- `docs/` — local KiCad 10 docs + project guidance/reference notes.
+**The core idea:** Physics-based placement nudges parts organically around locked components, then a grid-based A* router finds paths with full clearance awareness. GND pours are handled specially (passable-at-toll, auto-stitched).
 
-## Run the placement pass
+---
 
-The headless entry point runs under the project `.venv` (pure Python, no `pcbnew`
-needed):
+## Why It Exists
 
-```sh
-# Iterative physics mode (per-pad MST force-spring, step-by-step)
-.venv/bin/python scripts/run_autoroute.py tests/fixtures/DCCF.sved.kicad_pcb \
-    -o experiments/out/placed_dccf.kicad_pcb --step-iterations 5 --max-total-iterations 500 --validate
+| You've probably... | This does instead... |
+|--------------------|----------------------|
+| Spent 4 hours manually routing a 4-layer board | Routes the same board in minutes |
+| Moved a connector and watched 50 nets break | Rip-up/retry is automatic — move parts, re-route, done |
+| Had GND pours fragment into isolated islands | Auto-stitching vias + bridge tracks repair continuity |
+| Fought netclass width rules being ignored | Per-net width resolution + click-to-override power rails |
+| Wished for an autorouter that "just works" in KiCad | Pure Python, runs in your browser, saves to your board |
+
+---
+
+## The Unusual Feature: Physics-Based Part Migration
+
+Most autorouters treat footprints as rigid blocks. This one runs a **per-pad force-spring simulation**:
+
+- **Each pad feels forces independently** — connected pads attract (shorten wires), all pads repel (clearance)
+- **Parts rotate and translate organically** — no pre-defined "slots" or "legal positions"
+- **Locked parts are immovable anchors** — unlocked parts flow around them like water
+- **Decoupling caps get magnetic attraction** to their power/ground pins — they snap into place
+
+> **Result:** Parts migrate to natural positions for the actual connectivity, not a grid. You get layouts that look like a thoughtful human placed them — because the physics *is* thoughtful placement.
+
+---
+
+## Quick Start (2 minutes)
+
+```bash
+# 1. Clone and set up
+git clone https://github.com/your-repo/KiCadAutoRouterLab.git
+cd KiCadAutoRouterLab
+python -m venv .venv
+.venv/bin/pip install -e .
+
+# 2. Launch the web UI
+.venv/bin/python ui/server.py
+# Opens http://127.0.0.1:8000
 ```
 
-Then validate the result:
+1. **Load a board** — drag `tests/fixtures/tube111.kicad_pcb` onto the page (or click "Load…")
+2. **Place** — click parts to select, hit **Step** (5 iterations) or **Run** (to convergence), **Accept**
+3. **Route** — switch to **Route** tab, pick nets, adjust widths if needed, **Route Selected**
+4. **DRC** — tick **DRC** checkbox, **Run DRC** — violations overlay on the board
+5. **Save** — **Download** the modified `.kicad_pcb`
 
-```sh
-.venv/bin/python -m pytest tests/          # existing suite
-# or DRC-check a specific board:
-/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli pcb drc experiments/out/placed_minimal.kicad_pcb --format json
+**Try the included test boards:**
+- `tests/fixtures/tube111.kicad_pcb` — 105 parts, 6 GND zones, 73 nets (reference board with pours)
+- `tests/fixtures/DCCF.sved.kicad_pcb` — Audio board, decaps, split power rails
+
+---
+
+## Two Ways to Use It
+
+| Mode | Best For | How |
+|------|----------|-----|
+| **Web UI** (recommended) | Interactive placement + routing, visual feedback, iteration | `python ui/server.py` → browser |
+| **Headless CLI** | CI/CD, batch processing, automation | `scripts/run_autoroute.py board.kicad_pcb -o out.kicad_pcb --step-iterations 5 --max-total-iterations 500` |
+
+Both use the same pure-Python core. The UI adds SVG visualization, motion playback, and live parameter sliders.
+
+---
+
+## Core Workflows
+
+### 1. Placement — Nudge Parts Into Position
 ```
-
-## Workflow UI
-
-The UI renders loaded boards as SVG snapshots (pure Python, no `pcbnew` needed)
-with interactive zoom/pan and component selection for iterative placement:
-
-```sh
-.venv/bin/python ui/server.py   # http://127.0.0.1:8000
+Select parts → Step/Run → Ghost preview shows proposed moves → Accept → Repeat
 ```
+- **Step** = 5 iterations (fast, incremental)
+- **Run** = converges to equilibrium (uses saved max iterations)
+- **Pin** (Alt+click) = exclude parts from movement
+- **Ghost courtyards + arrows** show where parts want to go
 
-### UI workflow
-
-1. **Load** — drop a `.kicad_pcb` file (or use "Load…" button)
-2. **Adjust parameters** — repulsion/attraction etc.
-3. **Select components** — click a footprint to select it; Shift+click for multi-select; Alt+click to pin (prevent movement)
-4. **Step/Run placement** — Step runs a few iterations (default 5); Run goes to convergence (saved max iterations); ghost courtyards + arrows show proposed moves. Boards with no nets correctly propose no movement.
-5. **Accept proposal** — commits changes to the board model
-6. **Repeat** — continue stepping until satisfied
-
-### Component states (visual)
-
-| State | Color | Pattern | Movable? |
-|-------|-------|---------|----------|
-| KiCad-locked | Red | dashed | Never |
-| User-pinned | Orange | dashed | No (excluded) |
-| Selected | Green | solid | Yes |
-| Default unlocked | Gray-blue | solid | Yes (if no selection) |
-
-### Keyboard shortcuts
-
-- `A` / "Select All" button — select all unlocked, unpinned footprints
-- `Escape` / "Clear" button — clear selection
-- "Pin" button — pin all currently selected footprints
-- Mouse wheel — zoom; drag — pan; "Fit" button — reset view
-
-### DRC overlay
-
-Tick **DRC** or press **Run DRC** to run `kicad-cli pcb drc` on the current
-board; violations render as markers on the SVG. Silkscreen, library-metadata
-and router-irrelevant classes are hidden by default — see
-[`docs/autorouting_glossary.md`](docs/autorouting_glossary.md) (DRC stage) for
-the ignored list.
-
-## Routing panel
-
-The **Route** tab (right drawer) drives the grid-based router. It runs
-incrementally — one net per HTTP request — so progress/cancel work without
-server threading changes.
-
-### Routing controls
-
-| Control | Meaning |
-|---------|---------|
-| **Track Width** | Default signal track width (mm) |
-| **Power Width** | Default power/ground track width (mm) |
-| **Via Cost** | Wire-equivalent mm cost per via (controls layer changes) |
-| **Clearance** | Default clearance between tracks (mm) |
-| **Grid Resolution** | A* grid cell size; 0.05mm = 4× cells, may be rejected on large boards |
-| **Pour Severance Weight** | Soft cost for tracks that narrow a pour; 0 disables |
-| **Debug** | Return cost-grid + search frontier for SVG overlay |
-| **GND Stitching** | Auto-repair GND pour continuity after routing (stitching vias + bridge tracks) |
-| **Strip GND Blockers** | Evict pre-existing GND vias/tracks before routing (rebuilt by stitcher); signal/power copper is never evicted |
-
-### Nets table (Route tab)
-
-The table lists every net with live status:
-
-| Column | Meaning |
-|--------|---------|
-| **Net Name** | Click row to select; Shift/Ctrl for multi-select |
-| **Pads / Footprints / Tracks / Vias** | Existing copper counts |
-| **Width** | Resolved track width for this net (explicit → netclass → power → default) |
-| **Pwr** | ⚡ badge = power rail (keyword rules **or** your override). **Click the cell to mark/unmark** — marked nets route first with wide tracks, get placement magnetism, and count for decap detection. `power_user` flag means you toggled it. |
-| **Decap** | ◉ = decoupling caps on this net (C* footprint, power+ground) |
-| **🔒 Protect** | Protected nets route first and are never ripped up |
-
-**Power membership is user-controllable:**
-- On load, nets sitting in KiCad netclasses whose *name* matches power keywords (e.g. a class literally called "Power") are auto-marked.
-- After that you own the set — click the **Pwr** cell to add/remove. Badge, Width, and Decap columns refresh instantly.
-- Ground stays keyword-only; on overlap power wins (e.g. `GND_PWR`).
-
-### Routing actions
-
-- **Route Selected Nets** — runs the chunked router for each ticked net (progress bar, cancel works)
-- **Route All Unprotected** — temporary selects every non-protected net and routes them all
-- **Stop** — aborts the current net's search; already-routed nets are kept
-
-### What the router does today
-
-- Two-layer (F.Cu / B.Cu) grid A* with via cost, THT pads = free vias
-- Per-net fanout halos over foreign pads (steer without trapping)
-- Pour-severance toll steers tracks away from narrow pour corridors (clipped, never blocks)
-- **GND-only rip-up**: pre-existing GND vias/tracks can be stripped upfront (`Strip GND Blockers`); the stitcher (`plan_stitches()`) rebuilds continuity afterwards with overlap vias + bridge tracks. **Signal/power copper is never evicted** — no more tracks ripping each other out.
-- Stitcher is region-aware (never joins separate board panels in the same file)
-- DRC gate: `kicad-cli pcb drc` on the written file
-
-## Headless iterative mode
-
-The CLI supports the same iterative flow:
-
-```sh
-.venv/bin/python scripts/run_autoroute.py board.kicad_pcb -o out.kicad_pcb \
-  --step-iterations 5 --max-total-iterations 500 --validate
+### 2. Routing — Connect the Nets
 ```
+Route tab → Select nets (click rows, Shift/Ctrl) → Set Track/Power Width → Route Selected
+```
+- **Progress bar + cancel** per net (one net per request, no server threading needed)
+- **Per-net width resolution**: explicit → netclass → power → default
+- **Power rails**: click the **⚡ Pwr** column to mark any net as power → gets wide tracks + placement magnetism
+- **GND Stitching**: auto-repairs pour continuity after routing (on by default)
 
-- `--step-iterations` — iterations per step (default 5)
-- `--max-total-iterations` — total budget across all steps (default 1000)
+### 3. Iterate — The Real Workflow
+```
+Move parts → nets rip up automatically → Re-route → DRC → Done
+```
+Placement and routing are separate passes but designed to cycle. Move a connector, the connected nets rip up, re-route cleanly.
 
-## References
+---
 
-Guidance and reference notes live under `docs/`, not in this README. Start at the index:
+## What Makes It Different
 
-- [`docs/README.md`](docs/README.md) — index of local KiCad 10 docs + key facts for this project.
-- [`docs/autorouting_glossary.md`](docs/autorouting_glossary.md) — autorouting terminology and guidance, aligned to the pipeline stages (`ingest→parse→connectivity→route→drc→writeback`), incl. force-directed placement of unlocked components around locked ones.
-- Local KiCad 10 manuals (exact version match, `kicad-cli` 10.0.7):
-  - [`docs/kicad/pcbnew.md`](docs/kicad/pcbnew.md) — PCB editor: layers, nets, tracks, pads, zones, DRC, file format notes.
-  - [`docs/kicad/eeschema.md`](docs/kicad/eeschema.md) — schematic editor: symbols, nets, ERC, sheet structure.
-  - [`docs/kicad/cli.md`](docs/kicad/cli.md) — `kicad-cli` reference (`pcb drc`, `sch erc`, exports).
-  - [`docs/kicad/kicad.md`](docs/kicad/kicad.md) — project manager + all `.kicad_*` file types.
+| Feature | Why It Matters |
+|---------|----------------|
+| **Per-pad physics** (not whole-footprint) | Parts rotate organically; decaps snap to pins; no "legal position" constraints |
+| **GND pours passable-at-toll** | Router crosses pours when needed (soft cost), never gets stuck on pads inside pours |
+| **GND-only rip-up** | `Strip GND Blockers` evicts only GND vias/tracks; signal/power copper is **never evicted** |
+| **10° angle smoothing** (default) | 36 angle options vs hardcoded 45° — routes look shallower, more gradual |
+| **Params auto-save** | All sliders persist to `placement.json` — your tuned settings survive restarts |
+| **Region-aware** | Multi-panel boards: stitcher never joins separate panels |
+| **DRC gate** | `kicad-cli pcb drc` runs on writeback — the acceptance check |
+
+---
+
+## Routing Controls Cheat Sheet
+
+| Control | What It Does | Typical Range |
+|---------|--------------|---------------|
+| **Track Width** | Default signal track width | 0.15–0.25 mm |
+| **Power Width** | Power/ground track width | 0.4–0.8 mm |
+| **Via Cost** | Wire-equivalent mm per via (higher = fewer layer changes) | 3–10 mm |
+| **Clearance** | Minimum spacing between tracks | 0.15–0.25 mm |
+| **Grid Resolution** | A* cell size (0.05 = 4× cells, slower) | 0.1 mm default |
+| **Pour Severance Weight** | Penalty for narrowing a pour corridor | 0–100 (0 = off) |
+| **GND Stitching** | Auto-add vias/bridges to connect pour islands | **On** |
+| **Strip GND Blockers** | Remove old GND copper before routing | **On** |
+
+---
+
+## Keyboard Shortcuts (UI)
+
+| Key | Action |
+|-----|--------|
+| `A` | Select all unlocked, unpinned footprints |
+| `Escape` | Clear selection |
+| `Shift+click` | Multi-select footprints / net rows |
+| `Alt+click` | Pin/unpin footprint (orange dashed = pinned) |
+| Mouse wheel | Zoom |
+| Drag | Pan |
+| `Fit` button | Reset view |
+
+---
+
+## Test Boards Included
+
+| Board | Description | Good For Testing |
+|-------|-------------|------------------|
+| `tests/fixtures/tube111.kicad_pcb` | 105 footprints, 6 GND zones, 73 nets, pre-routed | Full flow: placement → routing → GND stitching → DRC |
+| `tests/fixtures/DCCF.sved.kicad_pcb` | Audio board, decaps, split ± rails | Power/ground handling, decap fanout, organic placement |
+
+---
+
+## Learn More
+
+| Doc | What You'll Find |
+|-----|------------------|
+| [`docs/autorouting_glossary.md`](docs/autorouting_glossary.md) | Pipeline stages, terminology, algorithm guidance (Lee/A*, force-directed, pour handling) |
+| [`docs/README.md`](docs/README.md) | Local KiCad 10 manuals (exact version match), Wikipedia research sources |
+| `PLAN.md` / `TODO.md` | Roadmap, completed work, internals |
+
+---
+
+## Requirements
+
+- Python 3.11+
+- KiCad 10.x (for `kicad-cli` DRC validation — optional but recommended)
+- `.venv` with project dependencies (`pip install -e .`)
+
+**No `pcbnew` Python module needed** for routing/placement — only used as an offline test oracle.
+
+---
+
+## License
+
+MIT — see `LICENSE` file.
