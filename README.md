@@ -14,7 +14,7 @@ An autorouter for KiCad that **actually works**. No `pcbnew` scripting, no C++ p
 
 | You've probably... | This does instead... |
 |--------------------|----------------------|
-| Spent 4 hours manually routing a 4-layer board | Routes the same board in minutes |
+| Spent 4 hours manually routing a board | Routes the same board for you |
 | Moved a connector and watched 50 nets break | Rip-up/retry is automatic — move parts, re-route, done |
 | Had GND pours fragment into isolated islands | Auto-stitching vias + bridge tracks repair continuity |
 | Fought netclass width rules being ignored | Per-net width resolution + click-to-override power rails |
@@ -170,8 +170,4 @@ Placement and routing are separate passes but designed to cycle. Move a connecto
 
 **No `pcbnew` Python module needed** for routing/placement — only used as an offline test oracle.
 
----
-
-## License
-
-MIT — see `LICENSE` file.
+and earlier version of thie file said it was MIT licensed, that was a mistake. the human didn't choose anything yet. Probably GPL-alike KiCad. 

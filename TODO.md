@@ -1,6 +1,6 @@
 # KiCad AutoRouter - TODO
 
-## Future Enhancements 📋
+## Future Enhancements 
 
 ### Visual
 - [ ] Highlight selected footprint in SVG on table hover
@@ -22,8 +22,6 @@
 - Phase 3 — DONE (soft cost, per 2026-10-11 decision): pours are passable-at-toll (`POUR=35` + `CostMap.pour_penalty=10`, was hard `BLOCKED` — which had also made pads inside pours unroutable); `severance_cost()` secondary steers tracks off narrow pour corridors (clipped so it steers, never blocks).
 
 ### Routing Smoothing & Post-Pass
-- [x] Configurable angle granularity (angle_step_rad) — default 10° (π/18) instead of hardcoded 45°; 36 angles vs 8
-- [x] Routing params auto-save to placement.json on route start (matching placement behavior)
 - [ ] Full curve/spline post-pass after stick phase (B-spline or clothoid interpolation)
 - [ ] Test suite for smoothing with angle_step_rad parameter
 
