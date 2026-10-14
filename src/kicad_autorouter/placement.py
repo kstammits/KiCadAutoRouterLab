@@ -23,7 +23,7 @@ from dataclasses import asdict, dataclass, field, fields
 from typing import Collection, Dict, List, Optional, Set, Tuple
 
 import numpy as np
-from shapely.geometry import Polygon
+from shapely.geometry import Polygon, Point
 from shapely.ops import nearest_points, polygonize, unary_union
 
 from .board_model import (
@@ -955,70 +955,67 @@ def _run_region_simulation(
     def _local_shape(_fp: Footprint) -> dict:
         """Static local courtyard data mirroring _footprint_courtyard_polygon.
 
-        Only the pose-independent parts are cached here (branch resolution +
-        local vertices); per-iteration centroids/radii are derived exactly as
-        before from the posed polygons. Both entry points share
-        _courtyard_outline_polygon, so the branch order (courtyard-first,
-        then pad-bbox, then 1x1 point fallback) stays in sync by
-        construction.
-
-        kind 'courtyard': verts posed per iter (or left static when the live
-        pad mapping degenerates — same rule as _transform_vertices).
-        kind 'bbox': bounds follow CURRENT pads (recomputed per iter).
-        kind 'point': static 1x1 rect (padless footprint fallback).
+        Returns dict with:
+        - "body": body courtyard (kind, verts, layer)
+        - "pins": list of pin courtyards for THT/MP pads (center, radius, layer="*.Cu")
+        - "pad_idx": live pad indices
+        - "orig_pos": original positions of ALL pads (for rigid pose)
         """
         if _fp is None:
-            return {"kind": "empty", "empty": True}
+            return {"body": {"kind": "empty", "empty": True}, "pins": [], "pad_idx": np.array([], dtype=int), "orig_pos": np.array([], dtype=np.float64)}
+        
+        # Body courtyard from F.CrtYd/B.CrtYd
         outline = _courtyard_outline_polygon(_fp.courtyard)
         if outline is not None:
-            return {
+            body = {
                 "kind": "courtyard",
                 "empty": False,
                 "verts": np.array(outline.exterior.coords, dtype=np.float64),
+                "layer": _fp.layer,
             }
-        if _fp.pads:
-            # Pad-bbox fallback: bounds track current pads, resolved per iter.
-            return {"kind": "bbox", "empty": False}
-        _cx, _cy = _fp.x_mm, _fp.y_mm
+        elif _fp.pads:
+            body = {"kind": "bbox", "empty": False, "layer": _fp.layer}
+        else:
+            _cx, _cy = _fp.x_mm, _fp.y_mm
+            body = {
+                "kind": "point",
+                "empty": False,
+                "verts": np.array([
+                    [_cx - 0.5, _cy - 0.5], [_cx + 0.5, _cy - 0.5],
+                    [_cx + 0.5, _cy + 0.5], [_cx - 0.5, _cy + 0.5],
+                ], dtype=np.float64),
+                "layer": _fp.layer,
+            }
+        
+        # Pin courtyards for THT/MP pads (exist on both layers)
+        pins = []
+        for pad in _fp.pads:
+            if pad.is_through_hole or pad.pad_type == "np_thru_hole":
+                # Pad radius = half the diagonal + 0.5mm clearance
+                pad_r = 0.5 * math.hypot(pad.size_mm[0], pad.size_mm[1]) + 0.5
+                pins.append({
+                    "center": (pad.position.x_mm, pad.position.y_mm),
+                    "radius": pad_r,
+                    "layer": "*.Cu",
+                })
+        
+        _pad_idx = np.array(fp_pad_indices.get(_fp.uuid, []), dtype=int)
+        _orig_pos = np.array(
+            [(p.position.x_mm, p.position.y_mm) for p in _fp.pads],
+            dtype=np.float64,
+        ) if _fp.pads else np.array([], dtype=np.float64)
+        
         return {
-            "kind": "point",
-            "empty": False,
-            "verts": np.array([
-                [_cx - 0.5, _cy - 0.5], [_cx + 0.5, _cy - 0.5],
-                [_cx + 0.5, _cy + 0.5], [_cx - 0.5, _cy + 0.5],
-            ], dtype=np.float64),
+            "body": body,
+            "pins": pins,
+            "pad_idx": _pad_idx,
+            "orig_pos": _orig_pos,
         }
 
     cy_cache: Dict[str, dict] = {}
     for _uuid in fp_uuids:
         _fp = fp_by_uuid.get(_uuid)
-        _entry = _local_shape(_fp)
-        _pad_idx = np.array(fp_pad_indices.get(_uuid, []), dtype=int)
-        _entry["pad_idx"] = _pad_idx
-        # Layer model for courtyard collision (2026-10-09): bodies collide on
-        # their placement side; through-hole leads protrude through the board,
-        # so any pair involving THT pads collides conservatively on both
-        # sides. (Refinement to per-pad layer checks is future work — the
-        # conservative rule is safe for THT-heavy boards like DCCF.) No
-        # same-net exemption: soldering/silkscreen spacing is net-agnostic;
-        # cross-layer electrical nearness keeps working via layer-blind
-        # attraction springs.
-        _entry["layer"] = _fp.layer if _fp is not None else ""
-        _entry["has_tht"] = bool(
-            _fp is not None and any(p.is_through_hole for p in _fp.pads)
-        )
-        if _entry["kind"] == "courtyard" and _fp is not None:
-            # Original positions of ALL footprint pads (not just the netted
-            # subset): _transform_vertices only applies when this matches the
-            # live pad count, else the courtyard stays untransformed. Pads
-            # without nets are skipped by _collect_pad_nodes, so footprints
-            # with netless pads (mounting holes etc.) never transform — the
-            # length check below replicates that exactly.
-            _entry["orig_pos"] = np.array(
-                [(p.position.x_mm, p.position.y_mm) for p in _fp.pads],
-                dtype=np.float64,
-            )
-        cy_cache[_uuid] = _entry
+        cy_cache[_uuid] = _local_shape(_fp)
 
     # Same-footprint mask: no repulsion between pads of one footprint.
     # Vectorized form of the old O(n^2) Python loop (identical result:
@@ -1145,28 +1142,36 @@ def _run_region_simulation(
         poly_force = np.zeros((n_pads_local, 2), dtype=np.float64)
         boundary_force = np.zeros((n_pads_local, 2), dtype=np.float64)
 
-        # Polygon-based courtyard collision from cached shapes.
-        # Per iteration only rigid poses change
+# Polygon-based courtyard collision from cached shapes.
+        # Per iteration: build body polygons (posed) + pin polygons (circles at transformed positions)
         n_fp = len(fp_uuids)
         if n_fp:
-            courtyard_polys: dict[str, Polygon] = {}
-            fp_centroids: list[list[float]] = []
-            fp_radii: list[float] = []
+            # Build body polygons + compute body centroids/radii for broadphase
+            body_polys: dict[str, Polygon] = {}
+            body_centroids: list[list[float]] = []
+            body_radii: list[float] = []
+            body_layers: list[str] = []
+            
+            # Build pin polygons + compute pin centers/radii for broadphase
+            # pins_data[fp_uuid] = list of (Polygon, center_xy, radius)
+            pins_data: dict[str, list[tuple[Polygon, tuple[float, float], float]]] = {}
+            
             for fp_uuid in fp_uuids:
                 e = cy_cache[fp_uuid]
-                kind = e["kind"]
-                if kind == "courtyard" and len(e["pad_idx"]) == len(e.get("orig_pos", [])) \
-                        and len(e["pad_idx"]) > 0:
-                    cp = pos[e["pad_idx"]]
-                    poly = Polygon(_rigid_pose_vertices(
-                        e["verts"], e["orig_pos"], cp
-                    ))
+                body = e["body"]
+                pins = e["pins"]
+                pad_idx = e["pad_idx"]
+                orig_pos = e["orig_pos"]
+                
+                # Build body polygon (posed)
+                kind = body["kind"]
+                if kind == "courtyard" and len(pad_idx) == len(orig_pos) and len(pad_idx) > 0:
+                    cp = pos[pad_idx]
+                    body_poly = Polygon(_rigid_pose_vertices(body["verts"], orig_pos, cp))
                 elif kind == "courtyard":
-                    # No live pads (length mismatch): old code left the
-                    # courtyard untransformed — static local polygon.
-                    poly = Polygon(e["verts"])
+                    body_poly = Polygon(body["verts"])
                 elif kind == "bbox":
-                    idx = e["pad_idx"]
+                    idx = pad_idx
                     if len(idx):
                         xs = pos[idx, 0]
                         ys = pos[idx, 1]
@@ -1179,47 +1184,74 @@ def _run_region_simulation(
                         x0, x1 = min(xs), max(xs)
                         y0, y1 = min(ys), max(ys)
                     m = 0.1
-                    poly = Polygon([
+                    body_poly = Polygon([
                         (x0 - m, y0 - m), (x1 + m, y0 - m),
                         (x1 + m, y1 + m), (x0 - m, y1 + m),
                     ])
                 elif kind == "point":
-                    poly = Polygon(e["verts"])
+                    body_poly = Polygon(body["verts"])
                 else:
-                    poly = Polygon()
-                courtyard_polys[fp_uuid] = poly
-                centroid = poly.centroid
-                fp_centroids.append([centroid.x, centroid.y])
+                    body_poly = Polygon()
+                body_polys[fp_uuid] = body_poly
+                
+                # Body centroid/radius for broadphase
+                centroid = body_poly.centroid
+                body_centroids.append([centroid.x, centroid.y])
+                body_layers.append(body.get("layer", ""))
                 max_extent = 0.5
-                if poly.area > 0:
-                    for x, y in poly.exterior.coords:
+                if body_poly.area > 0:
+                    for x, y in body_poly.exterior.coords:
                         d = math.hypot(x - centroid.x, y - centroid.y)
                         if d > max_extent:
                             max_extent = d
-                fp_radii.append(max_extent)
-
-            fp_centroids_arr = np.array(fp_centroids, dtype=np.float64)
-            fp_radii_arr = np.array(fp_radii, dtype=np.float64)
-
-            # Vectorized broadphase on the exact values above: a pair can
-            # interact only if centroid distance < ri + rj + halo_reach
-            # (outline gap >= centroid gap - ri - rj). 
-            # Layer gate (2026-10-09): bodies collide on their placement
-            # side; a pair involving through-hole pads additionally collides
-            # across sides (protruding leads). Cross-layer SMD-SMD pairs skip
-            # exact geometry entirely — this also shrinks pair work on
-            # mixed-side boards like tube111.
-            _lyr = np.array([cy_cache[u].get("layer", "") for u in fp_uuids])
-            _tht = np.array([bool(cy_cache[u].get("has_tht", False)) for u in fp_uuids])
-            _d = fp_centroids_arr[:, None, :] - fp_centroids_arr[None, :, :]
+                body_radii.append(max_extent)
+                
+                # Build pin polygons (circles at transformed pad positions)
+                fp_pins = []
+                if pins and len(pad_idx) == len(orig_pos) and len(pad_idx) > 0:
+                    cp = pos[pad_idx]
+                    # Transform pin centers from local to current position
+                    for pin in pins:
+                        local_cx, local_cy = pin["center"]
+                        # Find corresponding pad in orig_pos to get transform
+                        # Pin centers are in board coords already (from _local_shape)
+                        # But they need to be posed by the rigid transform
+                        # We'll pose them using the same rigid transform as the body
+                        pin_vert = np.array([[local_cx, local_cy]], dtype=np.float64)
+                        posed_center = _rigid_pose_vertices(pin_vert, orig_pos, cp)[0]
+                        pin_poly = Point(posed_center[0], posed_center[1]).buffer(pin["radius"])
+                        fp_pins.append((pin_poly, (posed_center[0], posed_center[1]), pin["radius"]))
+                elif pins:
+                    # No live pads: pin centers stay at local (board) positions
+                    for pin in pins:
+                        local_cx, local_cy = pin["center"]
+                        pin_poly = Point(local_cx, local_cy).buffer(pin["radius"])
+                        fp_pins.append((pin_poly, (local_cx, local_cy), pin["radius"]))
+                pins_data[fp_uuid] = fp_pins
+            
+            body_centroids_arr = np.array(body_centroids, dtype=np.float64)
+            body_radii_arr = np.array(body_radii, dtype=np.float64)
+            body_layers_arr = np.array(body_layers, dtype=object)
+            
+            # Broadphase: body-body (same layer only) + pin-involved (all layers)
+            # For simplicity, use body centroids for body-body broadphase
+            # Pin-involved pairs will be checked explicitly in the collision loop
+            _d = body_centroids_arr[:, None, :] - body_centroids_arr[None, :, :]
             _dist = np.sqrt(np.sum(_d * _d, axis=2))
-            _halo = np.minimum(1.5 * (fp_radii_arr[:, None] + fp_radii_arr[None, :]),
+            _halo = np.minimum(1.5 * (body_radii_arr[:, None] + body_radii_arr[None, :]),
                                params.courtyard_halo_mm)
-            _near = _dist < fp_radii_arr[:, None] + fp_radii_arr[None, :] + _halo + 1e-8
-            _sides = (
-                (_lyr[:, None] == _lyr[None, :]) | _tht[:, None] | _tht[None, :]
-            )
-            _close = _near & _sides
+            _near = _dist < body_radii_arr[:, None] + body_radii_arr[None, :] + _halo + 1e-8
+            _same_layer = (body_layers_arr[:, None] == body_layers_arr[None, :])
+            _body_close = _near & _same_layer
+            
+            # For pin-involved checks, we'll do explicit distance checks in the collision loop
+            # (pin count is small, so O(n_pins^2) is fine)
+            
+            # Store for collision loop
+            fp_centroids_arr = body_centroids_arr
+            fp_radii_arr = body_radii_arr
+            _close = _body_close
+            _halo_matrix = _halo
 
             # Spread one pair-push over a footprint's pads
             def _spread(rows, cx, cy, radius, ux, uy, fx, fy):
@@ -1278,86 +1310,131 @@ def _run_region_simulation(
                         _spread(fp_local_to_rows[lj], fp_centroids_arr[lj, 0], fp_centroids_arr[lj, 1],
                                 fp_radii_arr[lj], -ux, -uy, -fx, -fy)
 
+            def _apply_contact_push(
+                li: int, lj: int,
+                pi: Polygon, pj: Polygon,
+                intersection_area: float,  # >= 0: overlap area; < 0: gap (for halo)
+            ) -> None:
+                """Unified contact push using nearest-point normal.
+                
+                For overlap (intersection_area >= 0): F = kc * (1 + intersection_area)
+                For halo (intersection_area < 0, gap = -intersection_area): F = kc * (1 - gap/halo_reach)
+                
+                Direction always from nearest-point normal (edge-orthogonal).
+                Continuity at boundary: area=0 -> F=kc, gap=0 -> F=kc.
+                """
+                if pi.is_empty or pj.is_empty:
+                    return
+                try:
+                    qi, qj = nearest_points(pi, pj)
+                    dx = float(qi.x - qj.x)
+                    dy = float(qi.y - qj.y)
+                except Exception:
+                    dx = dy = 0.0
+                dist = math.hypot(dx, dy)
+                
+                # nearest_points on overlapping polygons returns boundary points with dist=0
+                # Fall back to centroid-to-centroid if degenerate
+                if dist <= 1e-8:
+                    dx = fp_centroids_arr[li, 0] - fp_centroids_arr[lj, 0]
+                    dy = fp_centroids_arr[li, 1] - fp_centroids_arr[lj, 1]
+                    dist = math.hypot(dx, dy)
+                if dist <= 1e-6:
+                    dx, dy, dist = 1.0, 0.0, 1.0  # deterministic tiebreak
+                
+                ux, uy = dx / dist, dy / dist
+                
+                if intersection_area >= 0:
+                    # Overlap: F = kc * (1 + area) — continuous with halo at area=0
+                    force_mag = params.courtyard_repulsion_kc * (1.0 + intersection_area)
+                else:
+                    # Halo: gap = -intersection_area, linear falloff to 0 at halo_reach
+                    gap = -intersection_area
+                    halo_reach = float(_halo[li, lj])
+                    if gap >= halo_reach:
+                        return
+                    force_mag = params.courtyard_repulsion_kc * (1.0 - gap / halo_reach)
+                
+                fx, fy = force_mag * ux, force_mag * uy
+                _spread(fp_local_to_rows[li], fp_centroids_arr[li, 0], fp_centroids_arr[li, 1],
+                        fp_radii_arr[li], ux, uy, fx, fy)
+                if fp_movable_arr[lj]:
+                    _spread(fp_local_to_rows[lj], fp_centroids_arr[lj, 0], fp_centroids_arr[lj, 1],
+                            fp_radii_arr[lj], -ux, -uy, -fx, -fy)
+
             # Compute collision forces per footprint pair, then distribute to pads.
+            # Check: body-body (same layer), pins-body (all layers), body-pins (all layers), pins-pins (all layers)
             for i in range(n_fp):
                 if not fp_movable_arr[i]:
                     continue  # Only movable footprints accumulate forces
                 fp_i_uuid = fp_uuids[i]
-                poly_i = courtyard_polys[fp_i_uuid]
-
+                body_i = body_polys[fp_i_uuid]
+                pins_i = pins_data[fp_i_uuid]
+                
                 for j in range(n_fp):
                     if j == i:
                         continue
                     if j < i and fp_movable_arr[j]:
                         continue  # movable-movable pair already done from the other side
-                    if not _close[i, j]:
-                        continue  # Far field, or opposite sides (SMD-SMD)
                     fp_j_uuid = fp_uuids[j]
-                    poly_j = courtyard_polys[fp_j_uuid]
-
-                    # Check overlap (including ghost footprints). Lenient with
-                    # degenerate outlines: empty polygons never collide.
-                    if poly_i.is_empty or poly_j.is_empty:
-                        continue
-                    if poly_i.intersects(poly_j):
-                        intersection = poly_i.intersection(poly_j)
-                        if intersection.area <= 1e-6:
-                            # Boundary touch (zero-area intersection):
-                            # halo contact at full kc instead of going
-                            # silent, so the contact plane has no force
-                            # cliff the integrator could tunnel through.
-                            _apply_halo_push(
-                                i, j, poly_i, poly_j, float(_halo[i, j]),
-                            )
-                        else:
-                            # Penetration-scaled push: F = kc * (1 + area).
-                            # At first touch (area -> 0) this equals kc,
-                            # continuous with the halo branch maximum (kc at
-                            # zero gap); deeper overlap pushes harder. The old
-                            # kc/dist form did the opposite (weaker when
-                            # deeper) and went fully silent on coincident
-                            # outlines (dist = 0 failed the guard below), so
-                            # stacked parts felt nothing and piled up.
-                            inter_centroid = intersection.centroid
-                            poly_i_centroid = poly_i.centroid
-                            dx = poly_i_centroid.x - inter_centroid.x
-                            dy = poly_i_centroid.y - inter_centroid.y
-                            dist = math.hypot(dx, dy)
-                            if dist <= 1e-6:
-                                # Containment / coincident outlines: the
-                                # intersection centroid sits on the polygon
-                                # centroid, so fall back to the
-                                # centroid-to-centroid direction.
-                                dx = fp_centroids_arr[i, 0] - fp_centroids_arr[j, 0]
-                                dy = fp_centroids_arr[i, 1] - fp_centroids_arr[j, 1]
-                                dist = math.hypot(dx, dy)
-                            if dist <= 1e-6:
-                                # Perfectly coincident: deterministic +x
-                                # tiebreak so stacked parts still separate
-                                # instead of feeling zero force.
-                                dx, dy, dist = 1.0, 0.0, 1.0
-                            force_mag = params.courtyard_repulsion_kc * (
-                                1.0 + intersection.area
-                            )
-                            ux, uy = dx / dist, dy / dist
-                            fx, fy = force_mag * ux, force_mag * uy
-                            _spread(fp_local_to_rows[i], fp_centroids_arr[i, 0], fp_centroids_arr[i, 1],
-                                    fp_radii_arr[i], ux, uy, fx, fy)
-                            # Equal/opposite on j (only matters if j moves)
-                            if fp_movable_arr[j]:
-                                _spread(fp_local_to_rows[j], fp_centroids_arr[j, 0], fp_centroids_arr[j, 1],
-                                        fp_radii_arr[j], -ux, -uy, -fx, -fy)
-                    else:
-                        # Near miss: bounded-halo linear falloff.
-                        poly_dist = poly_i.distance(poly_j)
-                        # Same reach the broadphase above culled on (matrix
-                        # form); reuse it instead of recomputing per pair.
-                        halo_reach = float(_halo[i, j])
-                        if poly_dist < halo_reach:
-                            _apply_halo_push(
-                                i, j, poly_i, poly_j,
-                                halo_reach - poly_dist,
-                            )
+                    body_j = body_polys[fp_j_uuid]
+                    pins_j = pins_data[fp_j_uuid]
+                    
+                    # 1. Body-body collision (same layer only)
+                    if _close[i, j]:
+                        if not body_i.is_empty and not body_j.is_empty:
+                            if body_i.intersects(body_j):
+                                intersection = body_i.intersection(body_j)
+                                _apply_contact_push(i, j, body_i, body_j, intersection.area)
+                            else:
+                                body_dist = body_i.distance(body_j)
+                                halo_reach = float(_halo_matrix[i, j])
+                                if body_dist < halo_reach:
+                                    _apply_contact_push(i, j, body_i, body_j, -body_dist)
+                    
+                    # 2. Pins_i vs body_j (all layers)
+                    if pins_i and not body_j.is_empty:
+                        for pin_poly, pin_center, pin_radius in pins_i:
+                            if pin_poly.is_empty:
+                                continue
+                            if pin_poly.intersects(body_j):
+                                intersection = pin_poly.intersection(body_j)
+                                _apply_contact_push(i, j, pin_poly, body_j, intersection.area)
+                            else:
+                                pin_dist = pin_poly.distance(body_j)
+                                # Pin halo reach = min(1.5*(pin_r + body_r), halo_mm)
+                                pin_halo = min(1.5 * (pin_radius + body_radii_arr[j]), params.courtyard_halo_mm)
+                                if pin_dist < pin_halo:
+                                    _apply_contact_push(i, j, pin_poly, body_j, -pin_dist)
+                    
+                    # 3. Body_i vs pins_j (all layers)
+                    if pins_j and not body_i.is_empty:
+                        for pin_poly, pin_center, pin_radius in pins_j:
+                            if pin_poly.is_empty:
+                                continue
+                            if body_i.intersects(pin_poly):
+                                intersection = body_i.intersection(pin_poly)
+                                _apply_contact_push(i, j, body_i, pin_poly, intersection.area)
+                            else:
+                                pin_dist = body_i.distance(pin_poly)
+                                pin_halo = min(1.5 * (body_radii_arr[i] + pin_radius), params.courtyard_halo_mm)
+                                if pin_dist < pin_halo:
+                                    _apply_contact_push(i, j, body_i, pin_poly, -pin_dist)
+                    
+                    # 4. Pins_i vs pins_j (all layers)
+                    if pins_i and pins_j:
+                        for pin_i_poly, pin_i_center, pin_i_radius in pins_i:
+                            for pin_j_poly, pin_j_center, pin_j_radius in pins_j:
+                                if pin_i_poly.is_empty or pin_j_poly.is_empty:
+                                    continue
+                                if pin_i_poly.intersects(pin_j_poly):
+                                    intersection = pin_i_poly.intersection(pin_j_poly)
+                                    _apply_contact_push(i, j, pin_i_poly, pin_j_poly, intersection.area)
+                                else:
+                                    pin_dist = pin_i_poly.distance(pin_j_poly)
+                                    pin_halo = min(1.5 * (pin_i_radius + pin_j_radius), params.courtyard_halo_mm)
+                                    if pin_dist < pin_halo:
+                                        _apply_contact_push(i, j, pin_i_poly, pin_j_poly, -pin_dist)
 
             # Courtyard pushes were spread directly onto pads above
             # (overlap-weighted, halo uniform; totals conserved); nothing

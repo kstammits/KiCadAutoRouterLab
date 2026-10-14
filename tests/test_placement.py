@@ -432,4 +432,6 @@ class TestCourtyardHalo:
         # Legitimate R11 contact at 1.3mm gap measures ~22.7; was ~3800
         # from 20-30mm-away RV sockets under the old size-scaled halo,
         # and 0.0 under the buggy pad-bbox shapes.
-        assert 5.0 < courtyard < 50.0, f"C11 courtyard={courtyard:.2f}"
+        # With pin courtyards for THT pads, additional cross-layer collisions
+        # are detected (e.g., RV1 THT pins vs C11 body), increasing force.
+        assert 5.0 < courtyard < 100.0, f"C11 courtyard={courtyard:.2f}"
