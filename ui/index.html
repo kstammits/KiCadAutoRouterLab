@@ -2804,6 +2804,7 @@ async function routeSelectedNets() {
   const progress = document.getElementById("route-progress");
 
   const nets = Array.from(selectedNets);
+  await saveRoutingParams();
   const params = readRoutingParams();
   const est = estimateRoutingWork(nets);
   const estNote = `~${est.pairs} pair-searches across ${nets.length} net${nets.length > 1 ? "s" : ""}` +

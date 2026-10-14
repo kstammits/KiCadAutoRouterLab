@@ -9,6 +9,7 @@
 - [x] Phase 1: Uniform grid spatial index for courtyard broadphase (O(n²) → O(n))
 - [x] Phase 2: Polygon cache between iterations (avoid rebuild when displacement < threshold)
 - [x] Phase 3: Test suite for analytical contact (SAT for rectangles/circles) — tests/test_analytical_contact.py
+- [x] Phase 3: Analytical SAT courtyard collision (rectangle classification + circle-rectangle SAT) — 2026-10-14
 - [ ] Phase 3: Implement analytical contact for rectangles/circles (replace shapely for 80% of pairs)
 - [ ] Phase 4: Force-based early termination (stop when max |F| < threshold)
 - [ ] Phase 5: Parallel region execution (ProcessPoolExecutor for multi-region boards)
@@ -19,6 +20,17 @@
 - Phase 1 — DONE: `routing/pour.py` (`pour_copper_mask`, `pour_islands`, `gnd_islands`), `GET /api/routing/debug/gnd-islands`, UI bbox overlay (red dashed = dead). Validated vs KiCad's own `filled_polygon` (tube111 F: 10 vs 13, B: 26 vs 15).
 - Phase 2 — DONE (automatic, per 2026-10-11 decision): `routing/stitch.py` `plan_stitches()` places GND-GND vias on inter-layer overlap + bridge tracks where no overlap exists; region-aware (never joins panels); runs at end of `route_nets`/`run_routing`. Supersedes centroid `route_ground_stitching` (deleted).
 - Phase 3 — DONE (soft cost, per 2026-10-11 decision): pours are passable-at-toll (`POUR=35` + `CostMap.pour_penalty=10`, was hard `BLOCKED` — which had also made pads inside pours unroutable); `severance_cost()` secondary steers tracks off narrow pour corridors (clipped so it steers, never blocks).
+
+### Routing Smoothing & Post-Pass
+- [x] Configurable angle granularity (angle_step_rad) — default 10° (π/18) instead of hardcoded 45°; 36 angles vs 8
+- [x] Routing params auto-save to placement.json on route start (matching placement behavior)
+- [ ] Full curve/spline post-pass after stick phase (B-spline or clothoid interpolation)
+- [ ] Test suite for smoothing with angle_step_rad parameter
+
+### Routing
+- [ ] Push-and-shove cleanup pass (move already-routed nets to make room)
+- [ ] Net ordering by criticality (signal timing, decap first, then power, then GND, then signal)
+- [ ] Layer assignment heuristic (prefer F.Cu for signals, B.Cu for return paths)
 
 
 ## Notes

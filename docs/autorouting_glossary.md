@@ -76,8 +76,33 @@ Key facts that shape the algorithm choice:
   violations heavily), rip-up and reroute each net to minimize it.
 - **Push-and-shove** ("shove-aside"): move already-routed nets out of the way to make room —
   the interactive-router feature; a useful cleanup idea for our core too.
+- **Smoothing / string-pulling**: post-process a grid path by shortcutting intermediate
+  nodes where straight line-of-sight is walkable. The 4-directional A* produces staircases;
+  smoothing replaces them with fewer, longer any-angle tracks. Our implementation uses
+  iterative bidirectional greedy passes + outward Steiner detour repair around blocking
+  lumps. Configurable **angle granularity** (`angle_step_rad`, default 10° = π/18)
+  replaces hardcoded 45° multiples, giving 36 angle options for shallower routes.
 - Secondary objectives that conflict with shortest path: crosstalk, via count, metal
   density, timing.
+
+### Copper pours in routing
+
+- **Passable-at-toll**: zones (pours) are not blocked; they carry a soft cost
+  (`POUR=35` + `CostMap.pour_penalty=10`) so the router can cross them but prefers
+  to go around. This avoids the hard-block problem where pads inside pours became
+  unroutable.
+- **Severance steering**: `severance_cost()` adds a secondary toll for tracks that
+  narrow a pour corridor below `min_thickness`; it is clipped (steers, never blocks)
+  so the router can still cross if needed.
+- **GND-only rip-up**: pre-existing GND vias/tracks can be stripped before routing
+  (`Strip GND Blockers`); the stitcher (`plan_stitches()`) rebuilds continuity
+  afterwards with overlap vias + bridge tracks. **Signal/power copper is never
+  evicted** — no more tracks ripping each other out.
+- **Island diagnostics**: `gnd_islands()` computes connected pour regions per layer;
+  UI shows red dashed bboxes for dead islands (no pad/via connection), matching
+  KiCad's isolated-fill DRC.
+- **Region-aware stitching**: stitcher respects board panel boundaries (never joins
+  separate panels in the same file).
 
 ## Stage: drc — design rule check
 
@@ -141,3 +166,5 @@ Treat footprints as nodes and nets as edges; run a physical simulation until equ
 | [`kicad/kicad.md`](kicad/kicad.md) | `.kicad_*` file types, S-expression formats |
 | [`kicad/pcbnew.md`](kicad/pcbnew.md) | Footprints, pads, nets, tracks, zones, DRC in the PCB editor |
 | [`kicad/cli.md`](kicad/cli.md) | `kicad-cli pcb drc` / `sch erc` JSON reports and exit codes |
+| [`src/kicad_autorouter/routing/smooth.py`](src/kicad_autorouter/routing/smooth.py) | String-pulling smoothing with configurable angle_step_rad (10° default), bidirectional greedy + Steiner detour repair |
+| [`tests/test_analytical_contact.py`](tests/test_analytical_contact.py) | SAT courtyard collision test suite (rectangle/circle SAT) |
