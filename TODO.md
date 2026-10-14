@@ -8,7 +8,7 @@
 ### Placement Performance Optimization (2026-10-13)
 - [x] Phase 1: Uniform grid spatial index for courtyard broadphase (O(n²) → O(n))
 - [x] Phase 2: Polygon cache between iterations (avoid rebuild when displacement < threshold)
-- [x] Phase 3: Test suite for analytical contact (SAT for rectangles/circles)
+- [x] Phase 3: Test suite for analytical contact (SAT for rectangles/circles) — tests/test_analytical_contact.py
 - [ ] Phase 3: Implement analytical contact for rectangles/circles (replace shapely for 80% of pairs)
 - [ ] Phase 4: Force-based early termination (stop when max |F| < threshold)
 - [ ] Phase 5: Parallel region execution (ProcessPoolExecutor for multi-region boards)
