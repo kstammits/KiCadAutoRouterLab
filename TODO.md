@@ -6,12 +6,12 @@
 - [ ] Highlight selected footprint in SVG on table hover
 
 ### Placement Performance Optimization (2026-10-13)
-- Phase 1: Uniform grid spatial index for courtyard broadphase (O(n²) → O(n))
-- Phase 2: Polygon cache between iterations (avoid rebuild when displacement < threshold)
-- Phase 3: Analytical contact for rectangles/circles (replace shapely for 80% of pairs)
-- Phase 4: Force-based early termination (stop when max |F| < threshold)
-- Phase 5: Parallel region execution (ProcessPoolExecutor for multi-region boards)
-- Phase 6: Numba JIT on hot inner loops (_spread, _rigid_pose_vertices, etc.)
+- [x] Phase 1: Uniform grid spatial index for courtyard broadphase (O(n²) → O(n))
+- [x] Phase 2: Polygon cache between iterations (avoid rebuild when displacement < threshold)
+- [ ] Phase 3: Analytical contact for rectangles/circles (replace shapely for 80% of pairs)
+- [ ] Phase 4: Force-based early termination (stop when max |F| < threshold)
+- [ ] Phase 5: Parallel region execution (ProcessPoolExecutor for multi-region boards)
+- [ ] Phase 6: Numba JIT on hot inner loops (_spread, _rigid_pose_vertices, etc.)
 
 ### GND Continuity / Copper Pours (agreed 2026-10-09, phased; landed 2026-10-11)
 - Phase 0 — DONE: `Zone` carries fill rules (`clearance`, `min_thickness`, `thermal_gap/bridge`, `island_removal_mode`, `priority`); singular `(layer …)` zones parse (previously dropped, silently disabling stitch pairing).
