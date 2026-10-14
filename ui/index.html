@@ -592,7 +592,7 @@ const PARAM_DEFS = [
   { key: "boundary_repulsion_kb", label: "Boundary repulsion k_b", min: 100, max: 1e6, step: 1, log: true },
   { key: "max_step_mm", label: "Max step (mm/iter)", min: 0.1, max: 5, step: 0.1 },
   { key: "friction_threshold_mm", label: "Friction (mm)", min: 0, max: 0.5, step: 0.005 },
-  { key: "power_attraction_scale", label: "Power attraction", min: 0, max: 2, step: 0.05 },
+  { key: "power_attraction_scale", label: "Power attraction", min: 0, max: 10, step: 0.05 },
   { key: "decap_boost", label: "Decap boost", min: 0, max: 16, step: 0.5 },
 ];
 
@@ -1782,16 +1782,20 @@ document.getElementById("refresh-forces-btn").addEventListener("click", refreshF
 // + 1.31 (footprint-pair shapely work dominates; pads^2 term ~0).
 // Order-of-magnitude only — real boards deviate with courtyard complexity —
 // and worst-case (runs often converge early), so the line reads "up to".
+// Updated 2026-10-13: Pin courtyards for THT parts make courtyard work
+// O((fps + tht_pins)^2) shapely ops. Measured: DCCF 64 fps ~450ms/iter.
 function estimatePlacementMs(movableUuids, iters) {
   const isMovable = (fp) => !fp.locked && !fp.pinned && !fp.ghost &&
     (movableUuids === undefined || movableUuids.includes(fp.uuid));
   const fps = allFootprints.filter(isMovable);
-  // Approximation: ghost pads also enter the sim but aren't movable, so
-  // they only add repulsion cost — ignored here (estimate stays conservative
-  // in the common no-ghost case).
   const pads = fps.reduce((s, fp) => s + (fp.pad_count ?? 0), 0);
-  const msPerIter = -3.2e-5 * pads * pads + 3.0e-3 * fps.length * fps.length + 1.31;
-  return { ms: Math.max(msPerIter, 0.05) * iters, msPerIter, fps: fps.length, pads };
+  const nFp = fps.length;
+  // Conservative fit to measured data: pairWork = nFp^2 + (1.5*pads)^2
+  // Coefficient 1/100 calibrated to DCCF ~450ms/iter (64fps, 147pads → 525ms)
+  const estThPins = pads * 1.5;
+  const pairWork = nFp * nFp + estThPins * estThPins;
+  const msPerIter = pairWork / 100 + 1;
+  return { ms: Math.max(msPerIter, 0.05) * iters, msPerIter, fps: nFp, pads };
 }
 
 function fmtDuration(ms) {
