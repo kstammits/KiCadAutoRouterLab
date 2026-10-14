@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import math
 import time
+from collections import defaultdict
 from dataclasses import asdict, dataclass, field, fields
 from typing import Collection, Dict, List, Optional, Set, Tuple
 
@@ -1067,6 +1068,9 @@ def _run_region_simulation(
         ghost_attractions: list,
         same_fp_mask: np.ndarray = None,
         return_components: bool = False,
+        poly_cache: Optional[Dict[str, dict]] = None,
+        cache_rebuild_threshold_mm: float = 0.01,
+        cache_rebuild_threshold_rad: float = 0.0,
     ):
         """Compute total force on each pad at given positions.
 
@@ -1163,95 +1167,176 @@ def _run_region_simulation(
                 pad_idx = e["pad_idx"]
                 orig_pos = e["orig_pos"]
                 
-                # Build body polygon (posed)
-                kind = body["kind"]
-                if kind == "courtyard" and len(pad_idx) == len(orig_pos) and len(pad_idx) > 0:
-                    cp = pos[pad_idx]
-                    body_poly = Polygon(_rigid_pose_vertices(body["verts"], orig_pos, cp))
-                elif kind == "courtyard":
-                    body_poly = Polygon(body["verts"])
-                elif kind == "bbox":
-                    idx = pad_idx
-                    if len(idx):
-                        xs = pos[idx, 0]
-                        ys = pos[idx, 1]
-                        x0, x1 = float(xs.min()), float(xs.max())
-                        y0, y1 = float(ys.min()), float(ys.max())
-                    else:
-                        _fp0 = fp_by_uuid.get(fp_uuid)
-                        xs = [p.position.x_mm for p in _fp0.pads] if _fp0 and _fp0.pads else [0.0]
-                        ys = [p.position.y_mm for p in _fp0.pads] if _fp0 and _fp0.pads else [0.0]
-                        x0, x1 = min(xs), max(xs)
-                        y0, y1 = min(ys), max(ys)
-                    m = 0.1
-                    body_poly = Polygon([
-                        (x0 - m, y0 - m), (x1 + m, y0 - m),
-                        (x1 + m, y1 + m), (x0 - m, y1 + m),
-                    ])
-                elif kind == "point":
-                    body_poly = Polygon(body["verts"])
+                # Get current pad positions for this footprint
+                cp = pos[pad_idx] if len(pad_idx) == len(orig_pos) and len(pad_idx) > 0 else None
+                
+                # Compute current centroid and angle for cache invalidation
+                if cp is not None and len(cp) >= 2:
+                    curr_centroid = cp.mean(axis=0)
+                    # Compute angle from first two pads
+                    v = cp[1] - cp[0]
+                    curr_angle = math.atan2(v[1], v[0])
+                elif cp is not None and len(cp) == 1:
+                    curr_centroid = cp[0]
+                    curr_angle = 0.0
                 else:
-                    body_poly = Polygon()
-                body_polys[fp_uuid] = body_poly
+                    curr_centroid = np.array([0.0, 0.0])
+                    curr_angle = 0.0
                 
-                # Body centroid/radius for broadphase
-                centroid = body_poly.centroid
-                body_centroids.append([centroid.x, centroid.y])
-                body_layers.append(body.get("layer", ""))
-                max_extent = 0.5
-                if body_poly.area > 0:
-                    for x, y in body_poly.exterior.coords:
-                        d = math.hypot(x - centroid.x, y - centroid.y)
-                        if d > max_extent:
-                            max_extent = d
-                body_radii.append(max_extent)
+                # Check cache
+                cached = poly_cache.get(fp_uuid)
+                rebuild = True
+                if cached is not None:
+                    last_centroid = cached.get("last_centroid")
+                    last_angle = cached.get("last_angle")
+                    if last_centroid is not None and last_angle is not None:
+                        dist = math.hypot(curr_centroid[0] - last_centroid[0], curr_centroid[1] - last_centroid[1])
+                        angle_diff = abs(curr_angle - last_angle)
+                        # Normalize angle difference
+                        angle_diff = min(angle_diff, 2 * math.pi - angle_diff)
+                        if dist <= cache_rebuild_threshold_mm and angle_diff <= cache_rebuild_threshold_rad:
+                            rebuild = False
                 
-                # Build pin polygons (circles at transformed pad positions)
-                fp_pins = []
-                if pins and len(pad_idx) == len(orig_pos) and len(pad_idx) > 0:
-                    cp = pos[pad_idx]
-                    # Transform pin centers from local to current position
-                    for pin in pins:
-                        local_cx, local_cy = pin["center"]
-                        # Find corresponding pad in orig_pos to get transform
-                        # Pin centers are in board coords already (from _local_shape)
-                        # But they need to be posed by the rigid transform
-                        # We'll pose them using the same rigid transform as the body
-                        pin_vert = np.array([[local_cx, local_cy]], dtype=np.float64)
-                        posed_center = _rigid_pose_vertices(pin_vert, orig_pos, cp)[0]
-                        pin_poly = Point(posed_center[0], posed_center[1]).buffer(pin["radius"])
-                        fp_pins.append((pin_poly, (posed_center[0], posed_center[1]), pin["radius"]))
-                elif pins:
-                    # No live pads: pin centers stay at local (board) positions
-                    for pin in pins:
-                        local_cx, local_cy = pin["center"]
-                        pin_poly = Point(local_cx, local_cy).buffer(pin["radius"])
-                        fp_pins.append((pin_poly, (local_cx, local_cy), pin["radius"]))
-                pins_data[fp_uuid] = fp_pins
+                if rebuild:
+                    # Build body polygon (posed)
+                    kind = body["kind"]
+                    if kind == "courtyard" and cp is not None:
+                        body_poly = Polygon(_rigid_pose_vertices(body["verts"], orig_pos, cp))
+                    elif kind == "courtyard":
+                        body_poly = Polygon(body["verts"])
+                    elif kind == "bbox":
+                        if cp is not None and len(cp) > 0:
+                            xs = cp[:, 0]
+                            ys = cp[:, 1]
+                            x0, x1 = float(xs.min()), float(xs.max())
+                            y0, y1 = float(ys.min()), float(ys.max())
+                        else:
+                            _fp0 = fp_by_uuid.get(fp_uuid)
+                            xs = [p.position.x_mm for p in _fp0.pads] if _fp0 and _fp0.pads else [0.0]
+                            ys = [p.position.y_mm for p in _fp0.pads] if _fp0 and _fp0.pads else [0.0]
+                            x0, x1 = min(xs), max(xs)
+                            y0, y1 = min(ys), max(ys)
+                        m = 0.1
+                        body_poly = Polygon([
+                            (x0 - m, y0 - m), (x1 + m, y0 - m),
+                            (x1 + m, y1 + m), (x0 - m, y1 + m),
+                        ])
+                    elif kind == "point":
+                        body_poly = Polygon(body["verts"])
+                    else:
+                        body_poly = Polygon()
+                    body_polys[fp_uuid] = body_poly
+                    
+                    # Build pin polygons (circles at transformed pad positions)
+                    fp_pins = []
+                    if pins and cp is not None:
+                        for pin in pins:
+                            local_cx, local_cy = pin["center"]
+                            pin_vert = np.array([[local_cx, local_cy]], dtype=np.float64)
+                            posed_center = _rigid_pose_vertices(pin_vert, orig_pos, cp)[0]
+                            pin_poly = Point(posed_center[0], posed_center[1]).buffer(pin["radius"])
+                            fp_pins.append((pin_poly, (posed_center[0], posed_center[1]), pin["radius"]))
+                    elif pins:
+                        for pin in pins:
+                            local_cx, local_cy = pin["center"]
+                            pin_poly = Point(local_cx, local_cy).buffer(pin["radius"])
+                            fp_pins.append((pin_poly, (local_cx, local_cy), pin["radius"]))
+                    pins_data[fp_uuid] = fp_pins
+                    
+                    # Update cache
+                    centroid = body_poly.centroid
+                    body_centroids.append([centroid.x, centroid.y])
+                    body_layers.append(body.get("layer", ""))
+                    max_extent = 0.5
+                    if body_poly.area > 0:
+                        for x, y in body_poly.exterior.coords:
+                            d = math.hypot(x - centroid.x, y - centroid.y)
+                            if d > max_extent:
+                                max_extent = d
+                    body_radii.append(max_extent)
+                    
+                    poly_cache[fp_uuid] = {
+                        "body_poly": body_poly,
+                        "pins": fp_pins,
+                        "centroid": [centroid.x, centroid.y],
+                        "radius": max_extent,
+                        "layer": body.get("layer", ""),
+                        "last_centroid": [curr_centroid[0], curr_centroid[1]],
+                        "last_angle": curr_angle,
+                    }
+                else:
+                    # Use cached polygons
+                    body_poly = cached["body_poly"]
+                    body_polys[fp_uuid] = body_poly
+                    pins_data[fp_uuid] = cached["pins"]
+                    body_centroids.append(cached["centroid"])
+                    body_radii.append(cached["radius"])
+                    body_layers.append(cached["layer"])
             
             body_centroids_arr = np.array(body_centroids, dtype=np.float64)
             body_radii_arr = np.array(body_radii, dtype=np.float64)
             body_layers_arr = np.array(body_layers, dtype=object)
             
-            # Broadphase: body-body (same layer only) + pin-involved (all layers)
-            # For simplicity, use body centroids for body-body broadphase
-            # Pin-involved pairs will be checked explicitly in the collision loop
-            _d = body_centroids_arr[:, None, :] - body_centroids_arr[None, :, :]
-            _dist = np.sqrt(np.sum(_d * _d, axis=2))
-            _halo = np.minimum(1.5 * (body_radii_arr[:, None] + body_radii_arr[None, :]),
-                               params.courtyard_halo_mm)
-            _near = _dist < body_radii_arr[:, None] + body_radii_arr[None, :] + _halo + 1e-8
-            _same_layer = (body_layers_arr[:, None] == body_layers_arr[None, :])
-            _body_close = _near & _same_layer
+            # Build uniform grid spatial index for broadphase
+            # Use fixed cell size based on typical footprint interaction distance
+            # (typical footprint diameter ~10mm + halo 3mm = ~13mm, round to 15mm)
+            # Large footprints will occupy multiple cells, which is fine.
+            cell_size = 15.0  # mm - covers typical interaction distance
             
-            # For pin-involved checks, we'll do explicit distance checks in the collision loop
-            # (pin count is small, so O(n_pins^2) is fine)
+            # Grid: cell_key -> list of footprint local indices
+            grid: Dict[Tuple[int, int], List[int]] = defaultdict(list)
+            for fp_idx in range(n_fp):
+                cx, cy = body_centroids_arr[fp_idx]
+                r = body_radii_arr[fp_idx] + params.courtyard_halo_mm
+                min_gx = int((cx - r) / cell_size)
+                max_gx = int((cx + r) / cell_size)
+                min_gy = int((cy - r) / cell_size)
+                max_gy = int((cy + r) / cell_size)
+                for gx in range(min_gx, max_gx + 1):
+                    for gy in range(min_gy, max_gy + 1):
+                        grid[(gx, gy)].append(fp_idx)
+            
+            # Generate candidate pairs from grid (same + adjacent cells)
+            # Use a set to deduplicate pairs that appear in multiple cells
+            candidate_pairs = set()
+            for cell, indices in grid.items():
+                # Pairs within the same cell
+                for ii, i in enumerate(indices):
+                    for j in indices[ii + 1:]:
+                        candidate_pairs.add((i, j) if i < j else (j, i))
+                # Pairs with adjacent cells
+                for dx in (-1, 0, 1):
+                    for dy in (-1, 0, 1):
+                        if dx == 0 and dy == 0:
+                            continue
+                        adj_cell = (cell[0] + dx, cell[1] + dy)
+                        adj_indices = grid.get(adj_cell, [])
+                        for i in indices:
+                            for j in adj_indices:
+                                if i < j:
+                                    candidate_pairs.add((i, j))
+                                elif j < i:
+                                    candidate_pairs.add((j, i))
+            
+            # Filter candidate pairs by layer (body-body only) and compute halo matrix for them
+            _close = np.zeros((n_fp, n_fp), dtype=bool)
+            _halo_matrix = np.zeros((n_fp, n_fp), dtype=np.float64)
+            for i, j in candidate_pairs:
+                if body_layers_arr[i] == body_layers_arr[j]:
+                    ri = body_radii_arr[i]
+                    rj = body_radii_arr[j]
+                    halo = min(1.5 * (ri + rj), params.courtyard_halo_mm)
+                    dx = body_centroids_arr[i, 0] - body_centroids_arr[j, 0]
+                    dy = body_centroids_arr[i, 1] - body_centroids_arr[j, 1]
+                    dist_sq = dx * dx + dy * dy
+                    reach_sq = (ri + rj + halo) ** 2
+                    if dist_sq < reach_sq + 1e-8:
+                        _close[i, j] = _close[j, i] = True
+                        _halo_matrix[i, j] = _halo_matrix[j, i] = halo
             
             # Store for collision loop
             fp_centroids_arr = body_centroids_arr
             fp_radii_arr = body_radii_arr
-            _close = _body_close
-            _halo_matrix = _halo
 
             # Spread one pair-push over a footprint's pads
             def _spread(rows, cx, cy, radius, ux, uy, fx, fy):
@@ -1283,7 +1368,7 @@ def _run_region_simulation(
                 pair on the two outlines."""
                 if margin <= 0:
                     return
-                halo_reach = float(_halo[li, lj])
+                halo_reach = float(_halo_matrix[li, lj])
                 try:
                     _qi, _qj = nearest_points(pi, pj)
                     dx = float(_qi.x - _qj.x)
@@ -1350,7 +1435,7 @@ def _run_region_simulation(
                 else:
                     # Halo: gap = -intersection_area, linear falloff to 0 at halo_reach
                     gap = -intersection_area
-                    halo_reach = float(_halo[li, lj])
+                    halo_reach = float(_halo_matrix[li, lj])
                     if gap >= halo_reach:
                         return
                     force_mag = params.courtyard_repulsion_kc * (1.0 - gap / halo_reach)
@@ -1364,77 +1449,72 @@ def _run_region_simulation(
 
             # Compute collision forces per footprint pair, then distribute to pads.
             # Check: body-body (same layer), pins-body (all layers), body-pins (all layers), pins-pins (all layers)
-            for i in range(n_fp):
-                if not fp_movable_arr[i]:
-                    continue  # Only movable footprints accumulate forces
+            # Iterate only over candidate pairs from grid broadphase
+            for i, j in candidate_pairs:
+                if not fp_movable_arr[i] and not fp_movable_arr[j]:
+                    continue  # Skip if neither is movable
                 fp_i_uuid = fp_uuids[i]
+                fp_j_uuid = fp_uuids[j]
                 body_i = body_polys[fp_i_uuid]
+                body_j = body_polys[fp_j_uuid]
                 pins_i = pins_data[fp_i_uuid]
+                pins_j = pins_data[fp_j_uuid]
                 
-                for j in range(n_fp):
-                    if j == i:
-                        continue
-                    if j < i and fp_movable_arr[j]:
-                        continue  # movable-movable pair already done from the other side
-                    fp_j_uuid = fp_uuids[j]
-                    body_j = body_polys[fp_j_uuid]
-                    pins_j = pins_data[fp_j_uuid]
-                    
-                    # 1. Body-body collision (same layer only)
-                    if _close[i, j]:
-                        if not body_i.is_empty and not body_j.is_empty:
-                            if body_i.intersects(body_j):
-                                intersection = body_i.intersection(body_j)
-                                _apply_contact_push(i, j, body_i, body_j, intersection.area)
-                            else:
-                                body_dist = body_i.distance(body_j)
-                                halo_reach = float(_halo_matrix[i, j])
-                                if body_dist < halo_reach:
-                                    _apply_contact_push(i, j, body_i, body_j, -body_dist)
-                    
-                    # 2. Pins_i vs body_j (all layers)
-                    if pins_i and not body_j.is_empty:
-                        for pin_poly, pin_center, pin_radius in pins_i:
-                            if pin_poly.is_empty:
+                # 1. Body-body collision (same layer only) - already filtered by layer in broadphase
+                if _close[i, j]:
+                    if not body_i.is_empty and not body_j.is_empty:
+                        if body_i.intersects(body_j):
+                            intersection = body_i.intersection(body_j)
+                            _apply_contact_push(i, j, body_i, body_j, intersection.area)
+                        else:
+                            body_dist = body_i.distance(body_j)
+                            halo_reach = float(_halo_matrix[i, j])
+                            if body_dist < halo_reach:
+                                _apply_contact_push(i, j, body_i, body_j, -body_dist)
+                
+                # 2. Pins_i vs body_j (all layers)
+                if pins_i and not body_j.is_empty:
+                    for pin_poly, pin_center, pin_radius in pins_i:
+                        if pin_poly.is_empty:
+                            continue
+                        if pin_poly.intersects(body_j):
+                            intersection = pin_poly.intersection(body_j)
+                            _apply_contact_push(i, j, pin_poly, body_j, intersection.area)
+                        else:
+                            pin_dist = pin_poly.distance(body_j)
+                            # Pin halo reach = min(1.5*(pin_r + body_r), halo_mm)
+                            pin_halo = min(1.5 * (pin_radius + body_radii_arr[j]), params.courtyard_halo_mm)
+                            if pin_dist < pin_halo:
+                                _apply_contact_push(i, j, pin_poly, body_j, -pin_dist)
+                
+                # 3. Body_i vs pins_j (all layers)
+                if pins_j and not body_i.is_empty:
+                    for pin_poly, pin_center, pin_radius in pins_j:
+                        if pin_poly.is_empty:
+                            continue
+                        if body_i.intersects(pin_poly):
+                            intersection = body_i.intersection(pin_poly)
+                            _apply_contact_push(i, j, body_i, pin_poly, intersection.area)
+                        else:
+                            pin_dist = body_i.distance(pin_poly)
+                            pin_halo = min(1.5 * (body_radii_arr[i] + pin_radius), params.courtyard_halo_mm)
+                            if pin_dist < pin_halo:
+                                _apply_contact_push(i, j, body_i, pin_poly, -pin_dist)
+                
+                # 4. Pins_i vs pins_j (all layers)
+                if pins_i and pins_j:
+                    for pin_i_poly, pin_i_center, pin_i_radius in pins_i:
+                        for pin_j_poly, pin_j_center, pin_j_radius in pins_j:
+                            if pin_i_poly.is_empty or pin_j_poly.is_empty:
                                 continue
-                            if pin_poly.intersects(body_j):
-                                intersection = pin_poly.intersection(body_j)
-                                _apply_contact_push(i, j, pin_poly, body_j, intersection.area)
+                            if pin_i_poly.intersects(pin_j_poly):
+                                intersection = pin_i_poly.intersection(pin_j_poly)
+                                _apply_contact_push(i, j, pin_i_poly, pin_j_poly, intersection.area)
                             else:
-                                pin_dist = pin_poly.distance(body_j)
-                                # Pin halo reach = min(1.5*(pin_r + body_r), halo_mm)
-                                pin_halo = min(1.5 * (pin_radius + body_radii_arr[j]), params.courtyard_halo_mm)
+                                pin_dist = pin_i_poly.distance(pin_j_poly)
+                                pin_halo = min(1.5 * (pin_i_radius + pin_j_radius), params.courtyard_halo_mm)
                                 if pin_dist < pin_halo:
-                                    _apply_contact_push(i, j, pin_poly, body_j, -pin_dist)
-                    
-                    # 3. Body_i vs pins_j (all layers)
-                    if pins_j and not body_i.is_empty:
-                        for pin_poly, pin_center, pin_radius in pins_j:
-                            if pin_poly.is_empty:
-                                continue
-                            if body_i.intersects(pin_poly):
-                                intersection = body_i.intersection(pin_poly)
-                                _apply_contact_push(i, j, body_i, pin_poly, intersection.area)
-                            else:
-                                pin_dist = body_i.distance(pin_poly)
-                                pin_halo = min(1.5 * (body_radii_arr[i] + pin_radius), params.courtyard_halo_mm)
-                                if pin_dist < pin_halo:
-                                    _apply_contact_push(i, j, body_i, pin_poly, -pin_dist)
-                    
-                    # 4. Pins_i vs pins_j (all layers)
-                    if pins_i and pins_j:
-                        for pin_i_poly, pin_i_center, pin_i_radius in pins_i:
-                            for pin_j_poly, pin_j_center, pin_j_radius in pins_j:
-                                if pin_i_poly.is_empty or pin_j_poly.is_empty:
-                                    continue
-                                if pin_i_poly.intersects(pin_j_poly):
-                                    intersection = pin_i_poly.intersection(pin_j_poly)
-                                    _apply_contact_push(i, j, pin_i_poly, pin_j_poly, intersection.area)
-                                else:
-                                    pin_dist = pin_i_poly.distance(pin_j_poly)
-                                    pin_halo = min(1.5 * (pin_i_radius + pin_j_radius), params.courtyard_halo_mm)
-                                    if pin_dist < pin_halo:
-                                        _apply_contact_push(i, j, pin_i_poly, pin_j_poly, -pin_dist)
+                                    _apply_contact_push(i, j, pin_i_poly, pin_j_poly, -pin_dist)
 
             # Courtyard pushes were spread directly onto pads above
             # (overlap-weighted, halo uniform; totals conserved); nothing
@@ -1510,6 +1590,14 @@ def _run_region_simulation(
         for comp in components.values():
             comp[~pad_movable] = 0.0
         return force, components
+    # Polygon cache for courtyard collision - persists across iterations
+    # Key: fp_uuid -> {body_poly, body_centroid, body_radius, body_layer,
+    #                  pins: list of (pin_poly, pin_center, pin_radius),
+    #                  last_centroid, last_angle}
+    poly_cache: Dict[str, dict] = {}
+    cache_rebuild_threshold_mm = 0.01  # Rebuild if centroid moves > 10 microns
+    cache_rebuild_threshold_rad = math.radians(0.01)  # or angle > 0.01 deg
+
     # Initial forces predict the NEXT step from the committed board positions.
     # They are captured before the loop so the overlay explains the move it
     # is about to make (F0 -> D0), not the residual at the preview end
@@ -1521,6 +1609,9 @@ def _run_region_simulation(
         ghost_attractions,
         same_fp_mask,
         return_components=True,
+        poly_cache=poly_cache,
+        cache_rebuild_threshold_mm=cache_rebuild_threshold_mm,
+        cache_rebuild_threshold_rad=cache_rebuild_threshold_rad,
     )
     # ---- Trajectory frames (opt-in motion viz) ----
     # Dense per-sampled-iteration (dx, dy, da) vs committed start for every
@@ -1574,6 +1665,9 @@ def _run_region_simulation(
             ghost_attractions,
             same_fp_mask,
             return_components=True,
+            poly_cache=poly_cache,
+            cache_rebuild_threshold_mm=cache_rebuild_threshold_mm,
+            cache_rebuild_threshold_rad=cache_rebuild_threshold_rad,
         )
         force_frame: Dict[str, Dict[str, Tuple[float, float]]] = {}
         for _fp, _pi in _frame_fps:
@@ -1608,6 +1702,7 @@ def _run_region_simulation(
     # holds: same (model, params) prefix → same path.
     _step_scale = np.ones((len(region_pads), 1), dtype=np.float64)
     _prev_disp = np.zeros((len(region_pads), 2), dtype=np.float64)
+
     # Rigid-body projection data (PBD): per movable multi-pad footprint,
     # (rows, reference-shape snapshot). The reference is the committed board
     # geometry, i.e. each footprint's true shape; per iteration the proposed
@@ -1623,12 +1718,24 @@ def _run_region_simulation(
             continue
         _barr = np.asarray(_brows, dtype=int)
         _proj_bodies.append((_barr, positions[_barr].copy()))
+
+    # Polygon cache for courtyard collision - persists across iterations
+    # Key: fp_uuid -> {body_poly, body_centroid, body_radius, body_layer,
+    #                  pins: list of (pin_poly, pin_center, pin_radius),
+    #                  last_centroid, last_angle}
+    poly_cache: Dict[str, dict] = {}
+    cache_rebuild_threshold_mm = 0.01  # Rebuild if centroid moves > 10 microns
+    cache_rebuild_threshold_rad = math.radians(0.01)  # or angle > 0.01 deg
+
     for iteration in range(params.max_iterations):
         force = _compute_total_force(
             positions, len(region_pads), pad_movable,
             params, has_net_edges, src_idx, dst_idx, edge_weights,
             ghost_attractions,
             same_fp_mask,
+            poly_cache=poly_cache,
+            cache_rebuild_threshold_mm=cache_rebuild_threshold_mm,
+            cache_rebuild_threshold_rad=cache_rebuild_threshold_rad,
         )
 
         # Displacement = force * step_cap
