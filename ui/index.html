@@ -157,7 +157,22 @@
   .param { display:flex; flex-direction:column; gap:.2rem; color:#9fb0c0; }
   .param .row { display:flex; gap:.4rem; align-items:center; }
   .param input[type=range] { flex:1; min-width:0; }
-  .param input[type=number] { width:5rem; background:#161c22; border:1px solid #3a4a5a; color:#d7e0e9; border-radius:3px; padding:.1rem .25rem; font-family:inherit; font-size:.7rem; }
+  .param input[type=number] { width:5rem; background:#161c22; border:1px solid #3a4a5a; color:#d7e0e9; border-radius:3px; padding:.3rem .5rem; font-family:inherit; font-size:.85rem; min-height:1.8rem; }
+.param input[type=number]::-webkit-inner-spin-button,
+.param input[type=number]::-webkit-outer-spin-button {
+  height: 1.2rem;
+  width: 1.2rem;
+  margin: 0;
+  opacity: 1;
+}
+.param input[type=number] {
+  -moz-appearance: textfield;
+}
+.param input[type=number]:hover::-webkit-inner-spin-button,
+.param input[type=number]:hover::-webkit-outer-spin-button {
+  background: #2a3540;
+  border-radius: 2px;
+}
   
   /* Selection toolbar */
   .sel-toolbar { display:flex; gap:.4rem; align-items:center; padding:.35rem .7rem; border-top:1px solid #2a3540; font-size:.65rem; color:#9fb0c0; flex-wrap:wrap; background:#161c22; }
