@@ -8,6 +8,7 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 
+from .corridor import find_corridor
 from .grid import RoutingGrid
 from .obstacles import POUR
 from .pair_cost import kruskal_connect
@@ -176,7 +177,16 @@ class SingleNetRouter:
             )
 
         def _search_pair(i: int, j: int):
-            """Windowed A* with growth + full-board fallback; (ok, path, cost)."""
+            """Windowed A* with growth + full-board fallback; (ok, path, cost).
+
+            When the first (smallest) window fails, a coarse corridor is
+            computed once and the pair is retried restricted to it before
+            the grown windows run: tight-spot corridors that unguided A*
+            cannot find within budget route in seconds instead of hanging
+            at the cap. A missing corridor or a failed restricted search
+            falls through to the regular windows, so routability never
+            regresses.
+            """
             nonlocal pairs_done, expansions_total
             if should_cancel is not None and should_cancel():
                 raise RoutingCancelled(f"cancelled before pair {(i, j)}")
@@ -191,7 +201,10 @@ class SingleNetRouter:
             windows.append(full_board(self.W, self.H))
             base = expansions_total
             result = None
-            for window in windows:
+
+            def attempt(search_window, allow_mask=None, weight_override=None):
+                """One A* attempt with progress accounting; returns result."""
+                nonlocal base, result, pairs_done, expansions_total
                 search_cb = None
                 if progress_cb is not None:
                     def search_cb(e, _base=base):
@@ -203,15 +216,36 @@ class SingleNetRouter:
                     si, sj, secondary,
                     progress_cb=search_cb,
                     should_cancel=should_cancel,
-                    window=window,
+                    window=search_window,
                     via_ok=via_ok,
+                    allow_mask=allow_mask,
+                    heuristic_weight=weight_override,
                 )
                 expansions_total += result.expansions
                 base += result.expansions
                 pairs_done += 1
                 _report()
+                return result
+
+            for wi, window in enumerate(windows):
+                attempt(window)
                 if result.success:
                     break
+                if wi == 0:
+                    if should_cancel is not None and should_cancel():
+                        raise RoutingCancelled(f"cancelled before pair {(i, j)}")
+                    corridor = find_corridor(
+                        self.cost_grid, secondary, si, sj,
+                        self.cost_map.blocked_threshold, SECONDARY_BLOCKED,
+                    )
+                    if corridor is not None:
+                        attempt(
+                            full_board(self.W, self.H),
+                            allow_mask=corridor,
+                            weight_override=1.0,
+                        )
+                        if result.success:
+                            break
             return result.success, result.path, result.cost
 
         mst_edges, path_matrix, cost_matrix, connected = None, {}, {}, False
@@ -354,6 +388,8 @@ class SingleNetRouter:
         should_cancel=None,  # fn() -> bool — checked every 4096 pops
         window: Optional[Window] = None,  # search clip; None = full board
         via_ok: Optional[np.ndarray] = None,  # precomputed landing mask (H, W)
+        allow_mask: Optional[np.ndarray] = None,  # corridor restriction (H, W); None = anywhere
+        heuristic_weight: Optional[float] = None,  # override CostMap weight for this search
     ) -> RouteResult:
         """A* search on 3D grid with via transitions."""
         sc, sr, sl = start
@@ -373,8 +409,12 @@ class SingleNetRouter:
         # Heuristic: Weighted A* (weight from CostMap; must stay small
         # enough that cell penalties still steer the search).
         # Admissible heuristic is Manhattan * base_cost (min step cost = 1).
+        # Corridor-restricted searches use weight 1.0: inside a narrow
+        # tolled corridor an inflated heuristic thrashes (repeated
+        # re-expansion) instead of guiding.
+        hw = self.cost_map.heuristic_weight if heuristic_weight is None else heuristic_weight
         def heuristic(c, r, l):
-            return (abs(c - gc) + abs(r - gr) + abs(l - gl)) * self.cost_map.base_cost * self.cost_map.heuristic_weight
+            return (abs(c - gc) + abs(r - gr) + abs(l - gl)) * self.cost_map.base_cost * hw
 
         # A* with (f, g, col, row, layer, parent)
         # f = g + h
@@ -430,6 +470,8 @@ class SingleNetRouter:
                 nc, nr = c + dc, r + dr
                 if not (c0 <= nc <= c1 and r0 <= nr <= r1):
                     continue
+                if allow_mask is not None and not allow_mask[nr, nc]:
+                    continue
                 if self._is_blocked(nr, nc, l):
                     continue
                 if self._secondary_blocked(secondary, nr, nc, l):
@@ -446,6 +488,8 @@ class SingleNetRouter:
             for nl in [l - 1, l + 1]:
                 if 0 <= nl < self.n_layers:
                     # Check same cell on other layer
+                    if allow_mask is not None and not allow_mask[r, c]:
+                        continue
                     if self._is_blocked(r, c, nl):
                         continue
                     if self._secondary_blocked(secondary, r, c, nl):

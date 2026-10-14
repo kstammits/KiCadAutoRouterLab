@@ -56,6 +56,12 @@
   
   .sidebar-footer { padding:.5rem .75rem; border-top:1px solid #2a3540; display:flex; gap:.4rem; flex-wrap:wrap; }
   .sidebar-footer button { flex:1; min-width:0; padding:.3rem .5rem; font-size:.65rem; }
+  .sidebar.collapsed { width:40px; min-width:40px; }
+  .sidebar.collapsed .sidebar-title,
+  .sidebar.collapsed .sidebar-search,
+  .sidebar.collapsed .sidebar-filters,
+  .sidebar.collapsed .sidebar-content,
+  .sidebar.collapsed .sidebar-footer { display:none; }
   
   /* Resizer */
   .resizer { width:4px; background:#2a3540; cursor:col-resize; flex-shrink:0; }
@@ -157,16 +163,13 @@
   .param { display:flex; flex-direction:column; gap:.2rem; color:#9fb0c0; }
   .param .row { display:flex; gap:.4rem; align-items:center; }
   .param input[type=range] { flex:1; min-width:0; }
-  .param input[type=number] { width:5rem; background:#161c22; border:1px solid #3a4a5a; color:#d7e0e9; border-radius:3px; padding:.3rem .5rem; font-family:inherit; font-size:.85rem; min-height:1.8rem; }
+  .param input[type=number] { width:5rem; background:#161c22; border:1px solid #3a4a5a; color:#d7e0e9; border-radius:3px; padding:.1rem .25rem; font-family:inherit; font-size:.7rem; }
 .param input[type=number]::-webkit-inner-spin-button,
 .param input[type=number]::-webkit-outer-spin-button {
-  height: 1.2rem;
-  width: 1.2rem;
+  height: .9rem;
+  width: .9rem;
   margin: 0;
   opacity: 1;
-}
-.param input[type=number] {
-  -moz-appearance: textfield;
 }
 .param input[type=number]:hover::-webkit-inner-spin-button,
 .param input[type=number]:hover::-webkit-outer-spin-button {
@@ -278,6 +281,7 @@
     <div class="sidebar-header">
       <span class="sidebar-title">Footprints</span>
       <input type="search" class="sidebar-search" id="fp-search" placeholder="Filter by ref, footprint, net..." aria-label="Filter footprints">
+      <button id="sidebar-toggle" class="panel-toggle" title="Collapse parts list">▶</button>
     </div>
     <div class="sidebar-filters">
       <div class="filter-row">
@@ -526,6 +530,24 @@ sidePanelToggle.addEventListener("click", () => {
   }
   sidePanel.classList.toggle("collapsed", sidePanelCollapsed);
   sidePanelToggle.textContent = sidePanelCollapsed ? "▶" : "◀";
+});
+
+// Left sidebar (parts list) collapse/expand — same pattern as the side
+// panel: shrinking to a slim strip during routing work, restoring the
+// (possibly resized) width on expand.
+const partsSidebar = document.getElementById("sidebar");
+const partsSidebarToggle = document.getElementById("sidebar-toggle");
+let partsSidebarCollapsed = false;
+partsSidebarToggle.addEventListener("click", () => {
+  partsSidebarCollapsed = !partsSidebarCollapsed;
+  if (partsSidebarCollapsed) {
+    partsSidebar.dataset.width = partsSidebar.style.width;
+    partsSidebar.style.width = "";
+  } else if (partsSidebar.dataset.width) {
+    partsSidebar.style.width = partsSidebar.dataset.width;
+  }
+  partsSidebar.classList.toggle("collapsed", partsSidebarCollapsed);
+  partsSidebarToggle.textContent = partsSidebarCollapsed ? "◀" : "▶";
 });
 
 // Net legend collapse/expand
@@ -815,16 +837,43 @@ function renderCostGridOverlay() {
   if (!vbAttr) return;
   const [vbx, vby, vbw, vbh] = vbAttr.split(" ").map(Number);
   
-  // Use F.Cu layer data for PNG overlay
+  // Use F.Cu layer data for the overlay (already downsampled to
+  // max 200x200 by /api/routing/debug/cost-grid — no server PNG round-trip).
   const fcuLayer = costGridDebug.layers.find(l => l.layer === "F.Cu");
   if (!fcuLayer) return;
-  
-  // Create image element for PNG overlay
+
+  // Rasterize the downsampled grid to a canvas (same palette as the old
+  // server PNG: 25=gray COURTYARD, 35=teal POUR, 50=yellow HIGH_COST,
+  // 80=orange EDGE_KEEPOUT, 100+=red BLOCKED, else transparent).
+  const gw = fcuLayer.width, gh = fcuLayer.height;
+  const grid = fcuLayer.data;
+  const canvas = document.createElement("canvas");
+  canvas.width = gw;
+  canvas.height = gh;
+  const ctx = canvas.getContext("2d");
+  const imgData = ctx.createImageData(gw, gh);
+  const px = imgData.data;
+  for (let r = 0; r < gh; r++) {
+    const row = grid[r];
+    for (let c = 0; c < gw; c++) {
+      const v = row[c];
+      if (v <= 0) continue;
+      const o = (r * gw + c) * 4;
+      if (v === 25) { px[o] = 140; px[o + 1] = 140; px[o + 2] = 140; px[o + 3] = 140; }
+      else if (v === 35) { px[o] = 46; px[o + 1] = 168; px[o + 2] = 122; px[o + 3] = 140; }
+      else if (v === 50) { px[o] = 255; px[o + 1] = 255; px[o + 2] = 0; px[o + 3] = 180; }
+      else if (v === 80) { px[o] = 255; px[o + 1] = 165; px[o + 2] = 0; px[o + 3] = 200; }
+      else if (v >= 100) { px[o] = 255; px[o + 1] = 0; px[o + 2] = 0; px[o + 3] = 220; }
+    }
+  }
+  ctx.putImageData(imgData, 0, 0);
+
+  // Create image element for the overlay
   const img = document.createElementNS("http://www.w3.org/2000/svg", "image");
   img.classList.add("cost-grid-overlay");
   img.style.pointerEvents = "none";
   img.style.opacity = "0.5";
-  
+
   // Map cost grid bounds to board coordinates
   const originX = costGridDebug.origin_mm[0];
   const originY = costGridDebug.origin_mm[1];
@@ -832,39 +881,24 @@ function renderCostGridOverlay() {
   const scale = fcuLayer.scale;
   const gridWidthMm = fcuLayer.width * scale * resolutionMm;
   const gridHeightMm = fcuLayer.height * scale * resolutionMm;
-  
+
   // Position in board mm coordinates
   const xMm = originX;
   const yMm = originY + gridHeightMm; // Bottom of grid in board coords
-  
+
   // Map to SVG coordinates (viewport units)
   const xPx = ((xMm - vbx) / vbw) * viewport.clientWidth;
   const yPx = ((vby + vbh - yMm) / vbh) * viewport.clientHeight;
   const widthPx = (gridWidthMm / vbw) * viewport.clientWidth;
   const heightPx = (gridHeightMm / vbh) * viewport.clientHeight;
-  
+
   img.setAttribute("x", xPx);
   img.setAttribute("y", yPx - heightPx);
   img.setAttribute("width", widthPx);
   img.setAttribute("height", heightPx);
-  img.setAttribute("href", ""); // Will be set by fetch
   img.setAttribute("preserveAspectRatio", "none");
-  
-  // Fetch PNG and set it
-  fetch("/api/routing/debug/cost-grid.png")
-    .then(res => {
-      if (!res.ok) throw new Error("PNG fetch failed");
-      return res.json();
-    })
-    .then(data => {
-      if (data.png) {
-        img.setAttribute("href", data.png);
-        svg.appendChild(img);
-      }
-    })
-    .catch(err => {
-      console.error("Cost grid PNG fetch failed:", err);
-    });
+  img.setAttribute("href", canvas.toDataURL("image/png"));
+  svg.appendChild(img);
 }
 
 async function fetchAndInjectSVG(version) {

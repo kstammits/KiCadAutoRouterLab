@@ -1,5 +1,3 @@
-import base64
-import io
 import json
 import signal
 import sys
@@ -14,7 +12,6 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import numpy as np
-from PIL import Image
 
 UI_DIR = Path(__file__).resolve().parent
 REPO_ROOT = UI_DIR.parent.resolve()
@@ -820,56 +817,6 @@ def _cost_grid_to_debug(cost_grid: np.ndarray, routing_grid) -> dict:
     }
 
 
-def _cost_grid_to_png(cost_grid: np.ndarray, routing_grid) -> str:
-    """Convert cost grid to base64-encoded PNG for SVG overlay.
-    
-    Returns base64-encoded PNG data URL.
-    """
-    n_layers, H, W = cost_grid.shape
-    
-    # Use F.Cu layer (layer 0)
-    layer_data = cost_grid[0]
-    
-    # Create RGBA array directly
-    # Colors: 0=transparent, 25=gray (COURTYARD), 35=teal (POUR),
-    # 50=yellow (HIGH_COST), 80=orange (EDGE_KEEPOUT), 100+=red (BLOCKED)
-    rgba = np.zeros((H, W, 4), dtype=np.uint8)
-
-    # Mask for non-zero costs
-    mask = layer_data > 0
-
-    # COURTYARD (25) -> gray
-    courtyard = (layer_data == 25) & mask
-    rgba[courtyard] = [140, 140, 140, 140]
-
-    # POUR (35) -> teal
-    pour = (layer_data == 35) & mask
-    rgba[pour] = [46, 168, 122, 140]
-
-    # HIGH_COST (50) -> yellow
-    high_cost = (layer_data == 50) & mask
-    rgba[high_cost] = [255, 255, 0, 180]
-    
-    # EDGE_KEEPOUT (80) -> orange
-    edge_keepout = (layer_data == 80) & mask
-    rgba[edge_keepout] = [255, 165, 0, 200]
-    
-    # BLOCKED (100+) -> red
-    blocked = (layer_data >= 100) & mask
-    rgba[blocked] = [255, 0, 0, 220]
-    
-    # Create image
-    img_rgba = Image.fromarray(rgba, mode='RGBA')
-    
-    # Save to bytes
-    buf = io.BytesIO()
-    img_rgba.save(buf, format='PNG', optimize=True)
-    buf.seek(0)
-    
-    b64 = base64.b64encode(buf.read()).decode()
-    return f"data:image/png;base64,{b64}"
-
-
 def proposal_to_json(proposal, include_frames=True) -> dict:
     def r5(x):
         return round(x, 5) if isinstance(x, float) else x
@@ -1300,23 +1247,6 @@ class Handler(BaseHTTPRequestHandler):
                 "layers": layers,
             }
             self._send(200, json.dumps(payload).encode(), "application/json")
-            return
-
-        # GET /api/routing/debug/cost-grid.png - return cost grid as PNG for SVG overlay
-        if parsed.path == "/api/routing/debug/cost-grid.png":
-            model, _, _, _, _, _ = STATE.snapshot
-            if model is None:
-                self._send(404, b"no board loaded", "text/plain")
-                return
-            if STATE.cost_grid is None or STATE.routing_grid is None:
-                self._send(404, b"no cost grid available (run routing first)", "text/plain")
-                return
-            try:
-                png_data_url = _cost_grid_to_png(STATE.cost_grid, STATE.routing_grid)
-                payload = json.dumps({"png": png_data_url}).encode()
-                self._send(200, payload, "application/json")
-            except Exception as exc:
-                self._send(500, f"PNG generation failed: {exc}".encode(), "text/plain")
             return
 
         # GET /api/routing/jobs/<job_id> - poll an async routing job.
