@@ -82,12 +82,12 @@ def _overlap_area(model: BoardModel, deltas: dict) -> float:
 
 PARAMS = PlacementParams(
     max_iterations=10,
-    convergence_eps_mm=1e-12,
-    repulsion_kr=100.0,
-    attraction_ka=0.05,
-    courtyard_repulsion_kc=10000.0,
-    courtyard_halo_mm=3.0,
-    boundary_repulsion_kb=1.0,  # negligible: parts start at board center
+    convergence_eps_m=1e-15,
+    repulsion_k_N_m2=1.0000000000000001e-07,
+    attraction_k_N=5e-05,
+    wall_k_N=0.01,
+    wall_halo_m=0.003,
+    boundary_k_N=1e-06,  # negligible: parts start at board center
 )
 
 
@@ -98,12 +98,12 @@ SEPARATION_PARAMS = PlacementParams(
     # test about integrator dynamics instead of pairing. Thresholds
     # calibrated by running: old code reports EXACTLY 0.0 / no motion.
     max_iterations=3,
-    convergence_eps_mm=1e-12,
-    repulsion_kr=100.0,
-    attraction_ka=0.05,
-    courtyard_repulsion_kc=10000.0,
-    courtyard_halo_mm=3.0,
-    boundary_repulsion_kb=1.0,
+    convergence_eps_m=1e-15,
+    repulsion_k_N_m2=1.0000000000000001e-07,
+    attraction_k_N=5e-05,
+    wall_k_N=0.01,
+    wall_halo_m=0.003,
+    boundary_k_N=1e-06,
 )
 
 
@@ -178,12 +178,12 @@ def test_shear_produces_finite_rotation():
     )
     base = dict(
         max_iterations=1,
-        convergence_eps_mm=1e-12,
-        repulsion_kr=100.0,
-        attraction_ka=0.05,
-        courtyard_repulsion_kc=1e-6,  # near-zero: isolate repulsion shear
-        courtyard_halo_mm=3.0,
-        boundary_repulsion_kb=1.0,
+        convergence_eps_m=1e-15,
+        repulsion_k_N_m2=1.0000000000000001e-07,
+        attraction_k_N=5e-05,
+        wall_k_N=1e-12,  # near-zero: isolate repulsion shear
+        wall_halo_m=0.003,
+        boundary_k_N=1e-06,
     )
     prop = run_placement(model, PlacementParams(**base), movable_uuids={"uuid-m"})
     assert "uuid-m" in prop.deltas
@@ -209,12 +209,12 @@ def test_contact_weighting_conserves_total():
     model = _board(first_locked=True)
     params = PlacementParams(
         max_iterations=0,
-        convergence_eps_mm=1e-12,
-        repulsion_kr=100.0,
-        attraction_ka=0.05,
-        courtyard_repulsion_kc=10000.0,
-        courtyard_halo_mm=3.0,
-        boundary_repulsion_kb=1.0,
+        convergence_eps_m=1e-15,
+        repulsion_k_N_m2=1.0000000000000001e-07,
+        attraction_k_N=5e-05,
+        wall_k_N=0.01,
+        wall_halo_m=0.003,
+        boundary_k_N=1e-06,
     )
     prop = run_placement(model, params, movable_uuids={"uuid-b"})
     total_fx, _ = prop.forces["uuid-b"]
@@ -299,12 +299,12 @@ def test_boundary_force_bounded_near_edge():
     )
     params = PlacementParams(
         max_iterations=1,
-        convergence_eps_mm=1e-12,
-        repulsion_kr=100.0,
-        attraction_ka=0.05,
-        courtyard_repulsion_kc=10000.0,
-        courtyard_halo_mm=3.0,
-        boundary_repulsion_kb=500000.0,
+        convergence_eps_m=1e-15,
+        repulsion_k_N_m2=1.0000000000000001e-07,
+        attraction_k_N=5e-05,
+        wall_k_N=0.01,
+        wall_halo_m=0.003,
+        boundary_k_N=0.5,
     )
     prop = run_placement(model, params)
     bx, by = prop.force_components["uuid-p"]["boundary"]

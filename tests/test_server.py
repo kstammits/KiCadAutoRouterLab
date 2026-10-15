@@ -62,7 +62,7 @@ def test_params_roundtrip():
         with urllib.request.urlopen(f"{base}/api/placement/params") as r:
             defaults = json.load(r)
         assert defaults["repulsion_kr"] == 100.0
-        custom = dict(defaults, repulsion_kr=42.5)
+        custom = dict(defaults, repulsion_k_N_m2=4.2500000000000003e-08)
         req = urllib.request.Request(
             f"{base}/api/placement/params",
             data=json.dumps(custom).encode(),

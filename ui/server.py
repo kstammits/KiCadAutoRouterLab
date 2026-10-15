@@ -1648,17 +1648,24 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, b"movable_uuids must be a list", "text/plain")
                 return
 
-            # Use parameters from request if provided, else load from file
+            # Use parameters from request if provided, else load from file.
+            # SI v2 set (newtons, meters, seconds); max_iterations=0 makes
+            # this a static force probe.
             base_params = load_params()
             params = PlacementParams(
-                repulsion_kr=req.get("repulsion_kr", base_params.repulsion_kr),
-                attraction_ka=req.get("attraction_ka", base_params.attraction_ka),
+                repulsion_k_N_m2=req.get("repulsion_k_N_m2", base_params.repulsion_k_N_m2),
+                attraction_k_N=req.get("attraction_k_N", base_params.attraction_k_N),
                 max_iterations=0,
-                convergence_eps_mm=req.get("convergence_eps_mm", base_params.convergence_eps_mm),
-                courtyard_repulsion_kc=req.get("courtyard_repulsion_kc", base_params.courtyard_repulsion_kc),
-                courtyard_halo_mm=req.get("courtyard_halo_mm", base_params.courtyard_halo_mm),
-                boundary_repulsion_kb=req.get("boundary_repulsion_kb", base_params.boundary_repulsion_kb),
-                max_step_mm=req.get("max_step_mm", base_params.max_step_mm),
+                convergence_eps_m=req.get("convergence_eps_m", base_params.convergence_eps_m),
+                wall_k_N=req.get("wall_k_N", base_params.wall_k_N),
+                wall_area_ref_m2=req.get("wall_area_ref_m2", base_params.wall_area_ref_m2),
+                wall_halo_m=req.get("wall_halo_m", base_params.wall_halo_m),
+                boundary_k_N=req.get("boundary_k_N", base_params.boundary_k_N),
+                ghost_k_N=req.get("ghost_k_N", base_params.ghost_k_N),
+                damping_Ns_m=req.get("damping_Ns_m", base_params.damping_Ns_m),
+                friction_N=req.get("friction_N", base_params.friction_N),
+                dt_s=req.get("dt_s", base_params.dt_s),
+                vmax_m_s=req.get("vmax_m_s", base_params.vmax_m_s),
                 power_attraction_scale=req.get("power_attraction_scale", base_params.power_attraction_scale),
                 decap_boost=req.get("decap_boost", base_params.decap_boost),
                 include_power_nets=req.get("include_power_nets", base_params.include_power_nets),

@@ -71,8 +71,8 @@ def _two_squares_with_logo():
 
 def _params():
     return PlacementParams(
-        max_iterations=0, repulsion_kr=1.0,
-        courtyard_repulsion_kc=100.0, courtyard_halo_mm=3.0,
+        max_iterations=0, repulsion_k_N_m2=1e-09,
+        wall_k_N=9.999999999999999e-05, wall_halo_m=0.003,
     )
 
 
@@ -95,14 +95,14 @@ def test_padless_never_gets_deltas_or_forces():
     base, with_logo = _two_squares_with_logo()
     r = run_placement(
         with_logo,
-        PlacementParams(max_iterations=5, convergence_eps_mm=1e-12),
+        PlacementParams(max_iterations=5, convergence_eps_m=1e-15),
     )
     assert UUID_ART not in r.deltas
     assert UUID_ART not in r.forces
     assert UUID_ART not in r.force_components
     # ... and the run matches the logo-free model exactly.
     r2 = run_placement(
-        base, PlacementParams(max_iterations=5, convergence_eps_mm=1e-12)
+        base, PlacementParams(max_iterations=5, convergence_eps_m=1e-15)
     )
     assert set(r.deltas) == set(r2.deltas)
     for uuid, d in r2.deltas.items():

@@ -38,12 +38,12 @@ from kicad_autorouter.validate import find_kicad_cli, validate_pcb, KicadCliNotF
 # ---------------------------------------------------------------------------
 MAGNET_PARAMS = PlacementParams(
     max_iterations=10,
-    repulsion_kr=2.0,
+    repulsion_k_N_m2=2e-09,
     # Matches test_magnet.MAGNET_PARAMS: strong attraction shortens routes.
-    attraction_ka=6.0,
-    courtyard_repulsion_kc=30000.0,
-    boundary_repulsion_kb=500000.0,
-    convergence_eps_mm=0.1,
+    attraction_k_N=0.006,
+    wall_k_N=0.03,
+    boundary_k_N=0.5,
+    convergence_eps_m=0.0001,
 )
 
 

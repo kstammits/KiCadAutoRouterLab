@@ -87,7 +87,7 @@ class TestPhysicsRunner:
         assert prop.deltas == {}
 
     def test_convergence_stops_early(self, dccf_model):
-        p = PlacementParams(max_iterations=1000, convergence_eps_mm=100.0)
+        p = PlacementParams(max_iterations=1000, convergence_eps_m=0.1)
         prop = run_placement(dccf_model, p)
         assert prop.iterations < 1000
 
@@ -152,7 +152,7 @@ class TestCourtyardCollision:
 
     def test_courtyard_polygon_collision(self, dccf_model):
         """Overlapping courtyard polygons should generate repulsion forces."""
-        p = PlacementParams(max_iterations=5, courtyard_repulsion_kc=2000.0)
+        p = PlacementParams(max_iterations=5, wall_k_N=0.002)
         prop = run_placement(dccf_model, p)
 
         # Verify the simulation runs and produces forces
@@ -177,10 +177,10 @@ class TestGhostComponents:
         # Run placement with strong courtyard repulsion
         p = PlacementParams(
             max_iterations=50,
-            courtyard_repulsion_kc=5000.0,
+            wall_k_N=0.005,
             # Ghost rail (~y=15) sits ~35mm from R1/R2: halo must reach it.
-            courtyard_halo_mm=40.0,
-            repulsion_kr=10.0,  # Low Coulomb repulsion to isolate courtyard effect
+            wall_halo_m=0.04,
+            repulsion_k_N_m2=1e-08,  # Low Coulomb repulsion to isolate courtyard effect
         )
         prop = run_placement(ghost_test_model, p)
 
@@ -199,9 +199,9 @@ class TestGhostComponents:
         """Ghost courtyard collision generates forces on real footprints."""
         p = PlacementParams(
             max_iterations=5,
-            courtyard_repulsion_kc=2000.0,
+            wall_k_N=0.002,
             # ~35mm ghost-to-part gap: halo must reach it (bounded regime).
-            courtyard_halo_mm=40.0,
+            wall_halo_m=0.04,
         )
         prop = run_placement(ghost_test_model, p)
 
@@ -227,8 +227,8 @@ class TestGhostComponents:
         # Ghost at y=20, U1 at y=50. Attraction should pull U1 up (negative dy).
         p = PlacementParams(
             max_iterations=30,
-            courtyard_repulsion_kc=0.0,  # Disable courtyard to isolate attraction
-            repulsion_kr=10.0,  # Low Coulomb repulsion
+            wall_k_N=0.0,  # Disable courtyard to isolate attraction
+            repulsion_k_N_m2=1e-08,  # Low Coulomb repulsion
         )
         prop = run_placement(ghost_test_model, p)
 
@@ -247,7 +247,7 @@ class TestGhostComponents:
 
     def test_ghost_attraction_force_distribution(self, ghost_test_model):
         """Attraction force is distributed equally to all target pads."""
-        p = PlacementParams(max_iterations=5, courtyard_repulsion_kc=0.0)
+        p = PlacementParams(max_iterations=5, wall_k_N=0.0)
         prop = run_placement(ghost_test_model, p)
 
         u1_uuid = "aaaaaaaa-1111-2222-3333-444444444444"
@@ -258,7 +258,7 @@ class TestGhostComponents:
 
     def test_ghost_attraction_only_affects_target(self, ghost_test_model):
         """Only the target footprint feels attraction force."""
-        p = PlacementParams(max_iterations=10, courtyard_repulsion_kc=0.0, repulsion_kr=1.0)
+        p = PlacementParams(max_iterations=10, wall_k_N=0.0, repulsion_k_N_m2=1e-09)
         prop = run_placement(ghost_test_model, p)
 
         u1_uuid = "aaaaaaaa-1111-2222-3333-444444444444"
@@ -279,7 +279,7 @@ class TestForceComponents:
     """Per-cause force breakdown for the tuning overlay."""
 
     def test_ghost_component_visible_on_target(self, ghost_test_model):
-        p = PlacementParams(max_iterations=5, courtyard_repulsion_kc=0.0)
+        p = PlacementParams(max_iterations=5, wall_k_N=0.0)
         prop = run_placement(ghost_test_model, p)
         u1_uuid = "aaaaaaaa-1111-2222-3333-444444444444"
         comps = prop.force_components.get(u1_uuid, {})
@@ -295,9 +295,9 @@ class TestForceComponents:
         """
         m = _two_squares_model(gap_mm=2.0)
         base = dict(
-            repulsion_kr=1.0,
-            courtyard_repulsion_kc=100.0,
-            courtyard_halo_mm=3.0,
+            repulsion_k_N_m2=1e-09,
+            wall_k_N=9.999999999999999e-05,
+            wall_halo_m=0.003,
         )
         static_prop = run_placement(m, PlacementParams(max_iterations=0, **base))
         stepping_prop = run_placement(m, PlacementParams(max_iterations=5, **base))
@@ -315,8 +315,8 @@ class TestForceComponents:
         """For a 1-iteration run the displacement must head along F0."""
         m = _two_squares_model(gap_mm=2.0)
         p = PlacementParams(
-            max_iterations=1, repulsion_kr=1.0,
-            courtyard_repulsion_kc=100.0, courtyard_halo_mm=3.0,
+            max_iterations=1, repulsion_k_N_m2=1e-09,
+            wall_k_N=9.999999999999999e-05, wall_halo_m=0.003,
         )
         prop = run_placement(m, p)
         for uuid, (dx, dy, _da) in prop.deltas.items():
@@ -358,8 +358,8 @@ class TestCourtyardHalo:
     def test_inside_halo_pushes(self):
         m = _two_squares_model(gap_mm=2.0)
         p = PlacementParams(
-            max_iterations=0, repulsion_kr=1.0,
-            courtyard_repulsion_kc=100.0, courtyard_halo_mm=3.0,
+            max_iterations=0, repulsion_k_N_m2=1e-09,
+            wall_k_N=9.999999999999999e-05, wall_halo_m=0.003,
         )
         prop = run_placement(m, p)
         fx, fy = _courtyard_of(prop, "aaaaaaaa-0000-0000-0000-000000000001")
@@ -369,8 +369,8 @@ class TestCourtyardHalo:
     def test_outside_halo_silent(self):
         m = _two_squares_model(gap_mm=4.0)
         p = PlacementParams(
-            max_iterations=0, repulsion_kr=1.0,
-            courtyard_repulsion_kc=100.0, courtyard_halo_mm=3.0,
+            max_iterations=0, repulsion_k_N_m2=1e-09,
+            wall_k_N=9.999999999999999e-05, wall_halo_m=0.003,
         )
         prop = run_placement(m, p)
         for uuid in (
@@ -386,8 +386,8 @@ class TestCourtyardHalo:
         for gap in (0.1, 1.5, 2.9):
             m = _two_squares_model(gap_mm=gap)
             p = PlacementParams(
-                max_iterations=0, repulsion_kr=1.0,
-                courtyard_repulsion_kc=kc, courtyard_halo_mm=3.0,
+                max_iterations=0, repulsion_k_N_m2=1e-09,
+                courtyard_repulsion_kc=kc, wall_halo_m=0.003,
             )
             prop = run_placement(m, p)
             fx, fy = _courtyard_of(prop, "aaaaaaaa-0000-0000-0000-000000000001")
@@ -419,8 +419,8 @@ class TestCourtyardHalo:
         """
         p = PlacementParams(
             max_iterations=0,
-            courtyard_repulsion_kc=20.0,
-            courtyard_halo_mm=3.0,
+            wall_k_N=1.9999999999999998e-05,
+            wall_halo_m=0.003,
         )
         prop = run_placement(
             dccf_model, p,

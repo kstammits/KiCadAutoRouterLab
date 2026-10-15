@@ -73,10 +73,10 @@ def _run_frames():
     model = _shear_model()
     prop = run_placement(
         model,
-        PlacementParams(max_iterations=12, convergence_eps_mm=1e-12,
-                        repulsion_kr=100.0, attraction_ka=0.05,
-                        courtyard_repulsion_kc=2000.0, courtyard_halo_mm=3.0,
-                        boundary_repulsion_kb=1.0),
+        PlacementParams(max_iterations=12, convergence_eps_m=1e-15,
+                        repulsion_k_N_m2=1.0000000000000001e-07, attraction_k_N=5e-05,
+                        wall_k_N=0.002, wall_halo_m=0.003,
+                        boundary_k_N=1e-06),
         movable_uuids={UUID_M},
         record_frames=True, frame_stride=1,
     )

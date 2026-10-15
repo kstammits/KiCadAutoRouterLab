@@ -81,11 +81,11 @@ def _decap_board():
 def _decap_params(**kw):
     base = dict(
         max_iterations=1,
-        convergence_eps_mm=1e-12,
-        repulsion_kr=1.0,
-        attraction_ka=0.05,
-        courtyard_repulsion_kc=1e-9,
-        boundary_repulsion_kb=1e-9,
+        convergence_eps_m=1e-15,
+        repulsion_k_N_m2=1e-09,
+        attraction_k_N=5e-05,
+        wall_k_N=1e-15,
+        boundary_k_N=1e-15,
         friction_threshold_mm=0.0,
     )
     base.update(kw)

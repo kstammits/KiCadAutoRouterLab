@@ -1,10 +1,17 @@
-"""Force-spring placement domain: parameters, proposals, and the runner interface.
+"""SI placement dynamics: parameters, proposals, and the runner interface.
 
-The runner implements a vectorized numpy force-spring simulation at the PAD level
-(Fruchterman–Reingold style) with position-based rigid projection: after each
-step, every movable footprint's pads are Kabsch-snapped onto their exact
-rigid shape. This allows through-hole components to rotate organically when forces
-on their F.Cu and B.Cu pads differ.
+The runner implements a vectorized numpy dynamics simulation at the PAD level
+in SI units (meters, newtons, kilograms, seconds): semi-implicit Euler with
+viscous damping, per-footprint masses from ``mass.py``, an adaptive-dt energy
+guard, and position-based rigid projection. After each step, every movable
+footprint's pads are Kabsch-snapped onto their exact rigid shape, and pad
+velocities are re-derived from the projected displacement so the projection
+can't inject phantom energy. This allows through-hole components to rotate
+organically when forces on their F.Cu and B.Cu pads differ.
+
+Geometry arrays stay millimeter-native (shapely/Kabsch are unit-agnostic
+linear algebra); each force law converts to newtons at evaluation.
+Normative formulas: ``docs/si_force_laws.md``.
 
 Deltas are keyed by footprint UUID (dx_mm, dy_mm, dangle_deg) because refs may
 be duplicated or missing; locked footprints never appear in ``deltas`` (they are
@@ -12,7 +19,7 @@ fixed anchors).
 
 Supports multi-board region simulation: footprints are grouped by board outline
 region (from Edge.Cuts) and each region is simulated independently with its own
-bounding box and fixed per-iteration step budget.
+bounding box and timestep state.
 """
 
 from __future__ import annotations
@@ -31,6 +38,7 @@ from .board_model import (
     BoardModel, BoardRegion, Footprint, Pad, Segment,
     is_ground_net, is_power_net_effective,
 )
+from .mass import courtyard_bbox_area_m2, footprint_mass_kg
 
 
 # Power rails are NOT excluded from placement: on a two-layer board their
@@ -45,56 +53,73 @@ from .board_model import (
 
 @dataclass(frozen=True)
 class PlacementParams:
-    """Tunable force-spring parameters (v1 set; grows with the simulation)."""
+    """SI placement-dynamics parameters (v2 set; newtons, meters, seconds).
 
-    repulsion_kr: float = 100.0
-    attraction_ka: float = 0.05
+    Geometry inside the solver stays millimeter-native (shapely/Kabsch are
+    unit-agnostic linear algebra); every force law converts to SI at
+    evaluation and the integrator runs fully in m/kg/s. Normative formulas:
+    ``docs/si_force_laws.md``. Legacy v1 fields are gone on purpose —
+    calibration (``scripts/calibrate_si.py``) learns these ranges empirically.
+    """
+
     max_iterations: int = 1000
-    convergence_eps_mm: float = 0.01
-    # Force-based early termination: stop when max force magnitude across
-    # all movable pads < threshold (N). Complements displacement check to
-    # avoid false convergence when step capping clamps large forces.
-    # 0 disables (default for backward compatibility).
-    force_convergence_threshold: float = 0.0
-    # Courtyard collision repulsion force constant. Deliberately modest:
-    # the integrator caps every step, so extra magnitude only buys
-    # overshoot oscillation, not faster separation (2026-10-10).
-    courtyard_repulsion_kc: float = 2000.0
-    # Near-miss halo: courtyard interference reach past part outlines (mm).
-    # Caps the size-scaled 1.5x(radius_i + radius_j) halo so large parts
-    # don't push across the board; strength saturates at kc at contact.
-    courtyard_halo_mm: float = 3.0
-    # Boundary repulsion force constant (pushes footprints away from region
-    # edges). Kept at ~2x kc: decisive at the edge (max 2*kb) without
-    # shoving edge-near parts into their neighbors at 100x the force that
-    # separates them (2026-10-10: kb was 5e5).
-    boundary_repulsion_kb: float = 20000.0
-    
-    # Max pad displacement per iteration (mm). The integrator moves each
-    max_step_mm: float = 2.0
+    # Pair repulsion strength (Coulomb-like k/d^2, d in meters).
+    # Calibrated 2026-10-15 (scripts/calibrate_si.py, magnet synthetics):
+    # 2e-9 puts the isolated-pair equilibrium sqrt(kr/ka) at sub-mm for
+    # ka ~ 1e-2, i.e. repulsion only matters inside contact range and the
+    # wall owns contact response. Larger kr fights clustering.
+    repulsion_k_N_m2: float = 2e-9
+    # Net attraction spring pull (constant magnitude, newtons).
+    # Legalize regime default (placed-board polish): weak enough that wall
+    # contact (wall_k_N below) wins at touching. Scattered-start clustering
+    # wants ~0.04-0.06 (see two-stage recipe in calibration notes); the
+    # engine default stays on the safe/legalize side.
+    attraction_k_N: float = 8e-3
+    # Courtyard contact strength (newtons; elastic push-out on collision).
+    # One penalty per footprint pair (summed sub-areas, strongest
+    # direction); calibrated so wall beats ~2 attraction edges at contact.
+    wall_k_N: float = 8e-2
+    # Overlap-area normalization (m^2): F = k_wall * (1 + area / area_ref).
+    wall_area_ref_m2: float = 4e-6
+    # Near-miss halo reach (meters).
+    wall_halo_m: float = 0.006
+    # Boundary repulsion strength (newtons).
+    boundary_k_N: float = 1e-2
+    # Ghost attraction scale (newtons); file "TARGET,ka" values weight it.
+    ghost_k_N: float = 5e-5
+    # Viscous damping coefficient (N*s/m). Calibrated 0.10-0.15: lighter
+    # churns on dense boards, heavier crawls (magnet tightening stalls).
+    damping_Ns_m: float = 0.12
+    # Dry-friction deadband (N of total footprint force): below this the
+    # whole footprint freezes for the step.
+    friction_N: float = 1e-6
+    # Timestep (s); adaptive guard halves on energy rise, regrows on fall.
+    dt_s: float = 1e-3
+    # Timestep floor (s) and ceiling (s) for the adaptive guard. Floor 2e-4
+    # (not 1e-5): the guard's halve/regrow asymmetry ratchets dt to the
+    # floor under oscillation, where tiny steps fake convergence (runs
+    # "settle" while forces are still large). Ceiling 2e-3 bounds growth
+    # so dense-board steps stay accurate.
+    dt_min_s: float = 2e-4
+    dt_max_s: float = 2e-3
+    # Speed ceiling (m/s). Enforced on velocities AND, via the rigid-step
+    # clamp, on post-projection body motion (translation <= vmax*dt,
+    # rotation <= 5 deg/step), so tunneling is impossible by construction.
+    vmax_m_s: float = 1.0
+    # Settled threshold: max pad displacement per step (meters).
+    convergence_eps_m: float = 2e-5
+    # Footprint mass fallback slope (kg/m^2 of courtyard area).
+    mass_density_kg_m2: float = 3.0
+    # Minimum part mass (kg).
+    mass_floor_kg: float = 1e-9
     # Power-rail attraction trim: multiplies the fanout-scaled power term
-    # (ka * power_attraction_scale / (fanout-1) per edge). 1.0 = full
-    # participation; 0 disables power edges (restores the pre-2026-10-11
-    # exclude-all behavior when combined with decap handling below).
+    # (dimensionless, unchanged from v1).
     power_attraction_scale: float = 1.0
-    # Decoupling-cap boost: edges incident to a detected decap pad (2-pad
-    # C* footprint straddling a power and a ground net) are multiplied by
-    # this on top of fanout scaling, so decaps hug their local rail
-    # neighbor instead of drifting. Also gates the decap GND-side
-    # exception: with 0, decap GND pads get no edges (GND fully excluded).
+    # Decoupling-cap edge multiplier (dimensionless, unchanged from v1).
+    # Also gates the decap GND-side exception: 0 removes decap GND edges.
     decap_boost: float = 4.0
-    # Kill-switch for power participation (A/B comparisons). False drops
-    # all power edges; decap power-side edges go with them (decap GND-side
-    # exception is still gated by decap_boost).
+    # Kill-switch for power participation. False drops all power edges.
     include_power_nets: bool = True
-    # Static-friction deadband (mm of proposed per-pad displacement).
-    # A footprint moves only if its largest proposed pad step clears this;
-    # otherwise the whole footprint is frozen for the iteration. Halo and
-    # asymptotic forces decay forever without reaching zero, so without a
-    # deadband runs grind through the full budget on invisible micro-motion
-    # (and accumulate jitter). 0 disables. The mm-scale saturated ping-pong
-    # is still owned by the adaptive _step_scale below, not this.
-    friction_threshold_mm: float = 0.05
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -102,7 +127,8 @@ class PlacementParams:
     @classmethod
     def from_dict(cls, data: dict) -> "PlacementParams":
         """Build params from a JSON-style dict; missing keys take defaults and
-        unknown keys are ignored (forward compatibility with newer param sets)."""
+        unknown keys are ignored (forward compatibility with newer param sets,
+        and silent drop of legacy v1 keys)."""
         known = {f.name for f in fields(cls)}
         params = cls(**{name: data[name] for name in known if name in data})
         _validate(params)
@@ -111,14 +137,22 @@ class PlacementParams:
 
 def _validate(params: PlacementParams) -> None:
     numeric = (
-        "repulsion_kr",
-        "attraction_ka",
-        "convergence_eps_mm",
-        "courtyard_repulsion_kc",
-        "courtyard_halo_mm",
-        "boundary_repulsion_kb",
-        "max_step_mm",
-        "friction_threshold_mm",
+        "repulsion_k_N_m2",
+        "attraction_k_N",
+        "wall_k_N",
+        "wall_area_ref_m2",
+        "wall_halo_m",
+        "boundary_k_N",
+        "ghost_k_N",
+        "damping_Ns_m",
+        "friction_N",
+        "dt_s",
+        "dt_min_s",
+        "dt_max_s",
+        "vmax_m_s",
+        "convergence_eps_m",
+        "mass_density_kg_m2",
+        "mass_floor_kg",
         "power_attraction_scale",
         "decap_boost",
     )
@@ -126,20 +160,17 @@ def _validate(params: PlacementParams) -> None:
         value = getattr(params, name)
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ValueError(f"{name} must be a number")
-    for name in (
-        "repulsion_kr",
-        "attraction_ka",
-        "convergence_eps_mm",
-        "force_convergence_threshold",
-        "courtyard_repulsion_kc",
-        "courtyard_halo_mm",
-        "boundary_repulsion_kb",
-        "max_step_mm",
-    ):
-        if getattr(params, name) < 0:
+        if not math.isfinite(value):
+            raise ValueError(f"{name} must be finite")
+        if value < 0:
             raise ValueError(f"{name} must be >= 0")
-    if params.friction_threshold_mm < 0:
-        raise ValueError("friction_threshold_mm must be >= 0")
+    for name in ("dt_s", "dt_min_s", "dt_max_s", "vmax_m_s", "wall_area_ref_m2"):
+        if getattr(params, name) <= 0:
+            raise ValueError(f"{name} must be > 0")
+    if params.dt_min_s > params.dt_s:
+        raise ValueError("dt_min_s must be <= dt_s")
+    if params.dt_s > params.dt_max_s:
+        raise ValueError("dt_s must be <= dt_max_s")
     if params.power_attraction_scale < 0:
         raise ValueError("power_attraction_scale must be >= 0")
     if params.decap_boost < 0:
@@ -460,6 +491,81 @@ def _project_rigid_poses(
         except np.linalg.LinAlgError:
             continue
         positions[rows] = (ref - ref_center) @ r.T + prop_center
+
+
+def _clamp_rigid_step(
+    positions: np.ndarray,
+    old_positions: np.ndarray,
+    bodies: List[Tuple[np.ndarray, np.ndarray]],
+    pad_movable: np.ndarray,
+    cap_mm: float,
+    max_rot_rad: float,
+) -> None:
+    """Bound post-projection rigid motion per body per step (SI safety net).
+
+    The velocity ceiling (vmax) bounds pre-projection pad velocities, but the
+    Kabsch snap above can rotate a body whose pads saw differential forces,
+    swinging pads well past ``vmax*dt`` (observed: 7mm leap against a 3mm
+    cap; -40 deg spins on 2-pad parts). Unbounded rotation steps tunnel
+    parts into locked neighbors and feed sustained jam churn on dense
+    boards (DCCF C14 vs RV3, 2026-10-15: 2.8 -> 21mm^2 in one step).
+
+    Per movable body: clamp centroid shift to ``cap_mm`` and rotation change
+    (vs the pre-step pose) to ``max_rot_rad``, re-posing pads rigidly from
+    the old pose. Deterministic function of the trajectory, so the
+    no-cooling invariant holds. Single-pad footprints never appear here
+    (trivially rigid; already bounded by the velocity cap alone).
+    """
+    if cap_mm <= 0 or max_rot_rad <= 0:
+        return
+    for rows, _ref in bodies:
+        if len(rows) < 2:
+            continue
+        if pad_movable is not None and not np.any(pad_movable[rows]):
+            continue
+        old = old_positions[rows]
+        new = positions[rows]
+        if np.any(np.isnan(old)) or np.any(np.isnan(new)):
+            continue
+        old_c = old.mean(axis=0)
+        new_c = new.mean(axis=0)
+        t = new_c - old_c
+        tn = float(np.linalg.norm(t))
+        if tn > cap_mm and tn > 0:
+            t = t * (cap_mm / tn)
+        # Body angle from the first two pads with distinct positions.
+        base = old[1:] - old[:1]
+        blen = np.linalg.norm(base, axis=1)
+        k = int(np.argmax(blen)) + 1 if len(blen) else -1
+        if k < 1 or blen[k - 1] <= 1e-9:
+            if tn > 0:
+                positions[rows] = old + t
+            continue
+        va = old[k] - old[0]
+        vb = new[k] - new[0]
+        na = float(np.linalg.norm(va))
+        nb = float(np.linalg.norm(vb))
+        if na <= 1e-9 or nb <= 1e-9:
+            if tn > 0:
+                positions[rows] = old + t
+            continue
+        da = math.atan2(float(va[1]), float(va[0]))
+        db = math.atan2(float(vb[1]), float(vb[0]))
+        dth = db - da
+        while dth > math.pi:
+            dth -= 2.0 * math.pi
+        while dth < -math.pi:
+            dth += 2.0 * math.pi
+        if dth > max_rot_rad:
+            dth = max_rot_rad
+        elif dth < -max_rot_rad:
+            dth = -max_rot_rad
+        ca, sa = math.cos(dth), math.sin(dth)
+        rel = old - old_c
+        rot = np.empty_like(rel)
+        rot[:, 0] = ca * rel[:, 0] - sa * rel[:, 1]
+        rot[:, 1] = sa * rel[:, 0] + ca * rel[:, 1]
+        positions[rows] = old_c + t + rot
 
 
 def _compute_footprint_pose_from_pads(
@@ -855,20 +961,20 @@ def _board_bbox(model: BoardModel) -> Tuple[float, float, float, float]:
     return min_x, max_x, min_y, max_y
 
 
-def _boundary_edge_push(dist_mm: float, threshold_mm: float, kb: float) -> float:
-    """Inward push from one region edge: bounded linear falloff.
+def _boundary_edge_push(dist_m: float, threshold_m: float, k_b_N: float) -> float:
+    """Inward push from one region edge in newtons: bounded linear falloff.
 
-    Returns 0 past the threshold, rising linearly to 2*kb exactly at the
-    edge; already-outside parts get an ~kb saturating pull back in.
+    Returns 0 past the threshold, rising linearly to 2*k_b exactly at the
+    edge; already-outside parts get an ~k_b saturating pull back in.
     Deliberately singularity-free: the old ``kb*2*(t-d)/(d+eps)`` form
     blew up to ~3.5e7 on a part sitting ~0.03mm inside the region edge
     (2026-10-10, DCCF R11) and only the per-iteration step cap masked it.
     """
-    if dist_mm < 0:
-        d = abs(dist_mm)
-        return kb * d / (d + 1e-6)
-    if dist_mm < threshold_mm:
-        return kb * 2.0 * (threshold_mm - dist_mm) / threshold_mm
+    if dist_m < 0:
+        d = abs(dist_m)
+        return k_b_N * d / (d + 1e-9)
+    if dist_m < threshold_m:
+        return k_b_N * 2.0 * (threshold_m - dist_m) / threshold_m
     return 0.0
 
 
@@ -1128,6 +1234,36 @@ def _run_region_simulation(
         for i in range(n_pads)
     ], dtype=bool)
 
+    # SI masses: per-footprint kg broadcast to pads (static for the run).
+    # Ghost pads get the table/fallback mass too (harmless: immovable pads
+    # never integrate; it only keeps F/m finite).
+    _uuid_to_mass_kg: Dict[str, float] = {}
+    for _fp in list(model.footprints) + list(model.ghost_footprints):
+        if _fp.uuid and _fp.uuid not in _uuid_to_mass_kg:
+            _uuid_to_mass_kg[_fp.uuid] = footprint_mass_kg(
+                _fp.footprint_id,
+                courtyard_bbox_area_m2(_fp),
+                params.mass_density_kg_m2,
+                params.mass_floor_kg,
+            )
+    _fallback_mass_kg = max(params.mass_floor_kg, 1e-12)
+
+    def _pad_footprint(_i: int):
+        _idx = region_pad_to_fp_idx[_i]
+        try:
+            if _idx >= 0:
+                return model.footprints[_idx]
+            return model.ghost_footprints[-_idx - 1]
+        except IndexError:
+            return None
+
+    pad_mass_kg = np.array([
+        _uuid_to_mass_kg.get(
+            _pad_footprint(i).uuid if _pad_footprint(i) is not None else "", _fallback_mass_kg)
+        for i in range(n_pads)
+    ], dtype=np.float64)
+    pad_mass_kg = np.maximum(pad_mass_kg, _fallback_mass_kg)
+
     if not pad_movable.any():
         return {}, {}, 0, {}, [], []
 
@@ -1155,10 +1291,9 @@ def _run_region_simulation(
     for fp_uuid, pad_indices in region_fp_uuid_to_pad_indices.items():
         region_fp_to_pad_indices[fp_uuid] = pad_indices
 
-    # Fixed step budget (mm per iteration); see max_step_mm. No cooling
-    # schedule: the trajectory must not depend on the iteration budget.
-    step_cap = params.max_step_mm
-
+    # SI integrator state is initialized just before the loop (velocities,
+    # timestep). No cooling schedule: the adaptive-dt guard reacts to the
+    # trajectory's energy, not the iteration budget.
     iteration = 0
 
     # Build list of footprints in this region with courtyards (real + ghost)
@@ -1358,41 +1493,41 @@ def _run_region_simulation(
         footprints are snapped onto their exact shape by
         ``_project_rigid_poses`` after each step.
         """
-        # Repulsion: all-pairs Coulomb k_r / d^2
-        diff = pos[:, None, :] - pos[None, :, :]  # (n, n, 2)
+        # Repulsion: all-pairs Coulomb k/d^2 in SI (d in meters).
+        # Geometry arrays stay millimeter-native; only the law converts.
+        diff = pos[:, None, :] - pos[None, :, :]  # (n, n, 2), mm
         dist_sq = np.sum(diff * diff, axis=2)
         eps = 1e-6
         np.fill_diagonal(dist_sq, eps)
         dist_sq = np.maximum(dist_sq, eps)
         dist = np.sqrt(dist_sq)
-        force_mag = params.repulsion_kr / dist_sq
+        dist_sq_m = dist_sq * 1e-6  # mm^2 -> m^2
+        force_mag = params.repulsion_k_N_m2 / np.maximum(dist_sq_m, 1e-12)
         np.fill_diagonal(force_mag, 0.0)
         if same_fp_mask is not None:
             force_mag[same_fp_mask] = 0.0  # No repulsion between pads of same footprint
         force_vec = diff * (force_mag[:, :, None] / dist[:, :, None])
         repulsion = np.sum(force_vec, axis=1)
 
-        # Attraction: constant-magnitude pull along net edges.
+        # Attraction: constant-magnitude pull along net edges (newtons).
         # src is pulled toward dst (+unit) and dst toward src (-unit), so
         # the pair settles where this balances Coulomb repulsion
-        # (d = sqrt(kr/ka) for an isolated pad pair). Per-edge weights
-        # scale ka: 1.0 for signal, fanout-scaled for power, decap-boosted
-        # for decap-incident edges (see _build_net_edges_pad_level). The signs were
-        # inverted before 2026-10-11 (both pads pushed apart), which the
-        # ideal_length removal exposed: with F = ka*(d-L0) the old code
-        # attracted only when closer than L0 and the flip went unnoticed.
+        # (d = sqrt(k_rep/k_attr) for an isolated pad pair). Per-edge weights
+        # scale k_attr: 1.0 for signal, fanout-scaled for power, decap-boosted
+        # for decap-incident edges (see _build_net_edges_pad_level).
         attraction = np.zeros((n_pads, 2), dtype=np.float64)
         if has_net_edges:
             diff_edge = pos[dst_idx] - pos[src_idx]
             dist_edge = np.linalg.norm(diff_edge, axis=1, keepdims=True)
             dist_edge = np.maximum(dist_edge, 1e-6)
             unit = diff_edge / dist_edge
-            force_mag_edge = (params.attraction_ka * edge_weights)[:, None]
+            force_mag_edge = (params.attraction_k_N * edge_weights)[:, None]
             force_vec_edge = unit * force_mag_edge
             np.add.at(attraction, src_idx, force_vec_edge)
             np.add.at(attraction, dst_idx, -force_vec_edge)
 
-        # Ghost attraction: centroid-to-centroid springs from ghost to target
+        # Ghost attraction: centroid-to-centroid springs from ghost to target.
+        # File "TARGET,ka" values are dimensionless weights scaling ghost_k_N.
         ghost_attr_force = np.zeros((n_pads, 2), dtype=np.float64)
         if ghost_attractions:
             for ghost_anchor, target_pad_indices, ka_attr in ghost_attractions:
@@ -1405,7 +1540,7 @@ def _run_region_simulation(
                 dist_attr = np.linalg.norm(diff_attr)
                 if dist_attr > 1e-6:
                     unit_attr = diff_attr / dist_attr
-                    force_mag_attr = ka_attr 
+                    force_mag_attr = params.ghost_k_N * ka_attr
                     # Force on target points TOWARD ghost (opposite to unit_attr which points ghost->target)
                     force_vec_attr = -unit_attr * force_mag_attr
                     # Apply equally to all target pads (distribute)
@@ -1568,7 +1703,7 @@ def _run_region_simulation(
             grid: Dict[Tuple[int, int], List[int]] = defaultdict(list)
             for fp_idx in range(n_fp):
                 cx, cy = body_centroids_arr[fp_idx]
-                r = body_radii_arr[fp_idx] + params.courtyard_halo_mm
+                r = body_radii_arr[fp_idx] + (params.wall_halo_m * 1000.0)
                 min_gx = int((cx - r) / cell_size)
                 max_gx = int((cx + r) / cell_size)
                 min_gy = int((cy - r) / cell_size)
@@ -1606,7 +1741,7 @@ def _run_region_simulation(
                 if body_layers_arr[i] == body_layers_arr[j]:
                     ri = body_radii_arr[i]
                     rj = body_radii_arr[j]
-                    halo = min(1.5 * (ri + rj), params.courtyard_halo_mm)
+                    halo = min(1.5 * (ri + rj), params.wall_halo_m * 1000.0)
                     dx = body_centroids_arr[i, 0] - body_centroids_arr[j, 0]
                     dy = body_centroids_arr[i, 1] - body_centroids_arr[j, 1]
                     dist_sq = dx * dx + dy * dy
@@ -1640,13 +1775,14 @@ def _run_region_simulation(
                 pi: Polygon, pj: Polygon,
                 margin: float,
             ) -> None:
-                """Halo push for one pair at a given inside-halo margin.
+                """Halo push for one pair at a given inside-halo margin (newtons).
 
                 Shared by the near-miss branch (margin = reach - gap) and
                 the boundary-touch case (margin = full reach at zero gap),
                 so contact is continuous from both sides. Direction along
                 the contact normal (edge-orthogonal): the nearest-point
-                pair on the two outlines."""
+                pair on the two outlines. Geometry stays millimeter-native;
+                margin/halo_reach enter only as a dimensionless ratio."""
                 if margin <= 0:
                     return
                 halo_reach = float(_halo_matrix[li, lj])
@@ -1665,7 +1801,7 @@ def _run_region_simulation(
                     _gap = math.hypot(dx, dy)
                 if _gap > 1e-6:
                     strength = (
-                        params.courtyard_repulsion_kc
+                        params.wall_k_N
                         * (margin / halo_reach)
                     )
                     ux, uy = dx / _gap, dy / _gap
@@ -1679,15 +1815,26 @@ def _run_region_simulation(
             def _apply_contact_push(
                 li: int, lj: int,
                 pi: Polygon, pj: Polygon,
-                intersection_area: float,  # >= 0: overlap area; < 0: gap (for halo)
+                intersection_area: float,  # >= 0: overlap area mm^2; < 0: gap mm (for halo)
+                sink: Optional[list] = None,
             ) -> None:
-                """Unified contact push using nearest-point normal.
-                
-                For overlap (intersection_area >= 0): F = kc * (1 + intersection_area)
-                For halo (intersection_area < 0, gap = -intersection_area): F = kc * (1 - gap/halo_reach)
-                
+                """Unified contact push using nearest-point normal (newtons).
+
+                This is the elastic collision response: penalty-based push-out.
+                For overlap (intersection_area >= 0): F = k_wall * (1 + area_m2/area_ref)
+                For halo (intersection_area < 0, gap = -intersection_area): F = k_wall * (1 - gap/halo)
+                Geometry stays millimeter-native; SI conversions happen inline.
+
                 Direction always from nearest-point normal (edge-orthogonal).
-                Continuity at boundary: area=0 -> F=kc, gap=0 -> F=kc.
+                Continuity at boundary: area=0 -> F=k_wall, gap=0 -> F=k_wall.
+
+                With ``sink`` given, appends a candidate
+                ``('ov', area_mm2, 0.0, ux, uy)`` or
+                ``('halo', gap_mm, reach_mm, ux, uy)`` instead of spreading:
+                the pair loop aggregates sub-path candidates (body, pins)
+                into ONE penalty per footprint pair (summed overlap areas,
+                strongest direction), so THT pin circles can't stack the
+                same contact 3-9x.
                 """
                 if pi.is_empty or pj.is_empty:
                     return
@@ -1698,7 +1845,7 @@ def _run_region_simulation(
                 except Exception:
                     dx = dy = 0.0
                 dist = math.hypot(dx, dy)
-                
+
                 # nearest_points on overlapping polygons returns boundary points with dist=0
                 # Fall back to centroid-to-centroid if degenerate
                 if dist <= 1e-8:
@@ -1707,20 +1854,30 @@ def _run_region_simulation(
                     dist = math.hypot(dx, dy)
                 if dist <= 1e-6:
                     dx, dy, dist = 1.0, 0.0, 1.0  # deterministic tiebreak
-                
+
                 ux, uy = dx / dist, dy / dist
-                
+
                 if intersection_area >= 0:
-                    # Overlap: F = kc * (1 + area) — continuous with halo at area=0
-                    force_mag = params.courtyard_repulsion_kc * (1.0 + intersection_area)
+                    if sink is not None:
+                        sink.append(('ov', float(intersection_area), 0.0, ux, uy))
+                        return
+                    # Overlap: F = k_wall * (1 + area_m2 / area_ref) — the
+                    # dimensionless ratio keeps the constant sane across sizes.
+                    area_m2 = intersection_area * 1e-6
+                    force_mag = params.wall_k_N * (1.0 + area_m2 / params.wall_area_ref_m2)
                 else:
                     # Halo: gap = -intersection_area, linear falloff to 0 at halo_reach
                     gap = -intersection_area
                     halo_reach = float(_halo_matrix[li, lj])
                     if gap >= halo_reach:
                         return
-                    force_mag = params.courtyard_repulsion_kc * (1.0 - gap / halo_reach)
-                
+                    if sink is not None:
+                        sink.append(('halo', gap, halo_reach, ux, uy))
+                        return
+                    gap_m = gap * 1e-3
+                    halo_m = halo_reach * 1e-3
+                    force_mag = params.wall_k_N * (1.0 - gap_m / halo_m)
+
                 fx, fy = force_mag * ux, force_mag * uy
                 _spread(fp_local_to_rows[li], fp_centroids_arr[li, 0], fp_centroids_arr[li, 1],
                         fp_radii_arr[li], ux, uy, fx, fy)
@@ -1733,13 +1890,18 @@ def _run_region_simulation(
                 shape_i_type: str, shape_i_params: dict,
                 shape_j_type: str, shape_j_params: dict,
                 intersection_area: float,  # >= 0: overlap area; < 0: gap (for halo)
+                sink: Optional[list] = None,
             ) -> bool:
                 """Analytical contact push using SAT for rectangles/circles.
-                
+
                 Returns True if analytical collision was used, False if fallback needed.
-                
+
                 Normal convention: points from j to i (same as shapely nearest_points).
                 Force on i (li) is in normal direction; force on j (lj) is opposite.
+
+                With ``sink`` given, appends a candidate tuple (see
+                ``_apply_contact_push``) instead of spreading, for per-pair
+                aggregation by the caller.
                 """
                 # Determine collision type and call appropriate SAT function
                 overlap = False
@@ -1766,11 +1928,36 @@ def _run_region_simulation(
                     # Fall back to shapely for polygon-polygon, polygon-rectangle, etc.
                     return False
                 
-                # Compute force magnitude
+                # Compute force magnitude (newtons; gap/halo as SI ratio)
                 if intersection_area >= 0:
-                    # Overlap: fall back to shapely for force direction (centroid-to-centroid
-                    # or intersection centroid) to preserve original behavior.
-                    return False
+                    # Overlap: use the SAT minimum-translation (MTV) direction.
+                    # The shapely centroid-to-centroid fallback is wrong for
+                    # containment / small-in-large overlaps (e.g. a cap tucked
+                    # under a pot's wide courtyard span): centroids can point
+                    # along the long axis, shoving the small part DEEPER
+                    # instead of out the nearest edge (DCCF C14 vs RV3,
+                    # 2026-10-15: overlap 2.8 -> 21mm^2 in one step).
+                    # Magnitude keeps the wall penalty law from
+                    # docs/si_force_laws.md; only the direction changes.
+                    if normal is None:
+                        return False
+                    _n = np.asarray(normal, dtype=np.float64).reshape(-1)
+                    _nn = float(np.linalg.norm(_n))
+                    if not math.isfinite(_nn) or _nn <= 1e-12:
+                        return False
+                    ux, uy = float(_n[0] / _nn), float(_n[1] / _nn)
+                    if sink is not None:
+                        sink.append(('ov', float(intersection_area), 0.0, ux, uy))
+                        return True
+                    area_m2 = intersection_area * 1e-6
+                    force_mag = params.wall_k_N * (1.0 + area_m2 / params.wall_area_ref_m2)
+                    fx, fy = force_mag * ux, force_mag * uy
+                    _spread(fp_local_to_rows[li], fp_centroids_arr[li, 0], fp_centroids_arr[li, 1],
+                            fp_radii_arr[li], ux, uy, fx, fy)
+                    if fp_movable_arr[lj]:
+                        _spread(fp_local_to_rows[lj], fp_centroids_arr[lj, 0], fp_centroids_arr[lj, 1],
+                                fp_radii_arr[lj], -ux, -uy, -fx, -fy)
+                    return True
                 else:
                     # Halo: gap = -intersection_area, linear falloff to 0 at halo_reach
                     # Use SAT normal (separation axis) for halo force direction
@@ -1778,8 +1965,16 @@ def _run_region_simulation(
                     halo_reach = float(_halo_matrix[li, lj])
                     if gap >= halo_reach:
                         return True  # Outside halo, no force
-                    force_mag = params.courtyard_repulsion_kc * (1.0 - gap / halo_reach)
-                
+                    _n = np.asarray(normal, dtype=np.float64).reshape(-1)
+                    _nn = float(np.linalg.norm(_n))
+                    if not math.isfinite(_nn) or _nn <= 1e-12:
+                        return False
+                    if sink is not None:
+                        sink.append(('halo', gap, halo_reach,
+                                     float(_n[0] / _nn), float(_n[1] / _nn)))
+                        return True
+                    force_mag = params.wall_k_N * (1.0 - (gap * 1e-3) / (halo_reach * 1e-3))
+
                 ux, uy = normal[0], normal[1]
                 fx, fy = force_mag * ux, force_mag * uy
                 _spread(fp_local_to_rows[li], fp_centroids_arr[li, 0], fp_centroids_arr[li, 1],
@@ -1801,7 +1996,16 @@ def _run_region_simulation(
                 body_j = body_polys[fp_j_uuid]
                 pins_i = pins_data[fp_i_uuid]
                 pins_j = pins_data[fp_j_uuid]
-                
+                # Per-pair contact candidates: body + pin sub-paths below
+                # append ('ov'|'halo', scalar, reach, ux, uy) tuples; the
+                # consumer after section 4 applies exactly ONE penalty per
+                # footprint pair (summed overlap areas along the strongest
+                # direction, else strongest halo). Without aggregation the
+                # THT pin circles stack the same contact 3-9x, sandwiching
+                # small parts into locked neighbors (DCCF C14 vs RV3/U3 and
+                # C8/R13 vs RV1, 2026-10-15).
+                cand: list = []
+
                 # 1. Body-body collision (same layer only) - already filtered by layer in broadphase
                 if _close[i, j]:
                     if not body_i.is_empty and not body_j.is_empty:
@@ -1812,7 +2016,7 @@ def _run_region_simulation(
                         shape_j_type = cached_j.get("shape_type", ShapeType.POLYGON)
                         shape_i_params = cached_i.get("shape_params", {})
                         shape_j_params = cached_j.get("shape_params", {})
-                        
+
                         used_analytical = False
                         if body_i.intersects(body_j):
                             intersection = body_i.intersection(body_j)
@@ -1821,9 +2025,9 @@ def _run_region_simulation(
                                 used_analytical = _apply_contact_push_analytical(
                                     i, j, shape_i_type, shape_i_params,
                                     shape_j_type, shape_j_params,
-                                    intersection.area)
+                                    intersection.area, cand)
                             if not used_analytical:
-                                _apply_contact_push(i, j, body_i, body_j, intersection.area)
+                                _apply_contact_push(i, j, body_i, body_j, intersection.area, cand)
                         else:
                             body_dist = body_i.distance(body_j)
                             halo_reach = float(_halo_matrix[i, j])
@@ -1833,10 +2037,10 @@ def _run_region_simulation(
                                     used_analytical = _apply_contact_push_analytical(
                                         i, j, shape_i_type, shape_i_params,
                                         shape_j_type, shape_j_params,
-                                        -body_dist)
+                                        -body_dist, cand)
                                 if not used_analytical:
-                                    _apply_contact_push(i, j, body_i, body_j, -body_dist)
-                
+                                    _apply_contact_push(i, j, body_i, body_j, -body_dist, cand)
+
                 # 2. Pins_i vs body_j (all layers) - pins are circles
                 if pins_i and not body_j.is_empty:
                     for pin_poly, pin_center, pin_radius in pins_i:
@@ -1855,21 +2059,21 @@ def _run_region_simulation(
                                 used_analytical = _apply_contact_push_analytical(
                                     i, j, ShapeType.CIRCLE, pin_shape_params,
                                     shape_j_type, shape_j_params,
-                                    intersection.area)
+                                    intersection.area, cand)
                             if not used_analytical:
-                                _apply_contact_push(i, j, pin_poly, body_j, intersection.area)
+                                _apply_contact_push(i, j, pin_poly, body_j, intersection.area, cand)
                         else:
                             pin_dist = pin_poly.distance(body_j)
-                            pin_halo = min(1.5 * (pin_radius + body_radii_arr[j]), params.courtyard_halo_mm)
+                            pin_halo = min(1.5 * (pin_radius + body_radii_arr[j]), (params.wall_halo_m * 1000.0))
                             if pin_dist < pin_halo:
                                 if shape_j_type in (ShapeType.RECTANGLE, ShapeType.CIRCLE):
                                     used_analytical = _apply_contact_push_analytical(
                                         i, j, ShapeType.CIRCLE, pin_shape_params,
                                         shape_j_type, shape_j_params,
-                                        -pin_dist)
+                                        -pin_dist, cand)
                                 if not used_analytical:
-                                    _apply_contact_push(i, j, pin_poly, body_j, -pin_dist)
-                
+                                    _apply_contact_push(i, j, pin_poly, body_j, -pin_dist, cand)
+
                 # 3. Body_i vs pins_j (all layers)
                 if pins_j and not body_i.is_empty:
                     for pin_poly, pin_center, pin_radius in pins_j:
@@ -1888,21 +2092,21 @@ def _run_region_simulation(
                                 used_analytical = _apply_contact_push_analytical(
                                     i, j, shape_i_type, shape_i_params,
                                     ShapeType.CIRCLE, pin_shape_params,
-                                    intersection.area)
+                                    intersection.area, cand)
                             if not used_analytical:
-                                _apply_contact_push(i, j, body_i, pin_poly, intersection.area)
+                                _apply_contact_push(i, j, body_i, pin_poly, intersection.area, cand)
                         else:
                             pin_dist = body_i.distance(pin_poly)
-                            pin_halo = min(1.5 * (body_radii_arr[i] + pin_radius), params.courtyard_halo_mm)
+                            pin_halo = min(1.5 * (body_radii_arr[i] + pin_radius), (params.wall_halo_m * 1000.0))
                             if pin_dist < pin_halo:
                                 if shape_i_type in (ShapeType.RECTANGLE, ShapeType.CIRCLE):
                                     used_analytical = _apply_contact_push_analytical(
                                         i, j, shape_i_type, shape_i_params,
                                         ShapeType.CIRCLE, pin_shape_params,
-                                        -pin_dist)
+                                        -pin_dist, cand)
                                 if not used_analytical:
-                                    _apply_contact_push(i, j, body_i, pin_poly, -pin_dist)
-                
+                                    _apply_contact_push(i, j, body_i, pin_poly, -pin_dist, cand)
+
                 # 4. Pins_i vs pins_j (all layers) - both circles
                 if pins_i and pins_j:
                     for pin_i_poly, pin_i_center, pin_i_radius in pins_i:
@@ -1919,30 +2123,58 @@ def _run_region_simulation(
                                 used_analytical = _apply_contact_push_analytical(
                                     i, j, ShapeType.CIRCLE, pin_i_params,
                                     ShapeType.CIRCLE, pin_j_params,
-                                    intersection.area)
+                                    intersection.area, cand)
                             if not used_analytical:
                                 # Need to recompute intersection for fallback
                                 if pin_i_poly.intersects(pin_j_poly):
                                     intersection = pin_i_poly.intersection(pin_j_poly)
-                                    _apply_contact_push(i, j, pin_i_poly, pin_j_poly, intersection.area)
+                                    _apply_contact_push(i, j, pin_i_poly, pin_j_poly, intersection.area, cand)
                             else:
                                 pin_dist = pin_i_poly.distance(pin_j_poly)
-                                pin_halo = min(1.5 * (pin_i_radius + pin_j_radius), params.courtyard_halo_mm)
+                                pin_halo = min(1.5 * (pin_i_radius + pin_j_radius), (params.wall_halo_m * 1000.0))
                                 if pin_dist < pin_halo:
                                     used_analytical = _apply_contact_push_analytical(
                                         i, j, ShapeType.CIRCLE, pin_i_params,
                                         ShapeType.CIRCLE, pin_j_params,
-                                        -pin_dist)
+                                        -pin_dist, cand)
                                     if not used_analytical:
-                                        _apply_contact_push(i, j, pin_i_poly, pin_j_poly, -pin_dist)
+                                        _apply_contact_push(i, j, pin_i_poly, pin_j_poly, -pin_dist, cand)
+
+                # Aggregate per-pair candidates into ONE penalty: summed
+                # overlap areas along the strongest (max-area) direction,
+                # else the strongest (min gap/reach) halo. Magnitudes keep
+                # the wall laws from docs/si_force_laws.md.
+                if cand:
+                    _ovs = [c for c in cand if c[0] == 'ov']
+                    if _ovs:
+                        _total_area = sum(c[1] for c in _ovs)
+                        _win = max(_ovs, key=lambda c: c[1])
+                        _ux, _uy = _win[3], _win[4]
+                        _mag = params.wall_k_N * (
+                            1.0 + (_total_area * 1e-6) / params.wall_area_ref_m2)
+                    else:
+                        _halos = [c for c in cand if c[0] == 'halo']
+                        _win = min(_halos, key=lambda c: c[1] / c[2])
+                        _gap_mm, _reach_mm = _win[1], _win[2]
+                        _ux, _uy = _win[3], _win[4]
+                        _mag = params.wall_k_N * (
+                            1.0 - (_gap_mm * 1e-3) / (_reach_mm * 1e-3))
+                    _fx, _fy = _mag * _ux, _mag * _uy
+                    _spread(fp_local_to_rows[i],
+                            fp_centroids_arr[i, 0], fp_centroids_arr[i, 1],
+                            fp_radii_arr[i], _ux, _uy, _fx, _fy)
+                    if fp_movable_arr[j]:
+                        _spread(fp_local_to_rows[j],
+                                fp_centroids_arr[j, 0], fp_centroids_arr[j, 1],
+                                fp_radii_arr[j], -_ux, -_uy, -_fx, -_fy)
 
             # Courtyard pushes were spread directly onto pads above
             # (overlap-weighted, halo uniform; totals conserved); nothing
             # left to broadcast.
             force += poly_force
 
-            # Boundary repulsion: push footprints away from region edges
-            boundary_k = params.boundary_repulsion_kb
+            # Boundary repulsion in newtons (mm geometry converted at the call).
+            boundary_k = params.boundary_k_N
 
             # Compute current footprint bounds from pad positions, expanded by courtyard radius
             fp_bounds = {}
@@ -1978,20 +2210,21 @@ def _run_region_simulation(
                 fp_height = maxy - miny
                 # Dynamic threshold: 10% of footprint size, minimum 1mm, maximum 10mm
                 threshold = max(1.0, min(10.0, 0.1 * max(fp_width, fp_height)))
+                threshold_m = threshold * 1e-3
 
-                # Distance to region boundaries (bounded pushes, see
+                # Distance to region boundaries in meters (bounded pushes, see
                 # _boundary_edge_push; left/bottom push +, right/top push -)
-                dist_left = minx - min_x
-                boundary_force[pad_idx, 0] += _boundary_edge_push(dist_left, threshold, boundary_k)
+                dist_left = (minx - min_x) * 1e-3
+                boundary_force[pad_idx, 0] += _boundary_edge_push(dist_left, threshold_m, boundary_k)
 
-                dist_right = max_x - maxx
-                boundary_force[pad_idx, 0] -= _boundary_edge_push(dist_right, threshold, boundary_k)
+                dist_right = (max_x - maxx) * 1e-3
+                boundary_force[pad_idx, 0] -= _boundary_edge_push(dist_right, threshold_m, boundary_k)
 
-                dist_bottom = miny - min_y
-                boundary_force[pad_idx, 1] += _boundary_edge_push(dist_bottom, threshold, boundary_k)
+                dist_bottom = (miny - min_y) * 1e-3
+                boundary_force[pad_idx, 1] += _boundary_edge_push(dist_bottom, threshold_m, boundary_k)
 
-                dist_top = max_y - maxy
-                boundary_force[pad_idx, 1] -= _boundary_edge_push(dist_top, threshold, boundary_k)
+                dist_top = (max_y - maxy) * 1e-3
+                boundary_force[pad_idx, 1] -= _boundary_edge_push(dist_top, threshold_m, boundary_k)
 
             force += boundary_force
 
@@ -2114,14 +2347,13 @@ def _run_region_simulation(
     if record_frames and _frame_fps:
         _region_frames.append(_capture_frame(positions))
         _region_force_frames.append(_capture_force_frame(positions))
-    # Per-pad adaptive damping: saturated 1mm steps ping-pong across the
-    # halo gradient (direction flips every iteration, scrub shows jitter
-    # with no progress). Halve the budget on direction reversal, recover
-    # gradually on consistent headings. Deterministic function of the
-    # trajectory (not the iteration budget), so the no-cooling invariant
-    # holds: same (model, params) prefix → same path.
-    _step_scale = np.ones((len(region_pads), 1), dtype=np.float64)
-    _prev_disp = np.zeros((len(region_pads), 2), dtype=np.float64)
+    # SI integrator state: per-pad velocities (m/s) and adaptive timestep (s).
+    # Deterministic function of the trajectory (not the iteration budget),
+    # so the no-cooling invariant holds: same (model, params) prefix →
+    # same path.
+    _vel = np.zeros((len(region_pads), 2), dtype=np.float64)
+    _dt = float(params.dt_s)
+    _prev_ke: Optional[float] = None
 
     # Rigid-body projection data (PBD): per movable multi-pad footprint,
     # (rows, reference-shape snapshot). The reference is the committed board
@@ -2158,61 +2390,82 @@ def _run_region_simulation(
             cache_rebuild_threshold_rad=cache_rebuild_threshold_rad,
         )
 
-        # Force-based early termination: stop when all movable pad forces
-        # are below threshold (not just step-capped displacement).
-        if params.force_convergence_threshold > 0:
-            max_force = float(np.max(np.linalg.norm(force[pad_movable], axis=1)))
-            if max_force < params.force_convergence_threshold:
-                break
-
-        # Displacement = force * step_cap
-        disp = force * step_cap
-        disp_norm = np.linalg.norm(disp, axis=1, keepdims=True)
-        scale = np.minimum(1.0, step_cap / np.maximum(disp_norm, 1e-6))
-        disp *= scale
-        disp *= _step_scale
-        # Static friction: freeze a whole footprint whose largest proposed
-        # pad step is below threshold (all-or-nothing keeps the rigid body
-        # consistent for the Kabsch fit; ghost rows are harmless — the
-        # movability mask zeroes them right after regardless). Zeroed steps
-        # leave _step_scale untouched via _align == 0 below, and drive the
-        # convergence check to terminate settled runs.
-        if params.friction_threshold_mm > 0:
-            _step_norm = np.linalg.norm(disp, axis=1)
+        # SI dynamics step (forces are newtons from _compute_total_force).
+        # Dry friction: freeze a whole footprint whose largest pad-force
+        # norm is below friction_N (all-or-nothing keeps the rigid body
+        # consistent for the Kabsch fit). Frozen bodies also lose velocity.
+        _frozen = np.zeros(len(region_pads), dtype=bool)
+        if params.friction_N > 0:
+            _fp_force_norm = np.linalg.norm(force, axis=1)
             for _rows in fp_local_to_rows:
-                if len(_rows) and np.max(_step_norm[_rows]) < params.friction_threshold_mm:
-                    disp[_rows] = 0.0
-        disp[~pad_movable] = 0.0
+                if len(_rows) and np.max(_fp_force_norm[_rows]) < params.friction_N:
+                    force[_rows] = 0.0
+                    _frozen[_rows] = True
+        force[~pad_movable] = 0.0
+        _frozen[~pad_movable] = True
 
-        # Update positions (only movable pads)
-        positions[pad_movable] += disp[pad_movable]
+        # Semi-implicit Euler: v += (F/m) dt, with implicit-Euler viscous
+        # decay v *= 1/(1 + c*dt/m) (stable for any dt), then a speed
+        # ceiling (replaces the old displacement step cap).
+        _accel = force / pad_mass_kg[:, None]
+        _vel[pad_movable] += _accel[pad_movable] * _dt
+        _decay = 1.0 / (1.0 + params.damping_Ns_m * _dt / pad_mass_kg)
+        _vel *= _decay[:, None]
+        _vel[_frozen] = 0.0
+        _speed = np.linalg.norm(_vel, axis=1, keepdims=True)
+        _vcap = params.vmax_m_s / np.maximum(_speed, 1e-12)
+        np.minimum(_vcap, 1.0, out=_vcap)
+        _vel *= _vcap
+        _vel[~pad_movable] = 0.0
+
+        # Drift in meters, applied to the millimeter-native positions.
+        _old_positions = positions.copy()
+        positions[pad_movable] += _vel[pad_movable] * _dt * 1000.0
         positions = np.nan_to_num(positions, nan=0.0, posinf=0.0, neginf=0.0)
 
         # Rigid projection: snap each movable body onto its exact shape.
         # Unconditionally stable (no stiffness parameter); translation and
-        # rotation stay emergent from the soft-force differentials.
+        # rotation stay emergent from the force differentials.
         _project_rigid_poses(positions, _proj_bodies)
+        # Rigid-step clamp: bound what the snap above may have added. The
+        # velocity ceiling alone cannot bound rotation-induced pad swing.
+        _clamp_rigid_step(
+            positions, _old_positions, _proj_bodies, pad_movable,
+            cap_mm=params.vmax_m_s * _dt * 1000.0,
+            max_rot_rad=math.radians(5.0),
+        )
+        # Re-derive velocity from the actual projected displacement so the
+        # projection can't inject phantom energy into the guard below.
+        if _dt > 0:
+            _vel[pad_movable] = (
+                (positions[pad_movable] - _old_positions[pad_movable]) * 1e-3 / _dt)
+        _vel[_frozen] = 0.0
+        _vel[~pad_movable] = 0.0
 
-        # Damping update: reversal halves the budget, steady headings regrow
-        # it. The floor must sit below convergence_eps_mm / max_step_mm
-        # (0.01/2.0 = 0.005): a 1/8 floor pinned a sustained 0.25mm period-2
-        # flip-flop (overlap flickering in/out across the jump) that neither
-        # eps nor the friction deadband could terminate.
-        _align = np.sum(_prev_disp * disp, axis=1)
-        _rev = _align < 0
-        _fwd = _align > 0
-        _step_scale[_rev] = np.maximum(1.0 / 256.0, _step_scale[_rev] * 0.5)
-        _step_scale[_fwd] = np.minimum(1.0, _step_scale[_fwd] * 1.08)
-        _prev_disp = disp.copy()
+        # Adaptive-dt energy guard: bleed and slow down on significant
+        # kinetic-energy jumps (overshoot/collision ring), regrow otherwise.
+        # This is FIRE's blowup-proofing without FIRE's extra state. The
+        # rise needs a deadband: accelerating from rest raises KE every
+        # step, and halving on any rise ratchets dt to the floor during
+        # innocent spin-up (observed: dt pinned at dt_min, ~5x slowdown).
+        _ke = 0.5 * float(np.sum(
+            pad_mass_kg[pad_movable, None]
+            * _vel[pad_movable] * _vel[pad_movable]))
+        if _prev_ke is not None and _ke > 1.25 * _prev_ke + 1e-15:
+            _dt = max(float(params.dt_min_s), _dt * 0.5)
+            _vel *= 0.5
+        else:
+            _dt = min(float(params.dt_max_s), _dt * 1.1)
+        _prev_ke = _ke
 
         if record_frames and _frame_fps and ((iteration + 1) % _frame_stride == 0):
             _frame = _capture_frame(positions)
             _region_frames.append(_frame)
             _region_force_frames.append(_capture_force_frame(positions))
 
-        # Convergence check
-        max_disp = float(np.max(np.linalg.norm(positions - prev_positions, axis=1)))
-        if max_disp < params.convergence_eps_mm:
+        # Convergence check: max pad displacement this step, in meters.
+        max_disp = float(np.max(np.linalg.norm(positions - prev_positions, axis=1))) * 1e-3
+        if max_disp < params.convergence_eps_m:
             break
 
         prev_positions = positions.copy()

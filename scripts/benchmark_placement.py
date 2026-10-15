@@ -55,6 +55,7 @@ FIXTURES = REPO_ROOT / "tests" / "fixtures"
 # convergence variance (a high convergence_eps forces the full budget).
 TIMING_BUDGET = 50
 TIMING_EPS = 1e-12
+TIMING_EPS_SI = 1e-15  # meters: never converges, times the full budget
 
 
 def make_synthetic(n_fp: int, pads_per_fp: int = 4, seed: int = 7) -> BoardModel:
@@ -135,7 +136,7 @@ def time_case(name: str, model: BoardModel, budget: int = TIMING_BUDGET) -> dict
     """Time a fixed-budget run; report per-iteration cost + convergence run."""
     n_pads = sum(len(fp.pads) for fp in model.footprints)
     n_fp = len(model.footprints)
-    params = PlacementParams(max_iterations=budget, convergence_eps_mm=TIMING_EPS)
+    params = PlacementParams(max_iterations=budget, convergence_eps_m=TIMING_EPS_SI)
     t0 = time.perf_counter()
     proposal = run_placement(model, params)
     fixed_s = time.perf_counter() - t0
@@ -160,7 +161,7 @@ def time_case(name: str, model: BoardModel, budget: int = TIMING_BUDGET) -> dict
 
 def profile_case(model: BoardModel, budget: int = 20, top_n: int = 20) -> list[dict]:
     """cProfile one short run; return top cumulative entries ( Picklable)."""
-    params = PlacementParams(max_iterations=budget, convergence_eps_mm=TIMING_EPS)
+    params = PlacementParams(max_iterations=budget, convergence_eps_m=TIMING_EPS_SI)
     pr = cProfile.Profile()
     pr.enable()
     run_placement(model, params)

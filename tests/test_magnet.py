@@ -42,16 +42,16 @@ from kicad_autorouter.svg_render import render_board_svg
 # ---------------------------------------------------------------------------
 MAGNET_PARAMS = PlacementParams(
     max_iterations=200,
-    repulsion_kr=2.0,
+    repulsion_k_N_m2=2e-09,
     # Strong attraction shortens same-net routes: measured intra-group
     # 25.4→20.0mm (group A) and routed copper 138→124mm vs ka=2.0.
-    attraction_ka=6.0,
-    courtyard_repulsion_kc=30000.0,
+    attraction_k_N=0.006,
+    wall_k_N=0.03,
     # 3x2mm parts: 6mm halo preserves this test's original ~5.4mm
     # (1.5x radii sum) near-miss reach under the bounded-halo regime.
-    courtyard_halo_mm=6.0,
-    boundary_repulsion_kb=500000.0,
-    convergence_eps_mm=0.1,
+    wall_halo_m=0.006,
+    boundary_k_N=0.5,
+    convergence_eps_m=0.0001,
 )
 
 
@@ -340,11 +340,11 @@ class TestNetMagnet:
         """With high repulsion, all components should stay within board boundaries."""
         boundary_params = PlacementParams(
             max_iterations=200,
-            repulsion_kr=50.0,
-            attraction_ka=0.5,
-            courtyard_repulsion_kc=20000.0,
-            boundary_repulsion_kb=500000.0,
-            convergence_eps_mm=0.1,
+            repulsion_k_N_m2=5.0000000000000004e-08,
+            attraction_k_N=0.0005,
+            wall_k_N=0.02,
+            boundary_k_N=0.5,
+            convergence_eps_m=0.0001,
         )
         prop = run_placement(magnet_model, boundary_params)
 

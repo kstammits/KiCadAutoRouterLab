@@ -43,9 +43,9 @@ def _two_close_parts() -> BoardModel:
 def _params(**kw):
     base = dict(
         max_iterations=5,
-        repulsion_kr=1.0,
-        courtyard_repulsion_kc=100.0,
-        courtyard_halo_mm=3.0,
+        repulsion_k_N_m2=1e-09,
+        wall_k_N=9.999999999999999e-05,
+        wall_halo_m=0.003,
     )
     base.update(kw)
     return PlacementParams(**base)
@@ -68,7 +68,7 @@ class TestTrajectoryFrames:
         # termination is covered in test_placement_movement.py).
         prop = run_placement(
             _two_close_parts(),
-            _params(convergence_eps_mm=1e-12, friction_threshold_mm=0.0),
+            _params(convergence_eps_m=1e-15, friction_threshold_mm=0.0),
             record_frames=True, frame_stride=2,
         )
         # 5 iters, stride 2 -> frame 0 (start) + samples at 2,4 + final = 4 frames

@@ -175,8 +175,8 @@ class TestCreatedGhostPhysics:
         wall = make_ghost_wall("GHOST_WALL", 50, 42, 60, 4, uuid="ghost-wall-test")
         model2 = bm.replace(model, ghost_footprints=model.ghost_footprints + (wall,))
         p = PlacementParams(
-            max_iterations=30, courtyard_repulsion_kc=5000.0,
-            courtyard_halo_mm=40.0, repulsion_kr=10.0,
+            max_iterations=30, wall_k_N=0.005,
+            wall_halo_m=0.04, repulsion_k_N_m2=1e-08,
         )
         prop = run_placement(model2, p)
         assert "ghost-wall-test" not in prop.deltas
@@ -190,7 +190,7 @@ class TestCreatedGhostPhysics:
             "GHOST_PULL", 50, 20, "R2", 0.5, uuid="ghost-pull-test")
         model2 = bm.replace(model, ghost_footprints=model.ghost_footprints + (attr,))
         p = PlacementParams(
-            max_iterations=30, courtyard_repulsion_kc=0.0, repulsion_kr=10.0)
+            max_iterations=30, wall_k_N=0.0, repulsion_k_N_m2=1e-08)
         prop = run_placement(model2, p)
         r2 = "bbbbbbbb-1111-2222-3333-444444444444"
         assert r2 in prop.deltas

@@ -1,7 +1,7 @@
 {
   "_comment": "Footprint mass table for SI placement dynamics (branch: feature/si-dynamics). Masses in grams. ALL mass_g values are rough guesses from datasheet/package norms, good enough to give inertia the right order of magnitude — scripts/calibrate_si.py fits the dynamics around them, not the reverse. Add rows for your own libraries; loader resolution: exact footprint_id first, then first case-insensitive keyword substring match (specific entries MUST precede general ones), then area fallback m = density*area + floor. Effective mass is always clamped to >= mass_floor_g so F=ma can never divide by zero.",
   "defaults": {
-    "mass_floor_g": 0.02,
+    "mass_floor_g": 0.001,
     "areal_density_kg_m2": 3.0
   },
   "by_footprint_id": {
@@ -53,7 +53,7 @@
     {"match": "Transformer", "mass_g": 5.0, "note": "small transformer, rough"},
     {"match": "Tube", "mass_g": 6.0, "note": "subminiature tube, VERY rough"},
     {"match": "tube", "mass_g": 6.0, "note": "tube footprint, VERY rough"},
-    {"match": "MountingHole", "mass_g": 0.02, "note": "no component; floor only"},
-    {"match": "Symbol", "mass_g": 0.02, "note": "silkscreen/graphic; floor only"}
+    {"match": "MountingHole", "mass_g": 0.001, "note": "no component; floor only"},
+    {"match": "Symbol", "mass_g": 0.001, "note": "silkscreen/graphic; floor only"}
   ]
 }

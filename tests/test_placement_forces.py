@@ -10,7 +10,7 @@ loosen a bound just to make red go green.
 Conventions: boards mirror tests/test_placement_pairs.py (valid head-to-tail
 courtyard rects at board coords, virtual single region from Edge.Cuts).
 Probes use max_iterations=0 (static force at the committed pose); runs use
-short budgets with convergence_eps_mm=1e-12 so the full budget executes.
+short budgets with convergence_eps_m=1e-15 so the full budget executes.
 """
 
 import math
@@ -63,12 +63,12 @@ def _overlap(fa_uuid="uuid-a", fb_uuid="uuid-b", dx=1.0):
 def _base_params(**kw):
     base = dict(
         max_iterations=10,
-        convergence_eps_mm=1e-12,
-        repulsion_kr=100.0,
-        attraction_ka=0.05,
-        courtyard_repulsion_kc=10000.0,
-        courtyard_halo_mm=3.0,
-        boundary_repulsion_kb=1.0,
+        convergence_eps_m=1e-15,
+        repulsion_k_N_m2=1.0000000000000001e-07,
+        attraction_k_N=5e-05,
+        wall_k_N=0.01,
+        wall_halo_m=0.003,
+        boundary_k_N=1e-06,
     )
     base.update(kw)
     return PlacementParams(**base)
@@ -126,19 +126,27 @@ class TestOverlapLaw:
     def test_coincident_parts_separate(self):
         """Perfectly stacked outlines previously felt zero force (the
         intersection centroid sat exactly on the polygon centroid and
-        failed the dist guard). The deterministic tiebreak must split
-        them in opposite directions."""
+        failed the dist guard). The pair must split in opposite
+        directions.
+
+        NOTE (SI MTV contact): separation escapes along the minimum-
+        translation axis — the short side (y for these 6x4 rects), not
+        the old centroid-tiebreak x. The axis is assert-agnostic; what
+        matters is opposite nonzero motion plus shrinking overlap.
+        """
         model = _overlap(dx=0.0)
         before = overlap_area(model, {})
         assert before > 20.0
         prop = run_placement(model, _base_params(max_iterations=3))
         after = overlap_area(model, prop.deltas)
         assert after < before, f"coincident parts must separate ({before} -> {after})"
-        dx_a, _, _ = prop.deltas["uuid-a"]
-        dx_b, _, _ = prop.deltas["uuid-b"]
-        assert dx_a * dx_b < 0.0, (
-            f"pair must split in opposite x directions ({dx_a} vs {dx_b})"
+        dx_a, dy_a, _ = prop.deltas["uuid-a"]
+        dx_b, dy_b, _ = prop.deltas["uuid-b"]
+        dot = dx_a * dx_b + dy_a * dy_b
+        assert dot < 0.0, (
+            f"pair must move in opposite directions ({dx_a, dy_a} vs {dx_b, dy_b})"
         )
+        assert math.hypot(dx_a, dy_a) > 1e-9, "separation must be nonzero"
 
     def test_overlap_resolves_to_zero(self):
         model = _overlap(dx=1.0)
@@ -166,10 +174,10 @@ class TestAttractionRepulsionEquilibrium:
         prop = run_placement(
             model,
             _base_params(max_iterations=500,
-                         convergence_eps_mm=1e-6,
+                         convergence_eps_m=1e-09,
                          repulsion_kr=kr, attraction_ka=ka,
-                         courtyard_repulsion_kc=1e-9,
-                         boundary_repulsion_kb=1e-9),
+                         wall_k_N=1e-15,
+                         boundary_k_N=1e-15),
         )
         moved = apply_deltas(model, prop.deltas)
         ax = moved.by_ref["A"].x_mm
@@ -183,9 +191,9 @@ class TestAttractionRepulsionEquilibrium:
         ])
         prop = run_placement(
             model,
-            _base_params(max_iterations=5, repulsion_kr=1e-9,
-                         attraction_ka=1.0, courtyard_repulsion_kc=1e-9,
-                         boundary_repulsion_kb=1e-9),
+            _base_params(max_iterations=5, repulsion_k_N_m2=1e-18,
+                         attraction_k_N=0.001, wall_k_N=1e-15,
+                         boundary_k_N=1e-15),
         )
         moved = apply_deltas(model, prop.deltas)
         assert moved.by_ref["B"].x_mm < 10.0
@@ -198,9 +206,9 @@ class TestAttractionRepulsionEquilibrium:
         ])
         prop = run_placement(
             model,
-            _base_params(max_iterations=5, attraction_ka=0.0,
-                         courtyard_repulsion_kc=1e-9,
-                         boundary_repulsion_kb=1e-9),
+            _base_params(max_iterations=5, attraction_k_N=0.0,
+                         wall_k_N=1e-15,
+                         boundary_k_N=1e-15),
         )
         moved = apply_deltas(model, prop.deltas)
         assert moved.by_ref["B"].x_mm > 10.0
@@ -217,8 +225,8 @@ class TestCourtyardRole:
         before = overlap_area(model, {})
         prop = run_placement(
             model,
-            _base_params(max_iterations=5, repulsion_kr=0.01,
-                         courtyard_repulsion_kc=1e-9),
+            _base_params(max_iterations=5, repulsion_k_N_m2=1.0000000000000001e-11,
+                         wall_k_N=1e-15),
         )
         after = overlap_area(model, prop.deltas)
         assert after > before * 0.5, (
@@ -256,7 +264,7 @@ class TestBoundaryRole:
             return run_placement(
                 model,
                 _base_params(max_iterations=10, boundary_repulsion_kb=kb,
-                             courtyard_repulsion_kc=1e-9),
+                             wall_k_N=1e-15),
             ), model
 
         (walled, model) = run(20000.0)
@@ -294,7 +302,7 @@ class TestGhostRole:
     def test_ghost_pulls_target(self):
         model = self._ghost_board()
         prop = run_placement(
-            model, _base_params(max_iterations=30, repulsion_kr=1.0)
+            model, _base_params(max_iterations=30, repulsion_k_N_m2=1e-09)
         )
         assert "uuid-t" in prop.deltas
         _, dy, _ = prop.deltas["uuid-t"]
@@ -366,10 +374,10 @@ class TestRigidProjection:
         def _dx(iters):
             params = _base_params(
                 max_iterations=iters,
-                repulsion_kr=100.0,
-                attraction_ka=0.05,
-                courtyard_repulsion_kc=1e-9,
-                boundary_repulsion_kb=1e-9,
+                repulsion_k_N_m2=1.0000000000000001e-07,
+                attraction_k_N=5e-05,
+                wall_k_N=1e-15,
+                boundary_k_N=1e-15,
                 include_power_nets=False,
                 decap_boost=0.0,
             )
