@@ -712,14 +712,15 @@ loadInput.addEventListener("change", async () => {
 // (repulsion, solver internals, mass fallbacks) stays API-only at
 // calibrated defaults — POST /api/placement/params merges, so hidden keys
 // in placement.json survive GUI saves.
+// Ranges cover both Cluster (scattered starts) and Legalize (placed boards) regimes.
 const PARAM_DEFS = [
-  { key: "attraction_k_N", label: "Attraction k (N)", min: 1e-4, max: 1e-1, step: 1e-4, log: true },
-  { key: "wall_k_N", label: "Wall push (N)", min: 1e-5, max: 1e-1, step: 1e-5, log: true },
+  { key: "attraction_k_N", label: "Attraction k (N)", min: 1e-4, max: 2e-1, step: 1e-4, log: true },
+  { key: "wall_k_N", label: "Wall stiffness k (N)", min: 1e-5, max: 1, step: 1e-5, log: true },
   // display: UI shows millimeters, engine/API stay SI (see toDisplay/fromDisplay).
-  { key: "wall_halo_m", label: "Wall halo (mm)", min: 0, max: 0.02, step: 0.0005,
+  { key: "wall_halo_m", label: "Wall halo (mm)", min: 0, max: 0.015, step: 0.0005,
     display: { unit: "mm", scale: 1000, step: 0.5 } },
   { key: "boundary_k_N", label: "Boundary push (N)", min: 1e-4, max: 1, step: 1e-4, log: true },
-  { key: "damping_Ns_m", label: "Damping (N·s/m)", min: 1e-4, max: 1, step: 1e-4, log: true },
+  { key: "damping_Ns_m", label: "Damping (N·s/m)", min: 1e-3, max: 1, step: 1e-4, log: true },
   { key: "max_iterations", label: "Max iterations", min: 1, max: 20000, step: 10 },
 ];
 
@@ -729,21 +730,30 @@ const ADVANCED_PARAM_DEFS = [
   { key: "ghost_k_N", label: "Ghost pull (N)", min: 1e-7, max: 1e-3, step: 1e-7, log: true },
   { key: "convergence_eps_m", label: "Convergence eps (mm)", min: 1e-7, max: 1e-3, step: 1e-7, log: true,
     display: { unit: "mm", scale: 1000, step: 0.0001 } },
+  { key: "vmax_m_s", label: "Max speed (mm/s)", min: 10, max: 5000, step: 10,
+    display: { unit: "mm/s", scale: 1000, step: 10 } },
+  { key: "dt_s", label: "Timestep (ms)", min: 0.1, max: 5, step: 0.1,
+    display: { unit: "ms", scale: 1000, step: 0.1 } },
+  { key: "friction_N", label: "Friction deadband (µN)", min: 0.1, max: 100, step: 0.1,
+    display: { unit: "µN", scale: 1e6, step: 0.1 } },
 ];
 
 const ALL_PARAM_DEFS = [...PARAM_DEFS, ...ADVANCED_PARAM_DEFS];
 
 const PARAM_DESC = {
-  attraction_k_N: "Constant-magnitude attraction between net-connected pads (newtons). Calibrated default 8e-3; scattered-start clustering wants ~0.04-0.06. Log scale.",
-  wall_k_N: "Elastic collision push when courtyards overlap or enter the halo (newtons). Contact strength; falls linearly to zero at the halo edge. Log scale.",
-  wall_halo_m: "Near-miss reach past part outlines. Shown in mm; stored in meters.",
+  attraction_k_N: "Constant-magnitude attraction between net-connected pads (newtons). Legalize: 0.005-0.01; Cluster: 0.04-0.06. Log scale.",
+  wall_k_N: "Elastic collision stiffness when courtyards overlap or enter the halo (newtons). Peak force = k * (1 + area/area_ref). Legalize: 0.08-0.1; Cluster: 0.02-0.03. Log scale.",
+  wall_halo_m: "Near-miss reach past part outlines. Shown in mm; stored in meters. Default 6mm.",
   boundary_k_N: "Push from board region edges (newtons). Decisive at the edge without shoving edge-near parts into neighbors. Log scale.",
-  damping_Ns_m: "Viscous damping F = −c·v (N·s/m). The physics damper: higher settles faster with less overshoot. Log scale.",
+  damping_Ns_m: "Viscous damping F = −c·v (N·s/m). The physics damper: higher settles faster with less overshoot. Legalize: 0.12-0.15; Cluster: 0.08. Log scale.",
   max_iterations: "Hard limit on simulation steps (dimensionless).",
   power_attraction_scale: "Power-rail attraction trim (fanout-scaled k/(fanout-1) per edge). 1 = full participation; 0 restores the old exclude-power behavior.",
   decap_boost: "Decoupling-cap edge multiplier (on top of fanout scaling). Also gates the decap GND-side exception: 0 removes decap GND edges.",
   ghost_k_N: "Ghost attractor spring scale (newtons); file ka values weight it. Log scale. Only matters with ghost attractors.",
   convergence_eps_m: "Stop when max pad displacement per step falls below this. Shown in mm; stored in meters. Smaller runs longer; larger stops earlier. Log scale.",
+  vmax_m_s: "Speed ceiling for pad velocities and rigid-step clamp (m/s). Higher allows faster movement but less stable. Default 1.0 m/s.",
+  dt_s: "Simulation timestep (seconds). Adaptive guard halves on energy rise, regrows on fall. Default 1ms.",
+  friction_N: "Dry-friction deadband (newtons). Whole footprint freezes when all pad forces below this. Default 1e-6 N.",
 };
 
 // Display-unit conversion: defs with `display: {scale}` show scaled values
@@ -896,11 +906,11 @@ async function loadParams(defaultsOnly = false) {
 }
 
 // Regime presets from docs/si_force_laws.md §3: no single ratio clusters
-// AND legalizes, so offer the two calibrated starting points. dt_s rides
-// along via the merge-POST even though it has no slider.
+// AND legalizes, so offer the two calibrated starting points. dt_s, vmax,
+// friction ride along via the merge-POST even though they have no main-panel sliders.
 const REGIME_PRESETS = {
-  cluster: { attraction_k_N: 0.05, wall_k_N: 0.025, damping_Ns_m: 0.08, dt_s: 2e-3 },
-  legalize: { attraction_k_N: 0.008, wall_k_N: 0.09, damping_Ns_m: 0.13, dt_s: 1e-3 },
+  cluster: { attraction_k_N: 0.05, wall_k_N: 0.025, damping_Ns_m: 0.08, dt_s: 2e-3, vmax_m_s: 1.0, friction_N: 1e-6 },
+  legalize: { attraction_k_N: 0.008, wall_k_N: 0.09, damping_Ns_m: 0.13, dt_s: 1e-3, vmax_m_s: 1.0, friction_N: 1e-6 },
 };
 
 async function applyRegimePreset(name) {
