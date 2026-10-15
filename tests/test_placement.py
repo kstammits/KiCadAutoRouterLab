@@ -381,13 +381,13 @@ class TestCourtyardHalo:
             assert (fx, fy) == pytest.approx((0.0, 0.0))
 
     def test_falloff_capped_and_monotonic(self):
-        kc = 100.0
+        kc = 0.01  # SI newtons: halo saturates at wall_k_N
         mags = []
         for gap in (0.1, 1.5, 2.9):
             m = _two_squares_model(gap_mm=gap)
             p = PlacementParams(
                 max_iterations=0, repulsion_k_N_m2=1e-09,
-                courtyard_repulsion_kc=kc, wall_halo_m=0.003,
+                wall_k_N=kc, wall_halo_m=0.003,
             )
             prop = run_placement(m, p)
             fx, fy = _courtyard_of(prop, "aaaaaaaa-0000-0000-0000-000000000001")
@@ -405,11 +405,14 @@ class TestCourtyardHalo:
         Re-baselined 2026-10-10 (was test_c11_quarter_inch_clearance_is_quiet):
         the courtyard-outline fix (polygonize/unary_union) recovered true
         outlines, and C11/R11 now measure 1.30mm apart (inside the 3mm halo;
-        R14 sits exactly at the 3.00mm halo edge). So ~22.7 units of
-        legitimate halo contact replaced the buggy-shape 0.0. The upper
-        bound (< 50) still catches the old ~3800 blow-up by two orders of
-        magnitude; the lower bound (> 5) pins that contact is detected
-        (guards against a regression back to silent pad-bbox shapes).
+        R14 sits exactly at the 3.00mm halo edge).
+
+        SI re-baseline: forces are newtons, so the halo reads ~0.57×wall
+        at the 1.3mm gap. The upper bound (1.0×wall) still catches the old
+        far-field blow-up (20-30mm-away RV sockets pushing with ~190×wall
+        under the old size-scaled halo); the lower bound (0.1×wall) pins
+        that contact is detected (guards against a regression back to
+        silent pad-bbox shapes, which read exactly 0.0).
 
         Measured at the rest layout (max_iterations=0) on purpose: after
         live iterations the pads slosh on mm scale (hot start + stiff
@@ -417,9 +420,10 @@ class TestCourtyardHalo:
         across adjacent iteration counts (2026-10-10), so any threshold
         on the post-motion value pins a chaotic landing, not physics.
         """
+        wall = 1.9999999999999998e-05
         p = PlacementParams(
             max_iterations=0,
-            wall_k_N=1.9999999999999998e-05,
+            wall_k_N=wall,
             wall_halo_m=0.003,
         )
         prop = run_placement(
@@ -429,9 +433,6 @@ class TestCourtyardHalo:
         uuid = "883e9176-8fb8-4697-9a2d-1a656ba552fe"
         comps = prop.force_components[uuid]
         courtyard = math.hypot(*comps["courtyard"])
-        # Legitimate R11 contact at 1.3mm gap measures ~22.7; was ~3800
-        # from 20-30mm-away RV sockets under the old size-scaled halo,
-        # and 0.0 under the buggy pad-bbox shapes.
         # With pin courtyards for THT pads, additional cross-layer collisions
         # are detected (e.g., RV1 THT pins vs C11 body), increasing force.
-        assert 5.0 < courtyard < 100.0, f"C11 courtyard={courtyard:.2f}"
+        assert 0.1 * wall < courtyard < 1.0 * wall, f"C11 courtyard={courtyard:.2g}"

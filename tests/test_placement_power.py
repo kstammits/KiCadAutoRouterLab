@@ -84,10 +84,12 @@ def _decap_params(**kw):
         convergence_eps_m=1e-15,
         repulsion_k_N_m2=1e-09,
         attraction_k_N=5e-05,
-        wall_k_N=1e-15,
-        boundary_k_N=1e-15,
-        friction_threshold_mm=0.0,
-    )
+            wall_k_N=1e-15,
+            boundary_k_N=1e-15,
+            # SI rename: friction_threshold_mm (displacement deadband) is
+            # now friction_N (force deadband); 0.0 still disables it.
+            friction_N=0.0,
+        )
     base.update(kw)
     return PlacementParams(**base)
 
@@ -250,8 +252,9 @@ class TestPowerBehavior:
         fx, _ = prop.forces["uuid-c1"]
         assert fx < 0.0
         ax, _ = prop.force_components["uuid-c1"]["attraction"]
-        assert ax == pytest.approx(-0.4), (
-            f"decap attraction must be 2 boosted edges x ka=0.05, got {ax}"
+        # SI newtons: 2 boosted edges x ka=5e-5 x decap_boost=4.0.
+        assert ax == pytest.approx(-0.0004), (
+            f"decap attraction must be 2 boosted edges x ka=5e-5 x boost 4, got {ax}"
         )
 
     def test_decap_drifts_without_power(self):

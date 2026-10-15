@@ -105,7 +105,6 @@ class TestOverlapLaw:
         """First touch from outside (halo max = kc) meets first touch from
         inside (kc * (1 + ~0 area)): no force cliff at the contact plane
         that the integrator could tunnel through."""
-        kc = 10000.0
         # 2x2 squares touching edge-to-edge: halo branch at zero gap.
         touching = _board([
             _single_pad("A", "uuid-a", 0.0, 0.0, "N1"),
@@ -120,6 +119,8 @@ class TestOverlapLaw:
         prop_in = run_placement(overlapping, _base_params(max_iterations=0))
         halo_at_contact = _courtyard_mag(prop_out, "uuid-b")
         overlap_just_inside = _courtyard_mag(prop_in, "uuid-b")
+        # SI newtons: halo saturates at wall_k_N (see _base_params).
+        kc = 0.01
         assert halo_at_contact == pytest.approx(kc, rel=0.01)
         assert overlap_just_inside == pytest.approx(kc, rel=0.05)
 
@@ -149,8 +150,11 @@ class TestOverlapLaw:
         assert math.hypot(dx_a, dy_a) > 1e-9, "separation must be nonzero"
 
     def test_overlap_resolves_to_zero(self):
+        # NOTE (SI damping): the damped approach needs ~30 iterations to
+        # clear a 20mm² overlap with wall_k_N=0.01; the intent (no
+        # persistent interpenetration) is unchanged, only the runway.
         model = _overlap(dx=1.0)
-        prop = run_placement(model, _base_params(max_iterations=10))
+        prop = run_placement(model, _base_params(max_iterations=30))
         assert overlap_area(model, prop.deltas) == pytest.approx(0.0, abs=1e-6)
 
 
@@ -166,7 +170,8 @@ class TestAttractionRepulsionEquilibrium:
     """
 
     def test_pair_settles_at_sqrt_kr_over_ka(self):
-        kr, ka = 4.0, 1.0
+        # SI units: kr in N·m², ka in N, equilibrium d = sqrt(kr/ka) meters.
+        kr, ka = 5e-7, 5e-3  # ~10mm equilibrium
         model = _board([
             _single_pad("A", "uuid-a", 0.0, 0.0, "N1", hw=0.25, hh=0.25),
             _single_pad("B", "uuid-b", 8.0, 0.0, "N1", hw=0.25, hh=0.25),
@@ -175,14 +180,15 @@ class TestAttractionRepulsionEquilibrium:
             model,
             _base_params(max_iterations=500,
                          convergence_eps_m=1e-09,
-                         repulsion_kr=kr, attraction_ka=ka,
+                         repulsion_k_N_m2=kr, attraction_k_N=ka,
                          wall_k_N=1e-15,
                          boundary_k_N=1e-15),
         )
         moved = apply_deltas(model, prop.deltas)
         ax = moved.by_ref["A"].x_mm
         bx = moved.by_ref["B"].x_mm
-        assert abs(bx - ax) == pytest.approx(math.sqrt(kr / ka), rel=0.25)
+        assert abs(bx - ax) == pytest.approx(
+            math.sqrt(kr / ka) * 1000.0, rel=0.25)
 
     def test_attraction_pulls_together(self):
         model = _board([
@@ -254,20 +260,25 @@ class TestBoundaryRole:
     """Boundary repulsion is what keeps parts inside the region outline."""
 
     def test_wall_holds_against_shove(self):
+        # NOTE (SI boundary): reach is dynamic (10% of body size, min
+        # 1mm), so A must start inside 1mm of the edge at x=-30 for the
+        # wall to engage; at -26 the wall is silent by design.
         def run(kb):
             model = _board([
-                _single_pad("A", "uuid-a", -26.0, 0.0, "N1",
+                _single_pad("A", "uuid-a", -29.0, 0.0, "N1",
                             hw=0.25, hh=0.25),
                 _single_pad("B", "uuid-b", -18.0, 0.0, "N2",
                             hw=0.25, hh=0.25),
             ])
             return run_placement(
                 model,
-                _base_params(max_iterations=10, boundary_repulsion_kb=kb,
+                _base_params(max_iterations=10, boundary_k_N=kb,
                              wall_k_N=1e-15),
             ), model
 
-        (walled, model) = run(20000.0)
+        # SI newtons: the Coulomb shove here is ~1.5mN, so 0.05N of wall
+        # holds while 1nN is transparent.
+        (walled, model) = run(0.05)
         (open_, _) = run(1e-9)
         ax_walled = apply_deltas(model, walled.deltas).by_ref["A"].x_mm
         ax_open = apply_deltas(model, open_.deltas).by_ref["A"].x_mm
@@ -388,9 +399,47 @@ class TestRigidProjection:
             f"pair must drift monotonically apart, got {traj}"
         )
 
+    def test_angular_deadband_kills_creep_not_torque(self):
+        """Sub-0.1°/step rotations are noise (orientation random-walk over
+        long runs); genuine torque passes through and the 5° rate cap
+        still bounds large swings. Translation is preserved in all cases.
+        """
+        import numpy as np
+
+        from kicad_autorouter.placement import (
+            MIN_ROT_STEP_RAD,
+            _clamp_rigid_step,
+        )
+
+        assert MIN_ROT_STEP_RAD == pytest.approx(math.radians(0.1))
+        old = np.array([[0.0, 0.0], [2.0, 0.0]])
+
+        def posed(deg):
+            r = math.radians(deg)
+            c, s = math.cos(r), math.sin(r)
+            cc = old.mean(axis=0)
+            return (old - cc) @ np.array([[c, s], [-s, c]]) + cc + [0.05, 0.0]
+
+        def out_angle(deg):
+            pos = posed(deg)
+            _clamp_rigid_step(
+                pos, old, [(np.array([0, 1]), old.copy())],
+                np.array([True, True]),
+                cap_mm=1.0, max_rot_rad=math.radians(5.0))
+            va, vb = old[1] - old[0], pos[1] - pos[0]
+            return abs(math.degrees(
+                math.atan2(vb[1], vb[0]) - math.atan2(va[1], va[0])))
+
+        assert out_angle(0.05) == pytest.approx(0.0, abs=1e-9)
+        assert out_angle(0.5) == pytest.approx(0.5, rel=0.01)
+        assert out_angle(10.0) == pytest.approx(5.0, rel=0.01)
+
     def test_no_stiffness_knob(self):
         """The spring is gone: no rigid_stiffness field, and legacy files
         carrying it still load (from_dict ignores unknown keys)."""
         assert not hasattr(PlacementParams(), "rigid_stiffness")
-        q = PlacementParams.from_dict({"repulsion_kr": 1.0, "rigid_stiffness": 5e5})
-        assert q.repulsion_kr == 1.0
+        q = PlacementParams.from_dict(
+            {"repulsion_k_N_m2": 1e-7, "rigid_stiffness": 5e5,
+             "repulsion_kr": 4.0})
+        assert q.repulsion_k_N_m2 == pytest.approx(1e-7)
+        assert not hasattr(q, "repulsion_kr")

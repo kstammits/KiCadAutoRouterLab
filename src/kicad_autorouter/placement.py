@@ -493,6 +493,14 @@ def _project_rigid_poses(
         positions[rows] = (ref - ref_center) @ r.T + prop_center
 
 
+# Angular deadband (rad/step): per-step rotations below this are numerical
+# / gradient creep, not torque response — drop them so orientation doesn't
+# random-walk over long runs. Deliberately NOT a PlacementParams slider:
+# it is a noise floor, not a tuning knob. Genuine torque (degrees/step)
+# passes through untouched.
+MIN_ROT_STEP_RAD = math.radians(0.1)
+
+
 def _clamp_rigid_step(
     positions: np.ndarray,
     old_positions: np.ndarray,
@@ -500,6 +508,7 @@ def _clamp_rigid_step(
     pad_movable: np.ndarray,
     cap_mm: float,
     max_rot_rad: float,
+    min_rot_rad: float = MIN_ROT_STEP_RAD,
 ) -> None:
     """Bound post-projection rigid motion per body per step (SI safety net).
 
@@ -512,9 +521,11 @@ def _clamp_rigid_step(
 
     Per movable body: clamp centroid shift to ``cap_mm`` and rotation change
     (vs the pre-step pose) to ``max_rot_rad``, re-posing pads rigidly from
-    the old pose. Deterministic function of the trajectory, so the
-    no-cooling invariant holds. Single-pad footprints never appear here
-    (trivially rigid; already bounded by the velocity cap alone).
+    the old pose. Rotations below ``min_rot_rad`` are dropped outright
+    (angular deadband against creep spin). Deterministic function of the
+    trajectory, so the no-cooling invariant holds. Single-pad footprints
+    never appear here (trivially rigid; already bounded by the velocity
+    cap alone).
     """
     if cap_mm <= 0 or max_rot_rad <= 0:
         return
@@ -556,6 +567,8 @@ def _clamp_rigid_step(
             dth -= 2.0 * math.pi
         while dth < -math.pi:
             dth += 2.0 * math.pi
+        if abs(dth) < min_rot_rad:
+            dth = 0.0
         if dth > max_rot_rad:
             dth = max_rot_rad
         elif dth < -max_rot_rad:

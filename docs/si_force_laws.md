@@ -156,9 +156,17 @@ guesses were wrong, not the method.
 
 Known residuals (follow-ups, not regressions): DCCF keeps 1–2 wedged
 pairs (e.g. R13 vs RV1's 76 mm-wide courtyard span: net anchor lies
-across a locked obstacle → shuttle limit cycle); small parts accumulate
-tens of degrees of rotation over long runs (rotation is emergent and only
-viscous-damped, 5°/step clamp bounds the rate, not the total).
+across a locked obstacle → shuttle limit cycle); sub-0.1°/step rotation
+creep is dropped by the angular deadband (`MIN_ROT_STEP_RAD` in the
+rigid-step clamp — a noise floor, not a slider), but large slow flips
+still occur when the torque is genuine (observed: 0805 flipping ~160°
+toward its rail over 400 iters — a compass-needle response, kept
+deliberately since gradual movement must keep working).
+
+Future, not planned: orientation-matching neighboring parts. It conflicts
+with the force-driven orientation above (neighbors agreeing on an angle
+vs each part following its own net/wall torque), so it needs its own
+design before anyone builds it.
 
 ## 4. Mass model
 

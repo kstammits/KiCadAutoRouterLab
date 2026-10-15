@@ -402,8 +402,9 @@ class TestLenientCourtyard:
 
     def test_disc_cap_in_large_rect_courtyard_overlap_force(self):
         """Disc cap (2mm dia) centered in large rect (10x5mm): measure overlap force.
-        
-        With default kc=2000, overlap area ~3.14mm² -> force ~kc*(1+3.14) ~8000.
+
+        SI newtons: F = wall*(1 + area/area_ref) with wall=0.002 (see
+        _base_params) and area_ref=4mm² -> 0.002*(1+pi/4) ~ 3.6e-3.
         This test documents the force level for tuning 'lenient' behavior.
         """
         # Large rectangular courtyard (like a connector body)
@@ -420,13 +421,13 @@ class TestLenientCourtyard:
         mag = math.hypot(fx, fy)
         
         # Document the force level - user can decide if this is "lenient" enough
-        # Overlap area = pi * 1^2 = 3.14 (but shapely approximates circle with 8 segments)
-        # force = kc * (1 + area) = 2000 * (1 + ~3.14) = ~8280
-        # Actual measured force will be slightly different due to polygon approximation
-        expected_force = 2000.0 * (1.0 + math.pi * 1.0**2)
+        # Overlap area = pi * 1^2 = 3.14 (shapely approximates the circle;
+        # measured footprint polygon area is used, tolerance absorbs it).
+        # force = wall * (1 + area / area_ref), area_ref = 4mm² default.
+        expected_force = 0.002 * (1.0 + math.pi * 1.0**2 / 4.0)
         assert mag == pytest.approx(expected_force, rel=0.1), (
-            f"Overlap force {mag:.0f} vs expected {expected_force:.0f} "
-            f"(for kc=2000, area=pi*1^2). Tune kc or add deadband for 0.5mm tolerance."
+            f"Overlap force {mag:.2g} vs expected {expected_force:.2g} "
+            f"(wall=0.002, area=pi*1^2). Tune wall or add deadband for 0.5mm tolerance."
         )
 
     def test_overlap_exceeds_tolerance_pushes_out(self):
@@ -486,8 +487,11 @@ class TestRV1Scenarios:
         resistor = make_smd_resistor("R1", "uuid-r1", 37.0, 1.75, "NET_A", "NET_B", hw=1.5, hh=1.0)
         
         model = _board([rv1, resistor])
-        prop = run_placement(model, _base_params(max_iterations=100))
-        
+        # NOTE (SI damping): the damped escape needs ~200 iterations to
+        # cover the ~6mm to the top edge; direction was always correct
+        # (nearest-edge MTV escape), only the runway changed.
+        prop = run_placement(model, _base_params(max_iterations=200))
+
         # Check final position - should be outside RV1 courtyard
         dx, dy, da = prop.deltas.get("uuid-r1", (0, 0, 0))
         final_x = 37.0 + dx
@@ -514,9 +518,14 @@ class TestRV1Scenarios:
         resistor = make_smd_resistor("R1", "uuid-r1", -10.0, 0.0, "B1", "NET_B", hw=1.5, hh=1.0)
         
         model = _board([rv1, resistor])
+        # NOTE (SI force scales): ka=0.002 loses to the ~mN Coulomb field
+        # of RV1's 7 pads at 10mm, so the part drifts away. ka=0.01 wins
+        # the approach while wall=0.08 (8x margin at contact) still holds
+        # the courtyard edge — the calibrated balance this scenario pins.
         prop = run_placement(model, _base_params(
             max_iterations=100,
-            attraction_k_N=0.002,  # Stronger attraction
+            attraction_k_N=0.01,
+            wall_k_N=0.08,
         ))
         
         dx, dy, da = prop.deltas.get("uuid-r1", (0, 0, 0))

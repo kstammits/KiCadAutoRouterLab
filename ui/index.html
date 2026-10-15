@@ -696,44 +696,26 @@ loadInput.addEventListener("change", async () => {
   loadInput.value = "";
 });
 
+// Trimmed 2026-10-15: only calibrated behavior knobs get sliders. Removed
+// params stay live in the API (POST /api/placement/params accepts every
+// PlacementParams field; saved placement.json values keep loading) — they
+// are just fixed at calibrated defaults in the GUI.
 const PARAM_DEFS = [
-  { key: "repulsion_k_N_m2", label: "Repulsion k (N·m²)", min: 1e-9, max: 1e-5, step: 1e-9, log: true },
-  { key: "attraction_k_N", label: "Attraction k (N)", min: 1e-7, max: 1e-3, step: 1e-7, log: true },
-  { key: "max_iterations", label: "Max iterations", min: 1, max: 20000, step: 10 },
-  { key: "convergence_eps_m", label: "Convergence eps (m)", min: 1e-7, max: 1e-3, step: 1e-7, log: true },
+  { key: "attraction_k_N", label: "Attraction k (N)", min: 1e-4, max: 1e-1, step: 1e-4, log: true },
   { key: "wall_k_N", label: "Wall push (N)", min: 1e-5, max: 1e-1, step: 1e-5, log: true },
-  { key: "wall_area_ref_m2", label: "Wall area ref (m²)", min: 1e-7, max: 1e-4, step: 1e-7, log: true },
   { key: "wall_halo_m", label: "Wall halo (m)", min: 0, max: 0.02, step: 0.0005 },
   { key: "boundary_k_N", label: "Boundary push (N)", min: 1e-4, max: 1, step: 1e-4, log: true },
-  { key: "ghost_k_N", label: "Ghost pull (N)", min: 1e-7, max: 1e-3, step: 1e-7, log: true },
   { key: "damping_Ns_m", label: "Damping (N·s/m)", min: 1e-4, max: 1, step: 1e-4, log: true },
-  { key: "friction_N", label: "Friction (N)", min: 1e-9, max: 1e-3, step: 1e-9, log: true },
-  { key: "dt_s", label: "Timestep (s)", min: 1e-5, max: 2e-2, step: 1e-5, log: true },
-  { key: "vmax_m_s", label: "Speed cap (m/s)", min: 0, max: 2, step: 0.05 },
-  { key: "power_attraction_scale", label: "Power attraction", min: 0, max: 10, step: 0.05 },
-  { key: "decap_boost", label: "Decap boost", min: 0, max: 16, step: 0.5 },
-  { key: "mass_density_kg_m2", label: "Mass density (kg/m²)", min: 0.1, max: 30, step: 0.1, log: true },
-  { key: "mass_floor_kg", label: "Mass floor (kg)", min: 1e-10, max: 1e-6, step: 1e-10, log: true },
+  { key: "max_iterations", label: "Max iterations", min: 1, max: 20000, step: 10 },
 ];
 
 const PARAM_DESC = {
-  repulsion_k_N_m2: "Coulomb repulsion between ALL pads (F = k/d², d in meters). Balances attraction at d = √(k_rep/k_attr). Log scale.",
-  attraction_k_N: "Constant-magnitude attraction between net-connected pads (newtons). Log scale.",
-  max_iterations: "Hard limit on simulation steps (dimensionless).",
-  convergence_eps_m: "Stop when max pad displacement per step falls below this (meters). Log scale.",
+  attraction_k_N: "Constant-magnitude attraction between net-connected pads (newtons). Calibrated default 8e-3; scattered-start clustering wants ~0.04-0.06. Log scale.",
   wall_k_N: "Elastic collision push when courtyards overlap or enter the halo (newtons). Contact strength; falls linearly to zero at the halo edge. Log scale.",
-  wall_area_ref_m2: "Overlap-area normalization (m²): F = k_wall·(1 + area/area_ref). Smaller = stiffer response to deep overlap. Log scale.",
   wall_halo_m: "Near-miss reach past part outlines (meters).",
   boundary_k_N: "Push from board region edges (newtons). Decisive at the edge without shoving edge-near parts into neighbors. Log scale.",
-  ghost_k_N: "Ghost attractor spring scale (newtons); file ka values weight it. Log scale.",
   damping_Ns_m: "Viscous damping F = −c·v (N·s/m). The physics damper: higher settles faster with less overshoot. Log scale.",
-  friction_N: "Dry-friction deadband: a footprint freezes when its largest pad force drops below this (newtons). Log scale.",
-  dt_s: "Timestep (seconds). Adaptive guard halves it on energy rise. Log scale.",
-  vmax_m_s: "Speed ceiling (m/s): replaces the old per-iteration displacement cap.",
-  power_attraction_scale: "Power-rail attraction trim (fanout-scaled k/(fanout-1) per edge). 1 = full participation; 0 restores the old exclude-power behavior.",
-  decap_boost: "Decoupling-cap edge multiplier (on top of fanout scaling). Also gates the decap GND-side exception: 0 removes decap GND edges.",
-  mass_density_kg_m2: "Fallback mass slope (kg per m² of courtyard area) for parts missing from data/footprint_mass.json. Log scale.",
-  mass_floor_kg: "Minimum part mass (kg). Safety floor so F=ma never divides by zero. Log scale.",
+  max_iterations: "Hard limit on simulation steps (dimensionless).",
 };
 
 const paramsGrid = document.getElementById("params-grid");

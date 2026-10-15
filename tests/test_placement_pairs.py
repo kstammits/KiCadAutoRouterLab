@@ -121,8 +121,11 @@ def test_movable_separates_from_earlier_immobile():
     assert dx > 0.0
     comps = prop.force_components["uuid-b"]
     assert set(comps) == {"repulsion", "attraction", "ghost", "courtyard", "boundary"}
-    cx, _ = comps["courtyard"]
-    assert cx > 1e4  # old code: exactly 0.0 (pair never evaluated)
+    # NOTE (SI MTV contact): the 5mm-x / 4mm-y overlap escapes along the
+    # minimum axis (±y), so the wall force reads on cy, not cx. Old code
+    # reported exactly 0.0 on every axis (pair never evaluated).
+    _, cy = comps["courtyard"]
+    assert cy > 1e-3
 
 
 @pytest.mark.regression
@@ -136,8 +139,9 @@ def test_movable_separates_from_later_immobile():
     assert "uuid-a" not in prop.deltas
     dx, _, _ = prop.deltas["uuid-b"]
     assert dx < 0.0  # B sits west of A here: pushed west
-    cx, _ = prop.force_components["uuid-b"]["courtyard"]
-    assert cx < -1e4  # old code: exactly 0.0 (pair never evaluated)
+    # NOTE (SI MTV contact): escape axis is ±y here; see above.
+    _, cy = prop.force_components["uuid-b"]["courtyard"]
+    assert cy < -1e-3  # old code: exactly 0.0 (pair never evaluated)
 
 
 @pytest.mark.regression
@@ -217,8 +221,9 @@ def test_contact_weighting_conserves_total():
         boundary_k_N=1e-06,
     )
     prop = run_placement(model, params, movable_uuids={"uuid-b"})
-    total_fx, _ = prop.forces["uuid-b"]
-    assert total_fx > 1e4  # sanity: the pair push exists
+    total_fx, total_fy = prop.forces["uuid-b"]
+    # SI newtons: Coulomb ~0.1N in x, wall ~0.06N in y (MTV escape axis).
+    assert math.hypot(total_fx, total_fy) > 1e-3  # sanity: the pair push exists
     single = _make_fp("S", "uuid-s", 1.0, 0.0, ("N3",),
                       footprint_id="test:R", hw=3.0, hh=2.0,
                       pad_layers=("F.Cu",), pad_shape="circle")
@@ -311,4 +316,4 @@ def test_boundary_force_bounded_near_edge():
     assert math.isfinite(bx) and math.isfinite(by)
     assert by == 0.0  # far from top/bottom edges
     # Per-pad bound is 2*kb; the footprint component sums over its pads.
-    assert 0.0 < bx <= 2.0 * params.boundary_repulsion_kb * len(part.pads)
+    assert 0.0 < bx <= 2.0 * params.boundary_k_N * len(part.pads)

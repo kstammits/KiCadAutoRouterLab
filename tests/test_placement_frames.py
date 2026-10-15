@@ -68,7 +68,9 @@ class TestTrajectoryFrames:
         # termination is covered in test_placement_movement.py).
         prop = run_placement(
             _two_close_parts(),
-            _params(convergence_eps_m=1e-15, friction_threshold_mm=0.0),
+            # SI rename: friction_threshold_mm (displacement deadband) is
+            # now friction_N (force deadband); 0.0 still disables it.
+            _params(convergence_eps_m=1e-15, friction_N=0.0),
             record_frames=True, frame_stride=2,
         )
         # 5 iters, stride 2 -> frame 0 (start) + samples at 2,4 + final = 4 frames
