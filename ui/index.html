@@ -419,6 +419,7 @@
       <input type="file" id="load-input" accept=".kicad_pcb,.kicad_sch" multiple hidden>
       <button id="load-btn">Load PCB…</button>
       <span id="board-name" style="flex:1; text-align:center;">no board loaded</span>
+      <span id="conn-badge" class="chip" hidden style="color:#f87171; border-color:#f87171;">● disconnected — server unreachable</span>
       <span id="board-sch" class="chip" hidden>pcb only</span>
       <span id="app-version" class="chip" style="margin-left:0.5rem; font-size:0.6rem;">v?</span>
       <label class="chk"><input type="checkbox" id="overlay-toggle" checked> proposal</label>
@@ -488,13 +489,14 @@
           <div class="bar">
             <span class="num">Place</span>
             <label class="chk" style="margin-left:.5rem;"><input type="number" id="step-iters" value="5" min="1" max="5000" step="1" style="width:5rem;"> iters</label>
-            <button id="step-selected-btn" class="primary" title="Run a few placement iterations on selected footprints only">Step Selected</button>
-            <button id="step-all-btn" title="Run a few placement iterations on all movable footprints">Step All Movable</button>
-            <button id="run-selected-btn" class="primary" title="Run placement to convergence (max iterations) on selected footprints only">Run Selected</button>
-            <button id="run-all-btn" title="Run placement to convergence (max iterations) on all movable footprints">Run All Movable</button>
+            <button id="step-selected-btn" class="primary" title="Run a few placement iterations on the selection (empty selection targets all movable)">Step</button>
+            <button id="run-selected-btn" class="primary" title="Run placement to convergence (max iterations) on the selection (empty selection targets all movable)">Run</button>
+            <button id="select-all-place-btn" title="Select all unlocked footprints">Select All</button>
+            <button id="clear-selection-place-btn" title="Clear footprint selection (Run/Step then target all movable)">Clear Selection</button>
             <button id="refresh-forces-btn" title="Recompute forces with current parameters">↻ Forces</button>
             <button id="accept-btn" disabled>Accept</button>
-            <button id="clear-btn">Clear</button>
+            <button id="clear-btn" title="Discard the current placement proposal">Clear Proposal</button>
+            <span id="place-scope-hint" class="zoom-info" title="What Step/Run will target">nothing selected → Step/Run targets all movable</span>
             <span id="diag"></span>
           </div>
           <div class="bar" id="motion-bar">
@@ -515,6 +517,15 @@
             <button id="motion-reset-btn" title="Back to the proposal preview (final pose)">Reset</button>
           </div>
           <div class="params" id="params-grid"></div>
+          <div class="bar" id="regime-bar">
+            <span class="num">Regime</span>
+            <button id="regime-cluster-btn" title="Scattered-start clustering: stronger attraction, softer walls (attraction ~0.05, wall ~0.025, damping 0.08, dt 2ms)">Cluster preset</button>
+            <button id="regime-legalize-btn" title="Placed-board polish: gentle attraction, firm walls (attraction ~0.008, wall ~0.09, damping 0.13, dt 1ms)">Legalize preset</button>
+          </div>
+          <details id="advanced-params-details">
+            <summary title="Power, decap, ghost, and convergence knobs hidden from the main panel">Advanced</summary>
+            <div class="params" id="advanced-params-grid"></div>
+          </details>
           <div class="bar"><button id="reset-params-btn">Reset params</button></div>
         </div>
 
@@ -696,62 +707,111 @@ loadInput.addEventListener("change", async () => {
   loadInput.value = "";
 });
 
-// Trimmed 2026-10-15: only calibrated behavior knobs get sliders. Removed
-// params stay live in the API (POST /api/placement/params accepts every
-// PlacementParams field; saved placement.json values keep loading) — they
-// are just fixed at calibrated defaults in the GUI.
+// Calibrated behavior knobs get main-panel sliders; power/decap/ghost and
+// the convergence threshold live under Advanced. Everything else
+// (repulsion, solver internals, mass fallbacks) stays API-only at
+// calibrated defaults — POST /api/placement/params merges, so hidden keys
+// in placement.json survive GUI saves.
 const PARAM_DEFS = [
   { key: "attraction_k_N", label: "Attraction k (N)", min: 1e-4, max: 1e-1, step: 1e-4, log: true },
   { key: "wall_k_N", label: "Wall push (N)", min: 1e-5, max: 1e-1, step: 1e-5, log: true },
-  { key: "wall_halo_m", label: "Wall halo (m)", min: 0, max: 0.02, step: 0.0005 },
+  // display: UI shows millimeters, engine/API stay SI (see toDisplay/fromDisplay).
+  { key: "wall_halo_m", label: "Wall halo (mm)", min: 0, max: 0.02, step: 0.0005,
+    display: { unit: "mm", scale: 1000, step: 0.5 } },
   { key: "boundary_k_N", label: "Boundary push (N)", min: 1e-4, max: 1, step: 1e-4, log: true },
   { key: "damping_Ns_m", label: "Damping (N·s/m)", min: 1e-4, max: 1, step: 1e-4, log: true },
   { key: "max_iterations", label: "Max iterations", min: 1, max: 20000, step: 10 },
 ];
 
+const ADVANCED_PARAM_DEFS = [
+  { key: "power_attraction_scale", label: "Power attraction", min: 0, max: 10, step: 0.05 },
+  { key: "decap_boost", label: "Decap boost", min: 0, max: 16, step: 0.5 },
+  { key: "ghost_k_N", label: "Ghost pull (N)", min: 1e-7, max: 1e-3, step: 1e-7, log: true },
+  { key: "convergence_eps_m", label: "Convergence eps (mm)", min: 1e-7, max: 1e-3, step: 1e-7, log: true,
+    display: { unit: "mm", scale: 1000, step: 0.0001 } },
+];
+
+const ALL_PARAM_DEFS = [...PARAM_DEFS, ...ADVANCED_PARAM_DEFS];
+
 const PARAM_DESC = {
   attraction_k_N: "Constant-magnitude attraction between net-connected pads (newtons). Calibrated default 8e-3; scattered-start clustering wants ~0.04-0.06. Log scale.",
   wall_k_N: "Elastic collision push when courtyards overlap or enter the halo (newtons). Contact strength; falls linearly to zero at the halo edge. Log scale.",
-  wall_halo_m: "Near-miss reach past part outlines (meters).",
+  wall_halo_m: "Near-miss reach past part outlines. Shown in mm; stored in meters.",
   boundary_k_N: "Push from board region edges (newtons). Decisive at the edge without shoving edge-near parts into neighbors. Log scale.",
   damping_Ns_m: "Viscous damping F = −c·v (N·s/m). The physics damper: higher settles faster with less overshoot. Log scale.",
   max_iterations: "Hard limit on simulation steps (dimensionless).",
+  power_attraction_scale: "Power-rail attraction trim (fanout-scaled k/(fanout-1) per edge). 1 = full participation; 0 restores the old exclude-power behavior.",
+  decap_boost: "Decoupling-cap edge multiplier (on top of fanout scaling). Also gates the decap GND-side exception: 0 removes decap GND edges.",
+  ghost_k_N: "Ghost attractor spring scale (newtons); file ka values weight it. Log scale. Only matters with ghost attractors.",
+  convergence_eps_m: "Stop when max pad displacement per step falls below this. Shown in mm; stored in meters. Smaller runs longer; larger stops earlier. Log scale.",
 };
 
-const paramsGrid = document.getElementById("params-grid");
-for (const def of PARAM_DEFS) {
+// Display-unit conversion: defs with `display: {scale}` show scaled values
+// (e.g. mm) while the API/engine stay SI. All three inputs (range slider,
+// number box, log slider position) speak display units; conversion happens
+// only at the API boundary (loadParams in, readParams out).
+function toDisplay(val, def) {
+  return def.display ? val * def.display.scale : val;
+}
+function fromDisplay(val, def) {
+  return def.display ? val / def.display.scale : val;
+}
+// Slider/number bounds in display units (def.min/max/step stay SI).
+function dispStep(def) {
+  return def.display && def.display.step ? def.display.step : def.step;
+}
+function dispDecimals(def) {
+  const s = dispStep(def);
+  if (s >= 1) return 0;
+  if (s >= 0.1) return 1;
+  if (s >= 0.001) return 3;
+  return 4;
+}
+
+function buildParamRow(def, desc) {
   const el = document.createElement("div");
   el.className = "param";
-  const desc = PARAM_DESC[def.key] || "";
   const isLog = def.log === true;
+  const dmin = toDisplay(def.min, def);
+  const dmax = toDisplay(def.max, def);
+  const dstep = dispStep(def);
 
   if (isLog) {
     // Log-scale parameter
-    const logMin = Math.log10(def.min);
-    const logMax = Math.log10(def.max);
+    const logMin = Math.log10(dmin);
+    const logMax = Math.log10(dmax);
     el.innerHTML = `<span title="${desc}">${def.label}</span>
       <div class="row">
         <input type="range" data-key="${def.key}" data-log="true" min="${logMin}" max="${logMax}" step="0.01">
-        <input type="number" data-key="${def.key}" min="${def.min}" max="${def.max}" step="${def.step}">
+        <input type="number" data-key="${def.key}" min="${dmin}" max="${dmax}" step="${dstep}">
       </div>`;
   } else {
     // Linear parameter
     el.innerHTML = `<span title="${desc}">${def.label}</span>
       <div class="row">
-        <input type="range" data-key="${def.key}" min="${def.min}" max="${def.max}" step="${def.step}">
-        <input type="number" data-key="${def.key}" min="${def.min}" max="${def.max}" step="${def.step}">
+        <input type="range" data-key="${def.key}" min="${dmin}" max="${dmax}" step="${dstep}">
+        <input type="number" data-key="${def.key}" min="${dmin}" max="${dmax}" step="${dstep}">
       </div>`;
   }
-  paramsGrid.appendChild(el);
+  return el;
 }
 
-// Parameter description table
+const paramsGrid = document.getElementById("params-grid");
+for (const def of PARAM_DEFS) {
+  paramsGrid.appendChild(buildParamRow(def, PARAM_DESC[def.key] || ""));
+}
+const advancedGrid = document.getElementById("advanced-params-grid");
+for (const def of ADVANCED_PARAM_DEFS) {
+  advancedGrid.appendChild(buildParamRow(def, PARAM_DESC[def.key] || ""));
+}
+
+// Parameter description table (main + advanced)
 const descTable = document.createElement("table");
 descTable.className = "param-desc-table";
 descTable.innerHTML = "<thead><tr><th>Parameter</th><th>Description</th></tr></thead><tbody>" +
-  PARAM_DEFS.map(d => `<tr><td><code>${d.key}</code></td><td>${PARAM_DESC[d.key]}</td></tr>`).join("") +
+  ALL_PARAM_DEFS.map(d => `<tr><td><code>${d.key}</code></td><td>${PARAM_DESC[d.key]}</td></tr>`).join("") +
   "</tbody>";
-document.getElementById("params-grid").parentElement.insertBefore(descTable, document.getElementById("params-grid").nextSibling);
+document.getElementById("advanced-params-details").insertAdjacentElement("afterend", descTable);
 
 function logToValue(logVal, def) {
   return Math.pow(10, logVal);
@@ -761,37 +821,57 @@ function valueToLog(val, def) {
   return Math.log10(val);
 }
 
-paramsGrid.addEventListener("input", e => {
-  const key = e.target.dataset.key;
-  const def = PARAM_DEFS.find(d => d.key === key);
+function syncParamInputs(key, def, source) {
+  const grid = source?.closest?.("#params-grid, #advanced-params-grid") || document;
+  const range = grid.querySelector(`input[type=range][data-key="${key}"]`);
+  const num = grid.querySelector(`input[type=number][data-key="${key}"]`);
+  if (!range || !num) return;
   const isLog = def?.log === true;
-  const range = paramsGrid.querySelector(`input[type=range][data-key=${key}]`);
-  const num = paramsGrid.querySelector(`input[type=number][data-key=${key}]`);
 
-  if (e.target.type === "range") {
+  if (source?.type === "range") {
     if (isLog) {
-      num.value = logToValue(Number(range.value), def).toFixed(def.step >= 1 ? 0 : 4);
+      num.value = logToValue(Number(range.value), def).toFixed(dispDecimals(def));
     } else {
       num.value = range.value;
     }
-  } else if (e.target.type === "number") {
+  } else if (source?.type === "number") {
     if (isLog) {
       range.value = valueToLog(Number(num.value), def).toFixed(2);
     } else {
       range.value = num.value;
     }
   }
-  // Auto-refresh forces if currently shown
-  if (forcesToggle.checked && lastVersion) {
+}
+
+// Slider input only syncs range<->number positions (no network): a drag
+// fires dozens of input events, so the force recompute waits for `change`
+// (drag release / number-box commit) instead of churning per tick.
+function onParamInput(e) {
+  const key = e.target.dataset.key;
+  if (!key) return;
+  const def = ALL_PARAM_DEFS.find(d => d.key === key);
+  syncParamInputs(key, def, e.target);
+}
+function onParamChange(e) {
+  const key = e.target.dataset.key;
+  if (!key) return;
+  // Refresh forces on release if currently shown.
+  if (typeof forcesToggle !== "undefined" && forcesToggle.checked && lastVersion) {
     refreshForces();
   }
-});
+}
+paramsGrid.addEventListener("input", onParamInput);
+advancedGrid.addEventListener("input", onParamInput);
+paramsGrid.addEventListener("change", onParamChange);
+advancedGrid.addEventListener("change", onParamChange);
 
 function readParams() {
+  // Number boxes speak display units; convert back to SI for the API.
   const out = {};
-  for (const def of PARAM_DEFS) {
-    const num = paramsGrid.querySelector(`input[type=number][data-key=${def.key}]`);
-    if (num) out[def.key] = Number(num.value);
+  for (const def of ALL_PARAM_DEFS) {
+    const num = document.querySelector(`#params-grid input[type=number][data-key="${def.key}"]`)
+      || document.querySelector(`#advanced-params-grid input[type=number][data-key="${def.key}"]`);
+    if (num) out[def.key] = fromDisplay(Number(num.value), def);
   }
   return out;
 }
@@ -800,18 +880,51 @@ async function loadParams(defaultsOnly = false) {
   const res = await fetch(`/api/placement/params${defaultsOnly ? "?defaults=1" : ""}`);
   if (!res.ok) throw new Error(await res.text());
   const p = await res.json();
-  for (const def of PARAM_DEFS) {
+  for (const def of ALL_PARAM_DEFS) {
     if (!(def.key in p)) continue;
-    const range = paramsGrid.querySelector(`input[type=range][data-key=${def.key}]`);
-    const num = paramsGrid.querySelector(`input[type=number][data-key=${def.key}]`);
+    // API speaks SI; convert to display units for both inputs.
+    const shown = toDisplay(p[def.key], def);
+    const range = document.querySelector(`input[type=range][data-key="${def.key}"]`);
+    const num = document.querySelector(`input[type=number][data-key="${def.key}"]`);
     if (range && def.log) {
-      range.value = valueToLog(p[def.key], def).toFixed(2);
+      range.value = valueToLog(shown, def).toFixed(2);
     } else if (range) {
-      range.value = p[def.key];
+      range.value = shown;
     }
-    if (num) num.value = p[def.key];
+    if (num) num.value = shown;
   }
 }
+
+// Regime presets from docs/si_force_laws.md §3: no single ratio clusters
+// AND legalizes, so offer the two calibrated starting points. dt_s rides
+// along via the merge-POST even though it has no slider.
+const REGIME_PRESETS = {
+  cluster: { attraction_k_N: 0.05, wall_k_N: 0.025, damping_Ns_m: 0.08, dt_s: 2e-3 },
+  legalize: { attraction_k_N: 0.008, wall_k_N: 0.09, damping_Ns_m: 0.13, dt_s: 1e-3 },
+};
+
+async function applyRegimePreset(name) {
+  const preset = REGIME_PRESETS[name];
+  if (!preset) return;
+  const res = await fetch("/api/placement/params", {
+    method: "POST",
+    body: JSON.stringify(preset),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  await loadParams();
+  if (typeof diagEl !== "undefined" && diagEl) {
+    diagEl.textContent = `${name} preset applied (persists on next run)`;
+  }
+}
+
+document.getElementById("regime-cluster-btn").addEventListener("click", async () => {
+  try { await applyRegimePreset("cluster"); }
+  catch (err) { diagEl.textContent = `preset failed: ${err.message}`; }
+});
+document.getElementById("regime-legalize-btn").addEventListener("click", async () => {
+  try { await applyRegimePreset("legalize"); }
+  catch (err) { diagEl.textContent = `preset failed: ${err.message}`; }
+});
 
 const boardEl = document.getElementById("board");
 const nameEl = document.getElementById("board-name");
@@ -1016,9 +1129,26 @@ async function fetchAndInjectSVG(version) {
   if (typeof motion !== "undefined" && motion.frames.length) applyMotionFrame(motion.idx);
 }
 
+function setConnected(ok) {
+  const badge = document.getElementById("conn-badge");
+  if (badge) badge.hidden = ok;
+  if (!ok && typeof diagEl !== "undefined" && diagEl) {
+    diagEl.textContent = "disconnected — server unreachable (retrying)";
+  }
+}
+
 async function poll() {
-  const res = await fetch("/api/state");
-  const st = await res.json();
+  let st;
+  try {
+    const res = await fetch("/api/state");
+    st = await res.json();
+  } catch (err) {
+    // Server down: badge it and skip all downstream refresh work. The
+    // 2s tick doubles as the reconnect detector — next success clears it.
+    setConnected(false);
+    return;
+  }
+  setConnected(true);
   const dropZone = document.getElementById("drop-zone");
   if (st.loaded) {
     boardEl.hidden = false;
@@ -1342,6 +1472,13 @@ function updateSelectionUI() {
   selCount.textContent = `${selectedUuids.size} selected, ${pinnedUuids.size} pinned`;
   pinBtn.textContent = selectedUuids.size > 0 ? "Pin" : "Unpin";
   pinBtn.disabled = selectedUuids.size === 0;
+  // Place-bar scope hint: Step/Run target the selection, or all movable when empty.
+  const scopeHint = document.getElementById("place-scope-hint");
+  if (scopeHint) {
+    scopeHint.textContent = selectedUuids.size > 0
+      ? `${selectedUuids.size} selected → Step/Run targets selection`
+      : "nothing selected → Step/Run targets all movable";
+  }
   // Nudge pad mirrors the placement selection (ghosts excluded).
   const nudgeCount = document.getElementById("nudge-count");
   if (nudgeCount) nudgeCount.textContent = String(selectedUuids.size);
@@ -2576,8 +2713,7 @@ async function runPlacement(movableUuids, iterations) {
       diagEl.textContent = `v${r.version} — no movement (nothing movable, no nets, or already converged)`;
       document.getElementById("accept-btn").disabled = true;
     }
-    document.getElementById("step-selected-btn").textContent = "Step Selected Again";
-    document.getElementById("step-all-btn").textContent = "Step All Again";
+    document.getElementById("step-selected-btn").textContent = "Step Again";
   } catch (err) {
     diagEl.textContent = err?.name === "AbortError"
       ? `run timed out after ${fmtDuration(timeoutMs)} — try fewer footprints or a smaller iteration budget`
@@ -2588,39 +2724,22 @@ async function runPlacement(movableUuids, iterations) {
   }
 }
 
-// Step Selected: a few iterations on currently selected footprints
+// Step: a few iterations on the selection (empty selection targets all movable)
 document.getElementById("step-selected-btn").addEventListener("click", async () => {
   const iters = parseInt(document.getElementById("step-iters").value, 10);
   const movableUuids = selectedUuids.size > 0 ? Array.from(selectedUuids) : undefined;
   await runPlacement(movableUuids, iters);
 });
 
-// Step All Movable: a few iterations on all unlocked, not pinned footprints
-document.getElementById("step-all-btn").addEventListener("click", async () => {
-  const iters = parseInt(document.getElementById("step-iters").value, 10);
-  const modelRes = await fetch("/api/state");
-  const st = await modelRes.json();
-  if (!st.loaded) return;
-
-  // Pass undefined to let server compute all movable (unlocked, not pinned)
-  await runPlacement(undefined, iters);
-});
-
-// Run Selected: to convergence (saved max_iterations) on selected footprints
+// Run: to convergence (saved max_iterations) on the selection (empty targets all)
 document.getElementById("run-selected-btn").addEventListener("click", async () => {
   const movableUuids = selectedUuids.size > 0 ? Array.from(selectedUuids) : undefined;
   await runPlacement(movableUuids, null);
 });
 
-// Run All Movable: to convergence (saved max_iterations) on all movable footprints
-document.getElementById("run-all-btn").addEventListener("click", async () => {
-  const modelRes = await fetch("/api/state");
-  const st = await modelRes.json();
-  if (!st.loaded) return;
-
-  // Pass undefined to let server compute all movable (unlocked, not pinned)
-  await runPlacement(undefined, null);
-});
+// Selection scope controls live next to Step/Run (reuse the shared helpers).
+document.getElementById("select-all-place-btn").addEventListener("click", selectAllUnlocked);
+document.getElementById("clear-selection-place-btn").addEventListener("click", clearSelection);
 
 document.getElementById("accept-btn").addEventListener("click", async () => {
   try {
@@ -2639,8 +2758,7 @@ document.getElementById("accept-btn").addEventListener("click", async () => {
       + (skipped ? `; kept protected ${skipped}` : "")
       + `. Re-route via Route panel if needed.`;
     document.getElementById("accept-btn").disabled = true;
-    document.getElementById("step-selected-btn").textContent = "Step Selected";
-    document.getElementById("step-all-btn").textContent = "Step All Movable";
+    document.getElementById("step-selected-btn").textContent = "Step";
     document.getElementById("undo-btn").disabled = false;
     resetMotionState(); // positions committed — cached deltas are stale
   } catch (err) {
@@ -2652,8 +2770,7 @@ document.getElementById("clear-btn").addEventListener("click", async () => {
   await fetch("/api/placement/clear", { method: "POST" });
   diagEl.textContent = "proposal cleared";
   document.getElementById("accept-btn").disabled = true;
-  document.getElementById("step-selected-btn").textContent = "Step Selected";
-  document.getElementById("step-all-btn").textContent = "Step All Movable";
+  document.getElementById("step-selected-btn").textContent = "Step";
   resetMotionState();
 });
 
@@ -2664,8 +2781,7 @@ document.getElementById("undo-btn").addEventListener("click", async () => {
     const r = await res.json();
     diagEl.textContent = `undone — board reverted to v${r.version}`;
     document.getElementById("accept-btn").disabled = true;
-    document.getElementById("step-selected-btn").textContent = "Step Selected";
-    document.getElementById("step-all-btn").textContent = "Step All Movable";
+    document.getElementById("step-selected-btn").textContent = "Step";
     resetMotionState();
   } catch (err) {
     diagEl.textContent = `undo failed: ${err.message}`;

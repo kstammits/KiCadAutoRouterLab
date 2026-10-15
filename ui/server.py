@@ -1574,7 +1574,15 @@ class Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length") or 0)
             data = self.rfile.read(length) if length > 0 else b""
             try:
-                params = PlacementParams.from_dict(json.loads(data.decode("utf-8")))
+                incoming = json.loads(data.decode("utf-8"))
+                if not isinstance(incoming, dict):
+                    raise ValueError("params body must be a JSON object")
+                # Partial-update merge: overlay incoming keys onto the saved
+                # params so GUI-hidden knobs (power/decap/ghost/solver
+                # internals) survive a POST that only carries visible sliders.
+                merged = load_params().to_dict()
+                merged.update(incoming)
+                params = PlacementParams.from_dict(merged)
             except ValueError as exc:
                 self._send(400, f"bad params: {exc}".encode(), "text/plain")
                 return
