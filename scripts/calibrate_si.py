@@ -311,7 +311,6 @@ def main(argv=None):
         max_iterations=args.max_iters,
         repulsion_k_N_m2=2e-9,
         wall_halo_m=0.006,
-        wall_area_ref_m2=4e-6,
         ghost_k_N=5e-5,
         damping_Ns_m=0.12,
         friction_N=1e-6,

@@ -282,22 +282,32 @@ class TestOverlapForce:
     """Overlap repulsion force mechanics."""
 
     def test_deeper_overlap_pushes_harder(self):
-        """Intersection area grows -> force magnitude grows."""
+        """Penetration depth along the MTV axis grows -> force magnitude grows.
+
+        The wall law is F = k*(1+pen/h) with pen the SAT depth along the
+        minimum-translation axis, so deepening must happen ALONG that axis:
+        fb sits at fixed x-overlap (4mm) with growing y-overlap, keeping the
+        MTV on y throughout. (Deepening along a non-MTV axis correctly leaves
+        the force flat — same minimum-translation cost — so the old x-slide
+        geometry can no longer pin growth.)
+        """
         mags = []
-        for dx in (2.0, 1.0, 0.5):  # Decreasing gap = more overlap
+        for dy in (1.5, 1.0, 0.5):  # Decreasing gap = more y-overlap
             fa = make_smd_resistor("A", "uuid-a", 0.0, 0.0, "N1", "N2", hw=3.0, hh=2.0)
-            fb = make_smd_resistor("B", "uuid-b", dx, 0.0, "N3", "N4", hw=3.0, hh=2.0)
+            fb = make_smd_resistor("B", "uuid-b", 2.0, dy, "N3", "N4", hw=3.0, hh=2.0)
             model = _board([fa, fb])
             prop = run_placement(model, _base_params(max_iterations=0))
-            
+
             fx, fy = prop.force_components["uuid-b"]["courtyard"]
             mag = math.hypot(fx, fy)
             mags.append(mag)
-        
+
         # All should push (positive magnitude)
         assert all(m > 0 for m in mags), f"All overlaps should push: {mags}"
-        # Deeper overlap -> harder push
+        # Deeper MTV penetration -> harder push (depths 2.5/3.0/3.5mm)
         assert mags[0] < mags[1] < mags[2], f"Force should grow with penetration: {mags}"
+        # Escape stays on the MTV axis (+y, away from fa below).
+        assert mags[0] == pytest.approx(0.002 * (1.0 + 2.5 / 3.0), rel=0.05)
 
     def test_containment_direction_fallback(self):
         """Small part centered in large courtyard: force uses minimum penetration axis (SAT)."""
@@ -403,58 +413,59 @@ class TestLenientCourtyard:
     def test_disc_cap_in_large_rect_courtyard_overlap_force(self):
         """Disc cap (2mm dia) centered in large rect (10x5mm): measure overlap force.
 
-        SI newtons: F = wall*(1 + area/area_ref) with wall=0.002 (see
-        _base_params) and area_ref=4mm² -> 0.002*(1+pi/4) ~ 3.6e-3.
+        Unified wall law: F = wall*(1+pen/h) with wall=0.002 (see
+        _base_params) and halo h=3mm. Contained circle: SAT inside-branch
+        picks the nearest edge (y, slack 2.5mm), so pen=2.5 and
+        F = 0.002*(1+2.5/3) ~ 3.7e-3.
         This test documents the force level for tuning 'lenient' behavior.
         """
         # Large rectangular courtyard (like a connector body)
         large = make_smd_resistor("LARGE", "uuid-large", 0.0, 0.0, "N1", "N2", hw=5.0, hh=2.5)
         large = replace(large, courtyard=make_rect_courtyard(0, 0, 5.0, 2.5))
-        
+
         # Small disc cap centered inside
         disc = make_disc_cap("DISC", "uuid-disc", 0.0, 0.0, diameter=2.0)
-        
+
         model = _board([large, disc])
         prop = run_placement(model, _base_params(max_iterations=0))
-        
+
         fx, fy = prop.force_components["uuid-disc"]["courtyard"]
         mag = math.hypot(fx, fy)
-        
-        # Document the force level - user can decide if this is "lenient" enough
-        # Overlap area = pi * 1^2 = 3.14 (shapely approximates the circle;
-        # measured footprint polygon area is used, tolerance absorbs it).
-        # force = wall * (1 + area / area_ref), area_ref = 4mm² default.
-        expected_force = 0.002 * (1.0 + math.pi * 1.0**2 / 4.0)
-        assert mag == pytest.approx(expected_force, rel=0.1), (
+
+        # Document the force level - user can decide if this is "lenient" enough.
+        # Escape is out the nearest edge (+y by the deterministic tiebreak).
+        expected_force = 0.002 * (1.0 + 2.5 / 3.0)
+        assert mag == pytest.approx(expected_force, rel=0.05), (
             f"Overlap force {mag:.2g} vs expected {expected_force:.2g} "
-            f"(wall=0.002, area=pi*1^2). Tune wall or add deadband for 0.5mm tolerance."
+            f"(wall=0.002, pen=2.5mm, halo=3mm). Tune wall or add deadband for 0.5mm tolerance."
         )
+        assert abs(fx) < 0.1 * abs(fy), f"Escape must be along y, got ({fx:.2g}, {fy:.2g})"
 
     def test_overlap_exceeds_tolerance_pushes_out(self):
-        """Disc cap offset so overlap > 0.5mm radial.
-        
-        Current behavior: intersection centroid -> polygon centroid direction
-        can push DEEPER into overlap for partial edge overlap (centroid of
-        intersection sliver falls on inside of small shape). This documents
-        the emergent behavior; a proper "push out" would need edge-normal
-        direction like the halo branch uses.
+        """Disc cap offset so overlap > 0.5mm radial: escape goes out the nearest edge.
+
+        Disc center at x=4.5 (radius 1.0, edge at 5.5); rect half-width 5.0.
+        The disc protrudes 0.5mm past the rect's east edge, so the SAT
+        minimum-translation axis is +x with pen=0.5 — pushing the disc east
+        is pushing it OUT (the old centroid-based reading called this INTO,
+        misreading which side of the edge the disc sits on).
         """
-        large = make_smd_resistor("LARGE", "uuid-large", 0.0, 0.0, "N1", "N2", hw=5.0, hh=2.5)
+        large = make_smd_resistor("LARGE", "uuid-large", 0.0, 0.0, "N1", "N2", hw=5.0, hh=2.0)
         large = replace(large, courtyard=make_rect_courtyard(0, 0, 5.0, 2.5), locked=True)
-        
+
         # Disc cap offset: center at x=4.5, radius=1.0 -> edge at 5.5
         # Rect courtyard half-width=5.0 -> edge at 5.0
         # Overlap = 0.5mm
         disc = make_disc_cap("DISC", "uuid-disc", 4.5, 0.0, diameter=2.0)
-        
+
         model = _board([large, disc])
         prop = run_placement(model, _base_params(max_iterations=0))
-        
+
         fx, fy = prop.force_components["uuid-disc"]["courtyard"]
-        # Current algorithm: intersection centroid (at x~4.25) -> disc centroid (4.5)
-        # gives dx = +0.25, so force is +x (INTO the rect, not out!)
-        # This is a known limitation of centroid-based overlap force.
-        assert fx > 0, f"Current behavior pushes INTO overlap (+x), got fx={fx}"
+        # Unified law: F = wall*(1+0.5/3) along +x (nearest-edge escape).
+        assert fx == pytest.approx(0.002 * (1.0 + 0.5 / 3.0), rel=0.05), (
+            f"edge-escape force {fx:.2g} vs expected {0.002 * (1.0 + 0.5 / 3.0):.2g}")
+        assert abs(fy) < 0.1 * abs(fx), f"Escape must be along x, got ({fx:.2g}, {fy:.2g})"
 
     def test_disc_cap_at_edge_0_5mm_overlap_force_level(self):
         """Document force at exactly 0.5mm radial overlap for tuning."""
@@ -472,7 +483,7 @@ class TestLenientCourtyard:
         mag = math.hypot(fx, fy)
         
         # This documents the force at 0.5mm overlap for threshold decisions
-        print(f"\n0.5mm overlap force magnitude: {mag:.0f} (kc=2000)")
+        print(f"\n0.5mm overlap force magnitude: {mag:.0f} (unified wall law)")
         assert mag > 0
 
 

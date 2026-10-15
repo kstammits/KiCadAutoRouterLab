@@ -323,7 +323,13 @@ def test_long_run_stays_bounded():
              ("uuid-a", "uuid-d"), ("uuid-b", "uuid-d"), ("uuid-c", "uuid-d")]
     before = sum(overlap_area(m, {}, uuids=p) for p in pairs)
     assert before > 0.0
-    prop = run_placement(m, _repulse_params(max_iterations=200))
+    # NOTE (unified wall law): fa/fc share net N1, so default attraction
+    # (ka=8e-3) drags fc south into fa while the a-b overlap clears. The wall
+    # must exceed that attraction squeeze scale to hold the newcomer off:
+    # wall=0.002 lets the a-c collision form en route (halo hold at contact
+    # is k << ka*edges), wall=0.01 clears everything. Production default is
+    # 0.08, so 0.01 stays 8x adversarial while physical.
+    prop = run_placement(m, _repulse_params(max_iterations=200, wall_k_N=0.01))
     after = sum(overlap_area(m, prop.deltas, uuids=p) for p in pairs)
     assert after < before
     moved = apply_deltas(m, prop.deltas)

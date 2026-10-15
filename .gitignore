@@ -30,6 +30,9 @@ tmp/
 # via scripts/pytest_report.py --out <path>)
 docs/benchmarks/test_report_*.html
 
+# Quarto rendered output (regenerated on demand via scripts/regen_*.sh)
+docs/_output/
+
 # KiCad project-local / cache files (not for version control)
 *.kicad_prl
 fp-info-cache

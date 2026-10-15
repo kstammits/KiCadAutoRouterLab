@@ -38,3 +38,8 @@ calibration sweep decide.
   sweep on ghost_test → tube111 → DCCF to learn good ranges, (7) merge gates
   (same-or-better overlap + iterations, no sustained oscillation, suite green).
 - Legacy test failures are expected and fine — port or delete, don't preserve.
+- Update 2026-10-15: (8) unified wall law landed — `F = k·(1−s/h)`,
+  `wall_area_ref_m2` deleted, min-s winner-take-all, inverse push fixed
+  (C14/RV3). `docs/si_force_laws.md` kept normative-updated. Suite green:
+  329 passed, 1 skipped (pre-existing). Known residual: R13/RV1 stable
+  squeeze wedge (anchor-side, not contact — see TODO).

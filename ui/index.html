@@ -730,11 +730,11 @@ const ADVANCED_PARAM_DEFS = [
   { key: "ghost_k_N", label: "Ghost pull (N)", min: 1e-7, max: 1e-3, step: 1e-7, log: true },
   { key: "convergence_eps_m", label: "Convergence eps (mm)", min: 1e-7, max: 1e-3, step: 1e-7, log: true,
     display: { unit: "mm", scale: 1000, step: 0.0001 } },
-  { key: "vmax_m_s", label: "Max speed (mm/s)", min: 10, max: 5000, step: 10,
+  { key: "vmax_m_s", label: "Max speed (mm/s)", min: 0.01, max: 5.0, step: 0.01,
     display: { unit: "mm/s", scale: 1000, step: 10 } },
-  { key: "dt_s", label: "Timestep (ms)", min: 0.1, max: 5, step: 0.1,
+  { key: "dt_s", label: "Timestep (ms)", min: 2e-4, max: 2e-3, step: 1e-4,
     display: { unit: "ms", scale: 1000, step: 0.1 } },
-  { key: "friction_N", label: "Friction deadband (µN)", min: 0.1, max: 100, step: 0.1,
+  { key: "friction_N", label: "Friction deadband (µN)", min: 0.0, max: 1e-4, step: 1e-7,
     display: { unit: "µN", scale: 1e6, step: 0.1 } },
 ];
 
@@ -742,7 +742,7 @@ const ALL_PARAM_DEFS = [...PARAM_DEFS, ...ADVANCED_PARAM_DEFS];
 
 const PARAM_DESC = {
   attraction_k_N: "Constant-magnitude attraction between net-connected pads (newtons). Legalize: 0.005-0.01; Cluster: 0.04-0.06. Log scale.",
-  wall_k_N: "Elastic collision stiffness when courtyards overlap or enter the halo (newtons). Peak force = k * (1 + area/area_ref). Legalize: 0.08-0.1; Cluster: 0.02-0.03. Log scale.",
+  wall_k_N: "Elastic collision stiffness when courtyards overlap or enter the halo (newtons). One linear law F = k*(1-s/h) in signed distance s (gap +, penetration -): zero past the halo, k at contact, growing with depth. Deepest contact wins per pair. Legalize: 0.08-0.1; Cluster: 0.02-0.03. Log scale.",
   wall_halo_m: "Near-miss reach past part outlines. Shown in mm; stored in meters. Default 6mm.",
   boundary_k_N: "Push from board region edges (newtons). Decisive at the edge without shoving edge-near parts into neighbors. Log scale.",
   damping_Ns_m: "Viscous damping F = −c·v (N·s/m). The physics damper: higher settles faster with less overshoot. Legalize: 0.12-0.15; Cluster: 0.08. Log scale.",
@@ -752,7 +752,7 @@ const PARAM_DESC = {
   ghost_k_N: "Ghost attractor spring scale (newtons); file ka values weight it. Log scale. Only matters with ghost attractors.",
   convergence_eps_m: "Stop when max pad displacement per step falls below this. Shown in mm; stored in meters. Smaller runs longer; larger stops earlier. Log scale.",
   vmax_m_s: "Speed ceiling for pad velocities and rigid-step clamp (m/s). Higher allows faster movement but less stable. Default 1.0 m/s.",
-  dt_s: "Simulation timestep (seconds). Adaptive guard halves on energy rise, regrows on fall. Default 1ms.",
+  dt_s: "Simulation timestep: 0.2-2ms, bounded by the dt_min/dt_max solver guards (wider values fail validation). Adaptive guard halves on energy rise, regrows on fall. Default 1ms.",
   friction_N: "Dry-friction deadband (newtons). Whole footprint freezes when all pad forces below this. Default 1e-6 N.",
 };
 
@@ -897,9 +897,15 @@ async function loadParams(defaultsOnly = false) {
     const range = document.querySelector(`input[type=range][data-key="${def.key}"]`);
     const num = document.querySelector(`input[type=number][data-key="${def.key}"]`);
     if (range && def.log) {
-      range.value = valueToLog(shown, def).toFixed(2);
+      // Guard non-positive saved values (log undefined): pin slider at min.
+      const logVal = shown > 0 ? valueToLog(shown, def) : Math.log10(toDisplay(def.min, def));
+      range.value = Math.min(Math.max(logVal,
+        Math.log10(toDisplay(def.min, def))), Math.log10(toDisplay(def.max, def))).toFixed(2);
     } else if (range) {
-      range.value = shown;
+      // Clamp the slider thumb into range; the number box keeps the exact
+      // saved value so out-of-range params stay visible, not silent.
+      range.value = Math.min(Math.max(shown,
+        toDisplay(def.min, def)), toDisplay(def.max, def));
     }
     if (num) num.value = shown;
   }

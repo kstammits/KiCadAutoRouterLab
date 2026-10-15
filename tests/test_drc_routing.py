@@ -37,10 +37,11 @@ from kicad_autorouter.validate import find_kicad_cli, validate_pcb, KicadCliNotF
 # Magnet test parameters - physics placement on the shared-net test resistors
 # ---------------------------------------------------------------------------
 MAGNET_PARAMS = PlacementParams(
-    max_iterations=10,
+    max_iterations=80,
     repulsion_k_N_m2=2e-09,
-    # Matches test_magnet.MAGNET_PARAMS: strong attraction shortens routes.
-    attraction_k_N=0.006,
+    # Boosted attraction for faster clustering within iteration budget;
+    # test_magnet.py uses 0.006 with 200 iterations.
+    attraction_k_N=0.03,
     wall_k_N=0.03,
     boundary_k_N=0.5,
     convergence_eps_m=0.0001,

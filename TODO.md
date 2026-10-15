@@ -10,10 +10,18 @@
 - [x] Phase 2: Polygon cache between iterations (avoid rebuild when displacement < threshold)
 - [x] Phase 3: Test suite for analytical contact (SAT for rectangles/circles) — tests/test_analytical_contact.py
 - [x] Phase 3: Analytical SAT courtyard collision (rectangle classification + circle-rectangle SAT) — 2026-10-14
-- [ ] Phase 3: Implement analytical contact for rectangles/circles (replace shapely for 80% of pairs)
+- [x] Phase 3: Analytical contact is the primary path (approx-rect classification; zero `intersection.area` calls left in the contact path — depth via SAT/projection) — 2026-10-15
 - [ ] Phase 4: Force-based early termination (stop when max |F| < threshold)
 - [ ] Phase 5: Parallel region execution (ProcessPoolExecutor for multi-region boards)
 - [ ] Phase 6: Numba JIT on hot inner loops (_spread, _rigid_pose_vertices, etc.)
+
+### Contact Law Unification (landed 2026-10-15)
+- DONE: one linear wall law `F = k·(1−s/h)` in signed separation (gap +/penetration −), C0+C1 continuous at contact. `wall_area_ref_m2` deleted everywhere (dataclass, validation, `server.py`, `calibrate_si.py`, norm docs, primer, glossary, UI text). Coulomb pad repulsion untouched.
+- DONE: inverse-push fix — per-pair min-s winner-take-all (no area summation, no pin size-caps). C14/RV3 escape axis corrected (2.84 → 0.075mm²); R13/RV1 hold direction verified correct by isolated-pair probes.
+- DONE: DCCF regression tests — 1-mobile-vs-many-locked synthetic cases (ring, linear wedge, attracted-to-pad) + fixture tests (R11, 5-resistor group, C14, R13) in `tests/test_placement_pairs.py`. Suite: 329 passed, 1 skipped (pre-existing fixture-gated skip).
+- DONE: UI advanced-slider SI fix — `vmax`/`dt_s`/`friction` defs were display-units-as-SI (timestep showed 100–5000ms and every run failed validation); ranges corrected + `loadParams` clamping.
+- Follow-up (documented residual, NOT contact): R13/RV1 stable squeeze wedge (southern halo field + net anchor across RV1 exceed the edge hold at every exit point; equilibrium is stiffness-independent). Needs anchor-side or placement-level work, not wall-law work.
+- Follow-up: halo reach `h` is the only remaining distance lever (shorter `h` drops distant squeezers); global change, needs recalibration — do not touch without a sweep.
 
 ### GND Continuity / Copper Pours (agreed 2026-10-09, phased; landed 2026-10-11)
 - Phase 0 — DONE: `Zone` carries fill rules (`clearance`, `min_thickness`, `thermal_gap/bridge`, `island_removal_mode`, `priority`); singular `(layer …)` zones parse (previously dropped, silently disabling stitch pairing).
@@ -35,6 +43,8 @@
   SI-dynamics section (wall/halo/MTV/aggregation/Kabsch/clamp/deadband/
   guard/tightening/broadphase/decap-power-GND rules), each term with a
   pointer to the `placement.py` symbol or `si_force_laws.md` section.
+  (Progress 2026-10-15: wall entry rewritten for the unified law; full
+  section still open.)
 - [ ] Test suite organization: new `docs/tests.md` (per-file intent table,
   markers, pytest instructions) + `scripts/pytest_report.py` wrapping
   `pytest --html` (add `pytest-html` to dev deps); reports are gitignored
@@ -44,6 +54,8 @@
   start before merge): new `docs/physics_primer.md` — formulas + why +
   units table + parameter-response graphs via `scripts/plot_force_laws.py`
   (matplotlib, dev dependency), figures embedded in the primer.
+  (Progress 2026-10-15: `docs/physics_primer.qmd` wall section/figure/table
+  rewritten for the unified law; freeze cache regenerates on next render.)
 
 
 ## Notes

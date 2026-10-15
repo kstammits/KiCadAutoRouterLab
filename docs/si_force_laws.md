@@ -33,19 +33,20 @@ Unchanged shape (no Hooke length term). `w_edge` keeps the existing
 fanout/decap/power weighting (dimensionless, already unit-clean).
 
 ### Courtyard collision (walls)
-Overlap (`area` in m²):
+One linear law in signed separation `s` (meters) along the pair normal
+(`s > 0` gap, `s = 0` touching, `s = −penetration depth`):
 ```
-F_wall = k_wall · (1 + area / area_ref) · û      k_wall in N, area_ref in m²
+F_wall = k_wall · (1 − s / halo) · û      k_wall in N, halo in m
 ```
-The dimensionless ratio `area/area_ref` replaces the legacy raw-mm² term so
-the constant doesn't explode across part sizes. At first contact (`area=0`)
-this equals `k_wall`, continuous with the halo form below.
-
-Near-miss halo (`gap`, `halo` in meters):
-```
-F_halo = k_wall · (1 − gap / halo) · û           0 at halo edge, k_wall at contact
-```
-Direction is the pair's nearest-points normal in both cases.
+Zero past the halo reach, `k_wall` at contact, growing linearly with
+penetration depth — C0 and C1 continuous at first touch, so the formula
+never changes at intersection. Depth comes from SAT (rectangles/circles)
+or vertex-projection interval overlap (generic polygons); no intersection
+areas are computed anywhere in the contact path, which also removes the
+old exact-vs-approximated area mismatch in the per-pair direction vote
+and the magnitude jump at MTV axis ties (depth is continuous across ties).
+Direction is the pair's SAT minimum-translation (MTV) axis — out the
+nearest edge — in all cases.
 
 ### Boundary repulsion
 Same piecewise shape as legacy, in newtons: `0` beyond threshold,
@@ -107,10 +108,12 @@ deeper along the long axis). Generic (non-rect/circle) polygons keep the
 centroid fallback.
 
 Per-pair aggregation: body + THT-pin-circle sub-paths of ONE footprint pair
-aggregate into a single penalty (summed overlap areas along the strongest
-sub-direction, else the strongest halo), so pin circles can't stack the
-same contact 3–9×. Multi-neighbor superposition is unaffected (aggregation
-is per pair, not global).
+report signed separations and the single deepest contact wins
+(winner-takes-all), so pin circles can't stack the same contact 3–9× and
+every sub-path speaks the same units (mm). Multi-neighbor superposition is
+unaffected (aggregation is per pair, not global) — which is why a part
+squeezed by several neighbors can still settle wedged: equilibrium
+position is set by the squeeze geometry, not by the wall stiffness.
 
 Convergence: max `‖Δx‖ < eps_m` (meters) per step. Long Coulomb-tail
 cruises terminate via the friction deadband (whole-footprint freeze when
@@ -125,8 +128,7 @@ deadband cruises past any iteration budget.
 | `repulsion_k_N_m2` | N·m² | 2e-9 | pair push (sub-contact only) |
 | `attraction_k_N` | N | 8e-3 | legalize-regime net pull |
 | `wall_k_N` | N | 8e-2 | contact/halo strength |
-| `wall_area_ref_m2` | m² | 4e-6 | overlap normalization |
-| `wall_halo_m` | m | 0.006 | near-miss reach |
+| `wall_halo_m` | m | 0.006 | near-miss reach AND depth scale (single law) |
 | `boundary_k_N` | N | 1e-2 | edge push |
 | `ghost_k_N` | N | 5e-5 | ghost spring pull (untuned) |
 | `damping_Ns_m` | N·s/m | 0.12 | viscous damper |
@@ -156,7 +158,9 @@ guesses were wrong, not the method.
 
 Known residuals (follow-ups, not regressions): DCCF keeps 1–2 wedged
 pairs (e.g. R13 vs RV1's 76 mm-wide courtyard span: net anchor lies
-across a locked obstacle → shuttle limit cycle); sub-0.1°/step rotation
+across a locked obstacle plus a southern halo squeeze field that exceeds
+the edge hold — a stable force-balanced wedge, verified by isolated-pair
+probes showing the contact direction itself is correct); sub-0.1°/step rotation
 creep is dropped by the angular deadband (`MIN_ROT_STEP_RAD` in the
 rigid-step clamp — a noise floor, not a slider), but large slow flips
 still occur when the torque is genuine (observed: 0805 flipping ~160°

@@ -49,12 +49,12 @@ def _single_pad(ref, uuid, x, y, net, hw=1.0, hh=1.0):
                    pad_shape="circle", pad_layers=())
 
 
-def _overlap(fa_uuid="uuid-a", fb_uuid="uuid-b", dx=1.0):
-    """Two 6x4mm parts dx apart (heavy courtyard overlap), distinct nets."""
+def _overlap(fa_uuid="uuid-a", fb_uuid="uuid-b", dx=1.0, dy=0.0):
+    """Two 6x4mm parts (dx, dy) apart (heavy courtyard overlap), distinct nets."""
     fa = make_fp("A", fa_uuid, 0.0, 0.0, ("N1", "N2"),
                  footprint_id="test:R", hw=3.0, hh=2.0,
                  pad_layers=("F.Cu",), pad_shape="circle")
-    fb = make_fp("B", fb_uuid, dx, 0.0, ("N3", "N4"),
+    fb = make_fp("B", fb_uuid, dx, dy, ("N3", "N4"),
                  footprint_id="test:R", hw=3.0, hh=2.0,
                  pad_layers=("F.Cu",), pad_shape="circle")
     return _board([fa, fb])
@@ -91,9 +91,13 @@ class TestOverlapLaw:
     """
 
     def test_deeper_overlap_pushes_harder(self):
+        # Unified wall law F = k*(1+pen/h): pen is the SAT depth along the
+        # MTV axis, so deepening must happen ALONG that axis. Fixed x-offset
+        # holds x-overlap at 4mm while y-overlap grows (depths 2.5/3/3.5mm);
+        # sliding along x past the y-overlap would (correctly) read flat.
         mags = []
-        for dx in (2.0, 1.0, 0.5):
-            model = _overlap(dx=dx)
+        for dy in (1.5, 1.0, 0.5):
+            model = _overlap(dx=2.0, dy=dy)
             prop = run_placement(model, _base_params(max_iterations=0))
             mags.append(_courtyard_mag(prop, "uuid-b"))
         assert mags[0] > 0.0, "even shallow overlap must push"

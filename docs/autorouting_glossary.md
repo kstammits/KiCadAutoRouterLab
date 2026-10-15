@@ -94,8 +94,9 @@ stiffness-capped stepper).
   scattered-start clustering wants ~0.04–0.06
   (`PlacementParams.attraction_k_N`).
 - **Wall / courtyard contact** (`wall_k_N`, N): elastic push-out on
-  courtyard overlap, `F = k_wall·(1 + area/area_ref)`
-  (`PlacementParams.wall_k_N`, `wall_area_ref_m2`).
+  courtyard overlap, one linear law `F = k_wall·(1 − s/halo)` in signed
+  separation `s` (gap +, penetration −); deepest contact wins per pair
+  (`PlacementParams.wall_k_N`, `wall_halo_m`).
 - **Halo** (`wall_halo_m`, m): near-miss reach where the wall ramps in
   before touch, saturating at `wall_k_N` and falling linearly to zero at
   the edge (`PlacementParams.wall_halo_m`).

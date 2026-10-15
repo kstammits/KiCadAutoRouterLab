@@ -76,11 +76,9 @@ class PlacementParams:
     # engine default stays on the safe/legalize side.
     attraction_k_N: float = 8e-3
     # Courtyard contact strength (newtons; elastic push-out on collision).
-    # One penalty per footprint pair (summed sub-areas, strongest
-    # direction); calibrated so wall beats ~2 attraction edges at contact.
+    # One penalty per footprint pair (deepest contact wins, winner-takes-all);
+    # calibrated so wall beats ~2 attraction edges at contact.
     wall_k_N: float = 8e-2
-    # Overlap-area normalization (m^2): F = k_wall * (1 + area / area_ref).
-    wall_area_ref_m2: float = 4e-6
     # Near-miss halo reach (meters).
     wall_halo_m: float = 0.006
     # Boundary repulsion strength (newtons).
@@ -140,7 +138,6 @@ def _validate(params: PlacementParams) -> None:
         "repulsion_k_N_m2",
         "attraction_k_N",
         "wall_k_N",
-        "wall_area_ref_m2",
         "wall_halo_m",
         "boundary_k_N",
         "ghost_k_N",
@@ -164,7 +161,7 @@ def _validate(params: PlacementParams) -> None:
             raise ValueError(f"{name} must be finite")
         if value < 0:
             raise ValueError(f"{name} must be >= 0")
-    for name in ("dt_s", "dt_min_s", "dt_max_s", "vmax_m_s", "wall_area_ref_m2"):
+    for name in ("dt_s", "dt_min_s", "dt_max_s", "vmax_m_s", "wall_halo_m"):
         if getattr(params, name) <= 0:
             raise ValueError(f"{name} must be > 0")
     if params.dt_min_s > params.dt_s:
@@ -808,12 +805,19 @@ def _classify_shape(poly: Polygon) -> tuple[str, dict]:
     if poly.is_empty:
         return ShapeType.EMPTY, {}
     
-    # Try rectangle first
+    # Try exact rectangle first
     coords = list(poly.exterior.coords)
     verts = np.array(coords, dtype=np.float64)
     rect = _classify_rectangle(verts)
     if rect:
         return ShapeType.RECTANGLE, rect
+    
+    # Try approximate rectangle (minimum rotated rectangle)
+    # For courtyards that are nearly rectangular but have extra vertices
+    # (chamfered corners, merged loops, etc.)
+    approx_rect = _classify_approx_rectangle(poly)
+    if approx_rect:
+        return ShapeType.RECTANGLE, approx_rect
     
     # Try circle
     circle = _classify_circle(poly)
@@ -823,17 +827,77 @@ def _classify_shape(poly: Polygon) -> tuple[str, dict]:
     return ShapeType.POLYGON, {"polygon": poly}
 
 
+def _classify_approx_rectangle(poly: Polygon) -> Optional[dict]:
+    """Classify polygon as approximate rectangle using minimum rotated rectangle.
+    
+    Returns rectangle params if polygon area >= 95% of minimum bounding rectangle area.
+    This catches courtyards that are essentially rectangular but have extra vertices
+    from chamfered corners, small cutouts, or polygonization artifacts.
+    """
+    try:
+        # Get minimum area rotated rectangle
+        import warnings
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=RuntimeWarning)
+            min_rect = poly.minimum_rotated_rectangle
+        if min_rect.is_empty or min_rect.area <= 0:
+            return None
+        
+        # Check area ratio - polygon should be very close to its bounding rectangle
+        area_ratio = poly.area / min_rect.area
+        if area_ratio < 0.95:  # Must be at least 95% filled
+            return None
+        
+        # Extract rectangle parameters from minimum rotated rectangle
+        coords = list(min_rect.exterior.coords)
+        rect_verts = np.array(coords[:-1], dtype=np.float64)  # Remove closing vertex
+        
+        if len(rect_verts) != 4:
+            return None
+        
+        center = rect_verts.mean(axis=0)
+        
+        # Edge vectors
+        edges = np.roll(rect_verts, -1, axis=0) - rect_verts
+        edge_lengths = np.linalg.norm(edges, axis=1)
+        
+        # Find angle from longest edge
+        idx = int(np.argmax(edge_lengths))
+        edge0 = edges[idx]
+        angle = math.atan2(edge0[1], edge0[0])
+        
+        # Normalize angle to [-pi/2, pi/2] (180 degrees symmetry)
+        angle = (angle + math.pi/2) % math.pi - math.pi/2
+        
+        # Half extents in local frame
+        ca, sa = math.cos(angle), math.sin(angle)
+        v = rect_verts - center
+        local_x = v[:, 0] * ca + v[:, 1] * sa
+        local_y = -v[:, 0] * sa + v[:, 1] * ca
+        hx = float(abs(local_x).max())
+        hy = float(abs(local_y).max())
+        
+        return {
+            "type": ShapeType.RECTANGLE,
+            "center": (float(center[0]), float(center[1])),
+            "half_extents": (hx, hy),
+            "angle": angle,
+        }
+    except Exception:
+        return None
+
+
 # SAT collision for two rectangles
-def _sat_rect_rect(rect1: dict, rect2: dict) -> tuple[bool, np.ndarray, float]:
-    """SAT collision for two rectangles.
+def _sat_rect_rect(rect1: dict, rect2: dict) -> tuple[bool, tuple[float, float], float]:
+    """SAT collision for two rectangles (pure Python, no numpy).
     
     Returns: (overlaps, normal, penetration_depth)
     normal points from rect1 to rect2 (pushes rect1 away from rect2).
     Returns True for touching (penetration = 0) as well as overlapping.
     For non-overlapping, returns the separation axis normal (min overlap axis).
     """
-    c1 = np.array(rect1["center"])
-    c2 = np.array(rect2["center"])
+    c1x, c1y = rect1["center"]
+    c2x, c2y = rect2["center"]
     hx1, hy1 = rect1["half_extents"]
     hx2, hy2 = rect2["half_extents"]
     a1 = rect1["angle"]
@@ -841,115 +905,166 @@ def _sat_rect_rect(rect1: dict, rect2: dict) -> tuple[bool, np.ndarray, float]:
     
     ca1, sa1 = math.cos(a1), math.sin(a1)
     ca2, sa2 = math.cos(a2), math.sin(a2)
-    R1 = np.array([[ca1, -sa1], [sa1, ca1]])
-    R2 = np.array([[ca2, -sa2], [sa2, ca2]])
     
     # Local axes for both rectangles (4 axes total)
-    axes = np.array([
-        [ca1, sa1],    # rect1 x-axis
-        [-sa1, ca1],   # rect1 y-axis
-        [ca2, sa2],    # rect2 x-axis
-        [-sa2, ca2],   # rect2 y-axis
-    ])
+    axes = [
+        (ca1, sa1),    # rect1 x-axis
+        (-sa1, ca1),   # rect1 y-axis
+        (ca2, sa2),    # rect2 x-axis
+        (-sa2, ca2),   # rect2 y-axis
+    ]
     
     min_overlap = float('inf')
     best_axis = None
     
-    for axis in axes:
+    dx_centers = c2x - c1x
+    dy_centers = c2y - c1y
+    
+    for ax, ay in axes:
         # Project rect1 onto axis
-        r1_proj = abs(hx1 * (R1[0] @ axis)) + abs(hy1 * (R1[1] @ axis))
+        r1_proj = abs(hx1 * (ca1 * ax + sa1 * ay)) + abs(hy1 * (-sa1 * ax + ca1 * ay))
         # Project rect2 onto axis
-        r2_proj = abs(hx2 * (R2[0] @ axis)) + abs(hy2 * (R2[1] @ axis))
+        r2_proj = abs(hx2 * (ca2 * ax + sa2 * ay)) + abs(hy2 * (-sa2 * ax + ca2 * ay))
         # Distance between centers along axis
-        center_dist = abs((c2 - c1) @ axis)
+        center_dist = abs(dx_centers * ax + dy_centers * ay)
         
         overlap = r1_proj + r2_proj - center_dist
         
         if overlap < min_overlap:
             min_overlap = overlap
-            best_axis = axis
+            best_axis = (ax, ay)
     
-    # No valid axis found (shouldn't happen)
     if best_axis is None:
-        return False, np.zeros(2), 0.0
+        return False, (0.0, 0.0), 0.0
     
     # Normal points from rect1 to rect2
-    if ((c2 - c1) @ best_axis) < 0:
-        best_axis = -best_axis
+    if (dx_centers * best_axis[0] + dy_centers * best_axis[1]) < 0:
+        best_axis = (-best_axis[0], -best_axis[1])
     
     overlaps = min_overlap >= -1e-10
-    return overlaps, best_axis, max(0.0, min_overlap)
+    return overlaps, best_axis, min_overlap  # Return signed penetration (negative = gap)
 
 
-def _circle_circle_contact(c1: dict, c2: dict) -> tuple[bool, np.ndarray, float]:
-    """Circle-circle collision."""
-    center1 = np.array(c1["center"])
-    center2 = np.array(c2["center"])
+def _circle_circle_contact(c1: dict, c2: dict) -> tuple[bool, tuple[float, float], float]:
+    """Circle-circle collision (pure Python)."""
+    c1x, c1y = c1["center"]
+    c2x, c2y = c2["center"]
     r1 = c1["radius"]
     r2 = c2["radius"]
     
-    diff = center2 - center1
-    dist = np.linalg.norm(diff)
+    dx = c2x - c1x
+    dy = c2y - c1y
+    dist_sq = dx * dx + dy * dy
     
-    if dist < 1e-10:
-        return True, np.array([1.0, 0.0]), r1 + r2  # Arbitrary direction
+    if dist_sq < 1e-20:
+        return True, (1.0, 0.0), r1 + r2  # Arbitrary direction
     
-    normal = diff / dist
+    dist = math.sqrt(dist_sq)
+    nx = dx / dist
+    ny = dy / dist
     penetration = r1 + r2 - dist
     overlaps = penetration >= -1e-10
-    return overlaps, normal, max(0.0, penetration)
+    return overlaps, (nx, ny), penetration  # Return signed penetration
 
 
-def _rect_circle_contact(rect: dict, circle: dict) -> tuple[bool, np.ndarray, float]:
-    """Rectangle-circle collision using SAT.
+def _rect_circle_contact(rect: dict, circle: dict) -> tuple[bool, tuple[float, float], float]:
+    """Rectangle-circle collision using SAT (pure Python).
     
     Normal points from rect to circle.
     For non-overlapping, returns the separation axis normal (direction to closest point).
     """
-    c_rect = np.array(rect["center"])
-    c_circle = np.array(circle["center"])
+    rx, ry = rect["center"]
+    cx, cy = circle["center"]
     hx, hy = rect["half_extents"]
     angle = rect["angle"]
     r = circle["radius"]
     
-    # Rotate circle center into rect local space
     ca, sa = math.cos(angle), math.sin(angle)
-    R = np.array([[ca, -sa], [sa, ca]])
-    local_circle = R.T @ (c_circle - c_rect)
+    
+    # Rotate circle center into rect local space
+    dx = cx - rx
+    dy = cy - ry
+    local_x = dx * ca + dy * sa
+    local_y = -dx * sa + dy * ca
     
     # Clamp to rectangle bounds
-    clamped = np.array([
-        np.clip(local_circle[0], -hx, hx),
-        np.clip(local_circle[1], -hy, hy),
-    ])
+    clamped_x = max(-hx, min(hx, local_x))
+    clamped_y = max(-hy, min(hy, local_y))
     
     # Distance from circle center to closest point on rect
-    diff_local = local_circle - clamped
-    dist = np.linalg.norm(diff_local)
+    diff_x = local_x - clamped_x
+    diff_y = local_y - clamped_y
+    dist_sq = diff_x * diff_x + diff_y * diff_y
     
-    if dist < 1e-10:
+    if dist_sq < 1e-20:
         # Circle center inside rect - use axis of minimum penetration
-        px = hx - abs(local_circle[0])
-        py = hy - abs(local_circle[1])
+        px = hx - abs(local_x)
+        py = hy - abs(local_y)
         if px < py:
-            normal_local = np.array([1.0 if local_circle[0] >= 0 else -1.0, 0.0])
+            nx_local = 1.0 if local_x >= 0 else -1.0
+            ny_local = 0.0
             penetration = px
         else:
-            normal_local = np.array([0.0, 1.0 if local_circle[1] >= 0 else -1.0])
+            nx_local = 0.0
+            ny_local = 1.0 if local_y >= 0 else -1.0
             penetration = py
     else:
-        normal_local = diff_local / dist
+        dist = math.sqrt(dist_sq)
+        nx_local = diff_x / dist
+        ny_local = diff_y / dist
         penetration = r - dist
     
     # Transform normal back to world space
-    normal_world = R @ normal_local
+    nx_world = nx_local * ca - ny_local * sa
+    ny_world = nx_local * sa + ny_local * ca
     
     # Ensure normal points from rect to circle
-    if (normal_world @ (c_circle - c_rect)) < 0:
-        normal_world = -normal_world
+    if (nx_world * dx + ny_world * dy) < 0:
+        nx_world = -nx_world
+        ny_world = -ny_world
     
     overlaps = penetration >= -1e-10
-    return overlaps, normal_world, max(0.0, penetration)
+    return overlaps, (nx_world, ny_world), penetration  # Return signed penetration
+
+
+def _analytical_collision(
+    shape_i_type: str, shape_i_params: dict,
+    shape_j_type: str, shape_j_params: dict
+) -> tuple[float, tuple[float, float], bool] | None:
+    """
+    Perform analytical collision detection for supported shape pairs.
+    
+    Returns: (signed_penetration, normal, is_overlap) or None if not supported.
+    signed_penetration > 0: overlap depth (mm)
+    signed_penetration < 0: gap distance (mm)
+    normal: unit vector from j to i (push i away from j)
+    is_overlap: True if overlapping/touching, False if separated
+    """
+    # Rectangle - Rectangle
+    if shape_i_type == ShapeType.RECTANGLE and shape_j_type == ShapeType.RECTANGLE:
+        overlaps, normal, penetration = _sat_rect_rect(shape_i_params, shape_j_params)
+        # _sat_rect_rect normal points from i to j; flip to match shapely (j to i)
+        return penetration, (-normal[0], -normal[1]), overlaps
+    
+    # Circle - Circle
+    if shape_i_type == ShapeType.CIRCLE and shape_j_type == ShapeType.CIRCLE:
+        overlaps, normal, penetration = _circle_circle_contact(shape_i_params, shape_j_params)
+        # _circle_circle_contact normal points from i to j; flip
+        return penetration, (-normal[0], -normal[1]), overlaps
+    
+    # Rectangle - Circle (both orders)
+    if shape_i_type == ShapeType.RECTANGLE and shape_j_type == ShapeType.CIRCLE:
+        overlaps, normal, penetration = _rect_circle_contact(shape_i_params, shape_j_params)
+        # _rect_circle_contact normal points from rect to circle (i to j); flip
+        return penetration, (-normal[0], -normal[1]), overlaps
+    
+    if shape_i_type == ShapeType.CIRCLE and shape_j_type == ShapeType.RECTANGLE:
+        overlaps, normal, penetration = _rect_circle_contact(shape_j_params, shape_i_params)
+        # _rect_circle_contact normal points from rect to circle (j to i); already correct
+        return penetration, normal, overlaps
+    
+    # Unsupported pair (polygon-polygon, polygon-rect, polygon-circle)
+    return None
 
 
 
@@ -1670,6 +1785,11 @@ def _run_region_simulation(
                     # Classify shape for analytical collision
                     shape_type, shape_params = _classify_shape(body_poly)
                     
+                    # Track shape classification stats
+                    if not hasattr(_run_region_simulation, '_shape_counts'):
+                        _run_region_simulation._shape_counts = {}
+                    _run_region_simulation._shape_counts[shape_type] = _run_region_simulation._shape_counts.get(shape_type, 0) + 1
+                    
                     # Update cache
                     centroid = body_poly.centroid
                     body_centroids.append([centroid.x, centroid.y])
@@ -1747,14 +1867,17 @@ def _run_region_simulation(
                                 elif j < i:
                                     candidate_pairs.add((j, i))
             
-            # Filter candidate pairs by layer (body-body only) and compute halo matrix for them
+            # Filter candidate pairs by layer (body-body only) and compute halo matrix for them.
+            # Single global reach: the unified wall law F = k*(1-s/h) is zero
+            # past h for every contact kind, so broadphase culling stays valid
+            # with one scale (no size-dependent caps).
             _close = np.zeros((n_fp, n_fp), dtype=bool)
             _halo_matrix = np.zeros((n_fp, n_fp), dtype=np.float64)
             for i, j in candidate_pairs:
                 if body_layers_arr[i] == body_layers_arr[j]:
                     ri = body_radii_arr[i]
                     rj = body_radii_arr[j]
-                    halo = min(1.5 * (ri + rj), params.wall_halo_m * 1000.0)
+                    halo = params.wall_halo_m * 1000.0
                     dx = body_centroids_arr[i, 0] - body_centroids_arr[j, 0]
                     dy = body_centroids_arr[i, 1] - body_centroids_arr[j, 1]
                     dist_sq = dx * dx + dy * dy
@@ -1825,32 +1948,47 @@ def _run_region_simulation(
                         _spread(fp_local_to_rows[lj], fp_centroids_arr[lj, 0], fp_centroids_arr[lj, 1],
                                 fp_radii_arr[lj], -ux, -uy, -fx, -fy)
 
+            def _overlap_depth_mm(pi: Polygon, pj: Polygon, ux: float, uy: float) -> float:
+                """Penetration depth (mm) of overlapping pi/pj along unit (ux, uy).
+
+                Vertex-projection interval overlap; exact for convex outlines,
+                a conservative under-read for concave ones (never invents depth).
+                """
+                try:
+                    pa = [x * ux + y * uy for x, y in pi.exterior.coords]
+                    pb = [x * ux + y * uy for x, y in pj.exterior.coords]
+                except Exception:
+                    return 0.0
+                return max(0.0, min(max(pa), max(pb)) - max(min(pa), min(pb)))
+
             def _apply_contact_push(
                 li: int, lj: int,
                 pi: Polygon, pj: Polygon,
-                intersection_area: float,  # >= 0: overlap area mm^2; < 0: gap mm (for halo)
+                intersection_area: float,  # >= 0: overlap (depth recomputed); < 0: gap mm (halo)
                 sink: Optional[list] = None,
             ) -> None:
-                """Unified contact push using nearest-point normal (newtons).
+                """Unified contact push: one linear law in signed distance (newtons).
 
-                This is the elastic collision response: penalty-based push-out.
-                For overlap (intersection_area >= 0): F = k_wall * (1 + area_m2/area_ref)
-                For halo (intersection_area < 0, gap = -intersection_area): F = k_wall * (1 - gap/halo)
-                Geometry stays millimeter-native; SI conversions happen inline.
+                F = k_wall * (1 - s/h) with s the signed separation in mm along
+                the pair normal (s > 0 gap, s = 0 touching, s = -penetration).
+                Zero past the halo reach h, k_wall at contact, growing linearly
+                inside overlap — C0 and C1 continuous at first touch, so the
+                formula never changes at intersection (docs/si_force_laws.md).
 
-                Direction always from nearest-point normal (edge-orthogonal).
-                Continuity at boundary: area=0 -> F=k_wall, gap=0 -> F=k_wall.
+                Direction is the nearest-point normal (edge-orthogonal, j -> i);
+                penetration depth is the vertex-projection interval overlap
+                along that same axis. At exactly zero separation nearest_points
+                degenerates, so fall back to centroid-to-centroid (rare: most
+                outlines take the analytical MTV path with an exact axis).
 
-                With ``sink`` given, appends a candidate
-                ``('ov', area_mm2, 0.0, ux, uy)`` or
-                ``('halo', gap_mm, reach_mm, ux, uy)`` instead of spreading:
-                the pair loop aggregates sub-path candidates (body, pins)
-                into ONE penalty per footprint pair (summed overlap areas,
-                strongest direction), so THT pin circles can't stack the
-                same contact 3-9x.
+                With ``sink`` given, appends a ``('s', s_mm, ux, uy)`` candidate
+                instead of spreading: the pair loop keeps the single deepest
+                contact (min s, winner-takes-all), so stacked sub-contacts
+                (THT pin circles) can no longer inflate one pair's penalty.
                 """
                 if pi.is_empty or pj.is_empty:
                     return
+                halo_reach = float(_halo_matrix[li, lj])
                 try:
                     qi, qj = nearest_points(pi, pj)
                     dx = float(qi.x - qj.x)
@@ -1859,8 +1997,8 @@ def _run_region_simulation(
                     dx = dy = 0.0
                 dist = math.hypot(dx, dy)
 
-                # nearest_points on overlapping polygons returns boundary points with dist=0
-                # Fall back to centroid-to-centroid if degenerate
+                # nearest_points on overlapping/touching polygons returns
+                # boundary points with dist=0: fall back to centroid direction.
                 if dist <= 1e-8:
                     dx = fp_centroids_arr[li, 0] - fp_centroids_arr[lj, 0]
                     dy = fp_centroids_arr[li, 1] - fp_centroids_arr[lj, 1]
@@ -1871,25 +2009,17 @@ def _run_region_simulation(
                 ux, uy = dx / dist, dy / dist
 
                 if intersection_area >= 0:
-                    if sink is not None:
-                        sink.append(('ov', float(intersection_area), 0.0, ux, uy))
-                        return
-                    # Overlap: F = k_wall * (1 + area_m2 / area_ref) — the
-                    # dimensionless ratio keeps the constant sane across sizes.
-                    area_m2 = intersection_area * 1e-6
-                    force_mag = params.wall_k_N * (1.0 + area_m2 / params.wall_area_ref_m2)
+                    s_mm = -_overlap_depth_mm(pi, pj, ux, uy)
                 else:
-                    # Halo: gap = -intersection_area, linear falloff to 0 at halo_reach
-                    gap = -intersection_area
-                    halo_reach = float(_halo_matrix[li, lj])
-                    if gap >= halo_reach:
+                    s_mm = -intersection_area  # gap mm
+                    if s_mm >= halo_reach:
                         return
-                    if sink is not None:
-                        sink.append(('halo', gap, halo_reach, ux, uy))
-                        return
-                    gap_m = gap * 1e-3
-                    halo_m = halo_reach * 1e-3
-                    force_mag = params.wall_k_N * (1.0 - gap_m / halo_m)
+                if sink is not None:
+                    sink.append(('s', float(s_mm), ux, uy))
+                    return
+                if s_mm >= halo_reach:
+                    return
+                force_mag = params.wall_k_N * (1.0 - s_mm / halo_reach)
 
                 fx, fy = force_mag * ux, force_mag * uy
                 _spread(fp_local_to_rows[li], fp_centroids_arr[li, 0], fp_centroids_arr[li, 1],
@@ -1900,95 +2030,46 @@ def _run_region_simulation(
 
             def _apply_contact_push_analytical(
                 li: int, lj: int,
-                shape_i_type: str, shape_i_params: dict,
-                shape_j_type: str, shape_j_params: dict,
-                intersection_area: float,  # >= 0: overlap area; < 0: gap (for halo)
+                penetration: float,  # signed SAT depth in mm (> 0 overlap, < 0 gap)
+                normal: tuple[float, float],  # j -> i (push i away from j)
+                is_overlap: bool,
                 sink: Optional[list] = None,
             ) -> bool:
-                """Analytical contact push using SAT for rectangles/circles.
+                """Analytical contact push from a SAT result (rectangles/circles).
 
-                Returns True if analytical collision was used, False if fallback needed.
+                Callers pass through the ``_analytical_collision`` triple
+                directly — no recompute, no area approximation. Normal points
+                from j to i (same as shapely nearest_points). Force on i (li)
+                is in normal direction; force on j (lj) is opposite.
 
-                Normal convention: points from j to i (same as shapely nearest_points).
-                Force on i (li) is in normal direction; force on j (lj) is opposite.
-
-                With ``sink`` given, appends a candidate tuple (see
-                ``_apply_contact_push``) instead of spreading, for per-pair
-                aggregation by the caller.
+                With ``sink`` given, appends a ``('s', s_mm, ux, uy)`` candidate
+                (see ``_apply_contact_push``) instead of spreading, for per-pair
+                aggregation by the caller. Always returns True (callers only
+                invoke this when the analytical result exists).
                 """
-                # Determine collision type and call appropriate SAT function
-                overlap = False
-                normal = None
-                penetration = 0.0
-                
-                if shape_i_type == ShapeType.RECTANGLE and shape_j_type == ShapeType.RECTANGLE:
-                    overlap, normal, penetration = _sat_rect_rect(shape_i_params, shape_j_params)
-                    # SAT normal points from i to j; flip to match shapely (j to i)
-                    normal = -normal
-                elif shape_i_type == ShapeType.CIRCLE and shape_j_type == ShapeType.CIRCLE:
-                    overlap, normal, penetration = _circle_circle_contact(shape_i_params, shape_j_params)
-                    # circle_circle normal points from c1 to c2 (i to j); flip
-                    normal = -normal
-                elif shape_i_type == ShapeType.RECTANGLE and shape_j_type == ShapeType.CIRCLE:
-                    overlap, normal, penetration = _rect_circle_contact(shape_i_params, shape_j_params)
-                    # rect_circle normal points from rect to circle (i to j); flip
-                    normal = -normal
-                elif shape_i_type == ShapeType.CIRCLE and shape_j_type == ShapeType.RECTANGLE:
-                    overlap, normal, penetration = _rect_circle_contact(shape_j_params, shape_i_params)
-                    # rect_circle normal points from rect to circle (j to i); already correct
-                    # (rect=j, circle=i -> normal from j to i)
-                else:
-                    # Fall back to shapely for polygon-polygon, polygon-rectangle, etc.
+                # Signed separation in mm: s = -penetration, so s > 0 is a gap,
+                # s = 0 touching, s < 0 overlap depth. The unified wall law
+                # F = k*(1-s/h) needs no area: every sub-path speaks distance.
+                # Direction stays the SAT minimum-translation (MTV) axis — out
+                # the nearest edge, never centroid-to-centroid, which is wrong
+                # for containment / small-in-large overlaps (shoves the small
+                # part DEEPER along the long axis instead of out the nearest
+                # edge; DCCF C14 vs RV3 was the motivating case).
+                s_mm = -penetration
+                ux, uy = normal
+                nn = math.hypot(ux, uy)
+                if not math.isfinite(nn) or nn <= 1e-12:
                     return False
-                
-                # Compute force magnitude (newtons; gap/halo as SI ratio)
-                if intersection_area >= 0:
-                    # Overlap: use the SAT minimum-translation (MTV) direction.
-                    # The shapely centroid-to-centroid fallback is wrong for
-                    # containment / small-in-large overlaps (e.g. a cap tucked
-                    # under a pot's wide courtyard span): centroids can point
-                    # along the long axis, shoving the small part DEEPER
-                    # instead of out the nearest edge (DCCF C14 vs RV3,
-                    # 2026-10-15: overlap 2.8 -> 21mm^2 in one step).
-                    # Magnitude keeps the wall penalty law from
-                    # docs/si_force_laws.md; only the direction changes.
-                    if normal is None:
-                        return False
-                    _n = np.asarray(normal, dtype=np.float64).reshape(-1)
-                    _nn = float(np.linalg.norm(_n))
-                    if not math.isfinite(_nn) or _nn <= 1e-12:
-                        return False
-                    ux, uy = float(_n[0] / _nn), float(_n[1] / _nn)
-                    if sink is not None:
-                        sink.append(('ov', float(intersection_area), 0.0, ux, uy))
-                        return True
-                    area_m2 = intersection_area * 1e-6
-                    force_mag = params.wall_k_N * (1.0 + area_m2 / params.wall_area_ref_m2)
-                    fx, fy = force_mag * ux, force_mag * uy
-                    _spread(fp_local_to_rows[li], fp_centroids_arr[li, 0], fp_centroids_arr[li, 1],
-                            fp_radii_arr[li], ux, uy, fx, fy)
-                    if fp_movable_arr[lj]:
-                        _spread(fp_local_to_rows[lj], fp_centroids_arr[lj, 0], fp_centroids_arr[lj, 1],
-                                fp_radii_arr[lj], -ux, -uy, -fx, -fy)
+                ux, uy = ux / nn, uy / nn
+                halo_reach = float(_halo_matrix[li, lj])
+                if sink is not None:
+                    if is_overlap or s_mm < halo_reach:
+                        sink.append(('s', float(s_mm), ux, uy))
                     return True
-                else:
-                    # Halo: gap = -intersection_area, linear falloff to 0 at halo_reach
-                    # Use SAT normal (separation axis) for halo force direction
-                    gap = -intersection_area
-                    halo_reach = float(_halo_matrix[li, lj])
-                    if gap >= halo_reach:
-                        return True  # Outside halo, no force
-                    _n = np.asarray(normal, dtype=np.float64).reshape(-1)
-                    _nn = float(np.linalg.norm(_n))
-                    if not math.isfinite(_nn) or _nn <= 1e-12:
-                        return False
-                    if sink is not None:
-                        sink.append(('halo', gap, halo_reach,
-                                     float(_n[0] / _nn), float(_n[1] / _nn)))
-                        return True
-                    force_mag = params.wall_k_N * (1.0 - (gap * 1e-3) / (halo_reach * 1e-3))
+                if s_mm >= halo_reach:
+                    return True  # Outside halo, no force
+                force_mag = params.wall_k_N * (1.0 - s_mm / halo_reach)
 
-                ux, uy = normal[0], normal[1]
                 fx, fy = force_mag * ux, force_mag * uy
                 _spread(fp_local_to_rows[li], fp_centroids_arr[li, 0], fp_centroids_arr[li, 1],
                         fp_radii_arr[li], ux, uy, fx, fy)
@@ -2010,19 +2091,19 @@ def _run_region_simulation(
                 pins_i = pins_data[fp_i_uuid]
                 pins_j = pins_data[fp_j_uuid]
                 # Per-pair contact candidates: body + pin sub-paths below
-                # append ('ov'|'halo', scalar, reach, ux, uy) tuples; the
-                # consumer after section 4 applies exactly ONE penalty per
-                # footprint pair (summed overlap areas along the strongest
-                # direction, else strongest halo). Without aggregation the
-                # THT pin circles stack the same contact 3-9x, sandwiching
-                # small parts into locked neighbors (DCCF C14 vs RV3/U3 and
-                # C8/R13 vs RV1, 2026-10-15).
+                # append ('s', s_mm, ux, uy) tuples with s the signed
+                # separation in mm (s > 0 gap, s = 0 touching, s < 0 overlap
+                # depth). The consumer after section 4 applies exactly ONE
+                # penalty per footprint pair (deepest contact wins,
+                # winner-takes-all), so THT pin circles can no longer stack
+                # the same contact 3-9x and sandwich small parts into locked
+                # neighbors (DCCF C14 vs RV3/U3 and C8/R13 vs RV1, 2026-10-15).
                 cand: list = []
 
                 # 1. Body-body collision (same layer only) - already filtered by layer in broadphase
                 if _close[i, j]:
                     if not body_i.is_empty and not body_j.is_empty:
-                        # Try analytical collision first
+                        # Try analytical collision first for supported shapes
                         cached_i = poly_cache.get(fp_i_uuid, {})
                         cached_j = poly_cache.get(fp_j_uuid, {})
                         shape_i_type = cached_i.get("shape_type", ShapeType.POLYGON)
@@ -2030,28 +2111,22 @@ def _run_region_simulation(
                         shape_i_params = cached_i.get("shape_params", {})
                         shape_j_params = cached_j.get("shape_params", {})
 
-                        used_analytical = False
-                        if body_i.intersects(body_j):
-                            intersection = body_i.intersection(body_j)
-                            if shape_i_type in (ShapeType.RECTANGLE, ShapeType.CIRCLE) and \
-                               shape_j_type in (ShapeType.RECTANGLE, ShapeType.CIRCLE):
-                                used_analytical = _apply_contact_push_analytical(
-                                    i, j, shape_i_type, shape_i_params,
-                                    shape_j_type, shape_j_params,
-                                    intersection.area, cand)
-                            if not used_analytical:
-                                _apply_contact_push(i, j, body_i, body_j, intersection.area, cand)
+                        analytical_result = _analytical_collision(
+                            shape_i_type, shape_i_params, shape_j_type, shape_j_params)
+                        
+                        if analytical_result is not None:
+                            penetration, normal, is_overlap = analytical_result
+                            _apply_contact_push_analytical(i, j, penetration, normal,
+                                is_overlap, cand)
                         else:
-                            body_dist = body_i.distance(body_j)
-                            halo_reach = float(_halo_matrix[i, j])
-                            if body_dist < halo_reach:
-                                if shape_i_type in (ShapeType.RECTANGLE, ShapeType.CIRCLE) and \
-                                   shape_j_type in (ShapeType.RECTANGLE, ShapeType.CIRCLE):
-                                    used_analytical = _apply_contact_push_analytical(
-                                        i, j, shape_i_type, shape_i_params,
-                                        shape_j_type, shape_j_params,
-                                        -body_dist, cand)
-                                if not used_analytical:
+                            # Fallback to shapely for unsupported shapes (polygon-polygon, etc.)
+                            if body_i.intersects(body_j):
+                                # Overlap: depth recomputed inside from pi/pj.
+                                _apply_contact_push(i, j, body_i, body_j, 0.0, cand)
+                            else:
+                                body_dist = body_i.distance(body_j)
+                                halo_reach = float(_halo_matrix[i, j])
+                                if body_dist < halo_reach:
                                     _apply_contact_push(i, j, body_i, body_j, -body_dist, cand)
 
                 # 2. Pins_i vs body_j (all layers) - pins are circles
@@ -2059,32 +2134,38 @@ def _run_region_simulation(
                     for pin_poly, pin_center, pin_radius in pins_i:
                         if pin_poly.is_empty:
                             continue
+                        # Quick bounding check: pin center to body centroid distance
+                        pin_cx, pin_cy = pin_center
+                        body_cx, body_cy = fp_centroids_arr[j, 0], fp_centroids_arr[j, 1]
+                        dx = pin_cx - body_cx
+                        dy = pin_cy - body_cy
+                        center_dist = math.hypot(dx, dy)
+                        max_reach = pin_radius + body_radii_arr[j] + (params.wall_halo_m * 1000.0)
+                        if center_dist > max_reach:
+                            continue  # Too far, no collision possible
+                        
                         # Pin is a circle
                         pin_shape_params = {"center": pin_center, "radius": pin_radius}
                         cached_j = poly_cache.get(fp_j_uuid, {})
                         shape_j_type = cached_j.get("shape_type", ShapeType.POLYGON)
                         shape_j_params = cached_j.get("shape_params", {})
                         
-                        used_analytical = False
-                        if pin_poly.intersects(body_j):
-                            intersection = pin_poly.intersection(body_j)
-                            if shape_j_type in (ShapeType.RECTANGLE, ShapeType.CIRCLE):
-                                used_analytical = _apply_contact_push_analytical(
-                                    i, j, ShapeType.CIRCLE, pin_shape_params,
-                                    shape_j_type, shape_j_params,
-                                    intersection.area, cand)
-                            if not used_analytical:
-                                _apply_contact_push(i, j, pin_poly, body_j, intersection.area, cand)
+                        analytical_result = _analytical_collision(
+                            ShapeType.CIRCLE, pin_shape_params, shape_j_type, shape_j_params)
+                        
+                        if analytical_result is not None:
+                            penetration, normal, is_overlap = analytical_result
+                            _apply_contact_push_analytical(i, j, penetration, normal,
+                                is_overlap, cand)
                         else:
-                            pin_dist = pin_poly.distance(body_j)
-                            pin_halo = min(1.5 * (pin_radius + body_radii_arr[j]), (params.wall_halo_m * 1000.0))
-                            if pin_dist < pin_halo:
-                                if shape_j_type in (ShapeType.RECTANGLE, ShapeType.CIRCLE):
-                                    used_analytical = _apply_contact_push_analytical(
-                                        i, j, ShapeType.CIRCLE, pin_shape_params,
-                                        shape_j_type, shape_j_params,
-                                        -pin_dist, cand)
-                                if not used_analytical:
+                            # Fallback to shapely
+                            if pin_poly.intersects(body_j):
+                                # Overlap: depth recomputed inside from pi/pj.
+                                _apply_contact_push(i, j, pin_poly, body_j, 0.0, cand)
+                            else:
+                                pin_dist = pin_poly.distance(body_j)
+                                pin_halo = params.wall_halo_m * 1000.0  # single global reach
+                                if pin_dist < pin_halo:
                                     _apply_contact_push(i, j, pin_poly, body_j, -pin_dist, cand)
 
                 # 3. Body_i vs pins_j (all layers)
@@ -2092,86 +2173,90 @@ def _run_region_simulation(
                     for pin_poly, pin_center, pin_radius in pins_j:
                         if pin_poly.is_empty:
                             continue
+                        # Quick bounding check: body centroid to pin center distance
+                        body_cx, body_cy = fp_centroids_arr[i, 0], fp_centroids_arr[i, 1]
+                        pin_cx, pin_cy = pin_center
+                        dx = body_cx - pin_cx
+                        dy = body_cy - pin_cy
+                        center_dist = math.hypot(dx, dy)
+                        max_reach = body_radii_arr[i] + pin_radius + (params.wall_halo_m * 1000.0)
+                        if center_dist > max_reach:
+                            continue  # Too far, no collision possible
+                        
                         # Pin is a circle
                         pin_shape_params = {"center": pin_center, "radius": pin_radius}
                         cached_i = poly_cache.get(fp_i_uuid, {})
                         shape_i_type = cached_i.get("shape_type", ShapeType.POLYGON)
                         shape_i_params = cached_i.get("shape_params", {})
                         
-                        used_analytical = False
-                        if body_i.intersects(pin_poly):
-                            intersection = body_i.intersection(pin_poly)
-                            if shape_i_type in (ShapeType.RECTANGLE, ShapeType.CIRCLE):
-                                used_analytical = _apply_contact_push_analytical(
-                                    i, j, shape_i_type, shape_i_params,
-                                    ShapeType.CIRCLE, pin_shape_params,
-                                    intersection.area, cand)
-                            if not used_analytical:
-                                _apply_contact_push(i, j, body_i, pin_poly, intersection.area, cand)
+                        analytical_result = _analytical_collision(
+                            shape_i_type, shape_i_params, ShapeType.CIRCLE, pin_shape_params)
+                        
+                        if analytical_result is not None:
+                            penetration, normal, is_overlap = analytical_result
+                            _apply_contact_push_analytical(i, j, penetration, normal,
+                                is_overlap, cand)
                         else:
-                            pin_dist = body_i.distance(pin_poly)
-                            pin_halo = min(1.5 * (body_radii_arr[i] + pin_radius), (params.wall_halo_m * 1000.0))
-                            if pin_dist < pin_halo:
-                                if shape_i_type in (ShapeType.RECTANGLE, ShapeType.CIRCLE):
-                                    used_analytical = _apply_contact_push_analytical(
-                                        i, j, shape_i_type, shape_i_params,
-                                        ShapeType.CIRCLE, pin_shape_params,
-                                        -pin_dist, cand)
-                                if not used_analytical:
+                            # Fallback to shapely
+                            if body_i.intersects(pin_poly):
+                                # Overlap: depth recomputed inside from pi/pj.
+                                _apply_contact_push(i, j, body_i, pin_poly, 0.0, cand)
+                            else:
+                                pin_dist = body_i.distance(pin_poly)
+                                pin_halo = params.wall_halo_m * 1000.0  # single global reach
+                                if pin_dist < pin_halo:
                                     _apply_contact_push(i, j, body_i, pin_poly, -pin_dist, cand)
 
-                # 4. Pins_i vs pins_j (all layers) - both circles
+                # 4. Pins_i vs pins_j (all layers) - both circles (always analytical)
                 if pins_i and pins_j:
                     for pin_i_poly, pin_i_center, pin_i_radius in pins_i:
                         for pin_j_poly, pin_j_center, pin_j_radius in pins_j:
                             if pin_i_poly.is_empty or pin_j_poly.is_empty:
                                 continue
-                            # Both are circles - use analytical
+                            # Quick bounding check: pin center to pin center distance
+                            dx = pin_i_center[0] - pin_j_center[0]
+                            dy = pin_i_center[1] - pin_j_center[1]
+                            center_dist = math.hypot(dx, dy)
+                            max_reach = pin_i_radius + pin_j_radius + (params.wall_halo_m * 1000.0)
+                            if center_dist > max_reach:
+                                continue  # Too far, no collision possible
+                            
+                            # Both are circles - use analytical directly
                             pin_i_params = {"center": pin_i_center, "radius": pin_i_radius}
                             pin_j_params = {"center": pin_j_center, "radius": pin_j_radius}
                             
-                            used_analytical = False
-                            if pin_i_poly.intersects(pin_j_poly):
-                                intersection = pin_i_poly.intersection(pin_j_poly)
-                                used_analytical = _apply_contact_push_analytical(
-                                    i, j, ShapeType.CIRCLE, pin_i_params,
-                                    ShapeType.CIRCLE, pin_j_params,
-                                    intersection.area, cand)
-                            if not used_analytical:
-                                # Need to recompute intersection for fallback
-                                if pin_i_poly.intersects(pin_j_poly):
-                                    intersection = pin_i_poly.intersection(pin_j_poly)
-                                    _apply_contact_push(i, j, pin_i_poly, pin_j_poly, intersection.area, cand)
+                            analytical_result = _analytical_collision(
+                                ShapeType.CIRCLE, pin_i_params, ShapeType.CIRCLE, pin_j_params)
+                            
+                            if analytical_result is not None:
+                                penetration, normal, is_overlap = analytical_result
+                                _apply_contact_push_analytical(i, j, penetration, normal,
+                                    is_overlap, cand)
                             else:
-                                pin_dist = pin_i_poly.distance(pin_j_poly)
-                                pin_halo = min(1.5 * (pin_i_radius + pin_j_radius), (params.wall_halo_m * 1000.0))
-                                if pin_dist < pin_halo:
-                                    used_analytical = _apply_contact_push_analytical(
-                                        i, j, ShapeType.CIRCLE, pin_i_params,
-                                        ShapeType.CIRCLE, pin_j_params,
-                                        -pin_dist, cand)
-                                    if not used_analytical:
+                                # Should never happen for circle-circle, but fallback
+                                if pin_i_poly.intersects(pin_j_poly):
+                                    # Overlap: depth recomputed inside from pi/pj.
+                                    _apply_contact_push(i, j, pin_i_poly, pin_j_poly, 0.0, cand)
+                                else:
+                                    pin_dist = pin_i_poly.distance(pin_j_poly)
+                                    pin_halo = params.wall_halo_m * 1000.0  # single global reach
+                                    if pin_dist < pin_halo:
                                         _apply_contact_push(i, j, pin_i_poly, pin_j_poly, -pin_dist, cand)
 
-                # Aggregate per-pair candidates into ONE penalty: summed
-                # overlap areas along the strongest (max-area) direction,
-                # else the strongest (min gap/reach) halo. Magnitudes keep
-                # the wall laws from docs/si_force_laws.md.
+                # Aggregate per-pair candidates into ONE penalty: the deepest
+                # contact (min signed separation) wins, winner-takes-all.
+                # Magnitude is the unified wall law from docs/si_force_laws.md:
+                # F = k*(1-s/h), zero past the halo reach, k at contact,
+                # growing linearly with penetration depth. No area summation,
+                # so stacked sub-contacts cannot inflate one pair's penalty.
                 if cand:
-                    _ovs = [c for c in cand if c[0] == 'ov']
-                    if _ovs:
-                        _total_area = sum(c[1] for c in _ovs)
-                        _win = max(_ovs, key=lambda c: c[1])
-                        _ux, _uy = _win[3], _win[4]
-                        _mag = params.wall_k_N * (
-                            1.0 + (_total_area * 1e-6) / params.wall_area_ref_m2)
-                    else:
-                        _halos = [c for c in cand if c[0] == 'halo']
-                        _win = min(_halos, key=lambda c: c[1] / c[2])
-                        _gap_mm, _reach_mm = _win[1], _win[2]
-                        _ux, _uy = _win[3], _win[4]
-                        _mag = params.wall_k_N * (
-                            1.0 - (_gap_mm * 1e-3) / (_reach_mm * 1e-3))
+                    # Append-time gating guarantees s < halo for every
+                    # candidate (halo only appended inside reach, overlap has
+                    # s <= 0 < halo), so the winner always pushes (mag > 0).
+                    _win = min(cand, key=lambda c: c[1])
+                    _s_mm, _ux, _uy = _win[1], _win[2], _win[3]
+                    _halo_mm = params.wall_halo_m * 1000.0
+                    _mag = params.wall_k_N * (1.0 - _s_mm / _halo_mm)
                     _fx, _fy = _mag * _ux, _mag * _uy
                     _spread(fp_local_to_rows[i],
                             fp_centroids_arr[i, 0], fp_centroids_arr[i, 1],
@@ -2261,8 +2346,8 @@ def _run_region_simulation(
     #                  pins: list of (pin_poly, pin_center, pin_radius),
     #                  last_centroid, last_angle}
     poly_cache: Dict[str, dict] = {}
-    cache_rebuild_threshold_mm = 0.01  # Rebuild if centroid moves > 10 microns
-    cache_rebuild_threshold_rad = math.radians(0.01)  # or angle > 0.01 deg
+    cache_rebuild_threshold_mm = 0.1  # Rebuild if centroid moves > 100 microns (was 10)
+    cache_rebuild_threshold_rad = math.radians(0.1)  # or angle > 0.1 deg (was 0.01)
 
     # Initial forces predict the NEXT step from the committed board positions.
     # They are captured before the loop so the overlay explains the move it
@@ -2389,8 +2474,8 @@ def _run_region_simulation(
     #                  pins: list of (pin_poly, pin_center, pin_radius),
     #                  last_centroid, last_angle}
     poly_cache: Dict[str, dict] = {}
-    cache_rebuild_threshold_mm = 0.01  # Rebuild if centroid moves > 10 microns
-    cache_rebuild_threshold_rad = math.radians(0.01)  # or angle > 0.01 deg
+    cache_rebuild_threshold_mm = 0.1  # Rebuild if centroid moves > 100 microns (was 10)
+    cache_rebuild_threshold_rad = math.radians(0.1)  # or angle > 0.1 deg (was 0.01)
 
     for iteration in range(params.max_iterations):
         force = _compute_total_force(
@@ -2542,6 +2627,10 @@ def _run_region_simulation(
         if not _region_frames or _region_frames[-1] != _final_frame:
             _region_frames.append(_final_frame)
             _region_force_frames.append(_final_force_frame)
+
+    # Print shape classification stats
+    if hasattr(_run_region_simulation, '_shape_counts'):
+        print(f"  Shape classification: {_run_region_simulation._shape_counts}")
 
     return deltas, footprint_forces, iteration + 1, footprint_components, _region_frames, _region_force_frames
 
