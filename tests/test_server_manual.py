@@ -28,6 +28,8 @@ def _reset_state(tmp_path):
     server.STATE.pinned_uuids = set()
     server.STATE.selected_uuids = set()
     server.STATE.undo_stack = []
+    server.STATE._last_nudge_at = 0.0
+    server.STATE._last_nudge_keys = frozenset()
     server.PARAMS_PATH = tmp_path / "placement.json"
     yield
 
@@ -106,6 +108,90 @@ def test_nudge_rejects_empty_and_noop():
         with pytest.raises(urllib.error.HTTPError) as ei:
             _post(base, "/api/placement/nudge", {"dx_mm": 0.0, "dy_mm": 0.0})
         assert ei.value.code == 400  # no-op
+    finally:
+        httpd.shutdown()
+
+
+@pytest.mark.server
+@pytest.mark.minimal
+def test_nudge_burst_coalesces_into_one_undo(monkeypatch):
+    """Holding an arrow key: N rapid nudges share one undo entry, and one
+    undo reverts the whole burst (history isn't flushed with micro-steps)."""
+    now = [1000.0]
+    monkeypatch.setattr(server.time, "monotonic", lambda: now[0])
+    httpd, base = _client()
+    try:
+        _load(base)
+        u1 = "aaaaaaaa-1111-2222-3333-444444444444"
+        _post(base, "/api/placement/select", {"uuid": u1})
+        for i in range(3):
+            now[0] += 0.05  # 50ms apart: one burst
+            r = _post(base, "/api/placement/nudge", {"dx_mm": 1.0, "dy_mm": 0.0})
+            assert r["ok"]
+        assert _footprints(base)[u1]["x_mm"] == pytest.approx(53.0)
+        assert len(server.STATE.undo_stack) == 1
+        with urllib.request.urlopen(
+            urllib.request.Request(f"{base}/api/placement/undo", method="POST")
+        ):
+            pass
+        assert _footprints(base)[u1]["x_mm"] == pytest.approx(50.0)
+    finally:
+        httpd.shutdown()
+
+
+@pytest.mark.server
+@pytest.mark.minimal
+def test_nudge_burst_breaks_on_pause_or_reselect(monkeypatch):
+    """Window expiry or a changed selection starts a new undo entry."""
+    now = [1000.0]
+    monkeypatch.setattr(server.time, "monotonic", lambda: now[0])
+    httpd, base = _client()
+    try:
+        _load(base)
+        u1 = "aaaaaaaa-1111-2222-3333-444444444444"
+        r2 = "bbbbbbbb-1111-2222-3333-444444444444"
+        _post(base, "/api/placement/select", {"uuid": u1})
+        _post(base, "/api/placement/nudge", {"dx_mm": 1.0, "dy_mm": 0.0})
+        assert len(server.STATE.undo_stack) == 1
+        # Pause past the window: new entry.
+        now[0] += server.NUDGE_COALESCE_S + 0.5
+        _post(base, "/api/placement/nudge", {"dx_mm": 1.0, "dy_mm": 0.0})
+        assert len(server.STATE.undo_stack) == 2
+        # Different selection inside the window: new entry.
+        now[0] += 0.05
+        _post(base, "/api/placement/select", {"uuid": r2})
+        _post(base, "/api/placement/nudge", {"dx_mm": 1.0, "dy_mm": 0.0})
+        assert len(server.STATE.undo_stack) == 3
+    finally:
+        httpd.shutdown()
+
+
+@pytest.mark.server
+@pytest.mark.minimal
+def test_ghost_move_burst_coalesces(monkeypatch):
+    """Ghost-panel stepper bursts share one undo entry like nudges."""
+    now = [2000.0]
+    monkeypatch.setattr(server.time, "monotonic", lambda: now[0])
+    httpd, base = _client()
+    try:
+        _load(base)
+        r = _post(base, "/api/ghosts", {
+            "kind": "wall", "ref": "GHOST_B",
+            "x_mm": 10, "y_mm": 10, "w_mm": 20, "h_mm": 5,
+        })
+        wall_uuid = r["uuid"]
+        assert len(server.STATE.undo_stack) == 1  # create checkpoints
+        for i in range(3):
+            now[0] += 0.05
+            _post(base, "/api/ghosts/move", {"uuid": wall_uuid, "dx_mm": 1.0})
+        assert _footprints(base)[wall_uuid]["x_mm"] == pytest.approx(13.0)
+        assert len(server.STATE.undo_stack) == 2  # create + one burst
+        with urllib.request.urlopen(
+            urllib.request.Request(f"{base}/api/placement/undo", method="POST")
+        ):
+            pass
+        # Burst reverted as one: back to the created pose.
+        assert _footprints(base)[wall_uuid]["x_mm"] == pytest.approx(10.0)
     finally:
         httpd.shutdown()
 

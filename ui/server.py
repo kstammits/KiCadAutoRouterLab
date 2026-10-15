@@ -91,6 +91,13 @@ def _docs_entry(name: str, path: Path) -> dict:
     return {"name": name, "title": title, "size_bytes": size}
 
 
+# Nudge/ghost-move coalescing window (seconds): repeated manual moves of
+# the same selection inside this window share one undo entry, so holding
+# an arrow key doesn't flush the undo history with 1mm micro-steps. Undo
+# then reverts the whole burst as one gesture.
+NUDGE_COALESCE_S = 2.0
+
+
 class BoardState:
     """In-memory snapshot of the currently loaded board pair + proposal + undo stack."""
 
@@ -115,6 +122,11 @@ class BoardState:
         self.drc_error: Optional[str] = None  # Error message from last DRC run, if any
         self.undo_stack: list[tuple] = []  # Stack of (model, pcb_tree) for undo
         self.max_undo_depth = 20
+        # Nudge-burst coalescing: stamp + key set of the last manual move.
+        # Any explicit checkpoint (push_undo from another mutator, undo,
+        # reset, load) clears these so the next move starts a new entry.
+        self._last_nudge_at: float = 0.0
+        self._last_nudge_keys: frozenset = frozenset()
         self.board_version: str = ""  # KiCad generator_version (e.g., "10.0")
         self.version_warning: Optional[str] = None  # Warning for v11+ boards
         # Routing state
@@ -149,6 +161,8 @@ class BoardState:
                 self.pinned_uuids.clear()
                 self.selected_uuids.clear()
                 self.undo_stack.clear()
+                self._last_nudge_at = 0.0
+                self._last_nudge_keys = frozenset()
                 # A new board invalidates any cached DRC result
                 self.drc_violations.clear()
                 self.drc_for_version = None
@@ -396,12 +410,33 @@ class BoardState:
             return self.version
 
     def push_undo(self) -> None:
-        """Push current state to undo stack (called before mutating)."""
+        """Push current state to undo stack (called before mutating).
+
+        An explicit checkpoint always breaks any open nudge burst, so the
+        next manual move starts a fresh undo entry.
+        """
         with self._lock:
             if self.model is not None and self.pcb_tree is not None:
                 self.undo_stack.append((self.model, self.pcb_tree))
                 if len(self.undo_stack) > self.max_undo_depth:
                     self.undo_stack.pop(0)
+            self._last_nudge_at = 0.0
+            self._last_nudge_keys = frozenset()
+
+    def _maybe_push_undo(self, keys: frozenset) -> None:
+        """Checkpoint for manual moves, coalescing rapid bursts.
+
+        Repeated moves of the same key set (selection uuids, or a single
+        ghost uuid) inside ``NUDGE_COALESCE_S`` share the pre-burst entry
+        already on the stack — one undo reverts the whole gesture. Any
+        change of key set or window expiry pushes a new entry. Call with
+        the lock held (re-acquires via ``push_undo``; RLock-safe).
+        """
+        now = time.monotonic()
+        if keys != self._last_nudge_keys or now - self._last_nudge_at > NUDGE_COALESCE_S:
+            self.push_undo()
+        self._last_nudge_at = now
+        self._last_nudge_keys = keys
 
     def undo(self) -> int:
         """Revert to previous state from undo stack."""
@@ -409,6 +444,9 @@ class BoardState:
             if not self.undo_stack:
                 return self.version
             self.model, self.pcb_tree = self.undo_stack.pop()
+            # An undo breaks any open burst: the next move checkpoints fresh.
+            self._last_nudge_at = 0.0
+            self._last_nudge_keys = frozenset()
             self.proposal = None
             self.selected_uuids.clear()
             # Reset routing state on undo
@@ -427,6 +465,8 @@ class BoardState:
                 self.proposal = None
                 self.selected_uuids.clear()
                 self.undo_stack.clear()
+                self._last_nudge_at = 0.0
+                self._last_nudge_keys = frozenset()
                 # Reset routing state
                 self.cost_grid = None
                 self.routing_grid = None
@@ -545,7 +585,8 @@ class BoardState:
             ]
             if not movable:
                 raise ValueError("nothing movable in nudge set (locked/pinned/unknown)")
-            self.push_undo()
+            # Rapid arrow-key bursts share one undo entry (see _maybe_push_undo).
+            self._maybe_push_undo(frozenset(movable))
             protected_nets = set(self.protected_nets)
             affected_nets = self._get_affected_nets(set(movable))
             deltas = {u: (dx_mm, dy_mm, da_deg) for u in movable}
@@ -647,7 +688,8 @@ class BoardState:
                 raise ValueError("no board loaded")
             if not any(fp.uuid == uuid for fp in self.model.ghost_footprints):
                 raise ValueError(f"no ghost with uuid {uuid!r}")
-            self.push_undo()
+            # Stepper bursts share one undo entry (see _maybe_push_undo).
+            self._maybe_push_undo(frozenset({uuid}))
             self.pcb_tree = nudge_footprint_by_uuid(
                 self.pcb_tree, uuid, dx_mm, dy_mm, da_deg
             )
@@ -1532,7 +1574,15 @@ class Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length") or 0)
             data = self.rfile.read(length) if length > 0 else b""
             try:
-                params = PlacementParams.from_dict(json.loads(data.decode("utf-8")))
+                incoming = json.loads(data.decode("utf-8"))
+                if not isinstance(incoming, dict):
+                    raise ValueError("params body must be a JSON object")
+                # Partial-update merge: overlay incoming keys onto the saved
+                # params so GUI-hidden knobs (power/decap/ghost/solver
+                # internals) survive a POST that only carries visible sliders.
+                merged = load_params().to_dict()
+                merged.update(incoming)
+                params = PlacementParams.from_dict(merged)
             except ValueError as exc:
                 self._send(400, f"bad params: {exc}".encode(), "text/plain")
                 return
@@ -1648,17 +1698,24 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, b"movable_uuids must be a list", "text/plain")
                 return
 
-            # Use parameters from request if provided, else load from file
+            # Use parameters from request if provided, else load from file.
+            # SI v2 set (newtons, meters, seconds); max_iterations=0 makes
+            # this a static force probe.
             base_params = load_params()
             params = PlacementParams(
-                repulsion_kr=req.get("repulsion_kr", base_params.repulsion_kr),
-                attraction_ka=req.get("attraction_ka", base_params.attraction_ka),
+                repulsion_k_N_m2=req.get("repulsion_k_N_m2", base_params.repulsion_k_N_m2),
+                attraction_k_N=req.get("attraction_k_N", base_params.attraction_k_N),
                 max_iterations=0,
-                convergence_eps_mm=req.get("convergence_eps_mm", base_params.convergence_eps_mm),
-                courtyard_repulsion_kc=req.get("courtyard_repulsion_kc", base_params.courtyard_repulsion_kc),
-                courtyard_halo_mm=req.get("courtyard_halo_mm", base_params.courtyard_halo_mm),
-                boundary_repulsion_kb=req.get("boundary_repulsion_kb", base_params.boundary_repulsion_kb),
-                max_step_mm=req.get("max_step_mm", base_params.max_step_mm),
+                convergence_eps_m=req.get("convergence_eps_m", base_params.convergence_eps_m),
+                wall_k_N=req.get("wall_k_N", base_params.wall_k_N),
+                wall_area_ref_m2=req.get("wall_area_ref_m2", base_params.wall_area_ref_m2),
+                wall_halo_m=req.get("wall_halo_m", base_params.wall_halo_m),
+                boundary_k_N=req.get("boundary_k_N", base_params.boundary_k_N),
+                ghost_k_N=req.get("ghost_k_N", base_params.ghost_k_N),
+                damping_Ns_m=req.get("damping_Ns_m", base_params.damping_Ns_m),
+                friction_N=req.get("friction_N", base_params.friction_N),
+                dt_s=req.get("dt_s", base_params.dt_s),
+                vmax_m_s=req.get("vmax_m_s", base_params.vmax_m_s),
                 power_attraction_scale=req.get("power_attraction_scale", base_params.power_attraction_scale),
                 decap_boost=req.get("decap_boost", base_params.decap_boost),
                 include_power_nets=req.get("include_power_nets", base_params.include_power_nets),

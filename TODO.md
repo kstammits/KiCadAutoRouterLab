@@ -30,6 +30,21 @@
 - [ ] Net ordering by criticality (signal timing, decap first, then power, then GND, then signal)
 - [ ] Layer assignment heuristic (prefer F.Cu for signals, B.Cu for return paths)
 
+### Documentation (SI program support)
+- [ ] Simulation glossary: extend `docs/autorouting_glossary.md` with an
+  SI-dynamics section (wall/halo/MTV/aggregation/Kabsch/clamp/deadband/
+  guard/tightening/broadphase/decap-power-GND rules), each term with a
+  pointer to the `placement.py` symbol or `si_force_laws.md` section.
+- [ ] Test suite organization: new `docs/tests.md` (per-file intent table,
+  markers, pytest instructions) + `scripts/pytest_report.py` wrapping
+  `pytest --html` (add `pytest-html` to dev deps); reports are gitignored
+  (`docs/benchmarks/test_report_*.html`), regenerate on demand.
+  Gated on suite-green.
+- [ ] Physics primer (GATED behind settling the simulation method — do not
+  start before merge): new `docs/physics_primer.md` — formulas + why +
+  units table + parameter-response graphs via `scripts/plot_force_laws.py`
+  (matplotlib, dev dependency), figures embedded in the primer.
+
 
 ## Notes
 

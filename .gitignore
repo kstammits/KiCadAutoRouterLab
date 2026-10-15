@@ -26,6 +26,10 @@ experiments/out/
 # Scratch / temp artifacts (DRC reports, throwaway test boards)
 tmp/
 
+# Generated pytest HTML reports (immediately outdated; regenerate on demand
+# via scripts/pytest_report.py --out <path>)
+docs/benchmarks/test_report_*.html
+
 # KiCad project-local / cache files (not for version control)
 *.kicad_prl
 fp-info-cache

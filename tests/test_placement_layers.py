@@ -82,12 +82,12 @@ def _centroid_gap(model: BoardModel, deltas: dict) -> float:
 
 PARAMS = PlacementParams(
     max_iterations=30,  # 1mm/iter steps need the budget a 2mm vaulting solver did not
-    convergence_eps_mm=1e-12,
-    repulsion_kr=100.0,
-    attraction_ka=0.05,
-    courtyard_repulsion_kc=10000.0,
-    courtyard_halo_mm=3.0,
-    boundary_repulsion_kb=1.0,  # negligible: parts start at board center
+    convergence_eps_m=1e-15,
+    repulsion_k_N_m2=1.0000000000000001e-07,
+    attraction_k_N=5e-05,
+    wall_k_N=0.01,
+    wall_halo_m=0.003,
+    boundary_k_N=1e-06,  # negligible: parts start at board center
 )
 
 

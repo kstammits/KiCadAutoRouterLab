@@ -10,7 +10,7 @@ loosen a bound just to make red go green.
 Conventions: boards mirror tests/test_placement_pairs.py (valid head-to-tail
 courtyard rects at board coords, virtual single region from Edge.Cuts).
 Probes use max_iterations=0 (static force at the committed pose); runs use
-short budgets with convergence_eps_mm=1e-12 so the full budget executes.
+short budgets with convergence_eps_m=1e-15 so the full budget executes.
 """
 
 import math
@@ -63,12 +63,12 @@ def _overlap(fa_uuid="uuid-a", fb_uuid="uuid-b", dx=1.0):
 def _base_params(**kw):
     base = dict(
         max_iterations=10,
-        convergence_eps_mm=1e-12,
-        repulsion_kr=100.0,
-        attraction_ka=0.05,
-        courtyard_repulsion_kc=10000.0,
-        courtyard_halo_mm=3.0,
-        boundary_repulsion_kb=1.0,
+        convergence_eps_m=1e-15,
+        repulsion_k_N_m2=1.0000000000000001e-07,
+        attraction_k_N=5e-05,
+        wall_k_N=0.01,
+        wall_halo_m=0.003,
+        boundary_k_N=1e-06,
     )
     base.update(kw)
     return PlacementParams(**base)
@@ -105,7 +105,6 @@ class TestOverlapLaw:
         """First touch from outside (halo max = kc) meets first touch from
         inside (kc * (1 + ~0 area)): no force cliff at the contact plane
         that the integrator could tunnel through."""
-        kc = 10000.0
         # 2x2 squares touching edge-to-edge: halo branch at zero gap.
         touching = _board([
             _single_pad("A", "uuid-a", 0.0, 0.0, "N1"),
@@ -120,29 +119,42 @@ class TestOverlapLaw:
         prop_in = run_placement(overlapping, _base_params(max_iterations=0))
         halo_at_contact = _courtyard_mag(prop_out, "uuid-b")
         overlap_just_inside = _courtyard_mag(prop_in, "uuid-b")
+        # SI newtons: halo saturates at wall_k_N (see _base_params).
+        kc = 0.01
         assert halo_at_contact == pytest.approx(kc, rel=0.01)
         assert overlap_just_inside == pytest.approx(kc, rel=0.05)
 
     def test_coincident_parts_separate(self):
         """Perfectly stacked outlines previously felt zero force (the
         intersection centroid sat exactly on the polygon centroid and
-        failed the dist guard). The deterministic tiebreak must split
-        them in opposite directions."""
+        failed the dist guard). The pair must split in opposite
+        directions.
+
+        NOTE (SI MTV contact): separation escapes along the minimum-
+        translation axis — the short side (y for these 6x4 rects), not
+        the old centroid-tiebreak x. The axis is assert-agnostic; what
+        matters is opposite nonzero motion plus shrinking overlap.
+        """
         model = _overlap(dx=0.0)
         before = overlap_area(model, {})
         assert before > 20.0
         prop = run_placement(model, _base_params(max_iterations=3))
         after = overlap_area(model, prop.deltas)
         assert after < before, f"coincident parts must separate ({before} -> {after})"
-        dx_a, _, _ = prop.deltas["uuid-a"]
-        dx_b, _, _ = prop.deltas["uuid-b"]
-        assert dx_a * dx_b < 0.0, (
-            f"pair must split in opposite x directions ({dx_a} vs {dx_b})"
+        dx_a, dy_a, _ = prop.deltas["uuid-a"]
+        dx_b, dy_b, _ = prop.deltas["uuid-b"]
+        dot = dx_a * dx_b + dy_a * dy_b
+        assert dot < 0.0, (
+            f"pair must move in opposite directions ({dx_a, dy_a} vs {dx_b, dy_b})"
         )
+        assert math.hypot(dx_a, dy_a) > 1e-9, "separation must be nonzero"
 
     def test_overlap_resolves_to_zero(self):
+        # NOTE (SI damping): the damped approach needs ~30 iterations to
+        # clear a 20mm² overlap with wall_k_N=0.01; the intent (no
+        # persistent interpenetration) is unchanged, only the runway.
         model = _overlap(dx=1.0)
-        prop = run_placement(model, _base_params(max_iterations=10))
+        prop = run_placement(model, _base_params(max_iterations=30))
         assert overlap_area(model, prop.deltas) == pytest.approx(0.0, abs=1e-6)
 
 
@@ -158,7 +170,8 @@ class TestAttractionRepulsionEquilibrium:
     """
 
     def test_pair_settles_at_sqrt_kr_over_ka(self):
-        kr, ka = 4.0, 1.0
+        # SI units: kr in N·m², ka in N, equilibrium d = sqrt(kr/ka) meters.
+        kr, ka = 5e-7, 5e-3  # ~10mm equilibrium
         model = _board([
             _single_pad("A", "uuid-a", 0.0, 0.0, "N1", hw=0.25, hh=0.25),
             _single_pad("B", "uuid-b", 8.0, 0.0, "N1", hw=0.25, hh=0.25),
@@ -166,15 +179,16 @@ class TestAttractionRepulsionEquilibrium:
         prop = run_placement(
             model,
             _base_params(max_iterations=500,
-                         convergence_eps_mm=1e-6,
-                         repulsion_kr=kr, attraction_ka=ka,
-                         courtyard_repulsion_kc=1e-9,
-                         boundary_repulsion_kb=1e-9),
+                         convergence_eps_m=1e-09,
+                         repulsion_k_N_m2=kr, attraction_k_N=ka,
+                         wall_k_N=1e-15,
+                         boundary_k_N=1e-15),
         )
         moved = apply_deltas(model, prop.deltas)
         ax = moved.by_ref["A"].x_mm
         bx = moved.by_ref["B"].x_mm
-        assert abs(bx - ax) == pytest.approx(math.sqrt(kr / ka), rel=0.25)
+        assert abs(bx - ax) == pytest.approx(
+            math.sqrt(kr / ka) * 1000.0, rel=0.25)
 
     def test_attraction_pulls_together(self):
         model = _board([
@@ -183,9 +197,9 @@ class TestAttractionRepulsionEquilibrium:
         ])
         prop = run_placement(
             model,
-            _base_params(max_iterations=5, repulsion_kr=1e-9,
-                         attraction_ka=1.0, courtyard_repulsion_kc=1e-9,
-                         boundary_repulsion_kb=1e-9),
+            _base_params(max_iterations=5, repulsion_k_N_m2=1e-18,
+                         attraction_k_N=0.001, wall_k_N=1e-15,
+                         boundary_k_N=1e-15),
         )
         moved = apply_deltas(model, prop.deltas)
         assert moved.by_ref["B"].x_mm < 10.0
@@ -198,9 +212,9 @@ class TestAttractionRepulsionEquilibrium:
         ])
         prop = run_placement(
             model,
-            _base_params(max_iterations=5, attraction_ka=0.0,
-                         courtyard_repulsion_kc=1e-9,
-                         boundary_repulsion_kb=1e-9),
+            _base_params(max_iterations=5, attraction_k_N=0.0,
+                         wall_k_N=1e-15,
+                         boundary_k_N=1e-15),
         )
         moved = apply_deltas(model, prop.deltas)
         assert moved.by_ref["B"].x_mm > 10.0
@@ -217,8 +231,8 @@ class TestCourtyardRole:
         before = overlap_area(model, {})
         prop = run_placement(
             model,
-            _base_params(max_iterations=5, repulsion_kr=0.01,
-                         courtyard_repulsion_kc=1e-9),
+            _base_params(max_iterations=5, repulsion_k_N_m2=1.0000000000000001e-11,
+                         wall_k_N=1e-15),
         )
         after = overlap_area(model, prop.deltas)
         assert after > before * 0.5, (
@@ -246,20 +260,25 @@ class TestBoundaryRole:
     """Boundary repulsion is what keeps parts inside the region outline."""
 
     def test_wall_holds_against_shove(self):
+        # NOTE (SI boundary): reach is dynamic (10% of body size, min
+        # 1mm), so A must start inside 1mm of the edge at x=-30 for the
+        # wall to engage; at -26 the wall is silent by design.
         def run(kb):
             model = _board([
-                _single_pad("A", "uuid-a", -26.0, 0.0, "N1",
+                _single_pad("A", "uuid-a", -29.0, 0.0, "N1",
                             hw=0.25, hh=0.25),
                 _single_pad("B", "uuid-b", -18.0, 0.0, "N2",
                             hw=0.25, hh=0.25),
             ])
             return run_placement(
                 model,
-                _base_params(max_iterations=10, boundary_repulsion_kb=kb,
-                             courtyard_repulsion_kc=1e-9),
+                _base_params(max_iterations=10, boundary_k_N=kb,
+                             wall_k_N=1e-15),
             ), model
 
-        (walled, model) = run(20000.0)
+        # SI newtons: the Coulomb shove here is ~1.5mN, so 0.05N of wall
+        # holds while 1nN is transparent.
+        (walled, model) = run(0.05)
         (open_, _) = run(1e-9)
         ax_walled = apply_deltas(model, walled.deltas).by_ref["A"].x_mm
         ax_open = apply_deltas(model, open_.deltas).by_ref["A"].x_mm
@@ -294,7 +313,7 @@ class TestGhostRole:
     def test_ghost_pulls_target(self):
         model = self._ghost_board()
         prop = run_placement(
-            model, _base_params(max_iterations=30, repulsion_kr=1.0)
+            model, _base_params(max_iterations=30, repulsion_k_N_m2=1e-09)
         )
         assert "uuid-t" in prop.deltas
         _, dy, _ = prop.deltas["uuid-t"]
@@ -366,10 +385,10 @@ class TestRigidProjection:
         def _dx(iters):
             params = _base_params(
                 max_iterations=iters,
-                repulsion_kr=100.0,
-                attraction_ka=0.05,
-                courtyard_repulsion_kc=1e-9,
-                boundary_repulsion_kb=1e-9,
+                repulsion_k_N_m2=1.0000000000000001e-07,
+                attraction_k_N=5e-05,
+                wall_k_N=1e-15,
+                boundary_k_N=1e-15,
                 include_power_nets=False,
                 decap_boost=0.0,
             )
@@ -380,9 +399,47 @@ class TestRigidProjection:
             f"pair must drift monotonically apart, got {traj}"
         )
 
+    def test_angular_deadband_kills_creep_not_torque(self):
+        """Sub-0.1°/step rotations are noise (orientation random-walk over
+        long runs); genuine torque passes through and the 5° rate cap
+        still bounds large swings. Translation is preserved in all cases.
+        """
+        import numpy as np
+
+        from kicad_autorouter.placement import (
+            MIN_ROT_STEP_RAD,
+            _clamp_rigid_step,
+        )
+
+        assert MIN_ROT_STEP_RAD == pytest.approx(math.radians(0.1))
+        old = np.array([[0.0, 0.0], [2.0, 0.0]])
+
+        def posed(deg):
+            r = math.radians(deg)
+            c, s = math.cos(r), math.sin(r)
+            cc = old.mean(axis=0)
+            return (old - cc) @ np.array([[c, s], [-s, c]]) + cc + [0.05, 0.0]
+
+        def out_angle(deg):
+            pos = posed(deg)
+            _clamp_rigid_step(
+                pos, old, [(np.array([0, 1]), old.copy())],
+                np.array([True, True]),
+                cap_mm=1.0, max_rot_rad=math.radians(5.0))
+            va, vb = old[1] - old[0], pos[1] - pos[0]
+            return abs(math.degrees(
+                math.atan2(vb[1], vb[0]) - math.atan2(va[1], va[0])))
+
+        assert out_angle(0.05) == pytest.approx(0.0, abs=1e-9)
+        assert out_angle(0.5) == pytest.approx(0.5, rel=0.01)
+        assert out_angle(10.0) == pytest.approx(5.0, rel=0.01)
+
     def test_no_stiffness_knob(self):
         """The spring is gone: no rigid_stiffness field, and legacy files
         carrying it still load (from_dict ignores unknown keys)."""
         assert not hasattr(PlacementParams(), "rigid_stiffness")
-        q = PlacementParams.from_dict({"repulsion_kr": 1.0, "rigid_stiffness": 5e5})
-        assert q.repulsion_kr == 1.0
+        q = PlacementParams.from_dict(
+            {"repulsion_k_N_m2": 1e-7, "rigid_stiffness": 5e5,
+             "repulsion_kr": 4.0})
+        assert q.repulsion_k_N_m2 == pytest.approx(1e-7)
+        assert not hasattr(q, "repulsion_kr")

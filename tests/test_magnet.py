@@ -42,16 +42,16 @@ from kicad_autorouter.svg_render import render_board_svg
 # ---------------------------------------------------------------------------
 MAGNET_PARAMS = PlacementParams(
     max_iterations=200,
-    repulsion_kr=2.0,
+    repulsion_k_N_m2=2e-09,
     # Strong attraction shortens same-net routes: measured intra-group
     # 25.4→20.0mm (group A) and routed copper 138→124mm vs ka=2.0.
-    attraction_ka=6.0,
-    courtyard_repulsion_kc=30000.0,
+    attraction_k_N=0.006,
+    wall_k_N=0.03,
     # 3x2mm parts: 6mm halo preserves this test's original ~5.4mm
     # (1.5x radii sum) near-miss reach under the bounded-halo regime.
-    courtyard_halo_mm=6.0,
-    boundary_repulsion_kb=500000.0,
-    convergence_eps_mm=0.1,
+    wall_halo_m=0.006,
+    boundary_k_N=0.5,
+    convergence_eps_m=0.0001,
 )
 
 
@@ -306,7 +306,7 @@ class TestNetMagnet:
         print(f"  Average intra-group distance: {avg_intra:.1f}mm")
         print(f"  Average cross-group distance: {avg_cross:.1f}mm")
         print(f"  Tightening (intra/start): {avg_intra/avg_start:.2f}")
-        print(f"  Params: kr={MAGNET_PARAMS.repulsion_kr}, ka={MAGNET_PARAMS.attraction_ka}, "
+        print(f"  Params: kr={MAGNET_PARAMS.repulsion_k_N_m2}, ka={MAGNET_PARAMS.attraction_k_N}, "
               f"  iter={MAGNET_PARAMS.max_iterations}")
 
         assert avg_intra < avg_start * 0.85, (
@@ -340,11 +340,11 @@ class TestNetMagnet:
         """With high repulsion, all components should stay within board boundaries."""
         boundary_params = PlacementParams(
             max_iterations=200,
-            repulsion_kr=50.0,
-            attraction_ka=0.5,
-            courtyard_repulsion_kc=20000.0,
-            boundary_repulsion_kb=500000.0,
-            convergence_eps_mm=0.1,
+            repulsion_k_N_m2=5.0000000000000004e-08,
+            attraction_k_N=0.0005,
+            wall_k_N=0.02,
+            boundary_k_N=0.5,
+            convergence_eps_m=0.0001,
         )
         prop = run_placement(magnet_model, boundary_params)
 
@@ -457,17 +457,18 @@ class TestMagnetHeuristics:
         This is the assembly/silkscreen-spacing intent: courtyard repulsion's
         job is separation. Mean-spread ordering is deliberately NOT asserted
         (measured: high kr can pack parts along edges instead of spreading
-        them — a dynamics quirk, not a separation failure). Budget is 400,
-        not MAGNET_PARAMS' 200: under the fixed 1mm step cap (2026-10-11,
-        no more cooling schedule) stiff high-gain contacts settle slower —
-        seed 42 kr=30 leaves a 9e-4mm^2 sliver at 200 iters that resolves
-        to exactly 0.0 by 400. The threshold stays 1e-6.
+        them — a dynamics quirk, not a separation failure). SI note: the
+        wall owns separation (kr=2e-9 keeps the pair equilibrium sub-mm);
+        kr=1e-6 is the high-gain arm (13mm equilibrium — strong long-range
+        push, still resolves to exactly 0.0 by 400 iters). kr=1e-5 or more
+        blasts parts into edge pile-ups with residual overlap, so it is
+        NOT a valid expectation — the gain knob has a physical range.
         """
         for seed in HEURISTIC_SEEDS:
             model = _build_magnet_board(seed)
-            for kr in (MAGNET_PARAMS.repulsion_kr, 30.0):
+            for kr in (MAGNET_PARAMS.repulsion_k_N_m2, 1e-6):
                 prop = run_placement(
-                    model, replace(MAGNET_PARAMS, repulsion_kr=kr,
+                    model, replace(MAGNET_PARAMS, repulsion_k_N_m2=kr,
                                    max_iterations=400)
                 )
                 polys = _final_courtyard_polys(model, prop)

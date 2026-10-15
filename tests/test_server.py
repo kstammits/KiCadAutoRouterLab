@@ -61,8 +61,10 @@ def test_params_roundtrip():
     try:
         with urllib.request.urlopen(f"{base}/api/placement/params") as r:
             defaults = json.load(r)
-        assert defaults["repulsion_kr"] == 100.0
-        custom = dict(defaults, repulsion_kr=42.5)
+        # SI teardown complete: no legacy repulsion_kr anywhere.
+        assert "repulsion_kr" not in defaults
+        assert defaults["repulsion_k_N_m2"] == pytest.approx(2e-9)
+        custom = dict(defaults, repulsion_k_N_m2=4.2500000000000003e-08)
         req = urllib.request.Request(
             f"{base}/api/placement/params",
             data=json.dumps(custom).encode(),
@@ -70,10 +72,10 @@ def test_params_roundtrip():
         )
         with urllib.request.urlopen(req) as r:
             saved = json.load(r)
-        assert saved["repulsion_kr"] == 42.5
+        assert saved["repulsion_k_N_m2"] == pytest.approx(4.25e-08)
         with urllib.request.urlopen(f"{base}/api/placement/params") as r:
             reloaded = json.load(r)
-        assert reloaded["repulsion_kr"] == 42.5
+        assert reloaded["repulsion_k_N_m2"] == pytest.approx(4.25e-08)
     finally:
         httpd.shutdown()
 

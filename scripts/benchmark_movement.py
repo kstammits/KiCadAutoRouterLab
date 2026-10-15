@@ -40,6 +40,7 @@ FIXTURES = REPO_ROOT / "tests" / "fixtures"
 # convergence variance (a tiny eps forces the full budget).
 TIMING_BUDGET = 30
 TIMING_EPS = 1e-12
+TIMING_EPS_SI = 1e-15  # meters: never converges, times the full budget
 PROFILE_BUDGET = 10
 PROFILE_TOP_N = 25
 
@@ -82,7 +83,7 @@ def time_case(board_name: str, model, uuids: list[str],
               budget: int = TIMING_BUDGET) -> dict:
     """Time a fixed-budget movement run on the given parts."""
     params = PlacementParams(
-        max_iterations=budget, convergence_eps_mm=TIMING_EPS
+        max_iterations=budget, convergence_eps_m=TIMING_EPS_SI
     )
     t0 = time.perf_counter()
     proposal = run_placement(model, params, movable_uuids=set(uuids))
@@ -105,7 +106,7 @@ def profile_case(board_name: str, model, uuids: list[str],
                  top_n: int = PROFILE_TOP_N) -> dict:
     """cProfile a short movement run; top entries by total + cumulative."""
     params = PlacementParams(
-        max_iterations=budget, convergence_eps_mm=TIMING_EPS
+        max_iterations=budget, convergence_eps_m=TIMING_EPS_SI
     )
     pr = cProfile.Profile()
     pr.enable()
