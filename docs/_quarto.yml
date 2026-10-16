@@ -7,18 +7,29 @@ book:
     - index.qmd
     - physics_primer.qmd
     - pytest_results.qmd
+  # Served inside our own docs viewer: no sidebar search needed.
+  # (Saves ~160KB of autocomplete/fuse JS per page.)
+  search: false
 
 format:
   html:
-    theme: cosmo
+    # No Bootswatch theme: cosmo pulls in ~1.5MB of Source Sans Pro
+    # plus bootstrap JS/icons. System fonts are fine for a reference doc.
+    theme: none
     toc: true
     number-sections: true
-    code-fold: true
-    code-tools: true
+    code-fold: false
+    code-tools: false
     toc-depth: 3
-    fig-width: 10
-    fig-height: 6
-    fig-dpi: 150
+    # Lean figures: 8x4in @ 96dpi, no retina doubling (~750px wide,
+    # plenty for line charts at ~900px column width).
+    fig-width: 8
+    fig-height: 4
+    fig-dpi: 96
+    fig-retina: 1
+    # Formulas fall back to raw TeX spans; the viewer has no other
+    # typesetter, so keep the CDN loader (a few lines, loaded on demand).
+    html-math-method: mathjax
     embed-resources: true
   pdf:
     documentclass: scrbook

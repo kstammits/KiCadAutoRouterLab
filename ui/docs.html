@@ -26,6 +26,7 @@
   <h1>KiCad AutoRouter — Docs</h1>
   <select id="docs-select" title="Select a doc"></select>
   <a href="/" style="color:#7ee0a0;font-size:.75rem;">← Back to board</a>
+  <a id="rendered-link" href="#" target="_blank" rel="noopener" style="color:#7ee0a0;font-size:.75rem;display:none;">rendered ↗</a>
   <span id="diag"></span>
 </header>
 <main id="docs-content"></main>
@@ -40,6 +41,16 @@ function renderInline(s) {
   out = out.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   out = out.replace(/(^|[^*\w])\*([^*\n]+)\*/g, "$1<em>$2</em>");
   return out;
+}
+function stripFrontMatter(md) {
+  // Quarto/YAML header: leading ---\n...\n---\n block. Not rendered by the
+  // minimal viewer, so drop it before display.
+  if (!md.startsWith("---\n") && !md.startsWith("---\r\n")) return md;
+  const lines = md.split("\n");
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i].trim() === "---") return lines.slice(i + 1).join("\n");
+  }
+  return md;
 }
 function renderMarkdown(md) {
   const lines = md.split("\n");
@@ -99,7 +110,18 @@ async function loadDoc(name) {
   if (!res.ok) throw new Error(await res.text());
   const data = await res.json();
   document.title = `Docs — ${data.title}`;
-  el.innerHTML = renderMarkdown(data.markdown || "");
+  el.innerHTML = renderMarkdown(stripFrontMatter(data.markdown || ""));
+  const rl = document.getElementById("rendered-link");
+  if (data.rendered_url) {
+    rl.style.display = "";
+    rl.href = data.rendered_url;
+    rl.textContent = data.rendered_stale ? "rendered (stale) ↗" : "rendered ↗";
+    rl.title = data.rendered_stale
+      ? "Pre-rendered HTML is older than the source — re-run scripts/regen_*.sh"
+      : "Pre-rendered HTML with figures and math";
+  } else {
+    rl.style.display = "none";
+  }
   diag.textContent = data.truncated ? "truncated (size cap)" : data.title;
 }
 

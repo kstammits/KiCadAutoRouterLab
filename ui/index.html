@@ -584,6 +584,7 @@
             <span class="num">Docs</span>
             <select id="docs-select" class="filter-select" title="Select a doc"></select>
             <button id="docs-open-tab-btn" title="Open doc in a new browser tab">Open in new tab ↗</button>
+            <a id="docs-rendered-link" href="#" target="_blank" rel="noopener" style="display:none;font-size:.65rem;color:#7ee0a0;" title="Pre-rendered HTML with figures and math">rendered ↗</a>
             <span id="docs-diag" style="font-size:.65rem;color:#7d8b99;"></span>
           </div>
           <div id="docs-content" style="padding:.6rem .7rem;font-size:.72rem;line-height:1.45;overflow:auto;"></div>
@@ -3766,6 +3767,16 @@ function renderMarkdown(md) {
 }
 
 let docsLoaded = false;
+let docsByName = {};
+
+function stripDocsFrontMatter(md) {
+  if (!md.startsWith("---\n") && !md.startsWith("---\r\n")) return md;
+  const lines = md.split("\n");
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i].trim() === "---") return lines.slice(i + 1).join("\n");
+  }
+  return md;
+}
 
 async function loadDocsList() {
   const sel = document.getElementById("docs-select");
@@ -3776,11 +3787,13 @@ async function loadDocsList() {
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
     sel.innerHTML = "";
+    docsByName = {};
     for (const d of (data.docs || [])) {
       const opt = document.createElement("option");
       opt.value = d.name;
       opt.textContent = `${d.title} (${d.name})`;
       sel.appendChild(opt);
+      docsByName[d.name] = d;
     }
     docsLoaded = true;
     if (sel.options.length) {
@@ -3801,7 +3814,18 @@ async function loadDocContent(name) {
     const res = await fetch(`/api/docs/content?name=${encodeURIComponent(name)}`);
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
-    el.innerHTML = renderMarkdown(data.markdown || "");
+    el.innerHTML = renderMarkdown(stripDocsFrontMatter(data.markdown || ""));
+    const rl = document.getElementById("docs-rendered-link");
+    if (data.rendered_url) {
+      rl.style.display = "";
+      rl.href = data.rendered_url;
+      rl.textContent = data.rendered_stale ? "rendered (stale) ↗" : "rendered ↗";
+      rl.title = data.rendered_stale
+        ? "Pre-rendered HTML is older than the source — re-run scripts/regen_*.sh"
+        : "Pre-rendered HTML with figures and math";
+    } else {
+      rl.style.display = "none";
+    }
     // Rewrite relative .md links to stay inside the allowlisted viewer
     el.querySelectorAll("a").forEach(a => {
       const href = a.getAttribute("href") || "";

@@ -7,9 +7,9 @@ format:
   html:
     toc: true
     number-sections: true
-    fig-width: 10
-    fig-height: 6
-    fig-dpi: 150
+    fig-width: 8
+    fig-height: 4
+    fig-dpi: 96
     embed-resources: true
   pdf:
     documentclass: scrbook
@@ -81,8 +81,8 @@ $$d_{\text{eq}} = \sqrt{\frac{k_{\text{rep}}}{k_{\text{attr}}}}$$
 ```{python}
 #| label: fig-repulsion-vs-distance
 #| fig-cap: "Repulsion force magnitude vs. pad separation for different k_rep values. Attraction_k_N = 8 mN (default). Vertical line shows equilibrium distance for default k_rep = 2e-9 N·m²."
-#| fig-width: 10
-#| fig-height: 5
+#| fig-width: 8
+#| fig-height: 4
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -94,7 +94,7 @@ d_mm = np.logspace(-2, 2, 400)  # 0.01 mm to 100 mm
 d_m = d_mm * 1e-3
 
 k_rep_values = [1e-9, 2e-9, 5e-9, 1e-8]
-fig, ax = plt.subplots(figsize=(10, 5))
+fig, ax = plt.subplots(figsize=(8, 4))
 
 for k_rep in k_rep_values:
     F_rep = k_rep / (d_m**2)  # N
@@ -142,8 +142,8 @@ $$\mathbf{F}_{\text{attr}} = k_{\text{attr}} \cdot w_{\text{edge}} \cdot \hat{\m
 ```{python}
 #| label: fig-attraction-fanout
 #| fig-cap: "Effective attraction per pad vs. net fanout for signal vs. power nets. Power rails fan out the pull so total force per pad stays ~constant. Decap boost (4×) shown for reference."
-#| fig-width: 10
-#| fig-height: 5
+#| fig-width: 8
+#| fig-height: 4
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -162,7 +162,7 @@ F_power = k_attr * power_scale / (fanouts - 1)
 # Decap power edge: boosted
 F_decap_power = k_attr * power_scale / (fanouts - 1) * decap_boost
 
-fig, ax = plt.subplots(figsize=(10, 5))
+fig, ax = plt.subplots(figsize=(8, 4))
 ax.plot(fanouts, np.full_like(fanouts, F_signal)*1000, 'o-', label='Signal (1.0)', color='#a3e635')
 ax.plot(fanouts, F_power*1000, 's-', label='Power (1/(fanout-1))', color='#f59e0b')
 ax.plot(fanouts, F_decap_power*1000, '^-', label='Decap power edge (×4)', color='#2dd4bf')
@@ -225,8 +225,8 @@ sub-contacts cannot inflate one pair's penalty.
 ```{python}
 #| label: fig-courtyard-force-profile
 #| fig-cap: "Courtyard force profile: one linear law F = k*(1-s/h) in signed separation s (gap positive, penetration negative). C0/C1 continuous at contact (s=0). k_wall = 80 mN, halo = 6 mm."
-#| fig-width: 10
-#| fig-height: 5
+#| fig-width: 8
+#| fig-height: 4
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -237,7 +237,7 @@ halo = 6.0         # mm (single scale: approach + penetration)
 s_mm = np.linspace(halo, -halo, 400)
 F = k_wall * (1 - s_mm / halo)
 
-fig, ax = plt.subplots(figsize=(10, 5))
+fig, ax = plt.subplots(figsize=(8, 4))
 ax.plot(s_mm, F*1000, 'b-', linewidth=2, label='F = k*(1-s/h)')
 ax.axvline(0, color='k', linestyle=':', alpha=0.5, label='contact (s=0)')
 ax.axhline(k_wall*1000, color='k', linestyle=':', alpha=0.5, label=f'k_wall = {k_wall*1000:.0f} mN')
@@ -268,8 +268,8 @@ Static twins of these response graphs (no Quarto needed):
 ```{python}
 #| label: fig-overlap-resolution-heatmap
 #| fig-cap: "Overlap resolution ratio (1 − final/initial courtyard overlap, synthetic 2-part 1 mm-overlap test) as function of wall_k_N and damping_Ns_m after 50 iterations. Default marked with ★."
-#| fig-width: 10
-#| fig-height: 7
+#| fig-width: 8
+#| fig-height: 5
 import numpy as np
 import matplotlib.pyplot as plt
 import os, pathlib, sys
@@ -350,7 +350,7 @@ for i, wk in enumerate(wall_k_vals):
         resolution = 1 - final_overlap / initial_overlap if initial_overlap > 0 else 1
         results[i, j] = resolution
 
-fig, ax = plt.subplots(figsize=(10, 7))
+fig, ax = plt.subplots(figsize=(8, 5))
 im = ax.imshow(results, origin='lower', aspect='auto', cmap='RdYlGn',
                extent=[np.log10(damping_vals[0]), np.log10(damping_vals[-1]),
                        np.log10(wall_k_vals[0]), np.log10(wall_k_vals[-1])],
@@ -444,8 +444,8 @@ anchor 20 mm away, all other forces off, 500 iterations):
 ```{python}
 #| label: fig-ghost-pullin
 #| fig-cap: "Pull-in distance after 500 iterations vs. ghost spring weight ka (anchor 20 mm away, all other forces off). Linear response — constant-magnitude law. UI default ka = 0.1 barely registers; attraction-scale pull needs ka ≈ 160."
-#| fig-width: 10
-#| fig-height: 5
+#| fig-width: 8
+#| fig-height: 4
 import numpy as np
 import matplotlib.pyplot as plt
 import os, pathlib, sys
@@ -492,7 +492,7 @@ for i, ka in enumerate(ka_vals):
     prop = run_placement(make_ghost_model(float(ka)), params)
     pull_in[i] = prop.deltas.get("uuid-a", (0.0, 0.0, 0.0))[0]
 
-fig, ax = plt.subplots(figsize=(10, 5))
+fig, ax = plt.subplots(figsize=(8, 4))
 ax.semilogx(ka_vals, pull_in, "o-", color="#c4b5fd", linewidth=2, markersize=7)
 ax.axvline(0.1, color="gray", linestyle=":", alpha=0.7, label="UI default ka = 0.1")
 ax.axvline(160, color="gray", linestyle="--", alpha=0.7, label="attraction-scale ka ≈ 160")
@@ -550,8 +550,8 @@ budget, so `friction_N` must be scaled to the tail strength (`kr`).
 ```{python}
 #| label: fig-damping-decay
 #| fig-cap: "Implicit-Euler velocity decay v_n = v0/(1+c·dt/m)^n for an 0805 (~8 mg) at default dt = 1 ms. Higher damping settles faster with less overshoot; the decay is unconditionally stable."
-#| fig-width: 10
-#| fig-height: 5
+#| fig-width: 8
+#| fig-height: 4
 import numpy as np
 import matplotlib.pyplot as plt
 import os, pathlib, sys
@@ -566,7 +566,7 @@ from kicad_autorouter.placement import PlacementParams
 _p = PlacementParams()
 _m, _dt, _v0 = 8e-6, _p.dt_s, 0.1
 _steps = np.arange(0, 51)
-fig, ax = plt.subplots(figsize=(10, 5))
+fig, ax = plt.subplots(figsize=(8, 4))
 for _c in (0.05, _p.damping_Ns_m, 0.3):
     _decay = 1.0 / (1.0 + _c * _dt / _m)
     _hl = _c == _p.damping_Ns_m
@@ -641,8 +641,8 @@ rest; drift is `min(v·dt, vmax·dt)`):
 ```{python}
 #| label: fig-integrator-stability
 #| fig-cap: "One-step drift from rest vs. timestep for typical forces on an 0805. The vmax ceiling binds first for wall-scale forces; the shaded band is the adaptive guard's operating range. Same curves as docs/figures/fig_integrator_stability.png."
-#| fig-width: 10
-#| fig-height: 5
+#| fig-width: 8
+#| fig-height: 4
 import numpy as np
 import matplotlib.pyplot as plt
 import os, pathlib, sys
@@ -662,7 +662,7 @@ _forces = {
     f"attraction ({_p.attraction_k_N * 1e3:.0f} mN)": _p.attraction_k_N,
     f"wall ({_p.wall_k_N * 1e3:.0f} mN)": _p.wall_k_N,
 }
-fig, ax = plt.subplots(figsize=(10, 5))
+fig, ax = plt.subplots(figsize=(8, 4))
 for _label, _f in _forces.items():
     _v = (_f / _m) * _dt / (1.0 + _c * _dt / _m)
     ax.loglog(_dt * 1000, np.minimum(_v * _dt, _vmax * _dt) * 1000.0,
@@ -722,8 +722,8 @@ never integrate; it only keeps `F/m` finite).
 ```{python}
 #| label: fig-mass-acceleration
 #| fig-cap: "Acceleration a = F/m vs. courtyard area for typical forces. Heavier parts accelerate slower under the same rails; the 0805 anchor (≈2.5 mm², ~8 mg) sits near 6 m/s² at attraction scale — brisk but sub-ballistic at 1 ms steps."
-#| fig-width: 10
-#| fig-height: 5
+#| fig-width: 8
+#| fig-height: 4
 import numpy as np
 import matplotlib.pyplot as plt
 import os, pathlib, sys
@@ -743,7 +743,7 @@ _forces = {
     f"attraction ({_p.attraction_k_N * 1e3:.0f} mN)": _p.attraction_k_N,
     f"wall ({_p.wall_k_N * 1e3:.0f} mN)": _p.wall_k_N,
 }
-fig, ax = plt.subplots(figsize=(10, 5))
+fig, ax = plt.subplots(figsize=(8, 4))
 for _label, _f in _forces.items():
     ax.loglog(_area_mm2, _f / _m, label=f"a, F = {_label}")
 ax.axvline(2.5, color="gray", linestyle=":", alpha=0.7, label="0805 (~2.5 mm²)")

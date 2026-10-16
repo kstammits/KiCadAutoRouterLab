@@ -64,8 +64,37 @@ DOCS_ALLOWLIST: Dict[str, Path] = {
     "TODO.md": REPO_ROOT / "TODO.md",
     "docs/README.md": REPO_ROOT / "docs" / "README.md",
     "docs/autorouting_glossary.md": REPO_ROOT / "docs" / "autorouting_glossary.md",
+    "docs/si_force_laws.md": REPO_ROOT / "docs" / "si_force_laws.md",
+    "docs/index.qmd": REPO_ROOT / "docs" / "index.qmd",
+    "docs/physics_primer.qmd": REPO_ROOT / "docs" / "physics_primer.qmd",
+    "docs/pytest_results.qmd": REPO_ROOT / "docs" / "pytest_results.qmd",
+    "docs/benchmark_notes_2026-10-15.md": REPO_ROOT / "docs" / "benchmark_notes_2026-10-15.md",
 }
 DOCS_MAX_BYTES = 200 * 1024
+
+# Pre-rendered Quarto HTML (regenerated on demand via scripts/regen_*.sh,
+# gitignored under docs/_output/). Served verbatim so figures + math render;
+# never rendered on HTTP request (pytest_results.qmd re-runs the suite).
+# Maps URL basename -> (output file, source file for staleness, or None).
+DOCS_RENDERED: Dict[str, tuple[Path, Path | None]] = {
+    "physics_primer.html": (
+        REPO_ROOT / "docs" / "_output" / "html" / "physics_primer.html",
+        REPO_ROOT / "docs" / "physics_primer.qmd",
+    ),
+    "pytest_results.html": (
+        REPO_ROOT / "docs" / "_output" / "html" / "pytest_results.html",
+        REPO_ROOT / "docs" / "pytest_results.qmd",
+    ),
+    "test_report.html": (
+        REPO_ROOT / "docs" / "_output" / "html" / "test_report.html",
+        None,
+    ),
+}
+# Reverse map: allowlist source name -> rendered URL basename.
+DOCS_SOURCE_TO_RENDERED: Dict[str, str] = {
+    "docs/physics_primer.qmd": "physics_primer.html",
+    "docs/pytest_results.qmd": "pytest_results.html",
+}
 
 
 def _docs_title(text: str, fallback: str) -> str:
@@ -79,8 +108,10 @@ def _docs_title(text: str, fallback: str) -> str:
 def _docs_entry(name: str, path: Path) -> dict:
     try:
         size = path.stat().st_size
+        source_mtime = path.stat().st_mtime
     except OSError:
         size = 0
+        source_mtime = 0.0
     title = name
     try:
         with open(path, encoding="utf-8") as f:
@@ -88,7 +119,20 @@ def _docs_entry(name: str, path: Path) -> dict:
         title = _docs_title(head, name)
     except OSError:
         pass
-    return {"name": name, "title": title, "size_bytes": size}
+    entry: dict = {"name": name, "title": title, "size_bytes": size}
+    out = DOCS_SOURCE_TO_RENDERED.get(name)
+    if out is not None:
+        rendered_path, _ = DOCS_RENDERED[out]
+        try:
+            rendered_mtime = rendered_path.stat().st_mtime
+        except OSError:
+            rendered_mtime = None
+        entry["rendered_url"] = f"/docs-rendered/{out}" if rendered_mtime is not None else None
+        entry["rendered_stale"] = rendered_mtime is not None and rendered_mtime < source_mtime
+    else:
+        entry["rendered_url"] = None
+        entry["rendered_stale"] = False
+    return entry
 
 
 # Nudge/ghost-move coalescing window (seconds): repeated manual moves of
@@ -1116,6 +1160,7 @@ class Handler(BaseHTTPRequestHandler):
                 "title": _docs_title(text, name),
                 "markdown": text,
                 "truncated": truncated,
+                **{k: v for k, v in _docs_entry(name, full).items() if k in ("rendered_url", "rendered_stale")},
             }
             self._send(200, json.dumps(payload).encode(), "application/json")
             return
@@ -1487,6 +1532,20 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(404, b"unknown job", "text/plain")
                 return
             self._send(200, json.dumps(snapshot).encode(), "application/json")
+            return
+
+        # GET /docs-rendered/<name>.html - pre-rendered Quarto HTML (see DOCS_RENDERED).
+        if parsed.path.startswith("/docs-rendered/"):
+            base = parsed.path[len("/docs-rendered/"):]
+            if base not in DOCS_RENDERED or "/" in base:
+                self._send(404, b"unknown doc", "text/plain")
+                return
+            out_path, _ = DOCS_RENDERED[base]
+            full = out_path.resolve()
+            if not str(full).startswith(str(REPO_ROOT.resolve())) or not full.is_file():
+                self._send(404, b"unknown doc", "text/plain")
+                return
+            self._send(200, full.read_bytes(), "text/html")
             return
 
         rel_path = parsed.path.lstrip("/")
