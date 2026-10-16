@@ -2,15 +2,17 @@
 
 Terminology and design guidance for this project, aligned to the pipeline stages in
 `src/kicad_autorouter/pipeline.py`: `ingest → parse → connectivity → route → drc → writeback`.
-Sources are the local copies under [`wikipedia/`](wikipedia/) (fetched 2026-09-28) and
-[`kicad/`](kicad/) (KiCad 10.0.7, exact version match).
+Sources are the upstream references listed under [Source index](#source-index)
+(Wikipedia, fetched 2026-09-28; KiCad 10.0.7 docs, exact version match).
+Local vendored copies were removed to keep the repo small — `docs/README.md`
+has fetch recipes to restore them on demand.
 
 ## Stage: ingest — load `.kicad_pcb` / `.kicad_sch`
 
 - **S-expression**: the file format of both `.kicad_pcb` and `.kicad_sch`. Nested
   parenthesized lists, e.g. `(kicad_pcb (version 20241229) ...)`. Not JSON — any parser
   must be an S-expression reader. Version tags in KiCad 10: `20241229` (pcb),
-  `20250114` (sch). See [`kicad/kicad.md`](kicad/kicad.md) ("KiCad files and folders").
+  `20250114` (sch). See [KiCad files and folders](https://docs.kicad.org/10.0/en/kicad/kicad.html).
 - **Load failure**: a file KiCad cannot parse exits non-zero (code 3) with
   `Failed to load ...` on stderr — distinct from rule violations. Handled in
   `src/kicad_autorouter/validate.py`.
@@ -239,7 +241,7 @@ stiffness-capped stepper).
 
 ## Stage: route — the autorouter core
 
-The routing task (from [`wikipedia/autorouter.md`](wikipedia/autorouter.md)): create
+The routing task (from [Wikipedia: Autorouter](https://en.wikipedia.org/wiki/Autorouter)): create
 geometries such that all terminals of each net connect, no different nets connect, and
 all design rules are obeyed. Failure modes:
 
@@ -254,12 +256,12 @@ Key facts that shape the algorithm choice:
   optimal.
 - **Maze router**: represents routing space as a grid sized to the wiring pitch; blocked
   cells = components, existing tracks (pours are passable at a toll, not blocked). Find a chain of free cells from A to B
-  ([`wikipedia/maze_routing.md`](wikipedia/maze_routing.md)).
+  ([Wikipedia: Maze routing](https://en.wikipedia.org/wiki/Maze_routing)).
 - **Lee algorithm**: BFS wave expansion over that grid — mark start `0`, repeatedly mark
   unlabeled neighbors with the next index until the target is reached or no points remain,
   then backtrace through decreasing marks. Always optimal if a path exists, but slow and
-  memory-hungry ([`wikipedia/lee_algorithm.md`](wikipedia/lee_algorithm.md)). A* search
-  ([`wikipedia/a_star_search_algorithm.md`](wikipedia/a_star_search_algorithm.md)) is
+  memory-hungry ([Wikipedia: Lee algorithm](https://en.wikipedia.org/wiki/Lee_algorithm)). A* search
+  ([Wikipedia: A* search](https://en.wikipedia.org/wiki/A*_search_algorithm)) is
   commonly used in maze/Lee routers to cut the cost.
 - **Global routing**: first pick an approximate course per net on a coarse grid (optionally
   assigning layers), then do detailed routing cell by cell — limits the size of the hard part.
@@ -304,7 +306,7 @@ Key facts that shape the algorithm choice:
   via sizes, etc. The DRC stage validates the routed board against it.
 - `kicad-cli pcb drc <board> --format json -o report.json` produces a JSON report with
   top-level `violations[]` and `unconnected_items[]`; `--exit-code-violations` makes the
-  exit code reflect violations, not just load failures (see [`kicad/cli.md`](kicad/cli.md)
+  exit code reflect violations, not just load failures (see [kicad-cli reference](https://docs.kicad.org/10.0/en/cli/cli.html)
   and `src/kicad_autorouter/validate.py`).
 - Example violation (from the old demo-track pass): `track_dangling | Track has unconnected end`.
 - **Ignored violation classes**: the UI overlay and `DRCResult.filter_violations()` hide
@@ -320,8 +322,7 @@ Key facts that shape the algorithm choice:
 
 - Write new tracks (and moved footprints) back as S-expressions. In the current pass this
   is pure Python in `.venv`: per-footprint deltas are applied by UUID via
-  `io.nudge_footprint_by_uuid` and serialized with `sexpr.to_sexpr`;
-  `pcbnew_adapter.py` is reserved for future routing-accurate semantics.
+  `io.nudge_footprint_by_uuid` and serialized with `sexpr.to_sexpr`.
 - Always re-run DRC after writeback — it is the acceptance check for a pass.
 
 ## Force-directed placement of unlocked components
@@ -331,7 +332,7 @@ Key facts that shape the algorithm choice:
 > semi-implicit Euler + Kabsch projection in SI units. Kept for the
 > ghost / nudge / complexity notes, which still hold.
 
-Basis: [`wikipedia/force_directed_graph_drawing.md`](wikipedia/force_directed_graph_drawing.md).
+Basis: [Wikipedia: Force-directed graph drawing](https://en.wikipedia.org/wiki/Force-directed_graph_drawing).
 Treat footprints as nodes and nets as edges; run a physical simulation until equilibrium:
 
 - **Attraction**: spring-like force (Hooke's law) along each net edge pulls connected
@@ -360,21 +361,21 @@ Treat footprints as nodes and nets as edges; run a physical simulation until equ
   per iteration → sub-second total for a full run; net-edge attraction stays sparse O(E),
   vectorized with edge index arrays, and locked footprints are a boolean mask (zero force).
   Dense n² is therefore plenty at "a few hundred" nodes; Barnes–Hut
-  ([`wikipedia/barnes_hut_simulation.md`](wikipedia/barnes_hut_simulation.md)) only becomes
+  ([Wikipedia: Barnes–Hut simulation](https://en.wikipedia.org/wiki/Barnes%E2%80%93Hut_simulation)) only becomes
   necessary past ~3–5k nodes.
 
 ## Source index
 
-| Local file | Used for |
+| Upstream source | Used for |
 | --- | --- |
-| [`wikipedia/autorouter.md`](wikipedia/autorouter.md) | Routing task, failure modes, complexity, router taxonomy, global/detailed + rip-up strategies |
-| [`wikipedia/maze_routing.md`](wikipedia/maze_routing.md) | Grid maze routing model |
-| [`wikipedia/lee_algorithm.md`](wikipedia/lee_algorithm.md) | BFS wave expansion, optimality vs cost |
-| [`wikipedia/force_directed_graph_drawing.md`](wikipedia/force_directed_graph_drawing.md) | Spring/Coulomb placement model for unlocked footprints |
-| [`wikipedia/barnes_hut_simulation.md`](wikipedia/barnes_hut_simulation.md) | Barnes–Hut O(n log n) approximation of all-pairs repulsion; scaling path past ~3–5k nodes |
-| [`wikipedia/a_star_search_algorithm.md`](wikipedia/a_star_search_algorithm.md) | Heuristic grid search (f = g + h); cost cut for maze/Lee routing |
-| [`kicad/kicad.md`](kicad/kicad.md) | `.kicad_*` file types, S-expression formats |
-| [`kicad/pcbnew.md`](kicad/pcbnew.md) | Footprints, pads, nets, tracks, zones, DRC in the PCB editor |
-| [`kicad/cli.md`](kicad/cli.md) | `kicad-cli pcb drc` / `sch erc` JSON reports and exit codes |
+| [Wikipedia: Autorouter](https://en.wikipedia.org/wiki/Autorouter) | Routing task, failure modes, complexity, router taxonomy, global/detailed + rip-up strategies |
+| [Wikipedia: Maze routing](https://en.wikipedia.org/wiki/Maze_routing) | Grid maze routing model |
+| [Wikipedia: Lee algorithm](https://en.wikipedia.org/wiki/Lee_algorithm) | BFS wave expansion, optimality vs cost |
+| [Wikipedia: Force-directed graph drawing](https://en.wikipedia.org/wiki/Force-directed_graph_drawing) | Spring/Coulomb placement model for unlocked footprints |
+| [Wikipedia: Barnes–Hut simulation](https://en.wikipedia.org/wiki/Barnes%E2%80%93Hut_simulation) | Barnes–Hut O(n log n) approximation of all-pairs repulsion; scaling path past ~3–5k nodes |
+| [Wikipedia: A* search](https://en.wikipedia.org/wiki/A*_search_algorithm) | Heuristic grid search (f = g + h); cost cut for maze/Lee routing |
+| [KiCad: project files and folders](https://docs.kicad.org/10.0/en/kicad/kicad.html) | `.kicad_*` file types, S-expression formats |
+| [KiCad: PCB editor manual](https://docs.kicad.org/10.0/en/pcbnew/pcbnew.html) | Footprints, pads, nets, tracks, zones, DRC in the PCB editor |
+| [KiCad: CLI reference](https://docs.kicad.org/10.0/en/cli/cli.html) | `kicad-cli pcb drc` / `sch erc` JSON reports and exit codes |
 | [`src/kicad_autorouter/routing/smooth.py`](src/kicad_autorouter/routing/smooth.py) | String-pulling smoothing with configurable angle_step_rad (10° default), bidirectional greedy + Steiner detour repair |
 | [`tests/test_analytical_contact.py`](tests/test_analytical_contact.py) | SAT courtyard collision test suite (rectangle/circle SAT) |

@@ -4,8 +4,7 @@ The autorouter moves components around the board, so it needs each footprint's
 position and orientation, its courtyard outline in board coordinates, any keepout
 zones, and which pads share nets. This module derives all of that from the pure-
 Python :class:`~kicad_autorouter.sexpr.SExpr` tree (no ``pcbnew`` import), so it
-runs in the project .venv for testing; ``pcbnew_adapter.py`` remains the
-routing-accurate semantic source per the 2026-09-29 decision.
+runs in the project .venv for testing.
 
 Local footprint coordinates are converted to board space by rotating
 by the footprint angle and translating by its position. There is no

@@ -5,11 +5,13 @@
   plus force-directed placement of unlocked components around locked ones. Built from the
   sources below.
 
-## KiCad Documentation (local copies)
+## KiCad Documentation (fetch on demand)
 
-Local markdown copies of the **KiCad 10** user documentation, converted from the HTML
-docs bundled with the installed KiCad app. These match the exact version in use
-(`kicad-cli --version` → 10.0.7), so unlike web docs they cannot drift out of date.
+These markdown copies of the **KiCad 10** user documentation are converted from
+the HTML docs bundled with the installed KiCad app. They match the exact version
+in use (`kicad-cli --version` → 10.0.7), so unlike web docs they cannot drift out
+of date. They are **not committed** (too large for the repo) — restore them locally
+with the recipe under [Regenerating these copies](#regenerating-these-copies).
 
 | File | Contents | Source (local) | Upstream URL |
 | --- | --- | --- | --- |
@@ -24,9 +26,10 @@ Other sections available in the same local help folder (not yet copied):
 
 ## Wikipedia research sources (for the guidance doc)
 
-Local markdown copies fetched from the en.wikipedia.org REST API on 2026-09-28
+Markdown copies fetched from the en.wikipedia.org REST API on 2026-09-28
 (Barnes–Hut and A* added 2026-09-30), to support drafting the autorouting
-guidance/glossary doc:
+guidance/glossary doc. **Not committed** — restore them locally with the recipe
+under [Regenerating these copies](#regenerating-these-copies).
 
 | File | Actual article title | Fetched as | Upstream URL |
 | --- | --- | --- | --- |

@@ -1817,12 +1817,7 @@ def _run_region_simulation(
 
                     # Classify shape for analytical collision
                     shape_type, shape_params = _classify_shape(body_poly)
-                    
-                    # Track shape classification stats
-                    if not hasattr(_run_region_simulation, '_shape_counts'):
-                        _run_region_simulation._shape_counts = {}
-                    _run_region_simulation._shape_counts[shape_type] = _run_region_simulation._shape_counts.get(shape_type, 0) + 1
-                    
+
                     # Update cache
                     centroid = body_poly.centroid
                     body_centroids.append([centroid.x, centroid.y])
@@ -2008,20 +2003,6 @@ def _run_region_simulation(
 
                 F = k_wall * (1 - s/h) with s the signed separation in mm along
                 the pair normal (s > 0 gap, s = 0 touching, s = -penetration).
-                Zero past the halo reach h, k_wall at contact, growing linearly
-                inside overlap — C0 and C1 continuous at first touch, so the
-                formula never changes at intersection (docs/si_force_laws.md).
-
-                Direction is the nearest-point normal (edge-orthogonal, j -> i);
-                penetration depth is the vertex-projection interval overlap
-                along that same axis. At exactly zero separation nearest_points
-                degenerates, so fall back to centroid-to-centroid (rare: most
-                outlines take the analytical MTV path with an exact axis).
-
-                With ``sink`` given, appends a ``('s', s_mm, ux, uy)`` candidate
-                instead of spreading: the pair loop keeps the single deepest
-                contact (min s, winner-takes-all), so stacked sub-contacts
-                (THT pin circles) can no longer inflate one pair's penalty.
                 """
                 if pi.is_empty or pj.is_empty:
                     return
@@ -2515,14 +2496,6 @@ def _run_region_simulation(
         _barr = np.asarray(_brows, dtype=int)
         _proj_bodies.append((_barr, positions[_barr].copy()))
 
-    # Polygon cache for courtyard collision - persists across iterations
-    # Key: fp_uuid -> {body_poly, body_centroid, body_radius, body_layer,
-    #                  pins: list of (pin_poly, pin_center, pin_radius),
-    #                  last_centroid, last_angle}
-    poly_cache: Dict[str, dict] = {}
-    cache_rebuild_threshold_mm = 0.1  # Rebuild if centroid moves > 100 microns (was 10)
-    cache_rebuild_threshold_rad = math.radians(0.1)  # or angle > 0.1 deg (was 0.01)
-
     for iteration in range(params.max_iterations):
         force = _compute_total_force(
             positions, len(region_pads), pad_movable,
@@ -2673,10 +2646,6 @@ def _run_region_simulation(
         if not _region_frames or _region_frames[-1] != _final_frame:
             _region_frames.append(_final_frame)
             _region_force_frames.append(_final_force_frame)
-
-    # Print shape classification stats
-    if hasattr(_run_region_simulation, '_shape_counts'):
-        print(f"  Shape classification: {_run_region_simulation._shape_counts}")
 
     return deltas, footprint_forces, iteration + 1, footprint_components, _region_frames, _region_force_frames
 

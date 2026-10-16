@@ -2,10 +2,8 @@
 
 The portable structural half of the ingest → parse → writeback stages: it
 round-trips a board/schematic pair through the :class:`~kicad_autorouter.sexpr.SExpr`
-tree without ``pcbnew``, so it runs in the project .venv and CI. Per the 2026-09-29
-decision, routing-accurate semantics still come from ``pcbnew`` via
-``pcbnew_adapter.py``; this module is the headless plumbing those edits will be
-written against (and a test double for them). The no-op edit is
+tree without ``pcbnew``, so it runs in the project .venv and CI.
+This module is the headless read/modify/write plumbing. The no-op edit is
 :func:`nudge_footprint` with zero deltas: it rewrites one footprint's position
 by +0 mm, exercising read/modify/write without moving anything. ``validate.py``
 / kicad-cli remains the authority on whether a written file loads cleanly in

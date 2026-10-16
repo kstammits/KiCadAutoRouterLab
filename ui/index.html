@@ -265,6 +265,18 @@
   .net-legend-power { font-size: .55rem; font-weight: 700; margin-left: .2rem; }
   .net-legend-power.is-power { color: #f59e0b; }
   .net-legend-power.is-ground { color: #38bdf8; }
+
+  /* Pwr toggle cell: always-visible hit target (signal nets render a dim
+     ghost bolt; power/ground render their badge inside the button). */
+  #nets-table td.net-col-pwr { text-align:center; }
+  #nets-table td.net-col-pwr:hover { background:#1a222a; }
+  .pwr-toggle { display:inline-flex; align-items:center; justify-content:center; min-width:1.7rem; min-height:1.3rem; padding:0 .3rem; background:transparent; border:1px dashed #3a4a5a; border-radius:4px; color:#5b6b7a; font-size:.65rem; cursor:pointer; }
+  .pwr-toggle:hover { border-color:#f59e0b; color:#f59e0b; background:rgba(245,158,11,.08); }
+  .pwr-toggle:focus-visible { outline:1px solid #f59e0b; outline-offset:1px; }
+  .pwr-toggle.is-on { border-color:transparent; }
+  .pwr-toggle.is-on:hover { border-color:#f59e0b; }
+  .pwr-toggle.is-on .power-badge { margin-left:0; }
+  .pwr-toggle.is-ground:hover { border-color:#38bdf8; color:#38bdf8; background:rgba(56,189,248,.08); }
   
   /* Motion scrubber */
   #motion-bar input[type=range] { flex:1; min-width:6rem; }
@@ -2906,6 +2918,15 @@ function renderNetsTable(nets) {
       : (net.is_ground
         ? `<span class="power-badge is-ground" title="Ground net (keyword rules)">GND</span>`
         : "");
+    // Pwr cell control: always render a visible button (ghost bolt for
+    // signal nets) — the old `${pwr || ""}` left signal cells empty and
+    // undiscoverable. Name-column badge above stays static text.
+    const safeName = String(net.name).replace(/"/g, "&quot;");
+    const pwrCtrl = net.is_power
+      ? `<button type="button" class="pwr-toggle is-on" aria-pressed="true" aria-label="Unmark ${safeName} as power" title="${pwrTitle}">${pwr}</button>`
+      : (net.is_ground
+        ? `<button type="button" class="pwr-toggle is-ground" aria-pressed="false" aria-label="Mark ${safeName} as power (override)" title="Ground net (keyword rules) — click to add your power override">${pwr}</button>`
+        : `<button type="button" class="pwr-toggle" aria-pressed="false" aria-label="Mark ${safeName} as power" title="${pwrTitle}">&#9889;</button>`);
     const width = (net.width_mm ?? "") === "" ? "" : Number(net.width_mm).toFixed(2);
     const decaps = Array.isArray(net.decap_refs) ? net.decap_refs : [];
     const decap = decaps.length
@@ -2923,7 +2944,7 @@ function renderNetsTable(nets) {
         <td class="net-col-tracks">${net.track_count ?? ""}</td>
         <td class="net-col-vias">${net.via_count ?? ""}</td>
         <td class="net-col-width">${width}</td>
-        <td class="net-col-pwr" data-power-cell="${net.name}" title="${pwrTitle}" style="cursor:pointer;">${pwr || ""}</td>
+        <td class="net-col-pwr" data-power-cell="${net.name}" title="${pwrTitle}" style="cursor:pointer;">${pwrCtrl}</td>
         <td class="net-col-decap">${decap}</td>
         <td class="net-col-protect">
           <label class="chk"><input type="checkbox" class="net-protect-cb" ${net.protected ? 'checked' : ''} data-net="${net.name}" title="Protected nets are routed first and never ripped up"></label>
@@ -3092,32 +3113,23 @@ function renderRoutingParams(params) {
     { key: "grid_resolution_mm", label: "Grid Resolution (mm) — 0.05 is 4x cells, may be rejected on large boards", min: 0.05, max: 0.5, step: 0.05, default: 0.1 },
   ];
   
-  // Debug checkbox
+  // Option flags share one full-width row below the sliders (not one
+  // grid cell per checkbox) to save vertical space.
   const debugChecked = params.debug ? "checked" : "";
   const stitchChecked = params.stitch_gnd_vias ?? true ? "checked" : "";
   const stripChecked = params.strip_gnd_blockers ?? true ? "checked" : "";
   const debugHtml = `
-    <div class="param">
-      <span title="Enable debug output (cost grid, search frontier)">Debug Mode</span>
-      <div class="row">
-        <label class="chk" style="margin:0;">
-          <input type="checkbox" data-key="debug" ${debugChecked}> Enabled
+    <div class="param param-flags" style="grid-column:1/-1;">
+      <span>Options</span>
+      <div class="row" style="gap:.9rem; flex-wrap:wrap;">
+        <label class="chk" style="margin:0;" title="Auto-repair GND pour continuity after routing (stitching vias + bridge tracks)">
+          <input type="checkbox" data-key="stitch_gnd_vias" ${stitchChecked}> GND stitching
         </label>
-      </div>
-    </div>
-    <div class="param">
-      <span title="Auto-repair GND pour continuity after routing (stitching vias + bridge tracks)">GND Stitching</span>
-      <div class="row">
-        <label class="chk" style="margin:0;">
-          <input type="checkbox" data-key="stitch_gnd_vias" ${stitchChecked}> Enabled
+        <label class="chk" style="margin:0;" title="Evict GND vias/tracks upfront before routing (rebuildable via stitching); signal/power copper is never evicted">
+          <input type="checkbox" data-key="strip_gnd_blockers" ${stripChecked}> Strip GND blockers
         </label>
-      </div>
-    </div>
-    <div class="param">
-      <span title="Evict GND vias/tracks upfront before routing (rebuildable via stitching); signal/power copper is never evicted">Strip GND Blockers</span>
-      <div class="row">
-        <label class="chk" style="margin:0;">
-          <input type="checkbox" data-key="strip_gnd_blockers" ${stripChecked}> Enabled
+        <label class="chk" style="margin:0;" title="Enable debug output (cost grid, search frontier)">
+          <input type="checkbox" data-key="debug" ${debugChecked}> Debug
         </label>
       </div>
     </div>
