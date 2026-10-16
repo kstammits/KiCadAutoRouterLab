@@ -32,7 +32,7 @@ from scipy import ndimage
 
 from ..board_model import BoardModel, Footprint, Pad, is_ground_net
 from .grid import RoutingGrid, board_to_grid, grid_to_board
-from .obstacles import _fill_polygon, bresenham_cells, disc_cells
+from .obstacles import _fill_polygon, bresenham_cells, stamp_discs
 
 
 @dataclass(frozen=True)
@@ -72,8 +72,8 @@ def _paint_pad(mask: np.ndarray, grid: RoutingGrid, pad: Pad, inflate_mm: float)
     shape = (pad.shape or "").lower()
     if shape in ("circle",):
         r = _cells(max(w, h) / 2.0 + inflate_mm, res)
-        for rr, cc in disc_cells(row, col, max(r, 1), H, W):
-            mask[rr, cc] = True
+        # Compiled batch stamper (same cells as the disc_cells loop).
+        stamp_discs(mask, [row], [col], [max(r, 1)], True)
         return
     # Rect / roundrect / oval: rotated corners (oval over-covers slightly).
     hw, hh = w / 2.0 + inflate_mm, h / 2.0 + inflate_mm
@@ -88,16 +88,19 @@ def _paint_pad(mask: np.ndarray, grid: RoutingGrid, pad: Pad, inflate_mm: float)
     _fill_polygon(tmp, corners, 1)
     mask |= tmp.astype(bool)
     if shape in ("oval",):
-        # capsule ends
+        # capsule ends (both discs in one compiled stamp call)
         dx, dy = ca * (w - h) / 2.0, sa * (w - h) / 2.0
         r_end = _cells(min(w, h) / 2.0 + inflate_mm, res)
+        end_rows, end_cols = [], []
         for ex, ey in (
             (pad.position.x_mm - dx, pad.position.y_mm - dy),
             (pad.position.x_mm + dx, pad.position.y_mm + dy),
         ):
             c, r = board_to_grid(grid, ex, ey)
-            for rr, cc in disc_cells(r, c, max(r_end, 1), H, W):
-                mask[rr, cc] = True
+            end_rows.append(r)
+            end_cols.append(c)
+        stamp_discs(mask, end_rows, end_cols,
+                    [max(r_end, 1)] * len(end_rows), True)
 
 
 def _paint_track(
@@ -115,17 +118,20 @@ def _paint_track(
             if 0 <= r < H and 0 <= c < W:
                 mask[r, c] = True
         return
-    for c, r in bresenham_cells(c1, r1, c2, r2):
-        for rr, cc in disc_cells(r, c, rad, H, W):
-            mask[rr, cc] = True
+    # One compiled stamp for the whole capsule spine (same cells as the
+    # per-step disc_cells loops).
+    spine = [(r, c) for c, r in bresenham_cells(c1, r1, c2, r2)]
+    if spine:
+        stamp_discs(mask, [r for r, _ in spine], [c for _, c in spine],
+                    [rad] * len(spine), True)
 
 
 def _paint_disc(mask: np.ndarray, grid: RoutingGrid, x_mm: float, y_mm: float,
                 radius_mm: float) -> None:
-    H, W = mask.shape
     c, r = board_to_grid(grid, x_mm, y_mm)
-    for rr, cc in disc_cells(r, c, max(_cells(radius_mm, grid.resolution_mm), 1), H, W):
-        mask[rr, cc] = True
+    # Compiled batch stamper (same cells as the disc_cells loop).
+    stamp_discs(mask, [r], [c],
+                [max(_cells(radius_mm, grid.resolution_mm), 1)], True)
 
 
 def pour_copper_mask(

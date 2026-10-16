@@ -1,0 +1,770 @@
+{
+  "timing_budget": 30,
+  "profile_budget": 10,
+  "cases": [
+    {
+      "board": "tube111",
+      "footprints": 105,
+      "moved_parts": 1,
+      "refs": [
+        "C1"
+      ],
+      "iterations": 30,
+      "total_s": 0.118,
+      "ms_per_iter": 3.941,
+      "deltas": 1
+    },
+    {
+      "board": "tube111",
+      "footprints": 105,
+      "moved_parts": 4,
+      "refs": [
+        "C1",
+        "C10",
+        "C11",
+        "C12"
+      ],
+      "iterations": 30,
+      "total_s": 0.138,
+      "ms_per_iter": 4.613,
+      "deltas": 4
+    },
+    {
+      "board": "tube111",
+      "footprints": 105,
+      "moved_parts": 16,
+      "refs": [
+        "C1",
+        "C10",
+        "C11",
+        "C12",
+        "C13",
+        "C14",
+        "C15",
+        "C2",
+        "C3",
+        "C4",
+        "C5",
+        "C6",
+        "C7",
+        "C8",
+        "C9",
+        "D1"
+      ],
+      "iterations": 30,
+      "total_s": 0.323,
+      "ms_per_iter": 10.775,
+      "deltas": 16
+    },
+    {
+      "board": "DCCF",
+      "footprints": 97,
+      "moved_parts": 1,
+      "refs": [
+        "C1"
+      ],
+      "iterations": 30,
+      "total_s": 0.226,
+      "ms_per_iter": 7.545,
+      "deltas": 1
+    },
+    {
+      "board": "DCCF",
+      "footprints": 97,
+      "moved_parts": 4,
+      "refs": [
+        "C1",
+        "C10",
+        "C11",
+        "C12"
+      ],
+      "iterations": 30,
+      "total_s": 0.259,
+      "ms_per_iter": 8.649,
+      "deltas": 4
+    },
+    {
+      "board": "DCCF",
+      "footprints": 97,
+      "moved_parts": 16,
+      "refs": [
+        "C1",
+        "C10",
+        "C11",
+        "C12",
+        "C13",
+        "C14",
+        "C15",
+        "C16",
+        "C17",
+        "C18",
+        "C19",
+        "C2",
+        "C3",
+        "C4",
+        "C5",
+        "C6"
+      ],
+      "iterations": 30,
+      "total_s": 0.359,
+      "ms_per_iter": 11.98,
+      "deltas": 16
+    }
+  ],
+  "profiles": [
+    {
+      "board": "tube111",
+      "moved_parts": 16,
+      "refs": [
+        "C1",
+        "C10",
+        "C11",
+        "C12",
+        "C13",
+        "C14",
+        "C15",
+        "C2",
+        "C3",
+        "C4",
+        "C5",
+        "C6",
+        "C7",
+        "C8",
+        "C9",
+        "D1"
+      ],
+      "budget": 10,
+      "by_tottime": [
+        {
+          "func": "placement.py:1621:_compute_total_force",
+          "calls": 22,
+          "tottime": 0.093,
+          "cumtime": 0.2311
+        },
+        {
+          "func": "~:0:<method 'reduce' of 'numpy.ufunc' objects>",
+          "calls": 12852,
+          "tottime": 0.0141,
+          "cumtime": 0.0141
+        },
+        {
+          "func": "decorators.py:73:wrapped",
+          "calls": 11204,
+          "tottime": 0.0137,
+          "cumtime": 0.0412
+        },
+        {
+          "func": "~:0:<method 'add' of 'set' objects>",
+          "calls": 343816,
+          "tottime": 0.0132,
+          "cumtime": 0.0132
+        },
+        {
+          "func": "mass.py:87:<listcomp>",
+          "calls": 315,
+          "tottime": 0.013,
+          "cumtime": 0.013
+        },
+        {
+          "func": "mass.py:88:<listcomp>",
+          "calls": 315,
+          "tottime": 0.0121,
+          "cumtime": 0.0121
+        },
+        {
+          "func": "numeric.py:2373:isclose",
+          "calls": 852,
+          "tottime": 0.0069,
+          "cumtime": 0.0161
+        },
+        {
+          "func": "placement.py:1931:_spread",
+          "calls": 740,
+          "tottime": 0.0059,
+          "cumtime": 0.0084
+        },
+        {
+          "func": "_methods.py:117:_mean",
+          "calls": 2902,
+          "tottime": 0.0058,
+          "cumtime": 0.0118
+        },
+        {
+          "func": "placement.py:1306:_run_region_simulation",
+          "calls": 3,
+          "tottime": 0.0055,
+          "cumtime": 0.3172
+        },
+        {
+          "func": "decoder.py:343:raw_decode",
+          "calls": 315,
+          "tottime": 0.005,
+          "cumtime": 0.005
+        },
+        {
+          "func": "~:0:<built-in method io.open>",
+          "calls": 315,
+          "tottime": 0.0049,
+          "cumtime": 0.0052
+        },
+        {
+          "func": "placement.py:1193:_rigid_pose_vertices",
+          "calls": 524,
+          "tottime": 0.0049,
+          "cumtime": 0.0116
+        },
+        {
+          "func": "placement.py:706:_classify_rectangle",
+          "calls": 302,
+          "tottime": 0.0049,
+          "cumtime": 0.0312
+        },
+        {
+          "func": "~:0:<built-in method builtins.min>",
+          "calls": 3988,
+          "tottime": 0.0043,
+          "cumtime": 0.0044
+        },
+        {
+          "func": "~:0:<built-in method builtins.max>",
+          "calls": 3967,
+          "tottime": 0.0041,
+          "cumtime": 0.0041
+        },
+        {
+          "func": "constructive.py:136:buffer",
+          "calls": 272,
+          "tottime": 0.0035,
+          "cumtime": 0.0045
+        },
+        {
+          "func": "placement.py:511:_clamp_rigid_step",
+          "calls": 20,
+          "tottime": 0.0028,
+          "cumtime": 0.0071
+        },
+        {
+          "func": "placement.py:901:_sat_rect_rect",
+          "calls": 550,
+          "tottime": 0.0027,
+          "cumtime": 0.0032
+        },
+        {
+          "func": "decorators.py:75:<listcomp>",
+          "calls": 11204,
+          "tottime": 0.0025,
+          "cumtime": 0.0032
+        },
+        {
+          "func": "_methods.py:75:_count_reduce_items",
+          "calls": 2929,
+          "tottime": 0.0025,
+          "cumtime": 0.0029
+        },
+        {
+          "func": "fromnumeric.py:89:_wrapreduction_any_all",
+          "calls": 3017,
+          "tottime": 0.0024,
+          "cumtime": 0.0072
+        },
+        {
+          "func": "_geometry.py:273:get_x",
+          "calls": 2465,
+          "tottime": 0.0024,
+          "cumtime": 0.0024
+        },
+        {
+          "func": "_geometry.py:301:get_y",
+          "calls": 2465,
+          "tottime": 0.0022,
+          "cumtime": 0.0022
+        },
+        {
+          "func": "~:0:<built-in method builtins.isinstance>",
+          "calls": 33745,
+          "tottime": 0.002,
+          "cumtime": 0.002
+        }
+      ],
+      "by_cumtime": [
+        {
+          "func": "placement.py:2730:run_placement",
+          "calls": 1,
+          "tottime": 0.0006,
+          "cumtime": 0.3182
+        },
+        {
+          "func": "placement.py:1306:_run_region_simulation",
+          "calls": 3,
+          "tottime": 0.0055,
+          "cumtime": 0.3172
+        },
+        {
+          "func": "placement.py:1621:_compute_total_force",
+          "calls": 22,
+          "tottime": 0.093,
+          "cumtime": 0.2311
+        },
+        {
+          "func": "placement.py:808:_classify_shape",
+          "calls": 302,
+          "tottime": 0.001,
+          "cumtime": 0.0414
+        },
+        {
+          "func": "decorators.py:73:wrapped",
+          "calls": 11204,
+          "tottime": 0.0137,
+          "cumtime": 0.0412
+        },
+        {
+          "func": "mass.py:84:courtyard_bbox_area_m2",
+          "calls": 315,
+          "tottime": 0.0004,
+          "cumtime": 0.033
+        },
+        {
+          "func": "placement.py:706:_classify_rectangle",
+          "calls": 302,
+          "tottime": 0.0049,
+          "cumtime": 0.0312
+        },
+        {
+          "func": "decorators.py:171:wrapper",
+          "calls": 2325,
+          "tottime": 0.0013,
+          "cumtime": 0.0169
+        },
+        {
+          "func": "numeric.py:2373:isclose",
+          "calls": 852,
+          "tottime": 0.0069,
+          "cumtime": 0.0161
+        },
+        {
+          "func": "mass.py:65:footprint_mass_kg",
+          "calls": 315,
+          "tottime": 0.0004,
+          "cumtime": 0.0151
+        },
+        {
+          "func": "mass.py:42:resolve_table_mass_g",
+          "calls": 315,
+          "tottime": 0.0011,
+          "cumtime": 0.0147
+        },
+        {
+          "func": "~:0:<method 'reduce' of 'numpy.ufunc' objects>",
+          "calls": 12852,
+          "tottime": 0.0141,
+          "cumtime": 0.0141
+        },
+        {
+          "func": "mass.py:25:load_mass_table",
+          "calls": 315,
+          "tottime": 0.0003,
+          "cumtime": 0.0133
+        },
+        {
+          "func": "~:0:<method 'add' of 'set' objects>",
+          "calls": 343816,
+          "tottime": 0.0132,
+          "cumtime": 0.0132
+        },
+        {
+          "func": "numeric.py:2279:allclose",
+          "calls": 577,
+          "tottime": 0.0007,
+          "cumtime": 0.0131
+        },
+        {
+          "func": "mass.py:87:<listcomp>",
+          "calls": 315,
+          "tottime": 0.013,
+          "cumtime": 0.013
+        },
+        {
+          "func": "~:0:<method 'mean' of 'numpy.ndarray' objects>",
+          "calls": 2870,
+          "tottime": 0.0007,
+          "cumtime": 0.0124
+        },
+        {
+          "func": "placement.py:1518:_local_shape",
+          "calls": 85,
+          "tottime": 0.0004,
+          "cumtime": 0.0123
+        },
+        {
+          "func": "mass.py:88:<listcomp>",
+          "calls": 315,
+          "tottime": 0.0121,
+          "cumtime": 0.0121
+        },
+        {
+          "func": "_methods.py:117:_mean",
+          "calls": 2902,
+          "tottime": 0.0058,
+          "cumtime": 0.0118
+        },
+        {
+          "func": "placement.py:1193:_rigid_pose_vertices",
+          "calls": 524,
+          "tottime": 0.0049,
+          "cumtime": 0.0116
+        },
+        {
+          "func": "placement.py:1132:_courtyard_outline_polygon",
+          "calls": 85,
+          "tottime": 0.0006,
+          "cumtime": 0.0105
+        },
+        {
+          "func": "placement.py:1931:_spread",
+          "calls": 740,
+          "tottime": 0.0059,
+          "cumtime": 0.0084
+        },
+        {
+          "func": "pathlib.py:1053:read_text",
+          "calls": 315,
+          "tottime": 0.0003,
+          "cumtime": 0.0073
+        },
+        {
+          "func": "fromnumeric.py:89:_wrapreduction_any_all",
+          "calls": 3017,
+          "tottime": 0.0024,
+          "cumtime": 0.0072
+        }
+      ]
+    },
+    {
+      "board": "DCCF",
+      "moved_parts": 16,
+      "refs": [
+        "C1",
+        "C10",
+        "C11",
+        "C12",
+        "C13",
+        "C14",
+        "C15",
+        "C16",
+        "C17",
+        "C18",
+        "C19",
+        "C2",
+        "C3",
+        "C4",
+        "C5",
+        "C6"
+      ],
+      "budget": 10,
+      "by_tottime": [
+        {
+          "func": "placement.py:1621:_compute_total_force",
+          "calls": 11,
+          "tottime": 0.1307,
+          "cumtime": 0.2808
+        },
+        {
+          "func": "~:0:<method 'add' of 'set' objects>",
+          "calls": 412677,
+          "tottime": 0.0154,
+          "cumtime": 0.0154
+        },
+        {
+          "func": "~:0:<method 'reduce' of 'numpy.ufunc' objects>",
+          "calls": 11475,
+          "tottime": 0.0143,
+          "cumtime": 0.0143
+        },
+        {
+          "func": "decorators.py:73:wrapped",
+          "calls": 11143,
+          "tottime": 0.0132,
+          "cumtime": 0.044
+        },
+        {
+          "func": "constructive.py:136:buffer",
+          "calls": 616,
+          "tottime": 0.0065,
+          "cumtime": 0.0086
+        },
+        {
+          "func": "placement.py:1193:_rigid_pose_vertices",
+          "calls": 661,
+          "tottime": 0.0058,
+          "cumtime": 0.0138
+        },
+        {
+          "func": "placement.py:1931:_spread",
+          "calls": 755,
+          "tottime": 0.0057,
+          "cumtime": 0.0081
+        },
+        {
+          "func": "placement.py:980:_rect_circle_contact",
+          "calls": 2657,
+          "tottime": 0.0056,
+          "cumtime": 0.0072
+        },
+        {
+          "func": "_methods.py:117:_mean",
+          "calls": 2834,
+          "tottime": 0.0053,
+          "cumtime": 0.0108
+        },
+        {
+          "func": "~:0:<built-in method math.hypot>",
+          "calls": 62974,
+          "tottime": 0.005,
+          "cumtime": 0.005
+        },
+        {
+          "func": "numeric.py:2373:isclose",
+          "calls": 559,
+          "tottime": 0.0044,
+          "cumtime": 0.0103
+        },
+        {
+          "func": "placement.py:901:_sat_rect_rect",
+          "calls": 802,
+          "tottime": 0.0038,
+          "cumtime": 0.0045
+        },
+        {
+          "func": "placement.py:2069:_apply_contact_push_analytical",
+          "calls": 5034,
+          "tottime": 0.0035,
+          "cumtime": 0.0044
+        },
+        {
+          "func": "placement.py:1306:_run_region_simulation",
+          "calls": 2,
+          "tottime": 0.0032,
+          "cumtime": 0.3293
+        },
+        {
+          "func": "decoder.py:343:raw_decode",
+          "calls": 194,
+          "tottime": 0.003,
+          "cumtime": 0.003
+        },
+        {
+          "func": "mass.py:87:<listcomp>",
+          "calls": 194,
+          "tottime": 0.003,
+          "cumtime": 0.003
+        },
+        {
+          "func": "placement.py:706:_classify_rectangle",
+          "calls": 213,
+          "tottime": 0.003,
+          "cumtime": 0.0195
+        },
+        {
+          "func": "~:0:<built-in method io.open>",
+          "calls": 194,
+          "tottime": 0.0029,
+          "cumtime": 0.003
+        },
+        {
+          "func": "mass.py:88:<listcomp>",
+          "calls": 194,
+          "tottime": 0.0028,
+          "cumtime": 0.0028
+        },
+        {
+          "func": "placement.py:1040:_analytical_collision",
+          "calls": 5133,
+          "tottime": 0.0028,
+          "cumtime": 0.0156
+        },
+        {
+          "func": "decorators.py:75:<listcomp>",
+          "calls": 11143,
+          "tottime": 0.0026,
+          "cumtime": 0.0033
+        },
+        {
+          "func": "placement.py:511:_clamp_rigid_step",
+          "calls": 10,
+          "tottime": 0.0025,
+          "cumtime": 0.0064
+        },
+        {
+          "func": "_methods.py:75:_count_reduce_items",
+          "calls": 2874,
+          "tottime": 0.0022,
+          "cumtime": 0.0027
+        },
+        {
+          "func": "~:0:<built-in method builtins.isinstance>",
+          "calls": 36726,
+          "tottime": 0.0021,
+          "cumtime": 0.0021
+        },
+        {
+          "func": "~:0:<built-in method builtins.min>",
+          "calls": 7249,
+          "tottime": 0.0021,
+          "cumtime": 0.0023
+        }
+      ],
+      "by_cumtime": [
+        {
+          "func": "placement.py:2730:run_placement",
+          "calls": 1,
+          "tottime": 0.0004,
+          "cumtime": 0.3301
+        },
+        {
+          "func": "placement.py:1306:_run_region_simulation",
+          "calls": 2,
+          "tottime": 0.0032,
+          "cumtime": 0.3293
+        },
+        {
+          "func": "placement.py:1621:_compute_total_force",
+          "calls": 11,
+          "tottime": 0.1307,
+          "cumtime": 0.2808
+        },
+        {
+          "func": "decorators.py:73:wrapped",
+          "calls": 11143,
+          "tottime": 0.0132,
+          "cumtime": 0.044
+        },
+        {
+          "func": "placement.py:808:_classify_shape",
+          "calls": 213,
+          "tottime": 0.0007,
+          "cumtime": 0.0283
+        },
+        {
+          "func": "decorators.py:171:wrapper",
+          "calls": 2679,
+          "tottime": 0.0016,
+          "cumtime": 0.0225
+        },
+        {
+          "func": "placement.py:706:_classify_rectangle",
+          "calls": 213,
+          "tottime": 0.003,
+          "cumtime": 0.0195
+        },
+        {
+          "func": "placement.py:1040:_analytical_collision",
+          "calls": 5133,
+          "tottime": 0.0028,
+          "cumtime": 0.0156
+        },
+        {
+          "func": "~:0:<method 'add' of 'set' objects>",
+          "calls": 412677,
+          "tottime": 0.0154,
+          "cumtime": 0.0154
+        },
+        {
+          "func": "~:0:<method 'reduce' of 'numpy.ufunc' objects>",
+          "calls": 11475,
+          "tottime": 0.0143,
+          "cumtime": 0.0143
+        },
+        {
+          "func": "placement.py:1193:_rigid_pose_vertices",
+          "calls": 661,
+          "tottime": 0.0058,
+          "cumtime": 0.0138
+        },
+        {
+          "func": "base.py:462:buffer",
+          "calls": 616,
+          "tottime": 0.0009,
+          "cumtime": 0.0131
+        },
+        {
+          "func": "~:0:<method 'mean' of 'numpy.ndarray' objects>",
+          "calls": 2802,
+          "tottime": 0.0006,
+          "cumtime": 0.0113
+        },
+        {
+          "func": "placement.py:1518:_local_shape",
+          "calls": 75,
+          "tottime": 0.0004,
+          "cumtime": 0.0111
+        },
+        {
+          "func": "_methods.py:117:_mean",
+          "calls": 2834,
+          "tottime": 0.0053,
+          "cumtime": 0.0108
+        },
+        {
+          "func": "numeric.py:2373:isclose",
+          "calls": 559,
+          "tottime": 0.0044,
+          "cumtime": 0.0103
+        },
+        {
+          "func": "placement.py:1132:_courtyard_outline_polygon",
+          "calls": 75,
+          "tottime": 0.0006,
+          "cumtime": 0.0095
+        },
+        {
+          "func": "mass.py:65:footprint_mass_kg",
+          "calls": 194,
+          "tottime": 0.0002,
+          "cumtime": 0.0092
+        },
+        {
+          "func": "mass.py:42:resolve_table_mass_g",
+          "calls": 194,
+          "tottime": 0.0009,
+          "cumtime": 0.0089
+        },
+        {
+          "func": "constructive.py:136:buffer",
+          "calls": 616,
+          "tottime": 0.0065,
+          "cumtime": 0.0086
+        },
+        {
+          "func": "numeric.py:2279:allclose",
+          "calls": 386,
+          "tottime": 0.0004,
+          "cumtime": 0.0084
+        },
+        {
+          "func": "placement.py:1931:_spread",
+          "calls": 755,
+          "tottime": 0.0057,
+          "cumtime": 0.0081
+        },
+        {
+          "func": "mass.py:84:courtyard_bbox_area_m2",
+          "calls": 194,
+          "tottime": 0.0003,
+          "cumtime": 0.0079
+        },
+        {
+          "func": "mass.py:25:load_mass_table",
+          "calls": 194,
+          "tottime": 0.0001,
+          "cumtime": 0.0078
+        },
+        {
+          "func": "fromnumeric.py:69:_wrapreduction",
+          "calls": 792,
+          "tottime": 0.0005,
+          "cumtime": 0.0072
+        }
+      ]
+    }
+  ]
+}

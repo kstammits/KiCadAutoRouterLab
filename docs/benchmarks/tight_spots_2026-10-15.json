@@ -1,0 +1,149 @@
+{
+  "budget": 100000,
+  "retries": 2,
+  "spot_facts": {
+    "net": "VIN",
+    "terminals": 3,
+    "terminal": [
+      1383,
+      1376,
+      0
+    ],
+    "own_cell_secondary": 500,
+    "own_cell_via_blocked": true
+  },
+  "cases": [
+    {
+      "case": "pair-control(C6-Q1)",
+      "config": "w=3.0 halo=1.0",
+      "pairs": 2,
+      "success": true,
+      "expansions": 392161,
+      "time_s": 2.612,
+      "cost": 800.0,
+      "path_len": 191,
+      "exp_per_s": 150164.5
+    },
+    {
+      "case": "pair-control(C6-Q1)",
+      "config": "w=1.0 halo=1.0",
+      "pairs": 2,
+      "success": true,
+      "expansions": 53693,
+      "time_s": 0.951,
+      "cost": 800.0,
+      "path_len": 191,
+      "exp_per_s": 56470.4
+    },
+    {
+      "case": "pair-control(C6-Q1)",
+      "config": "w=3.0 halo=0.3",
+      "pairs": 2,
+      "success": true,
+      "expansions": 395301,
+      "time_s": 2.656,
+      "cost": 800.0,
+      "path_len": 191,
+      "exp_per_s": 148838.2
+    },
+    {
+      "case": "pair-control(C6-Q1)",
+      "config": "w=1.0 halo=0.3",
+      "pairs": 2,
+      "success": true,
+      "expansions": 53802,
+      "time_s": 0.952,
+      "cost": 800.0,
+      "path_len": 191,
+      "exp_per_s": 56500.0
+    },
+    {
+      "case": "pair-tight(Q1-Q2)",
+      "config": "w=3.0 halo=1.0",
+      "pairs": 2,
+      "success": true,
+      "expansions": 159292,
+      "time_s": 1.56,
+      "cost": 24676.0,
+      "path_len": 982,
+      "exp_per_s": 102091.0
+    },
+    {
+      "case": "pair-tight(Q1-Q2)",
+      "config": "w=1.0 halo=1.0",
+      "pairs": 2,
+      "success": true,
+      "expansions": 159292,
+      "time_s": 1.689,
+      "cost": 24676.0,
+      "path_len": 982,
+      "exp_per_s": 94328.3
+    },
+    {
+      "case": "pair-tight(Q1-Q2)",
+      "config": "w=3.0 halo=0.3",
+      "pairs": 2,
+      "success": true,
+      "expansions": 159287,
+      "time_s": 1.598,
+      "cost": 8716.0,
+      "path_len": 982,
+      "exp_per_s": 99693.4
+    },
+    {
+      "case": "pair-tight(Q1-Q2)",
+      "config": "w=1.0 halo=0.3",
+      "pairs": 2,
+      "success": true,
+      "expansions": 159287,
+      "time_s": 1.659,
+      "cost": 8716.0,
+      "path_len": 982,
+      "exp_per_s": 96018.9
+    },
+    {
+      "case": "full-VIN",
+      "config": "w=3.0 halo=1.0",
+      "pairs": 3,
+      "success": true,
+      "expansions": 272299,
+      "time_s": 2.207,
+      "cost": 25476.0,
+      "path_len": 1172,
+      "exp_per_s": 123398.5
+    },
+    {
+      "case": "full-VIN",
+      "config": "w=1.0 halo=1.0",
+      "pairs": 3,
+      "success": true,
+      "expansions": 212985,
+      "time_s": 1.948,
+      "cost": 25476.0,
+      "path_len": 1172,
+      "exp_per_s": 109358.8
+    },
+    {
+      "case": "full-VIN",
+      "config": "w=3.0 halo=0.3",
+      "pairs": 3,
+      "success": true,
+      "expansions": 272310,
+      "time_s": 2.26,
+      "cost": 9516.0,
+      "path_len": 1172,
+      "exp_per_s": 120499.1
+    },
+    {
+      "case": "full-VIN",
+      "config": "w=1.0 halo=0.3",
+      "pairs": 3,
+      "success": true,
+      "expansions": 213089,
+      "time_s": 1.933,
+      "cost": 9516.0,
+      "path_len": 1172,
+      "exp_per_s": 110213.2
+    }
+  ]
+}

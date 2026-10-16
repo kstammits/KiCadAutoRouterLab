@@ -81,6 +81,13 @@ class PlacementParams:
     wall_k_N: float = 8e-2
     # Near-miss halo reach (meters).
     wall_halo_m: float = 0.006
+    # Wall-law exponent (dimensionless, experimental, default 1 = linear).
+    # F = k*(1-s/h)^p: p > 1 softens the halo approach and stiffens deep
+    # penetration (Hertzian-like). Single formula both sides, so C0/C1
+    # continuity at contact holds for any p >= 1. p < 1 is rejected
+    # (infinite slope at the halo edge). Calibration decides; engine
+    # default stays linear until the tight-quarters sweep says otherwise.
+    wall_exponent: float = 1.0
     # Boundary repulsion strength (newtons).
     boundary_k_N: float = 1e-2
     # Ghost attraction scale (newtons); file "TARGET,ka" values weight it.
@@ -152,6 +159,7 @@ def _validate(params: PlacementParams) -> None:
         "mass_floor_kg",
         "power_attraction_scale",
         "decap_boost",
+        "wall_exponent",
     )
     for name in numeric:
         value = getattr(params, name)
@@ -170,6 +178,8 @@ def _validate(params: PlacementParams) -> None:
         raise ValueError("dt_s must be <= dt_max_s")
     if params.power_attraction_scale < 0:
         raise ValueError("power_attraction_scale must be >= 0")
+    if params.wall_exponent < 1.0:
+        raise ValueError("wall_exponent must be >= 1.0 (p < 1 is singular at the halo edge)")
     if params.decap_boost < 0:
         raise ValueError("decap_boost must be >= 0")
     if not isinstance(params.include_power_nets, bool):
@@ -1089,6 +1099,19 @@ def _board_bbox(model: BoardModel) -> Tuple[float, float, float, float]:
     return min_x, max_x, min_y, max_y
 
 
+def _wall_mag(k_wall_N: float, s_mm: float, halo_mm: float, exponent: float = 1.0) -> float:
+    """Unified wall-law magnitude in newtons: F = k*(1-s/h)^p.
+
+    s is the signed separation in mm (gap +, penetration -); zero past the
+    halo reach. p = 1 is the linear default; p > 1 softens the halo approach
+    and stiffens deep penetration. Single formula both sides, so contact
+    stays C0/C1-continuous for any p >= 1.
+    """
+    if s_mm >= halo_mm:
+        return 0.0
+    return k_wall_N * (1.0 - s_mm / halo_mm) ** exponent
+
+
 def _boundary_edge_push(dist_m: float, threshold_m: float, k_b_N: float) -> float:
     """Inward push from one region edge in newtons: bounded linear falloff.
 
@@ -1698,7 +1721,15 @@ def _run_region_simulation(
             # Build pin polygons + compute pin centers/radii for broadphase
             # pins_data[fp_uuid] = list of (Polygon, center_xy, radius)
             pins_data: dict[str, list[tuple[Polygon, tuple[float, float], float]]] = {}
-            
+            # Emptiness flags, cached per footprint: an affine pose cannot
+            # change emptiness, so these are fixed for the board — but the
+            # shapely `is_empty` predicate costs ~µs per call through its
+            # decorator chain, and the pair loop below queries it per pair
+            # (bodies) and per pin (pins) every iteration (~200k calls on
+            # tube111). Cache once per (re)build instead.
+            body_empty: dict[str, bool] = {}
+            pins_empty: dict[str, list[bool]] = {}
+
             for fp_uuid in fp_uuids:
                 e = cy_cache[fp_uuid]
                 body = e["body"]
@@ -1765,6 +1796,7 @@ def _run_region_simulation(
                     else:
                         body_poly = Polygon()
                     body_polys[fp_uuid] = body_poly
+                    body_empty[fp_uuid] = bool(body_poly.is_empty)
                     
                     # Build pin polygons (circles at transformed pad positions)
                     fp_pins = []
@@ -1781,7 +1813,8 @@ def _run_region_simulation(
                             pin_poly = Point(local_cx, local_cy).buffer(pin["radius"])
                             fp_pins.append((pin_poly, (local_cx, local_cy), pin["radius"]))
                     pins_data[fp_uuid] = fp_pins
-                    
+                    pins_empty[fp_uuid] = [bool(pin_poly.is_empty) for pin_poly, _, _ in fp_pins]
+
                     # Classify shape for analytical collision
                     shape_type, shape_params = _classify_shape(body_poly)
                     
@@ -1804,7 +1837,9 @@ def _run_region_simulation(
                     
                     poly_cache[fp_uuid] = {
                         "body_poly": body_poly,
+                        "body_empty": body_empty[fp_uuid],
                         "pins": fp_pins,
+                        "pins_empty": pins_empty[fp_uuid],
                         "centroid": [centroid.x, centroid.y],
                         "radius": max_extent,
                         "layer": body.get("layer", ""),
@@ -1817,7 +1852,9 @@ def _run_region_simulation(
                     # Use cached polygons
                     body_poly = cached["body_poly"]
                     body_polys[fp_uuid] = body_poly
+                    body_empty[fp_uuid] = cached["body_empty"]
                     pins_data[fp_uuid] = cached["pins"]
+                    pins_empty[fp_uuid] = cached["pins_empty"]
                     body_centroids.append(cached["centroid"])
                     body_radii.append(cached["radius"])
                     body_layers.append(cached["layer"])
@@ -1936,10 +1973,10 @@ def _run_region_simulation(
                     dy = fp_centroids_arr[li, 1] - fp_centroids_arr[lj, 1]
                     _gap = math.hypot(dx, dy)
                 if _gap > 1e-6:
-                    strength = (
-                        params.wall_k_N
-                        * (margin / halo_reach)
-                    )
+                    # margin = reach - gap, so s = reach - margin recovers the
+                    # signed separation for the unified law (with exponent).
+                    strength = _wall_mag(params.wall_k_N, halo_reach - margin,
+                                         halo_reach, params.wall_exponent)
                     ux, uy = dx / _gap, dy / _gap
                     fx, fy = strength * ux, strength * uy
                     _spread(fp_local_to_rows[li], fp_centroids_arr[li, 0], fp_centroids_arr[li, 1],
@@ -2019,7 +2056,8 @@ def _run_region_simulation(
                     return
                 if s_mm >= halo_reach:
                     return
-                force_mag = params.wall_k_N * (1.0 - s_mm / halo_reach)
+                force_mag = _wall_mag(params.wall_k_N, s_mm, halo_reach,
+                                      params.wall_exponent)
 
                 fx, fy = force_mag * ux, force_mag * uy
                 _spread(fp_local_to_rows[li], fp_centroids_arr[li, 0], fp_centroids_arr[li, 1],
@@ -2068,7 +2106,8 @@ def _run_region_simulation(
                     return True
                 if s_mm >= halo_reach:
                     return True  # Outside halo, no force
-                force_mag = params.wall_k_N * (1.0 - s_mm / halo_reach)
+                force_mag = _wall_mag(params.wall_k_N, s_mm, halo_reach,
+                                      params.wall_exponent)
 
                 fx, fy = force_mag * ux, force_mag * uy
                 _spread(fp_local_to_rows[li], fp_centroids_arr[li, 0], fp_centroids_arr[li, 1],
@@ -2090,6 +2129,10 @@ def _run_region_simulation(
                 body_j = body_polys[fp_j_uuid]
                 pins_i = pins_data[fp_i_uuid]
                 pins_j = pins_data[fp_j_uuid]
+                body_i_empty = body_empty[fp_i_uuid]
+                body_j_empty = body_empty[fp_j_uuid]
+                pins_i_empty = pins_empty[fp_i_uuid]
+                pins_j_empty = pins_empty[fp_j_uuid]
                 # Per-pair contact candidates: body + pin sub-paths below
                 # append ('s', s_mm, ux, uy) tuples with s the signed
                 # separation in mm (s > 0 gap, s = 0 touching, s < 0 overlap
@@ -2102,7 +2145,7 @@ def _run_region_simulation(
 
                 # 1. Body-body collision (same layer only) - already filtered by layer in broadphase
                 if _close[i, j]:
-                    if not body_i.is_empty and not body_j.is_empty:
+                    if not body_i_empty and not body_j_empty:
                         # Try analytical collision first for supported shapes
                         cached_i = poly_cache.get(fp_i_uuid, {})
                         cached_j = poly_cache.get(fp_j_uuid, {})
@@ -2130,9 +2173,9 @@ def _run_region_simulation(
                                     _apply_contact_push(i, j, body_i, body_j, -body_dist, cand)
 
                 # 2. Pins_i vs body_j (all layers) - pins are circles
-                if pins_i and not body_j.is_empty:
-                    for pin_poly, pin_center, pin_radius in pins_i:
-                        if pin_poly.is_empty:
+                if pins_i and not body_j_empty:
+                    for pin_k, (pin_poly, pin_center, pin_radius) in enumerate(pins_i):
+                        if pins_i_empty[pin_k]:
                             continue
                         # Quick bounding check: pin center to body centroid distance
                         pin_cx, pin_cy = pin_center
@@ -2169,9 +2212,9 @@ def _run_region_simulation(
                                     _apply_contact_push(i, j, pin_poly, body_j, -pin_dist, cand)
 
                 # 3. Body_i vs pins_j (all layers)
-                if pins_j and not body_i.is_empty:
-                    for pin_poly, pin_center, pin_radius in pins_j:
-                        if pin_poly.is_empty:
+                if pins_j and not body_i_empty:
+                    for pin_k, (pin_poly, pin_center, pin_radius) in enumerate(pins_j):
+                        if pins_j_empty[pin_k]:
                             continue
                         # Quick bounding check: body centroid to pin center distance
                         body_cx, body_cy = fp_centroids_arr[i, 0], fp_centroids_arr[i, 1]
@@ -2209,9 +2252,11 @@ def _run_region_simulation(
 
                 # 4. Pins_i vs pins_j (all layers) - both circles (always analytical)
                 if pins_i and pins_j:
-                    for pin_i_poly, pin_i_center, pin_i_radius in pins_i:
-                        for pin_j_poly, pin_j_center, pin_j_radius in pins_j:
-                            if pin_i_poly.is_empty or pin_j_poly.is_empty:
+                    for pin_ik, (pin_i_poly, pin_i_center, pin_i_radius) in enumerate(pins_i):
+                        if pins_i_empty[pin_ik]:
+                            continue
+                        for pin_jk, (pin_j_poly, pin_j_center, pin_j_radius) in enumerate(pins_j):
+                            if pins_j_empty[pin_jk]:
                                 continue
                             # Quick bounding check: pin center to pin center distance
                             dx = pin_i_center[0] - pin_j_center[0]
@@ -2256,7 +2301,8 @@ def _run_region_simulation(
                     _win = min(cand, key=lambda c: c[1])
                     _s_mm, _ux, _uy = _win[1], _win[2], _win[3]
                     _halo_mm = params.wall_halo_m * 1000.0
-                    _mag = params.wall_k_N * (1.0 - _s_mm / _halo_mm)
+                    _mag = _wall_mag(params.wall_k_N, _s_mm, _halo_mm,
+                                     params.wall_exponent)
                     _fx, _fy = _mag * _ux, _mag * _uy
                     _spread(fp_local_to_rows[i],
                             fp_centroids_arr[i, 0], fp_centroids_arr[i, 1],

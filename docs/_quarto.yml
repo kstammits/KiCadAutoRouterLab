@@ -1,0 +1,41 @@
+project:
+  type: book
+  title: "KiCad AutoRouter — Physics Primer & Test Reference"
+
+book:
+  chapters:
+    - index.qmd
+    - physics_primer.qmd
+    - pytest_results.qmd
+
+format:
+  html:
+    theme: cosmo
+    toc: true
+    number-sections: true
+    code-fold: true
+    code-tools: true
+    toc-depth: 3
+    fig-width: 10
+    fig-height: 6
+    fig-dpi: 150
+    embed-resources: true
+  pdf:
+    documentclass: scrbook
+    geometry: margin=1in
+    fontsize: 11pt
+    linestretch: 1.15
+    fig-width: 6.5
+    fig-height: 4
+    fig-dpi: 300
+
+execute:
+  engine: python
+  warning: false
+  message: false
+  echo: false
+  eval: true
+  # auto: re-execute only cells whose source changed (cached in _freeze/,
+  # gitignored). Without this every render re-runs the full pytest suite
+  # twice (pytest_results.qmd §§4-5) plus the placement sweep (§4 heatmap).
+  freeze: auto

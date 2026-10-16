@@ -2318,29 +2318,28 @@ document.getElementById("ghost-kind").addEventListener("change", e => {
 // iterations == null → omit the key so the server runs to convergence
 // (saved max_iterations); otherwise a small step budget is used.
 //
-// UX STAGE 1 — estimate-first (2026-10-09): the POST is still synchronous
-// (no progress/cancel yet — that needs the server job model, Stage 2), so
-// we show a benchmark-fitted pre-flight estimate + an elapsed ticker + a
-// client-side timeout backstop. Coefficients from
-// scripts/benchmark_placement.py (docs/benchmarks/placement_2026-10-09.json,
-// post courtyard-broadphase run): ms/iter ≈ -3.2e-5*pads^2 + 3.0e-3*fps^2
-// + 1.31 (footprint-pair shapely work dominates; pads^2 term ~0).
+// UX STAGE 1 — estimate-first: the POST is synchronous, so we show a
+// benchmark-fitted pre-flight estimate + an elapsed ticker + a client-side
+// timeout backstop. Recalibrated 2026-10-15 after the analytical-contact
+// primary path landed, then again after the is_empty per-footprint cache:
+// full-board ms/iter ≈ 0.0045*N^2 + 1 measured in
+// docs/benchmarks/placement_2026-10-15.json (tube111 105fps: 24ms,
+// DCCF 97fps: 19ms) and handful runs in placement_motion_2026-10-15.json
+// scale sublinearly in moved count
+// (tube111 1/4/16 parts: 3.9/4.6/10.8ms; DCCF: 7.5/8.6/12.0ms).
 // Order-of-magnitude only — real boards deviate with courtyard complexity —
 // and worst-case (runs often converge early), so the line reads "up to".
-// Updated 2026-10-13: Pin courtyards for THT parts make courtyard work
-// O((fps + tht_pins)^2) shapely ops. Measured: DCCF 64 fps ~450ms/iter.
 function estimatePlacementMs(movableUuids, iters) {
   const isMovable = (fp) => !fp.locked && !fp.pinned && !fp.ghost &&
     (movableUuids === undefined || movableUuids.includes(fp.uuid));
-  const fps = allFootprints.filter(isMovable);
-  const pads = fps.reduce((s, fp) => s + (fp.pad_count ?? 0), 0);
-  const nFp = fps.length;
-  // Conservative fit to measured data: pairWork = nFp^2 + (1.5*pads)^2
-  // Coefficient 1/100 calibrated to DCCF ~450ms/iter (64fps, 147pads → 525ms)
-  const estThPins = pads * 1.5;
-  const pairWork = nFp * nFp + estThPins * estThPins;
-  const msPerIter = pairWork / 100 + 1;
-  return { ms: Math.max(msPerIter, 0.05) * iters, msPerIter, fps: nFp, pads };
+  const movable = allFootprints.filter(isMovable);
+  const pads = movable.reduce((s, fp) => s + (fp.pad_count ?? 0), 0);
+  const nTotal = allFootprints.filter((fp) => !fp.locked && !fp.ghost).length || movable.length;
+  const m = movable.length;
+  const fullBoardMsPerIter = 0.0045 * nTotal * nTotal + 1;
+  const frac = nTotal > 0 ? m / nTotal : 1;
+  const msPerIter = fullBoardMsPerIter * (0.15 + 0.85 * frac);
+  return { ms: Math.max(msPerIter, 0.05) * iters, msPerIter, fps: m, pads };
 }
 
 function fmtDuration(ms) {
@@ -3197,8 +3196,13 @@ let routeCancelRequested = false;
 let routeCurrentJobId = null;
 
 // Pre-flight cost estimate: pairwise A* searches per net = k*(k-1)/2 over
-// pad counts (upper bound on terminals). Shown before the run so a 66-pad
-// GND (~2k searches, minutes) never surprises.
+// pad counts (upper bound on terminals), plus a wall-time fit. Shown before
+// the run so a 66-pad GND (~2k searches, minutes) never surprises.
+// Time fit from full-scale runs, docs/benchmarks/routing_2026-10-15.json:
+// first net pays ~2-3.5s fixed (occupancy+grids+via_ok), then ~1-1.5s/net
+// (DCCF 1/2/5/10 nets: 3.3/4.1/6.7/10.6s; tube111 1/2: 2.4/2.5s).
+// GND stitching is a separate surcharge measured in
+// stitch_pour_2026-10-15.json: +2.6s tube111 (36 islands), +17s DCCF (104).
 function estimateRoutingWork(netNames) {
   let pairs = 0;
   let worst = { net: null, pairs: 0 };
@@ -3209,7 +3213,8 @@ function estimateRoutingWork(netNames) {
     pairs += p;
     if (p > worst.pairs) worst = { net: name, pairs: p };
   }
-  return { pairs, worst };
+  const seconds = 2 + 1.2 * netNames.length;
+  return { pairs, worst, seconds };
 }
 
 function fmtExpansions(e) {
@@ -3316,7 +3321,10 @@ async function routeSelectedNets() {
   await saveRoutingParams();
   const params = readRoutingParams();
   const est = estimateRoutingWork(nets);
+  const stitchNote = params.stitch_gnd_vias
+    ? " + GND stitch (bench: +3s tube111-scale, +17s DCCF-scale)" : "";
   const estNote = `~${est.pairs} pair-searches across ${nets.length} net${nets.length > 1 ? "s" : ""}` +
+    ` (est. up to ≈${Math.round(est.seconds)}s${stitchNote})` +
     (est.worst.pairs > 100 ? ` — worst: ${est.worst.net} (~${est.worst.pairs}; expect minutes)` : "");
 
   routeBtn.disabled = true;

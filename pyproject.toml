@@ -18,6 +18,8 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0.0",
+    "pytest-html>=4.0.0",
+    "matplotlib>=3.5.0",
 ]
 
 [tool.setuptools.packages.find]

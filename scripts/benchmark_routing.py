@@ -160,6 +160,7 @@ def time_case(
     board_name: str,
     net_names: list[str],
     params: RoutingParams,
+    label: str | None = None,
 ) -> dict:
     """Route the first ``len(net_names)`` nets end-to-end via ``route_nets``."""
     model = load_board(board_name)
@@ -173,7 +174,7 @@ def time_case(
     n = len(net_names)
     total = t.get("total_s", 0.0)
     return {
-        "board": board_name,
+        "board": label or board_name,
         "nets_requested": n,
         "net_names": net_names,
         "nets_routed": result.nets_routed,
@@ -263,8 +264,8 @@ def main() -> None:
             stitch_gnd_vias=True,
             run_drc=False,
         )
-        stitch_row = time_case("DCCF+stitch", nets, stitch_params)
-        stitch_row["board"] = "DCCF+stitch"
+        stitch_row = time_case("DCCF", nets, stitch_params,
+                                label="DCCF+stitch")
         print(f"\nwith stitch: {stitch_row['total_s']:.3f}s total "
               f"({stitch_row['route_s']:.3f}s route) for "
               f"{stitch_row['nets_requested']} nets")

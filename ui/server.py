@@ -1709,6 +1709,7 @@ class Handler(BaseHTTPRequestHandler):
                 convergence_eps_m=req.get("convergence_eps_m", base_params.convergence_eps_m),
                 wall_k_N=req.get("wall_k_N", base_params.wall_k_N),
                 wall_halo_m=req.get("wall_halo_m", base_params.wall_halo_m),
+                wall_exponent=req.get("wall_exponent", base_params.wall_exponent),
                 boundary_k_N=req.get("boundary_k_N", base_params.boundary_k_N),
                 ghost_k_N=req.get("ghost_k_N", base_params.ghost_k_N),
                 damping_Ns_m=req.get("damping_Ns_m", base_params.damping_Ns_m),

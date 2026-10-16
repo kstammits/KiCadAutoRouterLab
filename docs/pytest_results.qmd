@@ -1,0 +1,279 @@
+---
+title: "Pytest Results Reference"
+subtitle: "Test Suite Overview, Physics Validation, and Regression Tracking"
+author: "KiCad AutoRouter Team"
+date: "2026-10-15"
+format:
+  html:
+    toc: true
+    number-sections: true
+    fig-width: 10
+    fig-height: 6
+    fig-dpi: 150
+    embed-resources: true
+  pdf:
+    documentclass: scrbook
+    geometry: margin=1in
+    fontsize: 11pt
+    fig-width: 6.5
+    fig-height: 4
+    fig-dpi: 300
+execute:
+  echo: false
+  eval: true
+  warning: false
+  message: false
+---
+
+# Pytest Results Reference
+
+This document provides a structured view of the test suite, focused on **physics validation** (`test_placement_forces.py`, `test_analytical_contact.py`, `test_magnet.py`) and **regression tracking** (`test_svg_render.py`, `test_placement.py`). It is regenerated on demand via `scripts/regen_pytest_report.sh`.
+
+> **Regeneration**: Run `./scripts/regen_pytest_report.sh` to update this document with current test results.
+
+```{python}
+#| label: env-setup
+#| output: false
+# Portable harness: repo root by walking up to pyproject.toml (works whether
+# Quarto executes with cwd=docs or cwd=repo), test interpreter = Quarto's own
+# kernel python unless QUARTO_PYTHON points at the project .venv, and
+# PYTHONPATH=src so the suite imports without an installed package.
+import os, pathlib, sys
+def _repo_root():
+    d = pathlib.Path(os.getcwd()).resolve()
+    for _ in range(6):
+        if (d / "pyproject.toml").exists():
+            return d
+        d = d.parent
+    return pathlib.Path(os.getcwd()).resolve()
+REPO_ROOT = _repo_root()
+REPO = str(REPO_ROOT)
+PYTEST_PY = os.environ.get("QUARTO_PYTHON", sys.executable)
+PYTEST_BASE = [PYTEST_PY, "-m", "pytest", "--color=no"]
+def _pytest_env():
+    env = dict(os.environ)
+    src = str(REPO_ROOT / "src")
+    env["PYTHONPATH"] = src + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    return env
+PYTEST_ENV = _pytest_env()
+```
+
+---
+
+## 1. Test Suite Structure
+
+From `pyproject.toml` markers and `tests/` directory:
+
+| Marker | Purpose | Key Files |
+|--------|---------|-----------|
+| `unit` | Pure unit tests, no fixtures/I/O | `test_placement_frames.py`, `test_padless_graphical.py` |
+| `params` | PlacementParams validation/serialization | `test_placement.py` |
+| `physics` | MST force-spring simulation (requires nets) | `test_placement_forces.py`, `test_analytical_contact.py`, `test_magnet.py` |
+| `cli` | CLI entry point tests | `test_io.py`, `test_run_autoroute.py` |
+| `server` | HTTP API endpoint tests | `test_server.py`, `test_server_manual.py` |
+| `regression` | Bug fix verification | `test_svg_render.py`, `test_placement.py` |
+| `minimal` | Uses `minimal.kicad_pcb` (4 footprints, no nets) | Various |
+| `dccf` | Uses `DCCF.sved.kicad_pcb` (97 footprints, 59 nets) | Various |
+
+**Total test files**: 36 in `tests/`
+
+```{python}
+#| label: test-file-list
+#| output: asis
+files = sorted(p.name for p in REPO_ROOT.glob("tests/test_*.py"))
+for f in files:
+    print(f"- `tests/{f}`")
+```
+
+---
+
+## 2. Physics Test Results
+
+These tests validate the **force laws**, **integrator**, and **collision detection** — the core of the SI placement dynamics.
+
+### 2.1 Force Matrix Behavior (`test_placement_forces.py`)
+
+Each test isolates one force by zeroing others, asserting qualitative behavior.
+
+| Test Class | Tests | Validates |
+|------------|-------|-----------|
+| `TestOverlapLaw` | 4 | Courtyard push grows with penetration; continuous at contact; coincident parts separate via MTV |
+| `TestAttractionRepulsionEquilibrium` | 3 | Pad pair settles at $d = \sqrt{k_r/k_a}$; attraction pulls; no attraction → drift apart |
+| `TestCourtyardRole` | 2 | Without courtyard, overlap persists; halo reaches before contact |
+| `TestBoundaryRole` | 1 | Wall holds against Coulomb shove |
+| `TestGhostRole` | 2 | Ghost pulls target; ghost never moves |
+| `TestRigidProjection` | 4 | Kabsch snap preserves shape exactly; monotonic drift; angular deadband; no stiffness knob |
+
+```{python}
+#| label: run-physics-tests
+#| output: asis
+import subprocess
+result = subprocess.run(
+    PYTEST_BASE + ['tests/test_placement_forces.py', '-v', '--tb=short'],
+    capture_output=True, text=True, cwd=REPO, env=PYTEST_ENV
+)
+print("```")
+print(result.stdout[-5000:] if len(result.stdout) > 5000 else result.stdout)
+if result.stderr:
+    print("STDERR:")
+    print(result.stderr[-2000:])
+print("```")
+print(f"Return code: {result.returncode}")
+```
+
+### 2.2 Analytical Contact (`test_analytical_contact.py`)
+
+Validates SAT-based collision for rectangles, circles, and rect-circle pairs.
+
+```{python}
+#| label: run-analytical-contact-tests
+#| output: asis
+import subprocess
+result = subprocess.run(
+    PYTEST_BASE + ['tests/test_analytical_contact.py', '-v', '--tb=short'],
+    capture_output=True, text=True, cwd=REPO, env=PYTEST_ENV
+)
+print("```")
+print(result.stdout[-5000:] if len(result.stdout) > 5000 else result.stdout)
+if result.stderr:
+    print("STDERR:")
+    print(result.stderr[-2000:])
+print("```")
+print(f"Return code: {result.returncode}")
+```
+
+### 2.3 Magnet Clustering (`test_magnet.py`)
+
+Emergent multi-part behavior: scattered resistors on shared nets should cluster.
+
+```{python}
+#| label: run-magnet-tests
+#| output: asis
+import subprocess
+result = subprocess.run(
+    PYTEST_BASE + ['tests/test_magnet.py', '-v', '--tb=short'],
+    capture_output=True, text=True, cwd=REPO, env=PYTEST_ENV
+)
+print("```")
+print(result.stdout[-5000:] if len(result.stdout) > 5000 else result.stdout)
+if result.stderr:
+    print("STDERR:")
+    print(result.stderr[-2000:])
+print("```")
+print(f"Return code: {result.returncode}")
+```
+
+---
+
+## 3. Regression Test Results
+
+### 3.1 SVG Render Correctness (`test_svg_render.py`)
+
+| Test | Validates |
+|------|-----------|
+| `test_preview_matches_accept_with_rotation` | Preview SVG == Accept SVG (no group-transform approximation) |
+| `test_tube111_back_footprints_inside_region_in_svg` | B.Cu parts render in correct region (no mirror bug) |
+| `test_tube111_back_pad_rect_uses_effective_angle` | Pad angle from file used directly (no double-count with footprint angle) |
+| `test_preview_rotates_square_pads_with_part` | Copper rotates with courtyard in preview |
+| `test_forces_overlay_per_cause_arrows` | Each force cause gets colored arrow + marker |
+| `test_forces_overlay_falls_back_to_total` | Legacy single-arrow fallback works |
+
+```{python}
+#| label: run-svg-render-tests
+#| output: asis
+import subprocess
+result = subprocess.run(
+    PYTEST_BASE + ['tests/test_svg_render.py', '-v', '--tb=short'],
+    capture_output=True, text=True, cwd=REPO, env=PYTEST_ENV
+)
+print("```")
+print(result.stdout[-5000:] if len(result.stdout) > 5000 else result.stdout)
+if result.stderr:
+    print("STDERR:")
+    print(result.stderr[-2000:])
+print("```")
+print(f"Return code: {result.returncode}")
+```
+
+### 3.2 Placement Integration (`test_placement.py`)
+
+Full-board placement on tube111 (3 regions) and DCCF.
+
+```{python}
+#| label: run-placement-tests
+#| output: asis
+import subprocess
+result = subprocess.run(
+    PYTEST_BASE + ['tests/test_placement.py', '-v', '--tb=short', '-k', 'not dccf'],
+    capture_output=True, text=True, cwd=REPO, env=PYTEST_ENV
+)
+print("```")
+print(result.stdout[-5000:] if len(result.stdout) > 5000 else result.stdout)
+if result.stderr:
+    print("STDERR:")
+    print(result.stderr[-2000:])
+print("```")
+print(f"Return code: {result.returncode}")
+```
+
+---
+
+## 4. Runtime & Performance
+
+```{python}
+#| label: pytest-durations
+#| output: asis
+import subprocess
+result = subprocess.run(
+    PYTEST_BASE + ['tests/', '--durations=20', '-q', '--tb=no'],
+    capture_output=True, text=True, cwd=REPO, env=PYTEST_ENV, timeout=1200
+)
+print("```")
+print(result.stdout)
+if result.stderr:
+    print("STDERR:")
+    print(result.stderr[-2000:])
+print("```")
+print(f"Return code: {result.returncode}")
+```
+
+---
+
+## 5. Full Suite Summary
+
+```{python}
+#| label: pytest-summary
+#| output: asis
+import subprocess
+result = subprocess.run(
+    PYTEST_BASE + ['tests/', '-q', '--tb=no'],
+    capture_output=True, text=True, cwd=REPO, env=PYTEST_ENV, timeout=1200
+)
+print("```")
+print(result.stdout)
+if result.stderr:
+    print("STDERR:")
+    print(result.stderr[-2000:])
+print("```")
+print(f"Return code: {result.returncode}")
+```
+
+---
+
+## 6. HTML Report (Self-Contained)
+
+For detailed per-test output, the HTML report is generated at `docs/_output/test_report.html` (gitignored). Regenerate with:
+
+```bash
+./scripts/regen_pytest_report.sh
+```
+
+The report includes:
+- Pass/fail status per test
+- Tracebacks for failures
+- Duration per test
+- Filtering by marker/keyword
+
+---
+
+*Generated by `scripts/regen_pytest_report.sh` using `pytest --html` and `pytest --durations` (figures via the project freeze cache; see `_quarto.yml`).*

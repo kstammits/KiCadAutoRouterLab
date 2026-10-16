@@ -1,0 +1,427 @@
+---
+title: "Physics Primer — SI Placement Dynamics"
+subtitle: "Force Laws, Parameter Tradeoffs, and SVG Render Guide"
+author: "KiCad AutoRouter Team"
+date: "2026-10-15"
+format:
+  html:
+    toc: true
+    number-sections: true
+    fig-width: 10
+    fig-height: 6
+    fig-dpi: 150
+    embed-resources: true
+  pdf:
+    documentclass: scrbook
+    geometry: margin=1in
+    fontsize: 11pt
+    fig-width: 6.5
+    fig-height: 4
+    fig-dpi: 300
+execute:
+  echo: false
+  eval: true
+  warning: false
+  message: false
+---
+
+# Physics Primer: SI Placement Dynamics
+
+This document explains the force-spring physics engine that drives component placement in KiCad AutoRouter. It is **not a general physics tutorial** — it is a reference for our specific implementation: the formulas we use, the parameters that control them, and how to interpret the visual output.
+
+All quantities in the solver are SI: **meters** for geometry, **newtons** for force, **kilograms** for mass, **seconds** for time. Board files and SVG output remain in millimeters at the boundaries; conversion happens at ingest/report.
+
+> **Normative reference**: `docs/si_force_laws.md` is the source of truth for formulas. This primer adds visualizations and parameter-response graphs to build intuition.
+
+---
+
+## 1. Force Laws Overview
+
+The net force on each pad is the sum of five independent causes:
+
+$$\mathbf{F}_{\text{total}} = \mathbf{F}_{\text{repulsion}} + \mathbf{F}_{\text{attraction}} + \mathbf{F}_{\text{courtyard}} + \mathbf{F}_{\text{boundary}} + \mathbf{F}_{\text{ghost}}$$
+
+Each cause has a distinct role and color in the SVG force overlay:
+
+| Cause | Color | Role | Key Parameters |
+|-------|-------|------|----------------|
+| **Repulsion** | Cyan `#22d3ee` | Pad-to-pad Coulomb push ($k_{\text{rep}}/d^2$) | `repulsion_k_N_m2` |
+| **Attraction** | Lime `#a3e635` | Net springs pulling connected pads together | `attraction_k_N` |
+| **Courtyard** | Pink `#f472b6` | Collision response (SAT minimum-translation axis) | `wall_k_N`, `wall_halo_m` |
+| **Boundary** | Near-white `#e2e8f0` (dashed) | Keeps footprints inside board region | `boundary_k_N` |
+| **Ghost** | Lavender `#c4b5fd` (dotted) | Pulls target parts toward ghost anchors | `ghost_k_N` |
+
+```{python}
+#| label: force-color-legend
+#| output: false
+# This cell just documents the color mapping for reference
+FORCE_CAUSE_COLORS = {
+    "repulsion": "#22d3ee",    # cyan
+    "attraction": "#a3e635",   # lime
+    "courtyard": "#f472b6",    # pink
+    "boundary": "#e2e8f0",     # near-white, dashed
+    "ghost": "#c4b5fd",        # pale lavender, dotted
+}
+```
+
+## 2. Pad Repulsion (Coulomb-like)
+
+**Formula** (from `si_force_laws.md` §1):
+
+$$\mathbf{F}_{\text{rep}}(i \leftarrow j) = k_{\text{rep}} \frac{\hat{\mathbf{u}}(i - j)}{d^2}$$
+
+where $d$ is the pad-to-pad distance in **meters**, $k_{\text{rep}}$ has units $\text{N}\cdot\text{m}^2$, and $\hat{\mathbf{u}}$ is the unit vector from $j$ to $i$.
+
+**Key insight**: This is a *pairwise* force evaluated at the **pad level**, not footprint level. A footprint with 4 pads feels 4× the repulsion from a neighbor's 4 pads (16 pair interactions).
+
+The equilibrium distance for an isolated pad pair (repulsion vs. attraction) is:
+
+$$d_{\text{eq}} = \sqrt{\frac{k_{\text{rep}}}{k_{\text{attr}}}}$$
+
+```{python}
+#| label: fig-repulsion-vs-distance
+#| fig-cap: "Repulsion force magnitude vs. pad separation for different k_rep values. Attraction_k_N = 8 mN (default). Vertical line shows equilibrium distance for default k_rep = 2e-9 N·m²."
+#| fig-width: 10
+#| fig-height: 5
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Default parameters from PlacementParams (2026-10-15 calibration)
+k_rep_default = 2e-9    # N·m²
+k_attr_default = 8e-3   # N
+
+d_mm = np.logspace(-2, 2, 400)  # 0.01 mm to 100 mm
+d_m = d_mm * 1e-3
+
+k_rep_values = [1e-9, 2e-9, 5e-9, 1e-8]
+fig, ax = plt.subplots(figsize=(10, 5))
+
+for k_rep in k_rep_values:
+    F_rep = k_rep / (d_m**2)  # N
+    F_attr = k_attr_default   # N (constant magnitude)
+    ax.loglog(d_mm, F_rep, label=f'$k_{{\\text{{rep}}}} = {k_rep:.0e}$ N·m²')
+
+# Attraction line (constant)
+ax.loglog(d_mm, np.full_like(d_mm, k_attr_default), 'k--', label=f'$k_{{\\text{{attr}}}} = {k_attr_default:.0e}$ N')
+
+# Equilibrium for default
+d_eq = np.sqrt(k_rep_default / k_attr_default) * 1000  # mm
+ax.axvline(d_eq, color='gray', linestyle=':', alpha=0.7, label=f'Equilibrium (default) = {d_eq:.2f} mm')
+
+ax.set_xlabel('Pad separation (mm)')
+ax.set_ylabel('Force magnitude (N)')
+ax.set_title('Pad Repulsion ($k_{\\text{rep}}/d^2$) vs. Constant Attraction')
+ax.legend()
+ax.grid(True, which='both', alpha=0.3)
+plt.tight_layout()
+plt.show()
+```
+
+**Parameter tradeoff**:
+
+- **Higher `repulsion_k_N_m2`** → pads push harder at a given distance → larger equilibrium spacing → parts spread out more aggressively
+- **Lower `repulsion_k_N_m2`** → weaker push → attraction dominates → parts cluster tighter, but risk courtyard overlap if `wall_k_N` isn't strong enough
+
+The default `2e-9` places equilibrium at ~0.5 mm for default attraction — repulsion only matters *inside* contact range; the courtyard wall owns the contact response.
+
+---
+
+## 3. Net Attraction (Constant-Magnitude Springs)
+
+**Formula**:
+
+$$\mathbf{F}_{\text{attr}} = k_{\text{attr}} \cdot w_{\text{edge}} \cdot \hat{\mathbf{u}}(\text{src} \to \text{dst})$$
+
+- $k_{\text{attr}}$ in newtons (default `8e-3` N = 8 mN)
+- $w_{\text{edge}}$ is a dimensionless weight per net edge:
+  - Signal nets: `1.0`
+  - Power nets: `power_attraction_scale / (fanout - 1)` — fans out the pull so a rail shared by many parts doesn't collapse them
+  - Decoupling caps (C*, 2 pads, one power + one GND): additional `decap_boost` multiplier (default `4×`)
+  - GND nets: **excluded** (pours connect anywhere) — *except* decap GND-side edges
+
+```{python}
+#| label: fig-attraction-fanout
+#| fig-cap: "Effective attraction per pad vs. net fanout for signal vs. power nets. Power rails fan out the pull so total force per pad stays ~constant. Decap boost (4×) shown for reference."
+#| fig-width: 10
+#| fig-height: 5
+import numpy as np
+import matplotlib.pyplot as plt
+
+k_attr = 8e-3  # N
+power_scale = 1.0
+decap_boost = 4.0
+
+fanouts = np.arange(2, 21)
+
+# Signal: constant 1.0 per edge
+F_signal = k_attr * 1.0
+
+# Power: fanout-scaled
+F_power = k_attr * power_scale / (fanouts - 1)
+
+# Decap power edge: boosted
+F_decap_power = k_attr * power_scale / (fanouts - 1) * decap_boost
+
+fig, ax = plt.subplots(figsize=(10, 5))
+ax.plot(fanouts, np.full_like(fanouts, F_signal)*1000, 'o-', label='Signal (1.0)', color='#a3e635')
+ax.plot(fanouts, F_power*1000, 's-', label='Power (1/(fanout-1))', color='#f59e0b')
+ax.plot(fanouts, F_decap_power*1000, '^-', label='Decap power edge (×4)', color='#2dd4bf')
+
+ax.set_xlabel('Net fanout (number of pads on net)')
+ax.set_ylabel('Attraction force per edge (mN)')
+ax.set_title('Net Attraction Weighting by Fanout and Net Type')
+ax.legend()
+ax.grid(True, alpha=0.3)
+ax.set_yscale('log')
+plt.tight_layout()
+plt.show()
+```
+
+**Parameter tradeoff**:
+
+- **Higher `attraction_k_N`** → stronger pull → tighter clustering, faster convergence, but more overlap pressure on courtyards
+- **`power_attraction_scale`** — turn down (< 1) to weaken rail pull; turn off (`include_power_nets: false`) to exclude power entirely
+- **`decap_boost`** — increase to anchor decoupling caps more aggressively to their power/GND rails
+
+---
+
+## 4. Courtyard Collision (SAT + Halo)
+
+This is the most complex force. It uses **Separating Axis Theorem (SAT)** for analytical collision on rectangles/circles (80% of pairs), falling back to shapely for polygons.
+
+### 4.1 Unified Contact Law (Overlap + Halo)
+
+Courtyards use **one law** in signed separation `s` (gap positive,
+penetration negative) — the formula never changes at intersection:
+
+$$F_{\text{wall}} = k_{\text{wall}} \left(1 - \frac{s}{\text{halo}}\right)^p$$
+
+with exponent $p = $ `wall_exponent` (default 1.0, linear; $p > 1$ softens the
+halo approach and stiffens deep penetration; $p < 1$ is rejected by validation
+— singular at the halo edge). Contact stays C0/C1-continuous for any $p \ge 1$.
+
+- Zero past the halo reach, $k_{\text{wall}}$ at contact, growing linearly
+  with penetration depth — C0 and C1 continuous at first touch
+- Depth comes from SAT (rectangles/circles) or vertex-projection interval
+  overlap (generic polygons); no intersection areas anywhere
+- Direction = **minimum-translation vector (MTV)** from SAT — pushes parts apart along the *shortest* escape axis, never centroid-to-centroid
+- This prevents "small part tucked under large courtyard" tunneling bugs
+
+### 4.2 Near-Miss Halo
+
+The halo is the same law at `s > 0` (`wall_halo_m` = 6 mm default): force
+falls linearly from $k_{\text{wall}}$ at contact to 0 at the halo edge.
+One scale serves approach and penetration.
+
+### 4.3 Per-Pair Aggregation (Critical!)
+
+One footprint pair may have **multiple collision sub-paths**: body courtyard + THT pin circles on both layers. Without aggregation, pin circles stack the same contact 3–9×.
+
+**Aggregation rule** (per footprint pair): every sub-path reports a signed
+separation in mm; the single deepest contact wins (winner-takes-all), and
+its magnitude is the unified law above. No area summation, so stacked
+sub-contacts cannot inflate one pair's penalty.
+
+```{python}
+#| label: fig-courtyard-force-profile
+#| fig-cap: "Courtyard force profile: one linear law F = k*(1-s/h) in signed separation s (gap positive, penetration negative). C0/C1 continuous at contact (s=0). k_wall = 80 mN, halo = 6 mm."
+#| fig-width: 10
+#| fig-height: 5
+import numpy as np
+import matplotlib.pyplot as plt
+
+k_wall = 8e-2      # N
+halo = 6.0         # mm (single scale: approach + penetration)
+
+# Signed separation: +halo (far) to -halo (2x halo deep)
+s_mm = np.linspace(halo, -halo, 400)
+F = k_wall * (1 - s_mm / halo)
+
+fig, ax = plt.subplots(figsize=(10, 5))
+ax.plot(s_mm, F*1000, 'b-', linewidth=2, label='F = k*(1-s/h)')
+ax.axvline(0, color='k', linestyle=':', alpha=0.5, label='contact (s=0)')
+ax.axhline(k_wall*1000, color='k', linestyle=':', alpha=0.5, label=f'k_wall = {k_wall*1000:.0f} mN')
+
+ax.set_xlabel('Signed separation s (mm) [gap +  ←→  - penetration]')
+ax.set_ylabel('Force magnitude (mN)')
+ax.set_title('Courtyard Force Profile: One Linear Law, Continuous at Contact')
+ax.legend()
+ax.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.show()
+```
+
+**Parameter tradeoff**:
+
+| Parameter | Effect | Typical Range |
+|-----------|--------|---------------|
+| `wall_k_N` | Overall collision stiffness. Higher = harder push-out at contact | 0.02–0.1 N |
+| `wall_halo_m` | Single distance scale: halo reach AND penetration stiffness. Larger = earlier gentle push, softer deep response | 0.003–0.01 m |
+| `wall_exponent` | Shape of the law. 1.0 = linear; higher softens approach, stiffens deep overlap | 1.0–2.0 |
+
+Static twins of these response graphs (no Quarto needed):
+`python scripts/plot_force_laws.py --outdir docs/figures`
+(`fig_wall_profile.png`, `fig_wall_exponent.png`).
+
+**Heatmap: Overlap resolution vs. wall_k_N and damping**
+
+```{python}
+#| label: fig-overlap-resolution-heatmap
+#| fig-cap: "Overlap resolution ratio (1 − final/initial courtyard overlap, synthetic 2-part 1 mm-overlap test) as function of wall_k_N and damping_Ns_m after 50 iterations. Default marked with ★."
+#| fig-width: 10
+#| fig-height: 7
+import numpy as np
+import matplotlib.pyplot as plt
+import os, pathlib, sys
+# Repo root by walking up to pyproject.toml (no hardcoded checkout path).
+_d = pathlib.Path(os.getcwd()).resolve()
+for _ in range(6):
+    if (_d / "pyproject.toml").exists():
+        break
+    _d = _d.parent
+sys.path.insert(0, str(_d / "src"))
+from kicad_autorouter.board_model import BoardModel, Point, Footprint, Pad, apply_deltas
+from kicad_autorouter.placement import PlacementParams, run_placement, _collect_pad_nodes, _footprint_courtyard_polygon
+
+def make_overlap_pair(dx=1.0):
+    """Two 6×4 mm parts with dx mm overlap."""
+    fp1 = Footprint("A", "uuid-a", "F.Cu", 0, 0, 0,
+        pads=(Pad("1", "N1", Point(-1,0), (1,1), "circle", 0, "smd", 0, ("F.Cu",)),
+              Pad("2", "N2", Point(1,0), (1,1), "circle", 0, "smd", 0, ("F.Cu",))),
+        courtyard=((Point(-3,-2), Point(3,-2)), (Point(3,-2), Point(3,2)),
+                   (Point(3,2), Point(-3,2)), (Point(-3,2), Point(-3,-2))),
+        locked=False, uuid="uuid-a", ghost=False, ghost_attractions=())
+    fp2 = Footprint("B", "uuid-b", "F.Cu", dx, 0, 0,
+        pads=(Pad("1", "N3", Point(dx-1,0), (1,1), "circle", 0, "smd", 0, ("F.Cu",)),
+              Pad("2", "N4", Point(dx+1,0), (1,1), "circle", 0, "smd", 0, ("F.Cu",))),
+        courtyard=((Point(dx-3,-2), Point(dx+3,-2)), (Point(dx+3,-2), Point(dx+3,2)),
+                   (Point(dx+3,2), Point(dx-3,2)), (Point(dx-3,2), Point(dx-3,-2))),
+        locked=False, uuid="uuid-b", ghost=False, ghost_attractions=())
+    
+    model = BoardModel(
+        footprints=(fp1, fp2),
+        keepout_zones=(),
+        nets={"N1": set(), "N2": set(), "N3": set(), "N4": set()},
+        by_ref={"A": fp1, "B": fp2},
+        edge_cuts=((Point(-30,-30), Point(30,-30)), (Point(30,-30), Point(30,30)),
+                   (Point(30,30), Point(-30,30)), (Point(-30,30), Point(-30,-30))),
+        footprint_region={"uuid-a": 0, "uuid-b": 0},
+    )
+    return model
+
+def overlap_area(model, deltas: dict, uuids=("uuid-a", "uuid-b")) -> float:
+    """Courtyard intersection area of two footprints at posed positions."""
+    moved = apply_deltas(model, deltas)
+    pads, _, uuid_to_idx, _, _ = _collect_pad_nodes(moved)
+    pos = np.array([(p.position.x_mm, p.position.y_mm) for p in pads])
+    polys = []
+    for uuid in uuids:
+        fp = next(f for f in moved.footprints if f.uuid == uuid)
+        polys.append(_footprint_courtyard_polygon(
+            fp, pad_positions=pos, pad_indices=uuid_to_idx.get(uuid, [])))
+    if polys[0].is_empty or polys[1].is_empty:
+        return 0.0
+    return polys[0].intersection(polys[1]).area
+
+# Sweep parameters
+wall_k_vals = np.logspace(-2, -1, 8)    # 0.01 to 0.1 N
+damping_vals = np.logspace(-1, 0, 8)    # 0.1 to 1.0 N·s/m
+
+results = np.zeros((len(wall_k_vals), len(damping_vals)))
+
+for i, wk in enumerate(wall_k_vals):
+    for j, damp in enumerate(damping_vals):
+        model = make_overlap_pair(dx=1.0)
+        params = PlacementParams(
+            max_iterations=50,
+            convergence_eps_m=1e-15,
+            wall_k_N=wk,
+            damping_Ns_m=damp,
+            repulsion_k_N_m2=1e-15,  # disable repulsion
+            attraction_k_N=1e-15,    # disable attraction
+            boundary_k_N=1e-15,
+            ghost_k_N=1e-15,
+        )
+        prop = run_placement(model, params)
+        
+        # Measure final overlap
+        final_overlap = overlap_area(model, prop.deltas)
+        initial_overlap = overlap_area(model, {})
+        resolution = 1 - final_overlap / initial_overlap if initial_overlap > 0 else 1
+        results[i, j] = resolution
+
+fig, ax = plt.subplots(figsize=(10, 7))
+im = ax.imshow(results, origin='lower', aspect='auto', cmap='RdYlGn',
+               extent=[np.log10(damping_vals[0]), np.log10(damping_vals[-1]),
+                       np.log10(wall_k_vals[0]), np.log10(wall_k_vals[-1])],
+               vmin=0, vmax=1)
+
+# Mark default
+default_wall = 8e-2
+default_damp = 0.12
+ax.plot(np.log10(default_damp), np.log10(default_wall), 'w*', markersize=20, label='Default (0.08, 0.12)')
+
+ax.set_xticks(np.log10(damping_vals))
+ax.set_xticklabels([f'{d:.2f}' for d in damping_vals])
+ax.set_yticks(np.log10(wall_k_vals))
+ax.set_yticklabels([f'{w:.2f}' for w in wall_k_vals])
+ax.set_xlabel('damping_Ns_m')
+ax.set_ylabel('wall_k_N')
+ax.set_title('Overlap Resolution Rate (50 iterations, 1 mm initial overlap)')
+plt.colorbar(im, ax=ax, label='Resolution (1 = fully separated)')
+ax.legend()
+plt.tight_layout()
+plt.show()
+```
+
+---
+
+## 5. Boundary Repulsion
+
+**Formula** (from `si_force_laws.md`, per board-region edge):
+
+$$F_{\text{edge}} = \begin{cases}
+0 & d \geq t \\
+2\,k_b\,\dfrac{t - d}{t} & 0 \leq d < t \\
+\sim k_b\ \text{(saturating)} & d < 0\ \text{(outside)}
+\end{cases}$$
+
+where $d$ is the pad-to-edge distance in meters and $t$ is a **dynamic
+threshold**: 10% of the footprint's largest extent, clamped to 1–10 mm
+(`placement.py`, region loop). Each of the four region edges pushes
+independently (left/bottom positive, right/top negative), applied per pad —
+so a part straddling a corner feels the vector sum. Default
+`boundary_k_N = 1e-2` N (10 mN).
+
+**Key insight**: the threshold scales with part size, so small passives feel
+the wall only in the last 1 mm while a 100 mm board-edge connector gets the
+full 10 mm lookahead. There is no user-facing threshold knob — size-relative
+behavior is automatic.
+
+**Parameter tradeoff**:
+
+| Parameter | Effect | Typical Range |
+|-----------|--------|---------------|
+| `boundary_k_N` | Wall stiffness. Higher = harder containment, but fights net attraction near edges (parts with pads near the edge get pinned by the sum) | 0.005–0.02 N |
+
+---
+
+## 6. Deferred Sections (post-merge)
+
+The remaining engine pieces are specified normatively in
+`docs/si_force_laws.md` and validated by the suite, but their primer
+visualizations are **gated behind settling the simulation method** (see
+`TODO.md`, Documentation) — they land after the SI merge:
+
+- **Ghost attraction** (`§Ghost attraction` + `test_ghost_create.py`): constant
+  $k_g$ pull toward ghost anchors, split over target pads, no reaction on the
+  ghost. Primer needs: pull-in distance vs. `ghost_k_N` response graph.
+- **Damping + friction** (`§Viscous damping`, `§Dry friction`): one linear
+  damper $c$ plus the whole-footprint freeze deadband that terminates
+  Coulomb-tail cruises. Primer needs: decay-envelope figure, deadband vs. tail
+  strength discussion.
+- **Integrator + guards** (`§2 Integrator`): semi-implicit Euler, Kabsch rigid
+  projection with velocity re-derivation, 5°/step rotation clamp, adaptive-dt
+  guard. Primer needs: stability-boundary sketch, `dt`/`vmax` guidance.
+- **Mass model** (`§4 Mass model`, `data/footprint_mass.json`): area fallback
+  + keyword table. Primer needs: acceleration-vs-size illustration.

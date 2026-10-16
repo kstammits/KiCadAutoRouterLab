@@ -40,7 +40,24 @@ F_wall = k_wall · (1 − s / halo) · û      k_wall in N, halo in m
 ```
 Zero past the halo reach, `k_wall` at contact, growing linearly with
 penetration depth — C0 and C1 continuous at first touch, so the formula
-never changes at intersection. Depth comes from SAT (rectangles/circles)
+never changes at intersection.
+
+Experimental exponent (tight-quarters program, 2026-10-16): `wall_exponent`
+`p` (default 1, validated `≥ 1`) generalizes to `F = k·(1−s/h)^p` — softer
+far-halo approach, stiffer deep penetration, all curves meeting at `k_wall`
+at contact; contact stays C0/C1-continuous for any `p ≥ 1` (single formula
+both sides). `p < 1` is rejected (singular slope at the halo edge).
+Sweep result (2026-10-16, `wall_exponent` harness, production defaults
+otherwise): synthetic corpus clears at every `p` (no differentiator on easy
+cases); DCCF C14 single-movable unchanged (`p=1` vs `2` within 0.02 mm²);
+R13/RV1 wedge shrinks monotonically and stably (500→1000 iters endpoint
+stable): 33 → 17 (`p=2`) → 10 mm² (`p=3`), rotation steady ~2.3–2.7°
+(no spin regression), per-step displacement calmer (2.68 → 0.97 mm);
+full-DCCF @200 iters total overlap 67.7 → 46.6 mm² (−31%), pair count 9→10
+(the extra is R3/R6 hovering at the 1.0 mm² threshold, not a new family).
+Promising but NOT landed: exponent is a global law change — needs the
+recalibration sweep (`calibrate_si.py`) + full suite + regime-map check
+before the default moves off linear. Figures: `docs/figures/fig_wall_exponent.png`. Depth comes from SAT (rectangles/circles)
 or vertex-projection interval overlap (generic polygons); no intersection
 areas are computed anywhere in the contact path, which also removes the
 old exact-vs-approximated area mismatch in the per-pair direction vote
@@ -129,6 +146,7 @@ deadband cruises past any iteration budget.
 | `attraction_k_N` | N | 8e-3 | legalize-regime net pull |
 | `wall_k_N` | N | 8e-2 | contact/halo strength |
 | `wall_halo_m` | m | 0.006 | near-miss reach AND depth scale (single law) |
+| `wall_exponent` | — | 1.0 | wall-law exponent (experimental; `≥ 1`) |
 | `boundary_k_N` | N | 1e-2 | edge push |
 | `ghost_k_N` | N | 5e-5 | ghost spring pull (untuned) |
 | `damping_Ns_m` | N·s/m | 0.12 | viscous damper |
