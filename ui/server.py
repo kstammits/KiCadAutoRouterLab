@@ -1100,6 +1100,8 @@ def proposal_to_json(proposal, include_frames=True) -> dict:
         "final_max_disp_mm": r5(proposal.final_max_disp_mm),
         "elapsed_s": r5(proposal.elapsed_s),
         "params": proposal.params,
+        "stop_reason": getattr(proposal, "stop_reason", "budget"),
+        "residual_max_force_N": r5(getattr(proposal, "residual_max_force_N", 0.0)),
     }
     frames = getattr(proposal, "frames", None) or []
     if include_frames and frames:
@@ -1221,6 +1223,8 @@ class Handler(BaseHTTPRequestHandler):
                         params=proposal.params,
                         forces=merged_forces,
                         force_components=merged_comps,
+                        stop_reason=getattr(proposal, "stop_reason", "budget"),
+                        residual_max_force_N=getattr(proposal, "residual_max_force_N", 0.0),
                     )
             
             # DRC overlay: draw cached violations; dim them when the cache is

@@ -137,7 +137,8 @@ def main(argv=None) -> int:
             total_moved += len(proposal.deltas)
             print(
                 f"step: moved={len(proposal.deltas)} iterations={proposal.iterations} "
-                f"max_disp={proposal.final_max_disp_mm:.3f}mm elapsed={proposal.elapsed_s:.2f}s"
+                f"max_disp={proposal.final_max_disp_mm:.3f}mm elapsed={proposal.elapsed_s:.2f}s "
+                f"stop={proposal.stop_reason} residual_max_force={proposal.residual_max_force_N:.3g}N"
             )
             for uuid_, (dx, dy, *_) in proposal.deltas.items():
                 fp = by_uuid[uuid_]
@@ -147,9 +148,21 @@ def main(argv=None) -> int:
                     f"({fp.x_mm + dx:.2f},{fp.y_mm + dy:.2f}) mm"
                 )
 
-            # Check convergence / budget
-            if proposal.final_max_disp_mm < base_params.convergence_eps_m * 1000.0:
-                print("converged (max displacement < convergence_eps_m)")
+            # Check convergence / budget. stop_reason is the honest signal:
+            # "converged" means displacement AND residual forces both settled;
+            # "budget" means max_iterations hit with pushes still unserved
+            # (e.g. a wedged overlap) — never report that as converged.
+            if proposal.stop_reason == "converged":
+                print("converged (displacement and residual forces settled)")
+                break
+            if proposal.stop_reason == "budget" and proposal.residual_max_force_N > 0:
+                print(
+                    "warning: iteration budget reached with "
+                    f"residual_max_force={proposal.residual_max_force_N:.3g}N — "
+                    "parts may still overlap; not converged"
+                )
+            if proposal.final_max_disp_mm < base_params.convergence_eps_m * 1000.0 and not proposal.deltas:
+                print("converged (no movement)")
                 break
             if iterative and total_iterations_used >= total_iters:
                 print(f"reached max total iterations ({total_iterations_used}/{total_iters})")

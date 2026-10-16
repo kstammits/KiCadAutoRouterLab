@@ -271,6 +271,15 @@ class PlacementProposal:
     for each movable footprint. Each frame is {uuid: {cause: (fx, fy)}} with
     causes in {"repulsion", "attraction", "courtyard", "boundary", "ghost"}.
     Values rounded to 3 significant figures for compact JSON.
+
+    stop_reason reports how the run ended: "converged" (per-step displacement
+    below eps AND residual forces below the settle threshold — genuinely at
+    rest), "budget" (max_iterations reached with work still outstanding —
+    headless callers must treat this as needs-attention, not settled), or
+    "empty" (nothing movable / nothing to integrate). residual_max_force_N
+    is the largest movable-pad total-force norm (newtons, post-friction) on
+    the final iteration: near zero at true rest, large when the run stopped
+    with pushes still unserved (e.g. a wedged overlap).
     """
 
     deltas: Dict[str, Tuple[float, float, float]]
@@ -285,6 +294,8 @@ class PlacementProposal:
     frames: List[Dict[str, Tuple[float, float, float]]] = field(default_factory=list)
     force_frames: List[Dict[str, Dict[str, Tuple[float, float]]]] = field(default_factory=list)
     frame_stride: int = 1
+    stop_reason: str = "budget"
+    residual_max_force_N: float = 0.0
 
 
 def _collect_pad_nodes(model: BoardModel) -> Tuple[List[Pad], List[int], Dict[str, List[int]], Dict[int, int], List[bool]]:
@@ -1325,6 +1336,8 @@ def _run_region_simulation(
     Dict[str, Dict[str, Tuple[float, float]]],
     List[Dict[str, Tuple[float, float, float]]],
     List[Dict[str, Dict[str, Tuple[float, float]]]],
+    str,
+    float,
 ]:
     """Run force-spring simulation for a single board region.
 
@@ -1341,6 +1354,9 @@ def _run_region_simulation(
         - force_frames: parallel to frames; per-footprint force breakdown
           {uuid: {cause: (fx, fy)}} with causes in {"repulsion", "attraction",
           "courtyard", "boundary", "ghost"}, values rounded to 3 sig figs.
+        - stop_reason: "converged" | "budget" | "empty" (see PlacementProposal).
+        - residual_max_force_N: largest movable-pad total-force norm (N,
+          post-friction) on the final iteration.
     """
     from .board_model import BoardRegion
 
@@ -1350,7 +1366,7 @@ def _run_region_simulation(
     # Filter pads for this region
     n_pads = len(region_pads)
     if n_pads == 0:
-        return {}, {}, 0, {}, [], []
+        return {}, {}, 0, {}, [], [], "empty", 0.0
 
     # Build pad positions array
     pad_positions = np.zeros((n_pads, 2), dtype=np.float64)
@@ -1416,7 +1432,7 @@ def _run_region_simulation(
     pad_mass_kg = np.maximum(pad_mass_kg, _fallback_mass_kg)
 
     if not pad_movable.any():
-        return {}, {}, 0, {}, [], []
+        return {}, {}, 0, {}, [], [], "empty", 0.0
 
     # Net attraction edges for this region. Same builder as the tests pin
     # (layer-blind by design: cross-layer electrical nearness keeps
@@ -2496,6 +2512,24 @@ def _run_region_simulation(
         _barr = np.asarray(_brows, dtype=int)
         _proj_bodies.append((_barr, positions[_barr].copy()))
 
+    # Settle threshold for the convergence gate (newtons, total force per
+    # pad, post-friction). Displacement alone cannot declare rest: the
+    # adaptive-dt guard can strangle sustained-contact motion into a
+    # sub-epsilon crawl while 0.1N wall/attraction forces persist (DCCF
+    # 2026-10-16: legalize early-stop at 234/500 with 9 overlaps and ~0.1N
+    # residuals). Scale: far above the friction deadband (frozen bodies read
+    # 0 and still terminate) and the constant-magnitude ghost hold
+    # (ghost-anchored rest is done — it cannot do better), but 1000x below
+    # contact/attraction scales so any real push keeps the run alive to
+    # its max_iterations budget.
+    force_settle_N = max(
+        20.0 * params.friction_N,
+        4.0 * params.ghost_k_N,
+        1e-3 * max(params.wall_k_N, params.attraction_k_N, params.boundary_k_N),
+    )
+    stop_reason = "budget"
+    residual_max_force_N = 0.0
+
     for iteration in range(params.max_iterations):
         force = _compute_total_force(
             positions, len(region_pads), pad_movable,
@@ -2520,6 +2554,17 @@ def _run_region_simulation(
                     _frozen[_rows] = True
         force[~pad_movable] = 0.0
         _frozen[~pad_movable] = True
+
+        # Residual-work signal for the convergence gate below: largest
+        # movable-pad total-force norm AFTER friction zeroing, so deadband-
+        # frozen rest reads 0 (still terminates) while served-through pushes
+        # stay visible. One extra norm over pads per step — negligible next
+        # to the O(n^2) repulsion and the wall geometry above.
+        if pad_movable.any():
+            _mov_force = force[pad_movable]
+            residual_max_force_N = float(np.max(np.linalg.norm(_mov_force, axis=1)))
+        else:
+            residual_max_force_N = 0.0
 
         # Semi-implicit Euler: v += (F/m) dt, with implicit-Euler viscous
         # decay v *= 1/(1 + c*dt/m) (stable for any dt), then a speed
@@ -2580,9 +2625,16 @@ def _run_region_simulation(
             _region_frames.append(_frame)
             _region_force_frames.append(_capture_force_frame(positions))
 
-        # Convergence check: max pad displacement this step, in meters.
+        # Convergence check: max pad displacement this step, in meters —
+        # AND residual forces below the settle threshold. Displacement alone
+        # lies: damper-strangled crawls trip eps with large pushes unserved,
+        # so a quiet step only counts as rest when no pad is still being
+        # pushed. max_iterations above remains the backstop: genuinely
+        # force-balanced wedges (total ~0 with overlap) still stop there and
+        # report "budget" with their residual attached.
         max_disp = float(np.max(np.linalg.norm(positions - prev_positions, axis=1))) * 1e-3
-        if max_disp < params.convergence_eps_m:
+        if max_disp < params.convergence_eps_m and residual_max_force_N < force_settle_N:
+            stop_reason = "converged"
             break
 
         prev_positions = positions.copy()
@@ -2647,7 +2699,7 @@ def _run_region_simulation(
             _region_frames.append(_final_frame)
             _region_force_frames.append(_final_force_frame)
 
-    return deltas, footprint_forces, iteration + 1, footprint_components, _region_frames, _region_force_frames
+    return deltas, footprint_forces, iteration + 1, footprint_components, _region_frames, _region_force_frames, stop_reason, residual_max_force_N
 
 
 def _merge_region_frames(
@@ -2758,6 +2810,8 @@ def run_placement(
             elapsed_s=time.perf_counter() - start,
             params=params.to_dict(),
             forces={},
+            stop_reason="empty",
+            residual_max_force_N=0.0,
         )
 
     # Group pads by board region
@@ -2770,6 +2824,9 @@ def run_placement(
         max_final_disp = 0.0
         all_region_frames: List[List[Dict[str, Tuple[float, float, float]]]] = []
         all_region_force_frames: List[List[Dict[str, Dict[str, Tuple[float, float]]]]] = []
+        all_stop = "converged"
+        all_residual = 0.0
+        any_region = False
 
         for region_idx, region in enumerate(model.board_regions):
             # Collect pads for this region
@@ -2802,13 +2859,17 @@ def run_placement(
                     region_global_pad_idx_to_local[local_idx] = global_pad_idx_to_local[i]
 
             if region_pads:
-                region_deltas, region_forces, region_iters, region_comps, region_frames, region_force_frames = _run_region_simulation(
+                region_deltas, region_forces, region_iters, region_comps, region_frames, region_force_frames, region_stop, region_residual = _run_region_simulation(
                     region_idx, model.board_regions[region_idx],
                     region_pad_indices, region_pads, region_pad_to_fp_idx,
                     region_fp_uuid_to_pad_indices, region_global_pad_idx_to_local,
                     region_pad_is_ghost, model, params, movable_uuids,
                     record_frames, _eff_stride, extra_power_nets,
                 )
+                any_region = True
+                if region_stop != "converged":
+                    all_stop = region_stop  # "budget" (or "empty" if it holds everywhere)
+                all_residual = max(all_residual, region_residual)
                 all_deltas.update(region_deltas)
                 all_forces.update(region_forces)
                 all_components.update(region_comps)
@@ -2835,6 +2896,8 @@ def run_placement(
             frames=merged_frames,
             force_frames=merged_force_frames,
             frame_stride=_eff_stride if record_frames else 1,
+            stop_reason=all_stop if any_region else "empty",
+            residual_max_force_N=all_residual,
         )
 
     # Single region mode: create a virtual region covering the whole board
@@ -2853,7 +2916,7 @@ def run_placement(
     region_global_pad_idx_to_local = global_pad_idx_to_local
     region_pad_is_ghost = pad_is_ghost
 
-    region_deltas, region_forces, region_iters, region_comps, region_frames, region_force_frames = _run_region_simulation(
+    region_deltas, region_forces, region_iters, region_comps, region_frames, region_force_frames, region_stop, region_residual = _run_region_simulation(
         0, virtual_region,
         region_pad_indices, region_pads, region_pad_to_fp_idx,
         region_fp_uuid_to_pad_indices, region_global_pad_idx_to_local,
@@ -2874,4 +2937,6 @@ def run_placement(
         frames=thin_frames,
         force_frames=thin_force_frames,
         frame_stride=_eff_stride if record_frames else 1,
+        stop_reason=region_stop,
+        residual_max_force_N=region_residual,
     )

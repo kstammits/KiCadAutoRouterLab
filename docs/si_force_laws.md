@@ -132,7 +132,15 @@ unaffected (aggregation is per pair, not global) — which is why a part
 squeezed by several neighbors can still settle wedged: equilibrium
 position is set by the squeeze geometry, not by the wall stiffness.
 
-Convergence: max `‖Δx‖ < eps_m` (meters) per step. Long Coulomb-tail
+Convergence: max `‖Δx‖ < eps_m` (meters) per step AND residual forces
+below the settle scale (`force_settle_N = max(20·friction, 4·ghost_k,
+1e-3·max(wall, attraction, boundary))` — far above the deadband so frozen
+rest still terminates, far below contact scales so any real push keeps the
+run alive). Displacement alone lied: damper-strangled crawls tripped eps
+with ~0.1N pushes unserved (DCCF legalize fake-settled at 234/500 with 9
+overlaps intact). `stop_reason` reports `converged` (quiet AND weak),
+`budget` (max_iterations with residual force — headless must treat as
+needs-attention, never settled), or `empty`. Long Coulomb-tail
 cruises terminate via the friction deadband (whole-footprint freeze when
 all pad forces drop below `friction_N`), which is why `friction_N` must
 be scaled to the tail strength (`kr`): a tail that stays above the
@@ -178,7 +186,13 @@ Known residuals (follow-ups, not regressions): DCCF keeps 1–2 wedged
 pairs (e.g. R13 vs RV1's 76 mm-wide courtyard span: net anchor lies
 across a locked obstacle plus a southern halo squeeze field that exceeds
 the edge hold — a stable force-balanced wedge, verified by isolated-pair
-probes showing the contact direction itself is correct); sub-0.1°/step rotation
+probes showing the contact direction itself is correct); honest stopping
+(`budget` + residual instead of a fake settle) lets trapped parts keep
+crawling along their net gradient, so wedge depth can GROW with longer
+budgets on attraction-dominated traps (legalize@200: RV1/R13 15→27 mm²
+once every region runs the full budget). Depth is not progress there —
+capping it needs a no-progress (stall) stop rule and/or anchor-side
+rebalance, not more iterations; tracked as the headless-trust follow-up. sub-0.1°/step rotation
 creep is dropped by the angular deadband (`MIN_ROT_STEP_RAD` in the
 rigid-step clamp — a noise floor, not a slider), but large slow flips
 still occur when the torque is genuine (observed: 0805 flipping ~160°

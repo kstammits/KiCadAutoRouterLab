@@ -86,10 +86,15 @@ class TestPhysicsRunner:
         prop = run_placement(dccf_model, p, movable_uuids={locked_fp.uuid})
         assert prop.deltas == {}
 
-    def test_convergence_stops_early(self, dccf_model):
+    def test_coarse_eps_does_not_stop_under_load(self, dccf_model):
+        """A coarse displacement epsilon must not declare rest while large
+        pushes remain (fake-settle regression, 2026-10-16: displacement-only
+        stopping halted legalize at 234/500 with 9 overlaps and ~0.1N
+        residuals intact). Honest stop: budget + residual attached."""
         p = PlacementParams(max_iterations=1000, convergence_eps_m=0.1)
         prop = run_placement(dccf_model, p)
-        assert prop.iterations < 1000
+        assert prop.stop_reason == "budget"
+        assert prop.residual_max_force_N > 1e-3
 
     def test_projection_preserves_footprint_shape(self, dccf_model):
         """Rigid projection keeps every footprint's shape (within 1e-9)."""
