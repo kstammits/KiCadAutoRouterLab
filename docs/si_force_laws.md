@@ -111,7 +111,7 @@ rotation change to 5°/step, re-posed rigidly from the pre-step pose.
 Velocity re-derivation runs after the clamp, so it reflects clamped motion.
 
 Adaptive-dt guard (convergence safety net, 5 lines): track system kinetic
-energy; halve `dt` when it rises iteration-over-iteration, regrow ×1.02 when
+energy; halve `dt` when it rises iteration-over-iteration, regrow ×1.1 when
 it falls, floored at `dt_min`, capped at `dt_max`. This is FIRE's
 blowup-proofing without FIRE's extra state. Floor `dt_min = 2e-4` (not
 1e-5): the halve/regrow asymmetry ratchets `dt` to the floor under

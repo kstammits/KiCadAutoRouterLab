@@ -2,7 +2,7 @@
 title: "Physics Primer — SI Placement Dynamics"
 subtitle: "Force Laws, Parameter Tradeoffs, and SVG Render Guide"
 author: "KiCad AutoRouter Team"
-date: "2026-10-15"
+date: "2026-10-16"
 format:
   html:
     toc: true
@@ -406,22 +406,363 @@ behavior is automatic.
 
 ---
 
-## 6. Deferred Sections (post-merge)
+## 6. Ghost Attraction
 
-The remaining engine pieces are specified normatively in
-`docs/si_force_laws.md` and validated by the suite, but their primer
-visualizations are **gated behind settling the simulation method** (see
-`TODO.md`, Documentation) — they land after the SI merge:
+The first five sections covered the forces parts exert on each other. The
+last four pieces are the stagehands: invisible helpers (§6), shock absorbers
+(§7), the stepper's safety nets (§8), and part weights (§9).
 
-- **Ghost attraction** (`§Ghost attraction` + `test_ghost_create.py`): constant
-  $k_g$ pull toward ghost anchors, split over target pads, no reaction on the
-  ghost. Primer needs: pull-in distance vs. `ghost_k_N` response graph.
-- **Damping + friction** (`§Viscous damping`, `§Dry friction`): one linear
-  damper $c$ plus the whole-footprint freeze deadband that terminates
-  Coulomb-tail cruises. Primer needs: decay-envelope figure, deadband vs. tail
-  strength discussion.
-- **Integrator + guards** (`§2 Integrator`): semi-implicit Euler, Kabsch rigid
-  projection with velocity re-derivation, 5°/step rotation clamp, adaptive-dt
-  guard. Primer needs: stability-boundary sketch, `dt`/`vmax` guidance.
-- **Mass model** (`§4 Mass model`, `data/footprint_mass.json`): area fallback
-  + keyword table. Primer needs: acceleration-vs-size illustration.
+Ghosts are invisible stagehands you place yourself: a **wall** that shoves
+parts out of a keepout region, or an **attractor** that drags a named part
+somewhere it should go (a connector to the board edge, say). You build them
+in the UI Ghosts panel — wall vs attractor, plus the `ka` strength box.
+
+**Formula** (from `si_force_laws.md` §1):
+
+```
+F_ghost = k_ghost · ka · û(target→anchor)
+```
+
+A ghost is a fixed anchor that participates in placement but never moves and
+never becomes copper: a **wall** (courtyard-only obstacle, pushes parts away
+via the normal wall law, no attraction springs) or an **attractor** (pulls
+named target refs). The anchor is the ghost footprint's position; the pull is
+split equally over the target's pads; there is no reaction force on the ghost
+(infinite mass). `ka` is the dimensionless per-spring weight from the file
+`(property "ghost_attract_N" "TARGET,ka")` (`ghost.make_ghost_attractor`).
+
+**Scale reading**: `ghost_k_N = 50 µN` by default (**untouched by calibration**)
+against `attraction_k_N = 8 mN` — the ghost pull is ~1/160th of a net spring
+at unit weight. The UI offers `ka = 0.1` out of the box (5 µN effective):
+a nudge-scale effect, not a room-scale one. The response below is linear
+because the law is constant-magnitude — no distance falloff, unlike a Hooke
+spring — so reaching attraction-scale pull needs `ka ≈ 160`.
+
+**Figure: pull-in distance vs. ka** (live sweep: one 6×4 mm part, ghost
+anchor 20 mm away, all other forces off, 500 iterations):
+
+```{python}
+#| label: fig-ghost-pullin
+#| fig-cap: "Pull-in distance after 500 iterations vs. ghost spring weight ka (anchor 20 mm away, all other forces off). Linear response — constant-magnitude law. UI default ka = 0.1 barely registers; attraction-scale pull needs ka ≈ 160."
+#| fig-width: 10
+#| fig-height: 5
+import numpy as np
+import matplotlib.pyplot as plt
+import os, pathlib, sys
+_d = pathlib.Path(os.getcwd()).resolve()
+for _ in range(6):
+    if (_d / "pyproject.toml").exists():
+        break
+    _d = _d.parent
+sys.path.insert(0, str(_d / "src"))
+from kicad_autorouter.board_model import BoardModel, Point, Footprint, Pad
+from kicad_autorouter.ghost import make_ghost_attractor
+from kicad_autorouter.placement import PlacementParams, run_placement
+
+def make_ghost_model(ka, dist=20.0):
+    fp = Footprint("A", "uuid-a", "F.Cu", 0, 0, 0,
+        pads=(Pad("1", "N1", Point(-1,0), (1,1), "circle", 0, "smd", 0, ("F.Cu",)),
+              Pad("2", "N2", Point(1,0), (1,1), "circle", 0, "smd", 0, ("F.Cu",))),
+        courtyard=((Point(-3,-2), Point(3,-2)), (Point(3,-2), Point(3,2)),
+                   (Point(3,2), Point(-3,2)), (Point(-3,2), Point(-3,-2))),
+        locked=False, uuid="uuid-a", ghost=False, ghost_attractions=())
+    gh = make_ghost_attractor("GHOST", dist, 0, target_ref="A", ka=ka,
+                              uuid="uuid-ghost")
+    return BoardModel(
+        footprints=(fp,),
+        ghost_footprints=(gh,),
+        keepout_zones=(),
+        nets={"N1": set(), "N2": set()},
+        by_ref={"A": fp},
+        edge_cuts=((Point(-60,-60), Point(60,-60)), (Point(60,-60), Point(60,60)),
+                   (Point(60,60), Point(-60,60)), (Point(-60,60), Point(-60,-60))),
+        footprint_region={"uuid-a": 0, "uuid-ghost": 0},
+    )
+
+ka_vals = np.array([0.1, 0.3, 1.0, 3.0, 10.0, 30.0, 100.0, 300.0])
+pull_in = np.zeros_like(ka_vals)
+for i, ka in enumerate(ka_vals):
+    params = PlacementParams(
+        max_iterations=500,
+        convergence_eps_m=1e-15,
+        repulsion_k_N_m2=1e-15,  # disable repulsion
+        attraction_k_N=1e-15,    # disable attraction
+        boundary_k_N=1e-15,      # disable boundary
+    )
+    prop = run_placement(make_ghost_model(float(ka)), params)
+    pull_in[i] = prop.deltas.get("uuid-a", (0.0, 0.0, 0.0))[0]
+
+fig, ax = plt.subplots(figsize=(10, 5))
+ax.semilogx(ka_vals, pull_in, "o-", color="#c4b5fd", linewidth=2, markersize=7)
+ax.axvline(0.1, color="gray", linestyle=":", alpha=0.7, label="UI default ka = 0.1")
+ax.axvline(160, color="gray", linestyle="--", alpha=0.7, label="attraction-scale ka ≈ 160")
+ax.set_xlabel("Ghost spring weight ka (dimensionless)")
+ax.set_ylabel("Pull-in after 500 iterations (mm)")
+ax.set_title("Ghost Pull-In vs. ka (k_ghost = 50 µN, anchor 20 mm away)")
+ax.legend()
+ax.grid(True, which="both", alpha=0.3)
+plt.tight_layout()
+plt.show()
+```
+
+**Key insight**: weak pulls also crawl for a second reason — a lone
+constant force accelerating from rest trips the adaptive-dt guard (§8) down
+to its floor, so the run spends its whole budget at 0.2 ms steps. Terminal
+velocity still scales with `F`, which is why the curve stays linear, but
+budget your iterations (or your `ka`) accordingly.
+
+**Parameter tradeoff**:
+
+| Parameter | Effect | Typical Range |
+|-----------|--------|---------------|
+| `ghost_k_N` | Global ghost spring scale. Higher = every ghost pulls harder; still split per-pad with no reaction | 50 µN default (untuned); raise order-of-magnitude for room-scale pulls |
+| `ka` (per spring) | File/UI weight on one ghost→target spring. The knob you actually turn — it lives in the Ghosts panel attractor row | 0.1 (UI default nudge) to ~160 (attraction-scale) |
+
+---
+
+## 7. Damping and Friction
+
+If forces are the engine, damping is the shock absorbers and friction is the
+parking brake: damping keeps parts from ringing around their targets, and
+friction makes them actually stop once they arrive. Both live under Advanced
+in the placement panel.
+
+**Formulas** (from `si_force_laws.md` §1):
+
+```
+F_damp = −c · v                        c = damping_Ns_m in N·s/m
+freeze whole footprint if max pad ‖F‖ < friction_N
+```
+
+Damping is one clean linear knob applied per pad, folded into the
+integrator as an implicit-Euler decay `v *= 1/(1 + c·dt/m)` — stable for any
+timestep, unlike an explicit drag that blows up when `c·dt/m > 2`. Friction
+is the dry deadband with all-or-nothing rigid semantics: when every pad of a
+footprint feels less than `friction_N = 1 µN`, the whole body freezes for
+that step (and loses its velocity). It stops micro-motion in force units —
+no displacement hack — and it is what terminates the long Coulomb-tail
+cruises: a tail that stays above the deadband cruises past any iteration
+budget, so `friction_N` must be scaled to the tail strength (`kr`).
+
+**Figure: viscous decay envelopes** (analytic, live defaults — an 0805,
+`m ≈ 8 mg`, kicked at 0.1 m/s):
+
+```{python}
+#| label: fig-damping-decay
+#| fig-cap: "Implicit-Euler velocity decay v_n = v0/(1+c·dt/m)^n for an 0805 (~8 mg) at default dt = 1 ms. Higher damping settles faster with less overshoot; the decay is unconditionally stable."
+#| fig-width: 10
+#| fig-height: 5
+import numpy as np
+import matplotlib.pyplot as plt
+import os, pathlib, sys
+_d = pathlib.Path(os.getcwd()).resolve()
+for _ in range(6):
+    if (_d / "pyproject.toml").exists():
+        break
+    _d = _d.parent
+sys.path.insert(0, str(_d / "src"))
+from kicad_autorouter.placement import PlacementParams
+
+_p = PlacementParams()
+_m, _dt, _v0 = 8e-6, _p.dt_s, 0.1
+_steps = np.arange(0, 51)
+fig, ax = plt.subplots(figsize=(10, 5))
+for _c in (0.05, _p.damping_Ns_m, 0.3):
+    _decay = 1.0 / (1.0 + _c * _dt / _m)
+    _hl = _c == _p.damping_Ns_m
+    ax.semilogy(_steps, _v0 * _decay**_steps, "o-" if _hl else "s-",
+                markevery=5, linewidth=2 if _hl else 1.2,
+                label=f"c = {_c:g} N·s/m" + (" (default)" if _hl else ""))
+ax.set_xlabel(f"Steps (dt = {_dt * 1000:g} ms)")
+ax.set_ylabel("Velocity (m/s, log scale)")
+ax.set_title("Viscous Damping Decay (0805, m ≈ 8 mg; stable for any dt)")
+ax.legend()
+ax.grid(True, which="both", alpha=0.3)
+plt.tight_layout()
+plt.show()
+```
+
+**Key insight**: damping and friction split the job — damping shapes the
+approach (no ringing), friction decides the stop. If converged boards still
+drift, the deadband is below the tail: raise `friction_N`, not the damping.
+
+**Parameter tradeoff**:
+
+| Parameter | Effect | Typical Range |
+|-----------|--------|---------------|
+| `damping_Ns_m` | Approach speed vs overshoot (Advanced → Damping). Legalize 0.12–0.15, cluster 0.08 | 0.05–0.3 N·s/m |
+| `friction_N` | Deadband floor (Advanced → Friction deadband). Too low = endless micro-cruise; too high = parts freeze short of equilibrium | ~1 µN default |
+
+---
+
+## 8. Integrator and Guards
+
+The engine moves the board in 1 ms hops, with three safety nets underneath:
+a speed limit, a rotation clamp, and steps that shrink themselves when things
+get violent. You rarely touch these directly — the Cluster/Legalize regime
+presets set them for you — but this section explains what keeps a run from
+flying apart. (`dt`/`vmax` live under Advanced if you ever need them.)
+
+**Update rule** (from `si_force_laws.md` §2), per movable pad per iteration:
+
+```
+v += (F / m) · dt        # kick (a = F/m in m/s²)
+v *= 1 / (1 + c·dt / m)  # implicit-Euler viscous decay (stable for any dt)
+if ‖v‖·dt > vmax:  v *= vmax / (‖v‖·dt)   # speed ceiling, replaces max_step_mm
+x += v · dt              # drift
+```
+
+Then the Kabsch snap — the math that keeps each part rigid — fits each body's
+pads back onto its exact shape, and velocity is **re-derived** from the actual
+projected displacement (`v := (x_proj − x_old)/dt`), so the projection can't
+inject phantom energy.
+Two guards sit on top:
+
+- **Rigid-step clamp** (tunneling guard): the velocity ceiling alone cannot
+  bound rotation — a Kabsch snap can swing pads past `vmax·dt` (observed: a
+  7 mm leap against a 3 mm cap, −40° spins). After projection, each body's
+  centroid shift is clamped to `vmax·dt` and its rotation to 5°/step,
+  re-posed rigidly; re-derivation runs after the clamp. Sub-0.1°/step
+  rotation creep is dropped by an angular noise floor, but genuine slow
+  torque still turns parts (observed: an 0805 flipping ~160° toward its rail
+  over 400 iters — a compass-needle response, kept deliberately).
+- **Adaptive-dt guard** (convergence safety net): tracks system kinetic
+  energy; halves `dt` when it rises iteration-over-iteration, regrows ×1.1
+  when it falls, floored at `dt_min_s = 0.2 ms`, capped at `dt_max_s = 2 ms`.
+  The halve/regrow asymmetry ratchets `dt` to the floor under sustained
+  acceleration — e.g. a lone constant force spinning up from rest (see §6) —
+  where tiny steps fake slow progress while forces stay large. The floor
+  exists so oscillation can't fake convergence, not so runs live there:
+  `PlacementParams` validates `dt_min_s ≤ dt_s ≤ dt_max_s`.
+
+**Figure: one-step drift vs. dt** (analytic, live defaults — an 0805 from
+rest; drift is `min(v·dt, vmax·dt)`):
+
+```{python}
+#| label: fig-integrator-stability
+#| fig-cap: "One-step drift from rest vs. timestep for typical forces on an 0805. The vmax ceiling binds first for wall-scale forces; the shaded band is the adaptive guard's operating range. Same curves as docs/figures/fig_integrator_stability.png."
+#| fig-width: 10
+#| fig-height: 5
+import numpy as np
+import matplotlib.pyplot as plt
+import os, pathlib, sys
+_d = pathlib.Path(os.getcwd()).resolve()
+for _ in range(6):
+    if (_d / "pyproject.toml").exists():
+        break
+    _d = _d.parent
+sys.path.insert(0, str(_d / "src"))
+from kicad_autorouter.placement import PlacementParams
+
+_p = PlacementParams()
+_m, _c, _vmax = 8e-6, _p.damping_Ns_m, _p.vmax_m_s
+_dt = np.logspace(-4, np.log10(5e-3), 300)
+_forces = {
+    f"ghost ({_p.ghost_k_N * 1e6:.0f} µN)": _p.ghost_k_N,
+    f"attraction ({_p.attraction_k_N * 1e3:.0f} mN)": _p.attraction_k_N,
+    f"wall ({_p.wall_k_N * 1e3:.0f} mN)": _p.wall_k_N,
+}
+fig, ax = plt.subplots(figsize=(10, 5))
+for _label, _f in _forces.items():
+    _v = (_f / _m) * _dt / (1.0 + _c * _dt / _m)
+    ax.loglog(_dt * 1000, np.minimum(_v * _dt, _vmax * _dt) * 1000.0,
+              label=f"drift/step, F = {_label}")
+ax.loglog(_dt * 1000, _vmax * _dt * 1000.0, "k--",
+          label=f"vmax ceiling ({_vmax:g} m/s × dt)")
+ax.axvspan(_p.dt_min_s * 1000, _p.dt_max_s * 1000, color="gray", alpha=0.15,
+           label=f"guard band ({_p.dt_min_s * 1000:g}–{_p.dt_max_s * 1000:g} ms)")
+ax.axvline(_p.dt_s * 1000, color="k", linestyle=":",
+           label=f"default dt = {_p.dt_s * 1000:g} ms")
+ax.set_xlabel("Timestep dt (ms)")
+ax.set_ylabel("Drift per step (mm)")
+ax.set_title("Integrator Guidance: One-Step Drift vs dt (0805, from rest)")
+ax.legend(fontsize="small")
+ax.grid(True, which="both", alpha=0.3)
+plt.tight_layout()
+plt.show()
+```
+
+**Key insight**: at the default 1 ms step, attraction-scale drift (~1 mm)
+sits right at the `vmax·dt` ceiling and wall-scale forces are deep into it —
+the ceiling, not `dt`, sets the pace of violent steps. Raise `dt` past the
+guard band and steps start skipping over contacts (tunneling risk even with
+the clamp); drop below it and runs burn budget inside the friction deadband.
+
+**Parameter tradeoff**:
+
+| Parameter | Effect | Typical Range |
+|-----------|--------|---------------|
+| `dt_s` | Step size. Larger = faster but coarser; the guard adapts downward under instability | 1 ms default (legalize), 2 ms cluster |
+| `vmax_m_s` | Speed ceiling + rigid-step clamp scale. Higher = faster, less stable | 1.0 m/s default |
+| `dt_min_s` / `dt_max_s` | Guard rails, not knobs. Floor stops fake convergence; ceiling keeps dense steps accurate | 0.2 ms / 2 ms |
+
+---
+
+## 9. Mass Model
+
+Heavy parts are lazy and light parts are skittish: mass only sets the *pace*
+of placement, never the *destination* (equilibrium comes from the force
+balance). To teach the engine your library's weights, add rows to
+`data/footprint_mass.json` — everything unlisted just weighs its courtyard.
+
+**Formula** (from `si_force_laws.md` §4):
+
+```
+m = mass_density_kg_m2 · courtyard_area_m² + mass_floor_kg,  clamped ≥ floor
+```
+
+`data/footprint_mass.json` maps exact `footprint_id` → keyword substring →
+area fallback: known parts get table masses, everything else weighs its
+courtyard at `3.0 kg/m²` plus a `1e-9 kg` floor so division by `m` is always
+safe. Ghost pads inherit table/fallback mass too (harmless — immovable pads
+never integrate; it only keeps `F/m` finite).
+
+**Figure: acceleration vs. courtyard area** (analytic, live defaults):
+
+```{python}
+#| label: fig-mass-acceleration
+#| fig-cap: "Acceleration a = F/m vs. courtyard area for typical forces. Heavier parts accelerate slower under the same rails; the 0805 anchor (≈2.5 mm², ~8 mg) sits near 6 m/s² at attraction scale — brisk but sub-ballistic at 1 ms steps."
+#| fig-width: 10
+#| fig-height: 5
+import numpy as np
+import matplotlib.pyplot as plt
+import os, pathlib, sys
+_d = pathlib.Path(os.getcwd()).resolve()
+for _ in range(6):
+    if (_d / "pyproject.toml").exists():
+        break
+    _d = _d.parent
+sys.path.insert(0, str(_d / "src"))
+from kicad_autorouter.placement import PlacementParams
+
+_p = PlacementParams()
+_area_mm2 = np.logspace(np.log10(0.5), 2, 200)
+_m = _p.mass_density_kg_m2 * _area_mm2 * 1e-6 + _p.mass_floor_kg
+_forces = {
+    f"ghost ({_p.ghost_k_N * 1e6:.0f} µN)": _p.ghost_k_N,
+    f"attraction ({_p.attraction_k_N * 1e3:.0f} mN)": _p.attraction_k_N,
+    f"wall ({_p.wall_k_N * 1e3:.0f} mN)": _p.wall_k_N,
+}
+fig, ax = plt.subplots(figsize=(10, 5))
+for _label, _f in _forces.items():
+    ax.loglog(_area_mm2, _f / _m, label=f"a, F = {_label}")
+ax.axvline(2.5, color="gray", linestyle=":", alpha=0.7, label="0805 (~2.5 mm²)")
+ax.set_xlabel("Courtyard area (mm²)")
+ax.set_ylabel("Acceleration (m/s²)")
+ax.set_title("Mass Sanity Anchor: a = F/m (heavier parts accelerate slower)")
+ax.legend()
+ax.grid(True, which="both", alpha=0.3)
+plt.tight_layout()
+plt.show()
+```
+
+**Key insight**: mass only sets the *pace*, never the *destination* —
+equilibrium positions come from the force balance, so a wrong mass table
+slows convergence but doesn't move the answer. Calibrate it last.
+
+**Parameter tradeoff**:
+
+| Parameter | Effect | Typical Range |
+|-----------|--------|---------------|
+| `mass_density_kg_m2` | Area slope for unknown parts. Higher = big parts lazier | 3.0 kg/m² default |
+| `mass_floor_kg` | Division-by-zero guard, doubles as minimum part mass | 1e-9 kg (not a knob) |

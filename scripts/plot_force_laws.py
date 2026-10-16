@@ -18,6 +18,7 @@ Figures (all PNG, committed under `docs/figures/`):
     fig_boundary_profile.png        boundary edge push vs distance-to-edge
     fig_damping_decay.png           implicit-Euler velocity decay for several damping values
     fig_mass_acceleration.png       a=F/m sanity anchor vs courtyard area
+    fig_integrator_stability.png    per-step drift vs dt for typical forces + vmax ceiling
 
 The heavy overlap-resolution heatmap (64 live `run_placement` runs) stays
 inline in the .qmd -- it is too slow for a figures script and is already
@@ -264,6 +265,48 @@ def fig_wall_exponent(p: PlacementParams, out: pathlib.Path, dpi: int) -> pathli
     return dest
 
 
+def fig_integrator_stability(p: PlacementParams, out: pathlib.Path, dpi: int) -> pathlib.Path:
+    """Per-step drift vs timestep for typical forces on an 0805 (~8 mg).
+
+    One semi-implicit Euler step from rest: v = (F/m)*dt decayed by
+    1/(1+c*dt/m), drift = min(v*dt, vmax*dt). The vmax ceiling binds first
+    for wall-scale forces; the dt_min..dt_max band is the adaptive guard's
+    operating range. Guidance: dt above the band steps over contacts
+    (tunneling risk even with the rigid-step clamp); dt below wastes
+    iterations inside the friction deadband.
+    """
+    m_kg = 8e-6
+    c = p.damping_Ns_m
+    vmax = p.vmax_m_s
+    dt = np.logspace(-4, np.log10(5e-3), 300)
+    forces = {
+        f"ghost ({p.ghost_k_N * 1e6:.0f} µN)": p.ghost_k_N,
+        f"attraction ({p.attraction_k_N * 1e3:.0f} mN)": p.attraction_k_N,
+        f"wall ({p.wall_k_N * 1e3:.0f} mN)": p.wall_k_N,
+    }
+    fig, ax = plt.subplots(figsize=(10, 5))
+    for label, f in forces.items():
+        v = (f / m_kg) * dt / (1.0 + c * dt / m_kg)
+        drift_mm = np.minimum(v * dt, vmax * dt) * 1000.0
+        ax.loglog(dt * 1000, drift_mm, label=f"drift/step, F = {label}")
+    ax.loglog(dt * 1000, vmax * dt * 1000.0, "k--",
+              label=f"vmax ceiling ({vmax:g} m/s × dt)")
+    ax.axvspan(p.dt_min_s * 1000, p.dt_max_s * 1000, color="gray", alpha=0.15,
+               label=f"guard band ({p.dt_min_s * 1000:g}–{p.dt_max_s * 1000:g} ms)")
+    ax.axvline(p.dt_s * 1000, color="k", linestyle=":",
+               label=f"default dt = {p.dt_s * 1000:g} ms")
+    ax.set_xlabel("Timestep dt (ms)")
+    ax.set_ylabel("Drift per step (mm)")
+    ax.set_title("Integrator Guidance: One-Step Drift vs dt (0805, from rest)")
+    ax.legend(fontsize="small")
+    ax.grid(True, which="both", alpha=0.3)
+    fig.tight_layout()
+    dest = out / "fig_integrator_stability.png"
+    _save_optimized(fig, dest, dpi)
+    plt.close(fig)
+    return dest
+
+
 FIGURES = (
     ("repulsion", fig_repulsion_vs_distance),
     ("fanout", fig_attraction_fanout),
@@ -272,6 +315,7 @@ FIGURES = (
     ("boundary", fig_boundary_profile),
     ("damping", fig_damping_decay),
     ("mass", fig_mass_acceleration),
+    ("integrator", fig_integrator_stability),
 )
 
 

@@ -82,12 +82,14 @@
   so `regen_pytest_report.sh --html` works; `pytest_results.qmd` cells made
   portable (repo-root walk-up, `QUARTO_PYTHON`/`sys.executable`, `--color=no`).
   `docs/tests.md` + `pytest_report.py` wrapper still open.)
-- [ ] Physics primer (GATED behind settling the simulation method — do not
-  start before merge): new `docs/physics_primer.md` — formulas + why +
-  units table + parameter-response graphs via `scripts/plot_force_laws.py`
-  (matplotlib, dev dependency), figures embedded in the primer.
-  (Progress 2026-10-15: `docs/physics_primer.qmd` wall section/figure/table
-  rewritten for the unified law; §5 Boundary filled from the normative law;
-  §6+ deferred-sections roadmap added (ghost/damping/integrator/mass stay
-  gated); all cited defaults verified against `PlacementParams`.)
+- [x] Physics primer (was GATED behind settling the simulation method —
+  gate passed with the SI merge `aaf82a8`): `docs/physics_primer.qmd` —
+  formulas + why + units table + parameter-response graphs via
+  `scripts/plot_force_laws.py` (matplotlib, dev dependency), figures
+  embedded in the primer.
+  (Done 2026-10-16: §§6–9 ghost/damping/integrator/mass written; ghost
+  pull-in sweep runs live in the doc like the §4 heatmap; integrator
+  sketch added as `fig_integrator_stability` in both the plot script and
+  inline; damping/mass embed the existing PNG generators inline; all
+  cited defaults verified against `PlacementParams`.)
 
