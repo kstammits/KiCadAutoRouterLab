@@ -88,6 +88,12 @@ class PlacementParams:
     # (infinite slope at the halo edge). Calibration decides; engine
     # default stays linear until the tight-quarters sweep says otherwise.
     wall_exponent: float = 1.0
+    # Deep-penetration cap (mm of penetration depth, 0 = uncapped).
+    # Bounds runaway deep force at p > 1 (p=3 at two-halo depth is 27x
+    # contact): signed separations deeper than -cap are evaluated at -cap,
+    # so F saturates at k*(1+cap/h)^p. Halo approach and contact are
+    # untouched (cap only binds at depth). 0 disables capping entirely.
+    wall_cap_depth_mm: float = 0.0
     # Boundary repulsion strength (newtons).
     boundary_k_N: float = 1e-2
     # Ghost attraction scale (newtons); file "TARGET,ka" values weight it.
@@ -160,6 +166,7 @@ def _validate(params: PlacementParams) -> None:
         "power_attraction_scale",
         "decap_boost",
         "wall_exponent",
+        "wall_cap_depth_mm",
     )
     for name in numeric:
         value = getattr(params, name)
@@ -1110,16 +1117,21 @@ def _board_bbox(model: BoardModel) -> Tuple[float, float, float, float]:
     return min_x, max_x, min_y, max_y
 
 
-def _wall_mag(k_wall_N: float, s_mm: float, halo_mm: float, exponent: float = 1.0) -> float:
+def _wall_mag(k_wall_N: float, s_mm: float, halo_mm: float, exponent: float = 1.0,
+              cap_depth_mm: float = 0.0) -> float:
     """Unified wall-law magnitude in newtons: F = k*(1-s/h)^p.
 
     s is the signed separation in mm (gap +, penetration -); zero past the
     halo reach. p = 1 is the linear default; p > 1 softens the halo approach
     and stiffens deep penetration. Single formula both sides, so contact
-    stays C0/C1-continuous for any p >= 1.
+    stays C0/C1-continuous for any p >= 1. cap_depth_mm > 0 clamps the
+    evaluated depth to s >= -cap (force saturates instead of growing
+    without bound at p > 1); 0 disables capping.
     """
     if s_mm >= halo_mm:
         return 0.0
+    if cap_depth_mm > 0.0:
+        s_mm = max(s_mm, -cap_depth_mm)
     return k_wall_N * (1.0 - s_mm / halo_mm) ** exponent
 
 
@@ -1987,7 +1999,8 @@ def _run_region_simulation(
                     # margin = reach - gap, so s = reach - margin recovers the
                     # signed separation for the unified law (with exponent).
                     strength = _wall_mag(params.wall_k_N, halo_reach - margin,
-                                         halo_reach, params.wall_exponent)
+                                          halo_reach, params.wall_exponent,
+                                          params.wall_cap_depth_mm)
                     ux, uy = dx / _gap, dy / _gap
                     fx, fy = strength * ux, strength * uy
                     _spread(fp_local_to_rows[li], fp_centroids_arr[li, 0], fp_centroids_arr[li, 1],
@@ -2054,7 +2067,8 @@ def _run_region_simulation(
                 if s_mm >= halo_reach:
                     return
                 force_mag = _wall_mag(params.wall_k_N, s_mm, halo_reach,
-                                      params.wall_exponent)
+                                       params.wall_exponent,
+                                       params.wall_cap_depth_mm)
 
                 fx, fy = force_mag * ux, force_mag * uy
                 _spread(fp_local_to_rows[li], fp_centroids_arr[li, 0], fp_centroids_arr[li, 1],
@@ -2104,7 +2118,8 @@ def _run_region_simulation(
                 if s_mm >= halo_reach:
                     return True  # Outside halo, no force
                 force_mag = _wall_mag(params.wall_k_N, s_mm, halo_reach,
-                                      params.wall_exponent)
+                                       params.wall_exponent,
+                                       params.wall_cap_depth_mm)
 
                 fx, fy = force_mag * ux, force_mag * uy
                 _spread(fp_local_to_rows[li], fp_centroids_arr[li, 0], fp_centroids_arr[li, 1],
@@ -2299,7 +2314,8 @@ def _run_region_simulation(
                     _s_mm, _ux, _uy = _win[1], _win[2], _win[3]
                     _halo_mm = params.wall_halo_m * 1000.0
                     _mag = _wall_mag(params.wall_k_N, _s_mm, _halo_mm,
-                                     params.wall_exponent)
+                                     params.wall_exponent,
+                                     params.wall_cap_depth_mm)
                     _fx, _fy = _mag * _ux, _mag * _uy
                     _spread(fp_local_to_rows[i],
                             fp_centroids_arr[i, 0], fp_centroids_arr[i, 1],

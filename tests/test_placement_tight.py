@@ -250,6 +250,60 @@ def test_wall_exponent_rejects_below_one():
 
 
 @pytest.mark.regression
+def test_wall_cap_clamps_deep_leaves_halo():
+    """wall_cap_depth_mm saturates deep force; halo/contact untouched; 0 = off."""
+    from kicad_autorouter.placement import _wall_mag
+
+    k, h = 0.08, 6.0
+    # Uncapped p=2 at two-halo depth: 9k.
+    assert _wall_mag(k, -2 * h, h, 2.0) == pytest.approx(9 * k)
+    # Capped at one halo: evaluated at -h -> 4k.
+    assert _wall_mag(k, -2 * h, h, 2.0, h) == pytest.approx(4 * k)
+    assert _wall_mag(k, -3 * h, h, 2.0, h) == pytest.approx(4 * k)
+    # Above the cap depth: identical to uncapped.
+    assert _wall_mag(k, -h / 2, h, 2.0, h) == pytest.approx(_wall_mag(k, -h / 2, h, 2.0))
+    # Contact and halo untouched by the cap.
+    assert _wall_mag(k, 0.0, h, 2.0, h) == pytest.approx(k)
+    assert _wall_mag(k, h / 2, h, 2.0, h) == pytest.approx(_wall_mag(k, h / 2, h, 2.0))
+    assert _wall_mag(k, h, h, 2.0, h) == 0.0
+    # cap=0 disables capping.
+    assert _wall_mag(k, -3 * h, h, 2.0, 0.0) == pytest.approx(16 * k)
+
+
+@pytest.mark.regression
+def test_wall_cap_rejects_negative():
+    with pytest.raises(ValueError):
+        PlacementParams.from_dict({"wall_cap_depth_mm": -1.0})
+    assert PlacementParams.from_dict({"wall_cap_depth_mm": 6.0}).wall_cap_depth_mm == 6.0
+
+
+@pytest.mark.regression
+def test_capped_deep_overlap_still_resolves():
+    """Capped (4k saturating) wall still clears a deep overlap — the cap
+    bounds runaway force, it must not strand buried parts."""
+    fa = make_fp("A", "uuid-a", 0.0, 0.0, ("N1", "N2"),
+                 footprint_id="test:R", hw=3.0, hh=2.0,
+                 pad_layers=("F.Cu",), pad_shape="circle")
+    fb = make_fp("B", "uuid-b", 1.0, 0.0, ("N3", "N4"),
+                 footprint_id="test:R", hw=3.0, hh=2.0,
+                 pad_layers=("F.Cu",), pad_shape="circle")
+    model = _board([fa, fb])
+    before = _pair_overlap(model, {})
+    assert before > 15.0
+    prop = run_placement(
+        model,
+        PlacementParams(max_iterations=200, convergence_eps_m=1e-15,
+                        repulsion_k_N_m2=1e-15, attraction_k_N=1e-15,
+                        wall_k_N=0.08, wall_halo_m=0.006, wall_exponent=2.0,
+                        wall_cap_depth_mm=6.0,
+                        boundary_k_N=1e-15, ghost_k_N=1e-15,
+                        damping_Ns_m=0.12),
+    )
+    after = _pair_overlap(model, prop.deltas)
+    assert after < 0.01 * before, f"capped wall must clear: {before:.2f} -> {after:.3f}"
+
+
+@pytest.mark.regression
 def test_wall_exponent_one_matches_default_run():
     """Refactor guard: exponent=1.0 must reproduce default-param dynamics."""
     fa = make_fp("A", "uuid-a", 0.0, 0.0, ("N1", "N2"),

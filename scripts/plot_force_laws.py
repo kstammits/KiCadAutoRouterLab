@@ -307,11 +307,76 @@ def fig_integrator_stability(p: PlacementParams, out: pathlib.Path, dpi: int) ->
     return dest
 
 
+def fig_wall_exponent_rescaled(p: PlacementParams, out: pathlib.Path, dpi: int) -> pathlib.Path:
+    """Exponent × rescale × cap comparison for the wall-hardening sweep.
+
+    Three panels, one k per exponent chosen two ways:
+    - same-k: fixed k (curves meet at contact, deep force runs away with p);
+    - rescaled-k: F matched at one-halo penetration (k(p) = F_ref/2^p),
+      isolating shape from magnitude;
+    deep-penetration caps drawn as cutoff lines, and the measured R13 net
+    attraction (~8.4 mN NE at committed pose, legalize) as the working
+    line: each curve's crossing with it is the predicted 1-D balance depth.
+    Range extends to s = -2h to show where caps bind.
+    """
+    import sys as _sys
+    _sys.path.insert(0, str(REPO_ROOT / "src"))
+    from kicad_autorouter.placement import _wall_mag
+
+    k0 = p.wall_k_N
+    halo_mm = p.wall_halo_m * 1000.0
+    s_mm = np.linspace(halo_mm * 0.999, -2 * halo_mm, 500)
+    exponents = (1.0, 1.5, 2.0, 3.0)
+    # Rescale anchor: match F at one-halo penetration (s=-h), F_ref = 2k0.
+    f_ref = 2.0 * k0
+    r13_mN = 8.4  # measured R13 net attraction, legalize, committed pose
+    floor_mN = 0.5  # log-scale floor (law is exactly 0 past the halo)
+
+    def curve(k, e, cap=0.0):
+        f = np.array([_wall_mag(k, s, halo_mm, e, cap) for s in s_mm])
+        return np.maximum(f * 1000.0, floor_mN)
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5), sharey=True)
+    for ax, (title, k_of) in zip(axes, [
+        ("same k (meet at contact)", lambda e: k0),
+        ("rescaled k (match F at s=-h)", lambda e: f_ref / (2.0 ** e)),
+    ]):
+        for exp in exponents:
+            k = k_of(exp)
+            ax.plot(s_mm, curve(k, exp), linewidth=1.8,
+                    label=f"p={exp:g} (k={k * 1000:.0f}mN)")
+        # Caps only where runaway matters (p>=2), labeled by saturation force.
+        for exp, ls in ((2.0, ":"), (3.0, "--")):
+            k = k_of(exp)
+            for cap_mult in (1.0, 2.0):
+                cap = cap_mult * halo_mm
+                fsat = k * (1.0 + cap_mult) ** exp * 1000.0
+                ax.plot(s_mm, curve(k, exp, cap), linewidth=1.0, linestyle=ls,
+                        alpha=0.7,
+                        label=f"p={exp:g} cap@{cap_mult:.0f}h (sat {fsat:.0f}mN)")
+        ax.axvline(0, color="k", linestyle=":", alpha=0.5)
+        ax.axhline(r13_mN, color="r", linestyle="-.", alpha=0.8,
+                   label=f"R13 pull ~{r13_mN:.1f} mN")
+        ax.set_yscale("log")
+        ax.set_xlabel("Signed separation s (mm) [gap + ←→ - penetration]")
+        ax.set_title(title)
+        ax.legend(fontsize="small")
+        ax.grid(True, which="both", alpha=0.3)
+    axes[0].set_ylabel("Force magnitude (mN, log)")
+    fig.suptitle(f"Wall Hardening: exponent × rescale (h={halo_mm:.0f}mm; caps bind at depth)")
+    fig.tight_layout()
+    dest = out / "fig_wall_exponent_rescaled.png"
+    _save_optimized(fig, dest, dpi)
+    plt.close(fig)
+    return dest
+
+
 FIGURES = (
     ("repulsion", fig_repulsion_vs_distance),
     ("fanout", fig_attraction_fanout),
     ("wall", fig_wall_profile),
     ("wall_exponent", fig_wall_exponent),
+    ("wall_exponent_rescaled", fig_wall_exponent_rescaled),
     ("boundary", fig_boundary_profile),
     ("damping", fig_damping_decay),
     ("mass", fig_mass_acceleration),

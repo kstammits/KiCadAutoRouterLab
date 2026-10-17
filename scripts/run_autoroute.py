@@ -106,6 +106,7 @@ def main(argv=None) -> int:
                     wall_k_N=base_params.wall_k_N,
                     wall_halo_m=base_params.wall_halo_m,
                     wall_exponent=base_params.wall_exponent,
+                    wall_cap_depth_mm=base_params.wall_cap_depth_mm,
                     boundary_k_N=base_params.boundary_k_N,
                     ghost_k_N=base_params.ghost_k_N,
                     damping_Ns_m=base_params.damping_Ns_m,
