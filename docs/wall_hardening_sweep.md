@@ -13,6 +13,7 @@ equally hard. Data + graphs below; landing recommendation at the end.
 - Law curves: `docs/figures/fig_wall_exponent_rescaled.png`
   (`plot_force_laws.py --only wall_exponent_rescaled`).
 - Empirical curves: `docs/figures/fig_wall_sweep_findings.png`.
+- Hardware: all runtimes measured on a 2022 Apple M2 chip.
 
 ![Wall law: exponent × rescale × cap](figures/fig_wall_exponent_rescaled.png)
 

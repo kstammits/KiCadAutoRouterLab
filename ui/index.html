@@ -533,6 +533,7 @@
             <span class="num">Regime</span>
             <button id="regime-cluster-btn" title="Scattered-start clustering: stronger attraction, softer walls (attraction ~0.05, wall ~0.025, damping 0.08, dt 2ms)">Cluster preset</button>
             <button id="regime-legalize-btn" title="Placed-board polish: gentle attraction, firm walls (attraction ~0.008, wall ~0.09, damping 0.13, dt 1ms)">Legalize preset</button>
+            <button id="copy-link-btn" title="Copy a bookmarkable link carrying the full current parameter set as URL query params (SI units, same keys as the params API)">Copy link</button>
           </div>
           <details id="advanced-params-details">
             <summary title="Power, decap, ghost, and convergence knobs hidden from the main panel">Advanced</summary>
@@ -953,6 +954,84 @@ document.getElementById("regime-cluster-btn").addEventListener("click", async ()
 document.getElementById("regime-legalize-btn").addEventListener("click", async () => {
   try { await applyRegimePreset("legalize"); }
   catch (err) { diagEl.textContent = `preset failed: ${err.message}`; }
+});
+
+// Bookmarkable parameter presets via URL query params. Keys are the
+// PlacementParams field names in SI units (same as the params API), e.g.
+// ?attraction_k_N=0.05&wall_k_N=0.025&max_iterations=200. On load, recognized
+// keys are merge-POSTed (same semantics as the regime preset buttons, so
+// hidden keys persist) and the sliders refresh. "Copy link" serializes the
+// full current set back into such a URL.
+function parseUrlPreset(knownKeys) {
+  const qs = new URLSearchParams(location.search);
+  const out = {};
+  for (const [key, raw] of qs) {
+    if (!knownKeys.has(key)) continue;
+    if (key === "include_power_nets") {
+      const v = raw.trim().toLowerCase();
+      if (["1", "true", "yes"].includes(v)) out[key] = true;
+      else if (["0", "false", "no"].includes(v)) out[key] = false;
+      continue;
+    }
+    const num = Number(raw);
+    if (Number.isFinite(num)) out[key] = num;
+  }
+  return out;
+}
+
+async function applyUrlPreset() {
+  const cur = await (await fetch("/api/placement/params")).json();
+  const preset = parseUrlPreset(new Set(Object.keys(cur)));
+  const n = Object.keys(preset).length;
+  if (n === 0) return;
+  const res = await fetch("/api/placement/params", {
+    method: "POST",
+    body: JSON.stringify(preset),
+  });
+  if (!res.ok) {
+    if (typeof diagEl !== "undefined" && diagEl) {
+      diagEl.textContent = `URL preset rejected: ${await res.text()}`;
+    }
+    return;
+  }
+  await loadParams();
+  if (typeof diagEl !== "undefined" && diagEl) {
+    diagEl.textContent = `${n} param${n === 1 ? "" : "s"} applied from URL (persists on next run)`;
+  }
+}
+
+async function copyPresetLink() {
+  const res = await fetch("/api/placement/params");
+  if (!res.ok) throw new Error(await res.text());
+  const p = await res.json();
+  const url = new URL(location.href);
+  url.search = "";
+  for (const [key, val] of Object.entries(p)) {
+    if (typeof val === "number" || typeof val === "boolean") {
+      url.searchParams.set(key, String(val));
+    }
+  }
+  const link = url.toString();
+  try {
+    await navigator.clipboard.writeText(link);
+  } catch (err) {
+    // Clipboard API needs a secure context; fall back to a prompt-less
+    // textarea select so the user can copy manually.
+    const ta = document.createElement("textarea");
+    ta.value = link;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    ta.remove();
+  }
+  if (typeof diagEl !== "undefined" && diagEl) {
+    diagEl.textContent = "preset link copied to clipboard";
+  }
+}
+
+document.getElementById("copy-link-btn").addEventListener("click", async () => {
+  try { await copyPresetLink(); }
+  catch (err) { diagEl.textContent = `copy link failed: ${err.message}`; }
 });
 
 const boardEl = document.getElementById("board");
@@ -4010,7 +4089,7 @@ async function loadAppVersion() {
 
 loadAppVersion();
 loadStages();
-loadParams().catch(() => {});
+loadParams().then(applyUrlPreset).catch(() => {});
 poll();
 setInterval(poll, 2000);
 </script>

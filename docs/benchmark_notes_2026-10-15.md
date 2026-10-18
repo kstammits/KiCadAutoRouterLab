@@ -1,6 +1,7 @@
 # Benchmark + behavior notes — 2026-10-15 full-scale runs
 
 All five benchmarks ran full-scale today; JSON in `docs/benchmarks/*_2026-10-15.json`.
+All timings below were measured on a 2022 Apple M2 chip.
 New script: `scripts/benchmark_stitch_pour.py` (pour analysis + stitch repair,
 budget sweep, determinism rerun). Also fixed a latent crash:
 `benchmark_routing.py --with-stitch` passed `"DCCF+stitch"` as a fixture name
