@@ -36,7 +36,6 @@ from .pour import (
     _paint_track,
     ground_nets_with_zones,
     labeled_copper,
-    pour_copper_mask,
 )
 
 

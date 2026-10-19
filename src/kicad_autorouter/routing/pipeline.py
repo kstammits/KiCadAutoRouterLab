@@ -81,6 +81,7 @@ class RoutingParams:
     window_margin_cells: int = 32  # Initial A* bbox dilation around a pair (cells)
     window_growth: float = 2.0  # Search-window expansion factor per retry
     window_retries: int = 3  # Window attempts per pair (last = full board)
+    corridor: bool = True  # Attempt coarse corridor guidance when initial window fails
 
     def to_dict(self) -> dict:
         return {
@@ -108,6 +109,7 @@ class RoutingParams:
             "window_margin_cells": self.window_margin_cells,
             "window_growth": self.window_growth,
             "window_retries": self.window_retries,
+            "corridor": self.corridor,
         }
 
     @classmethod
@@ -121,6 +123,7 @@ class RoutingParams:
             "stitch_gnd_vias", "strip_gnd_blockers", "stitch_vias_max", "stitch_bridges_max",
             "stitch_bridge_max_mm", "pour_severance_weight", "fanout_margin_mm",
             "window_margin_cells", "window_growth", "window_retries",
+            "corridor",
         }
         filtered = {k: v for k, v in d.items() if k in valid_keys}
         return cls(**filtered)
@@ -465,7 +468,15 @@ def route_nets(
         fresh = build_occupancy_grid(model, routing_grid, default_clearance_mm=params.clearance_mm)
         cost_grid[:] = fresh
         timings["occupancy_s"] = time.perf_counter() - t_occ
-    
+
+    # Board fill / density metrics from the occupancy grid (all layers).
+    # blocked_frac: impassable cells (>= BLOCKED). occupied_frac: any
+    # non-free cell (courtyards, pours, halos, blocked). tolled_frac:
+    # passable-but-costly cells (steering penalties without blocking).
+    blocked = cost_grid >= BLOCKED
+    timings["blocked_frac"] = float(blocked.mean())
+    timings["occupied_frac"] = float((cost_grid > 0).mean())
+    timings["tolled_frac"] = float(((cost_grid > 0) & (cost_grid < BLOCKED)).mean())
     # 3. Create THT via mask for free layer transitions at through-hole pads
     tht_via_mask = _build_tht_via_mask(model, routing_grid)
 
@@ -489,6 +500,7 @@ def route_nets(
         window_margin_cells=params.window_margin_cells,
         window_growth=params.window_growth,
         window_retries=params.window_retries,
+        corridor=params.corridor,
     )
     
     # 5. Identify net classes (user-marked power membership included)
@@ -637,7 +649,19 @@ def route_nets(
                 ripup.record_failure(net_name, "cancelled")
                 nets_failed += 1
     timings["route_s"] = time.perf_counter() - t_route
-    
+
+    # Aggregate corridor guidance stats across all routed nets.
+    ctried = sum(r.corridor_tried for r in all_results.values())
+    cfnd = sum(r.corridor_found for r in all_results.values())
+    cused = sum(r.corridor_used for r in all_results.values())
+    ccells = sum(r.corridor_cells for r in all_results.values())
+    timings["corridor_tried"] = float(ctried)
+    timings["corridor_found"] = float(cfnd)
+    timings["corridor_used"] = float(cused)
+    timings["corridor_cells"] = float(ccells)
+    timings["corridor_use_rate"] = (
+        round(cused / max(ctried, 1), 4) if ctried else 0.0
+    )
     # 10. Convert all results to tracks/vias (per-net resolved widths;
     # own-THT hops reuse the barrel: no Via emitted there)
     tracks, vias = routes_to_tracks_vias(

@@ -30,6 +30,8 @@ execute:
 This document provides a structured view of the test suite, focused on **physics validation** (`test_placement_forces.py`, `test_analytical_contact.py`, `test_magnet.py`) and **regression tracking** (`test_svg_render.py`, `test_placement.py`). It is regenerated on demand via `scripts/regen_pytest_report.sh`.
 
 > **Regeneration**: Run `./scripts/regen_pytest_report.sh` to update this document with current test results.
+>
+> **When to run each area**: see the Test Area Partition table below. Markers are defined in `pyproject.toml` under `[tool.pytest.ini_options] markers`; fixture-based markers (`minimal`, `dccf`) gate on the corresponding fixture file in `tests/fixtures/`.
 
 ```{python}
 #| label: env-setup
@@ -60,20 +62,40 @@ PYTEST_ENV = _pytest_env()
 
 ---
 
-## 1. Test Suite Structure
+## Test Area Partition
 
-From `pyproject.toml` markers and `tests/` directory:
+| Area | Marker / Keyword | Fixture | When to run | Test files |
+|------|-----------------|---------|-------------|------------|
+| **Placement physics** | `physics` | tube111 / DCCF | After force-law, integrator, or contact changes; before release | `test_placement_forces.py`, `test_analytical_contact.py`, `test_magnet.py`, `test_placement_settle.py`, `test_placement_movement.py`, `test_placement_power.py` |
+| **Placement behavior** | `unit` | minimal / none | After any placement or contact edit; fast CI gate | `test_placement_frames.py`, `test_placement_layers.py`, `test_placement_pairs.py`, `test_placement_tight.py`, `test_placement.py`, `test_courtyard_behavior.py`, `test_ghost_create.py`, `test_motion_roundtrip.py` |
+| **Routing** | (none by default) | minimal / tube111 / DCCF | After router, grid, obstacle, or corridor changes | `test_routing_astar.py`, `test_routing_grid.py`, `test_routing_obstacles.py`, `test_routing_search.py`, `test_routing_smooth.py`, `test_routing_smooth_detour.py`, `test_routing_tight_spot.py`, `test_routing_pour.py`, `test_routing_tht_free_via.py`, `test_routing_crossing.py`, `test_routing_chunked.py` |
+| **DRC / output** | (none by default) | minimal | After DRC, output, or rip-up changes | `test_drc_routing.py`, `test_track_ripup.py`, `test_gnd_strip.py`, `test_stitch.py` |
+| **Server / CLI** | `server` / `cli` | minimal | After HTTP API or CLI entry-point changes | `test_server.py`, `test_server_manual.py`, `test_server_docs.py`, `test_run_autoroute.py`, `test_io.py` |
+| **Board model / IO / S-expr** | `unit` | minimal | After parsing, S-expr, or board-model changes | `test_sexpr.py`, `test_board_model.py`, `test_io.py`, `test_validate.py` |
+| **Pour / power** | `unit` | minimal | After pour, power-membership, or fanout changes | `test_pour.py`, `test_power_membership.py` |
+| **SVG render** | `regression` | tube111 / DCCF | After SVG render or preview changes | `test_svg_render.py`, `test_padless_graphical.py` |
 
-| Marker | Purpose | Key Files |
-|--------|---------|-----------|
-| `unit` | Pure unit tests, no fixtures/I/O | `test_placement_frames.py`, `test_padless_graphical.py` |
-| `params` | PlacementParams validation/serialization | `test_placement.py` |
-| `physics` | MST force-spring simulation (requires nets) | `test_placement_forces.py`, `test_analytical_contact.py`, `test_magnet.py` |
-| `cli` | CLI entry point tests | `test_io.py`, `test_run_autoroute.py` |
-| `server` | HTTP API endpoint tests | `test_server.py`, `test_server_manual.py` |
-| `regression` | Bug fix verification | `test_svg_render.py`, `test_placement.py` |
-| `minimal` | Uses `minimal.kicad_pcb` (4 footprints, no nets) | Various |
-| `dccf` | Uses `DCCF.sved.kicad_pcb` (97 footprints, 59 nets) | Various |
+**Quick command reference** (run from repo root):
+
+| Goal | Command |
+|------|---------|
+| Fast CI gate (unit only) | `.venv/bin/python -m pytest tests/ -m unit -q` |
+| Physics validation | `.venv/bin/python -m pytest tests/ -m physics -q` |
+| Regression tracking | `.venv/bin/python -m pytest tests/ -m regression -q` |
+| DCCF fixture tests | `.venv/bin/python -m pytest tests/ -m dccf -q` |
+| Minimal fixture tests | `.venv/bin/python -m pytest tests/ -m minimal -q` |
+| Full suite | `.venv/bin/python -m pytest tests/ -q` |
+| Single test file | `.venv/bin/python -m pytest tests/test_<name>.py -q` |
+
+> **Marker definitions** (from `pyproject.toml`):
+> - `unit`: Pure unit tests — no fixtures, no I/O
+> - `params`: PlacementParams validation/serialization
+> - `physics`: MST force-spring simulation (requires nets)
+> - `cli`: CLI entry point tests
+> - `server`: HTTP API endpoint tests
+> - `regression`: Bug fix verification
+> - `minimal`: Uses `minimal.kicad_pcb` fixture (4 footprints, no nets)
+> - `dccf`: Uses `DCCF.sved.kicad_pcb` fixture (97 footprints, 59 nets)
 
 **Total test files**: 36 in `tests/`
 
@@ -87,11 +109,13 @@ for f in files:
 
 ---
 
-## 2. Physics Test Results
+## 1. Placement Physics
 
 These tests validate the **force laws**, **integrator**, and **collision detection** — the core of the SI placement dynamics.
 
-### 2.1 Force Matrix Behavior (`test_placement_forces.py`)
+**When to run**: `.venv/bin/python -m pytest tests/ -m physics -q`
+
+### 1.1 Force Matrix Behavior (`test_placement_forces.py`)
 
 Each test isolates one force by zeroing others, asserting qualitative behavior.
 
@@ -121,7 +145,7 @@ print("```")
 print(f"Return code: {result.returncode}")
 ```
 
-### 2.2 Analytical Contact (`test_analytical_contact.py`)
+### 1.2 Analytical Contact (`test_analytical_contact.py`)
 
 Validates SAT-based collision for rectangles, circles, and rect-circle pairs.
 
@@ -142,7 +166,7 @@ print("```")
 print(f"Return code: {result.returncode}")
 ```
 
-### 2.3 Magnet Clustering (`test_magnet.py`)
+### 1.3 Magnet Clustering (`test_magnet.py`)
 
 Emergent multi-part behavior: scattered resistors on shared nets should cluster.
 
@@ -165,9 +189,13 @@ print(f"Return code: {result.returncode}")
 
 ---
 
-## 3. Regression Test Results
+## 2. Regression Tests
 
-### 3.1 SVG Render Correctness (`test_svg_render.py`)
+Bug-fix verification and render correctness.
+
+**When to run**: `.venv/bin/python -m pytest tests/ -m regression -q`
+
+### 2.1 SVG Render Correctness (`test_svg_render.py`)
 
 | Test | Validates |
 |------|-----------|
@@ -195,7 +223,7 @@ print("```")
 print(f"Return code: {result.returncode}")
 ```
 
-### 3.2 Placement Integration (`test_placement.py`)
+### 2.2 Placement Integration (`test_placement.py`)
 
 Full-board placement on tube111 (3 regions) and DCCF.
 
@@ -218,7 +246,7 @@ print(f"Return code: {result.returncode}")
 
 ---
 
-## 4. Runtime & Performance
+## 3. Runtime & Performance
 
 ```{python}
 #| label: pytest-durations
@@ -239,7 +267,7 @@ print(f"Return code: {result.returncode}")
 
 ---
 
-## 5. Full Suite Summary
+## 4. Full Suite Summary
 
 ```{python}
 #| label: pytest-summary
@@ -260,7 +288,7 @@ print(f"Return code: {result.returncode}")
 
 ---
 
-## 6. HTML Report (Self-Contained)
+## 5. HTML Report (Self-Contained)
 
 For detailed per-test output, the HTML report is generated at `docs/_output/test_report.html` (gitignored). Regenerate with:
 

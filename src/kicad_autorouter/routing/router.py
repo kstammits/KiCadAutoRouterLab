@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import time
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
@@ -25,6 +26,11 @@ class RouteResult:
     cost: float
     success: bool
     expansions: int = 0  # A* node expansions spent (0 when trivially resolved)
+    # Corridor guidance stats (aggregated across all pair-searches of this net).
+    corridor_tried: int = 0   # pairs where initial window failed and corridor was attempted
+    corridor_found: int = 0   # pairs where find_corridor returned a mask
+    corridor_used: int = 0    # pairs where corridor-restricted search succeeded
+    corridor_cells: int = 0   # sum of corridor mask cells across found corridors
     # Per-edge MST branch paths (one terminal-to-terminal A* path each).
     # ``path`` is the deduped union of these (first-seen order) for cell
     # blocking / terminal-coverage checks — NOT a continuous polyline when
@@ -93,6 +99,7 @@ class SingleNetRouter:
         window_margin_cells: int = 32,
         window_growth: float = 2.0,
         window_retries: int = 3,
+        corridor: bool = True,
     ):
         self.grid = grid
         self.cost_grid = cost_grid
@@ -120,6 +127,7 @@ class SingleNetRouter:
         self.window_margin_cells = max(0, int(window_margin_cells))
         self.window_growth = max(1.0, float(window_growth))
         self.window_retries = max(0, int(window_retries))
+        self.corridor_enabled = bool(corridor)
 
     def route(
         self,
@@ -156,6 +164,7 @@ class SingleNetRouter:
         pairs_total = n * (n - 1) // 2
         pairs_done = 0
         expansions_total = 0
+        pair_cstats: list[dict] = []
 
         def _report():
             if progress_cb is not None:
@@ -199,8 +208,15 @@ class SingleNetRouter:
             for _ in range(max(0, self.window_retries - 1)):
                 windows.append(grow(windows[-1], self.W, self.H, self.window_growth))
             windows.append(full_board(self.W, self.H))
-            base = expansions_total
             result = None
+
+            cstats = {
+                "tried": 0, "found": 0, "used": 0, "cells": 0,
+                "corridor_time_s": 0.0,
+                "window0_exp": 0, "corridor_exp": 0, "subsequent_exp": 0,
+            }
+
+            base = expansions_total
 
             def attempt(search_window, allow_mask=None, weight_override=None):
                 """One A* attempt with progress accounting; returns result."""
@@ -227,25 +243,45 @@ class SingleNetRouter:
                 _report()
                 return result
 
-            for wi, window in enumerate(windows):
-                attempt(window)
+            # Attempt 1: initial (smallest) window.
+            attempt(window)
+            cstats["window0_exp"] = result.expansions
+            if result.success:
+                pair_cstats.append(cstats)
+                return result.success, result.path, result.cost
+
+            # Corridor fallback (only when enabled and window 0 failed).
+            if self.corridor_enabled:
+                cstats["tried"] = 1
+                if should_cancel is not None and should_cancel():
+                    raise RoutingCancelled(f"cancelled before pair {(i, j)}")
+                t_corr = time.perf_counter()
+                corridor = find_corridor(
+                    self.cost_grid, secondary, si, sj,
+                    self.cost_map.blocked_threshold, SECONDARY_BLOCKED,
+                )
+                cstats["corridor_time_s"] = time.perf_counter() - t_corr
+                if corridor is not None:
+                    cstats["found"] = 1
+                    cstats["cells"] = int(corridor.sum())
+                    attempt(
+                        full_board(self.W, self.H),
+                        allow_mask=corridor,
+                        weight_override=1.0,
+                    )
+                    cstats["corridor_exp"] = result.expansions
+                    if result.success:
+                        cstats["used"] = 1
+                        pair_cstats.append(cstats)
+                        return result.success, result.path, result.cost
+
+            # Attempts 2..N: grown windows + full-board fallback.
+            for wi in range(1, len(windows)):
+                attempt(windows[wi])
                 if result.success:
                     break
-                if wi == 0:
-                    if should_cancel is not None and should_cancel():
-                        raise RoutingCancelled(f"cancelled before pair {(i, j)}")
-                    corridor = find_corridor(
-                        self.cost_grid, secondary, si, sj,
-                        self.cost_map.blocked_threshold, SECONDARY_BLOCKED,
-                    )
-                    if corridor is not None:
-                        attempt(
-                            full_board(self.W, self.H),
-                            allow_mask=corridor,
-                            weight_override=1.0,
-                        )
-                        if result.success:
-                            break
+            cstats["subsequent_exp"] = result.expansions
+            pair_cstats.append(cstats)
             return result.success, result.path, result.cost
 
         mst_edges, path_matrix, cost_matrix, connected = None, {}, {}, False
@@ -299,6 +335,12 @@ class SingleNetRouter:
                     seen.add(cell)
                     union_path.append(cell)
 
+        # Aggregate corridor stats across all pair-searches of this net.
+        ctried = sum(c["tried"] for c in pair_cstats)
+        cfnd = sum(c["found"] for c in pair_cstats)
+        cused = sum(c["used"] for c in pair_cstats)
+        ccells = sum(c["cells"] for c in pair_cstats)
+
         return RouteResult(
             path=union_path,
             wire_mm=wire_mm,
@@ -306,6 +348,10 @@ class SingleNetRouter:
             cost=total_cost,
             success=True,
             expansions=expansions_total,
+            corridor_tried=ctried,
+            corridor_found=cfnd,
+            corridor_used=cused,
+            corridor_cells=ccells,
             branches=tuple(tuple(b) for b in branches),
         )
 
