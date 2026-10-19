@@ -39,6 +39,8 @@ class PlacementParams:
     (``scripts/calibrate_si.py``) learns these ranges empirically.
     """
 
+    # Step budget; 0 = static force probe (no integration steps, returns
+    # initial forces with empty deltas — used by the server force overlay).
     max_iterations: int = 1000
     # Pair repulsion strength (Coulomb-like k/d^2, d in meters).
     repulsion_k_N_m2: float = 2e-9
@@ -65,14 +67,16 @@ class PlacementParams:
     dt_s: float = 1e-3
     # Timestep floor (s) and ceiling (s) for the adaptive guard. Solver
     # internals — not UI sliders.
-    dt_min_s: float = 5e-4
-    dt_max_s: float = 5e-3
+    dt_min_s: float = (1/20) * (1/1000) #5% of a millisecond
+    dt_max_s: float = (2/1000) #2 millisecond
     # Speed ceiling (m/s). Enforced on velocities AND, via the rigid-step
     # clamp, on post-projection body motion (translation <= vmax*dt,
     # rotation <= 5 deg/step).
     vmax_m_s: float = 1.0
     # Settled threshold: max pad displacement per step (meters).
-    convergence_eps_m: float = 2e-5
+    # 1 micron is well below manufacturing tolerance but tight enough to
+    # ensure forces have actually settled.
+    convergence_eps_m: float = 1e-6
     # Footprint mass fallback slope (kg/m^2 of courtyard area).
     mass_density_kg_m2: float = 3.0
     # Minimum part mass (kg).
@@ -147,5 +151,5 @@ def _validate(params: PlacementParams) -> None:
         params.max_iterations, int
     ):
         raise ValueError("max_iterations must be an integer")
-    if params.max_iterations < 1:
-        raise ValueError("max_iterations must be >= 1")
+    if params.max_iterations < 0:
+        raise ValueError("max_iterations must be >= 0 (0 = static force probe: no steps, initial forces only)")

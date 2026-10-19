@@ -34,6 +34,7 @@ from .params import (
     FRAME_DEFAULT_MAX,
     FRAME_XY_DECIMALS,
     PlacementParams,
+    _validate,
 )
 from .rigid import (
     _clamp_rigid_step,
@@ -464,8 +465,16 @@ def _run_region_simulation(
         4.0 * params.ghost_k_N,
         1e-3 * max(params.wall_k_N, params.attraction_k_N, params.boundary_k_N),
     )
+    # Energy-guard absolute floor: a fraction of the characteristic single-pad
+    # kinetic energy (0.5*m*vmax^2). KE jumps below this are legitimate force
+    # work or contact noise in stiff configurations, not instability — only
+    # larger jumps justify halving the timestep.
+    _ke_abs_increase_threshold = (
+        0.3 * 0.5 * float(np.max(pad_mass_kg)) * float(params.vmax_m_s) ** 2
+    )
     stop_reason = "budget"
     residual_max_force_N = 0.0
+    iteration = 0  # defined when max_iterations=0 (static probe: loop never runs)
 
     for iteration in range(params.max_iterations):
         force, _ = _compute_total_force(
@@ -517,7 +526,7 @@ def _run_region_simulation(
         _clamp_rigid_step(
             positions, _old_positions, _proj_bodies, pad_movable,
             cap_mm=params.vmax_m_s * _dt * 1000.0,
-            max_rot_rad=math.radians(5.0),
+            max_rot_rad=math.radians(10.0),
         )
         # Re-derive velocity from the actual projected displacement so the
         # projection can't inject phantom energy into the guard below.
@@ -532,7 +541,13 @@ def _run_region_simulation(
         _ke = 0.5 * float(np.sum(
             pad_mass_kg[pad_movable, None]
             * _vel[pad_movable] * _vel[pad_movable]))
-        if _prev_ke is not None and _ke > 1.25 * _prev_ke + 1e-15:
+        # Only trigger the energy guard on significant jumps: above the
+        # numerical noise floor AND relatively large (1.25x) AND absolutely
+        # large (see _ke_abs_increase_threshold above).
+        if (_prev_ke is not None
+                and _ke > 1e-12
+                and _ke > 1.25 * _prev_ke + 1e-15
+                and _ke - _prev_ke > _ke_abs_increase_threshold):
             _dt = max(float(params.dt_min_s), _dt * 0.5)
             _vel *= 0.5
         else:
@@ -662,7 +677,12 @@ def run_placement(
     Supports multi-board region simulation: footprints are grouped by board
     outline region (from Edge.Cuts) and each region is simulated independently
     with its own bounding box and fixed per-iteration step budget.
+
+    ``params`` is re-validated here because direct ``PlacementParams(...)``
+    construction bypasses the ``from_dict`` check (only the API path
+    validates); fail fast instead of dividing by zero mid-run.
     """
+    _validate(params)
     start = time.perf_counter()
     _eff_stride = max(1, int(frame_stride or 1))
     if record_frames and max_frames >= 1 and params.max_iterations > max_frames:

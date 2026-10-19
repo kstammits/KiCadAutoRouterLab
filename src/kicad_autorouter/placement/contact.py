@@ -357,7 +357,11 @@ def _wall_mag(
     halo reach. p = 1 is the linear default; p > 1 softens the halo approach
     and stiffens deep penetration. cap_depth_mm > 0 clamps the evaluated
     depth to s >= -cap (force saturates); 0 disables capping.
+    halo_mm <= 0 disables the law entirely (returns 0: "no courtyard
+    contact") instead of dividing by zero.
     """
+    if halo_mm <= 0:
+        return 0.0
     if s_mm >= halo_mm:
         return 0.0
     if cap_depth_mm > 0.0:

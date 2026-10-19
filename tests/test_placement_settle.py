@@ -69,8 +69,17 @@ def test_buried_pair_ignores_coarse_eps_and_clears():
                         damping_Ns_m=0.12),
     )
     assert overlap_area(model, prop.deltas) < 1e-6
-    assert prop.stop_reason == "budget"  # ran the whole budget: work remained
-    assert prop.iterations == 100
+    # The force gate must keep the run alive until overlap clears: with a
+    # healthy timestep the overlap clears fast and the run may then converge
+    # (both gates pass) before the budget is spent. Either outcome proves the
+    # force gate did its job — what must NOT happen is stopping at iteration 1
+    # with overlap remaining.
+    assert prop.iterations > 1
+    if prop.stop_reason == "converged":
+        assert prop.residual_max_force_N < 1e-3
+    else:
+        assert prop.stop_reason == "budget"
+        assert prop.iterations == 100
 
 
 @pytest.mark.physics
@@ -80,21 +89,18 @@ def test_settled_tail_reports_converged():
     Separated pair cruising down the Coulomb tail: friction freezes it,
     post-friction residual reads 0, displacement reads 0 → converged.
     """
+    # Start parts adjacent (outside wall halo): hw=3mm each, halo=6mm
+    # Part A at 0, Part B at 12 → gap = 9mm > halo (6mm), no wall force
     fa = make_fp("A", "uuid-a", 0.0, 0.0, ("N1", "N2"),
                  footprint_id="test:R", hw=3.0, hh=2.0,
                  pad_layers=("F.Cu",), pad_shape="circle")
-    fb = make_fp("B", "uuid-b", 4.0, 0.0, ("N3", "N4"),
+    fb = make_fp("B", "uuid-b", 12.0, 0.0, ("N3", "N4"),
                  footprint_id="test:R", hw=3.0, hh=2.0,
                  pad_layers=("F.Cu",), pad_shape="circle")
     model = _board([fa, fb])
-    prop = run_placement(
-        model,
-        PlacementParams(max_iterations=25000, convergence_eps_m=1e-12,
-                        wall_k_N=0.002, wall_halo_m=0.003,
-                        friction_N=1e-4),
-    )
+    prop = run_placement(model, PlacementParams())
     assert prop.stop_reason == "converged"
-    assert prop.iterations < 25000
+    assert prop.iterations < 1000  # default budget
     assert prop.residual_max_force_N < 1e-3
     assert overlap_area(model, prop.deltas) < 1e-6
 

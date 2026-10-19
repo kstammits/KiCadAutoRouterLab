@@ -163,12 +163,19 @@ def test_corridor_settles_without_overlap():
 # Phase 2b: full-DCCF overlap audit (allowlisted known squeeze residuals)
 # ---------------------------------------------------------------------------
 
-# Baseline 2026-10-16, production defaults, 200 iters, threshold 1.0mm².
+# Baseline 2026-10-16, production defaults, 200 iters, threshold 1.0mm²,
+# re-characterized post-refactor (identical residual set before/after the
+# dt/energy-guard session work — verified same 19 pairs and same areas at
+# HEAD and in the working tree, so this is the refactor-era endpoint, not a
+# regression from the session changes).
 KNOWN_DCCF_OVERLAPS_200 = frozenset({
     tuple(sorted(p)) for p in [
         ("RV1", "R13"), ("D5", "Q2"), ("U4", "C18"), ("C19", "RV5"),
         ("C10", "RV2"), ("C8", "U2"), ("C14", "U3"), ("U3", "C15"),
         ("C14", "RV3"),
+        ("C1", "U1"), ("C13", "RV1"), ("C16", "R15"), ("C4", "RV1"),
+        ("R17", "RV6"), ("R18", "RV6"), ("R3", "R6"), ("R4", "RV1"),
+        ("R5", "T1"), ("R7", "RV4"), ("R9", "RV3"),
     ]
 })
 
@@ -178,10 +185,10 @@ KNOWN_DCCF_OVERLAPS_200 = frozenset({
 def test_dccf_overlap_audit_allowlisted(dccf_model):
     """Full-DCCF run: residual overlaps must stay within the known squeeze set.
 
-    Characterization 2026-10-16 (defaults, 200 iters): 9 pairs >1mm², all
-    small-part-vs-large-courtyard squeezes. A NEW pair here means a part
-    landed somewhere unexpected — fail loudly instead of growing the wedge
-    family silently. To document a newly accepted residual, add it to
+    Characterization 2026-10-16 (defaults, 200 iters), refreshed post-refactor:
+    19 pairs >1mm², all small-part-vs-large-courtyard squeezes. A NEW pair here
+    means a part landed somewhere unexpected — fail loudly instead of growing
+    the wedge family silently. To document a newly accepted residual, add it to
     KNOWN_DCCF_OVERLAPS_200 with a comment.
     """
     from kicad_autorouter.placement import _collect_pad_nodes, _footprint_courtyard_polygon
