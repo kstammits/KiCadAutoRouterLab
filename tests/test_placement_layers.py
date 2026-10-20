@@ -87,7 +87,6 @@ PARAMS = PlacementParams(
     attraction_k_N=5e-05,
     wall_k_N=0.01,
     wall_halo_m=0.003,
-    boundary_k_N=1e-06,  # negligible: parts start at board center
 )
 
 

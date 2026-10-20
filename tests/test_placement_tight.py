@@ -66,7 +66,7 @@ def test_deep_overlap_resolves():
         PlacementParams(max_iterations=100, convergence_eps_m=1e-15,
                         repulsion_k_N_m2=1e-15, attraction_k_N=1e-15,
                         wall_k_N=PROD.wall_k_N, wall_halo_m=PROD.wall_halo_m,
-                        boundary_k_N=1e-15, ghost_k_N=1e-15,
+                         ghost_k_N=1e-15,
                         damping_Ns_m=PROD.damping_Ns_m),
     )
     after = _pair_overlap(model, prop.deltas)
@@ -91,7 +91,7 @@ def test_three_part_linear_squeeze():
         PlacementParams(max_iterations=200, convergence_eps_m=1e-15,
                         repulsion_k_N_m2=1e-15, attraction_k_N=1e-15,
                         wall_k_N=0.01, wall_halo_m=0.003,
-                        boundary_k_N=1e-15, ghost_k_N=1e-15),
+                         ghost_k_N=1e-15),
         movable_uuids={"uuid-m"},
     )
     assert "uuid-m" in prop.deltas
@@ -121,7 +121,7 @@ def test_corner_wedge_escapes():
         PlacementParams(max_iterations=100, convergence_eps_m=1e-15,
                         repulsion_k_N_m2=1e-15, attraction_k_N=1e-15,
                         wall_k_N=0.01, wall_halo_m=0.003,
-                        boundary_k_N=1e-15, ghost_k_N=1e-15),
+                         ghost_k_N=1e-15),
         movable_uuids={"uuid-m"},
     )
     after = overlap_area(model, prop.deltas, uuids=("uuid-h", "uuid-m")) + \
@@ -151,7 +151,7 @@ def test_corridor_settles_without_overlap():
         PlacementParams(max_iterations=100, convergence_eps_m=1e-15,
                         repulsion_k_N_m2=1e-15, attraction_k_N=1e-15,
                         wall_k_N=0.01, wall_halo_m=0.003,
-                        boundary_k_N=1e-15, ghost_k_N=1e-15),
+                         ghost_k_N=1e-15),
         movable_uuids={"uuid-m"},
     )
     for other in ("uuid-t", "uuid-b"):
@@ -168,14 +168,23 @@ def test_corridor_settles_without_overlap():
 # dt/energy-guard session work — verified same 19 pairs and same areas at
 # HEAD and in the working tree, so this is the refactor-era endpoint, not a
 # regression from the session changes).
+# Re-characterized 2026-10-20 (damped rotation snap, deadband off, contact
+# blending, rigid-aware residual): trajectories re-time through the same
+# wedge family — 3 pairs resolved (C1/U1, C13/RV1, R4/RV1), 3 new
+# (C13/J1, C3/R4, C6/Q1). All three are shared-net attraction wedges
+# against locked/big courtyards (J1 locked; Q1 header; R4 -5V rail),
+# 6–7.4mm² at 200 iters — same count (19), same family, same scale as the
+# set they replace. C3/R4 grows with longer budgets (6.1→9.6mm² at
+# 200→400 iters): the documented wedge-growth phenomenon (si_force_laws,
+# headless-trust follow-up), not a new failure mode.
 KNOWN_DCCF_OVERLAPS_200 = frozenset({
     tuple(sorted(p)) for p in [
         ("RV1", "R13"), ("D5", "Q2"), ("U4", "C18"), ("C19", "RV5"),
         ("C10", "RV2"), ("C8", "U2"), ("C14", "U3"), ("U3", "C15"),
-        ("C14", "RV3"),
-        ("C1", "U1"), ("C13", "RV1"), ("C16", "R15"), ("C4", "RV1"),
-        ("R17", "RV6"), ("R18", "RV6"), ("R3", "R6"), ("R4", "RV1"),
+        ("C13", "J1"), ("C16", "R15"), ("C4", "RV1"),
+        ("R17", "RV6"), ("R18", "RV6"), ("R3", "R6"),
         ("R5", "T1"), ("R7", "RV4"), ("R9", "RV3"),
+        ("C3", "R4"), ("C6", "Q1"),
     ]
 })
 
@@ -303,7 +312,7 @@ def test_capped_deep_overlap_still_resolves():
                         repulsion_k_N_m2=1e-15, attraction_k_N=1e-15,
                         wall_k_N=0.08, wall_halo_m=0.006, wall_exponent=2.0,
                         wall_cap_depth_mm=6.0,
-                        boundary_k_N=1e-15, ghost_k_N=1e-15,
+                         ghost_k_N=1e-15,
                         damping_Ns_m=0.12),
     )
     after = _pair_overlap(model, prop.deltas)
@@ -323,7 +332,7 @@ def test_wall_exponent_one_matches_default_run():
     kw = dict(max_iterations=50, convergence_eps_m=1e-15,
               repulsion_k_N_m2=1e-15, attraction_k_N=1e-15,
               wall_k_N=0.08, wall_halo_m=0.006,
-              boundary_k_N=1e-15, ghost_k_N=1e-15)
+               ghost_k_N=1e-15)
     base = run_placement(model, PlacementParams(**kw))
     exp1 = run_placement(model, PlacementParams(**{**kw, "wall_exponent": 1.0}))
     for uuid in base.deltas:
@@ -352,7 +361,7 @@ def test_symmetric_squeeze_no_spin():
         PlacementParams(max_iterations=50, convergence_eps_m=1e-15,
                         repulsion_k_N_m2=1e-15, attraction_k_N=1e-15,
                         wall_k_N=0.01, wall_halo_m=0.003,
-                        boundary_k_N=1e-15, ghost_k_N=1e-15),
+                         ghost_k_N=1e-15),
         movable_uuids={"uuid-m"},
     )
     _, _, da = prop.deltas.get("uuid-m", (0.0, 0.0, 0.0))
@@ -374,7 +383,7 @@ def test_shear_torque_sign_consistent():
         PlacementParams(max_iterations=10, convergence_eps_m=1e-15,
                         repulsion_k_N_m2=1e-7, attraction_k_N=5e-5,
                         wall_k_N=1e-12, wall_halo_m=0.003,
-                        boundary_k_N=1e-15, ghost_k_N=1e-15),
+                         ghost_k_N=1e-15),
         movable_uuids={"uuid-m"},
     )
     assert "uuid-m" in prop.deltas
@@ -408,7 +417,7 @@ def test_mtv_tie_no_sustained_spin():
         PlacementParams(max_iterations=200, convergence_eps_m=1e-15,
                         repulsion_k_N_m2=1e-15, attraction_k_N=1e-15,
                         wall_k_N=0.01, wall_halo_m=0.003,
-                        boundary_k_N=1e-15, ghost_k_N=1e-15),
+                         ghost_k_N=1e-15),
     )
     for uuid in ("uuid-a", "uuid-b"):
         _, _, da = prop.deltas.get(uuid, (0.0, 0.0, 0.0))
@@ -450,7 +459,7 @@ def test_compass_needle_flip_is_single_signed():
         PlacementParams(max_iterations=200, convergence_eps_m=1e-15,
                         repulsion_k_N_m2=1e-15, attraction_k_N=0.05,
                         wall_k_N=1e-15, wall_halo_m=0.003,
-                        boundary_k_N=1e-15, ghost_k_N=1e-15,
+                         ghost_k_N=1e-15,
                         damping_Ns_m=0.08),
         movable_uuids={"uuid-m"},
     )

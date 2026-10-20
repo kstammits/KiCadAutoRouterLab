@@ -24,11 +24,24 @@ FRAME_XY_DECIMALS = 3
 FRAME_ANGLE_DECIMALS = 2
 FRAME_DEFAULT_MAX = 100
 
-# Angular deadband (rad/step): per-step rotations below this are numerical
-# / gradient creep, not torque response — drop them so orientation doesn't
-# random-walk over long runs. Deliberately NOT a PlacementParams slider:
-# it is a noise floor, not a tuning knob.
-MIN_ROT_STEP_RAD = math.radians(0.1)
+# Angular deadband (rad/step): DISABLED (0.0). Measured 2026-10-20: the
+# 0.1° deadband parks micro-rotations that wedged pairs need to work
+# themselves apart (magnet R6/R7: exact separation without it, permanent
+# 0.06 growing to 0.075mm² wedge with it). Idle-orientation burn is bounded
+# instead by the stall rule (no window-mean progress stops "stalled").
+# Deliberately NOT a PlacementParams slider. Re-enable only with a case
+# the stall rule mishandles in hand.
+MIN_ROT_STEP_RAD = 0.0
+
+# Stall-rule tolerance multiplier (dimensionless): the stall check compares
+# the WINDOW-AVERAGED pose shift against STALL_MEAN_EPS_MULT * eps, not eps
+# itself. Measured 2026-10-21 (DCCF R5 legalize, single-part vs locked
+# neighbor): steady chatter holds window means still to ~1.5um while single
+# steps swing ~80um and the transit tail moves the mean 6.6um — so 4x sits
+# mid-gap between chatter noise and real progress. Deliberately NOT a
+# PlacementParams slider. Re-tune only with a case the stall rule
+# mishandles in hand.
+STALL_MEAN_EPS_MULT = 4.0
 
 
 @dataclass(frozen=True)
@@ -54,8 +67,6 @@ class PlacementParams:
     wall_exponent: float = 1.0
     # Deep-penetration cap (mm of penetration depth, 0 = uncapped).
     wall_cap_depth_mm: float = 0.0
-    # Boundary repulsion strength (newtons).
-    boundary_k_N: float = 1e-2
     # Ghost attraction scale (newtons).
     ghost_k_N: float = 5e-5
     # Viscous damping coefficient (N*s/m).
@@ -77,6 +88,13 @@ class PlacementParams:
     # 1 micron is well below manufacturing tolerance but tight enough to
     # ensure forces have actually settled.
     convergence_eps_m: float = 1e-6
+    # Stall window (iterations): no NET progress of the window-averaged
+    # pose over the window stops the run as "stalled" instead of burning
+    # budget. A stalled run sits in place with unserved forces
+    # (wedged/chattering with no resolvable drift) — headless callers must
+    # treat it like budget (needs attention: move the neighbors), never
+    # like converged. 0 disables.
+    stall_window: int = 100
     # Footprint mass fallback slope (kg/m^2 of courtyard area).
     mass_density_kg_m2: float = 3.0
     # Minimum part mass (kg).
@@ -108,7 +126,6 @@ def _validate(params: PlacementParams) -> None:
         "attraction_k_N",
         "wall_k_N",
         "wall_halo_m",
-        "boundary_k_N",
         "ghost_k_N",
         "damping_Ns_m",
         "friction_N",
@@ -153,3 +170,9 @@ def _validate(params: PlacementParams) -> None:
         raise ValueError("max_iterations must be an integer")
     if params.max_iterations < 0:
         raise ValueError("max_iterations must be >= 0 (0 = static force probe: no steps, initial forces only)")
+    if isinstance(params.stall_window, bool) or not isinstance(
+        params.stall_window, int
+    ):
+        raise ValueError("stall_window must be an integer")
+    if params.stall_window < 0:
+        raise ValueError("stall_window must be >= 0 (0 = disabled)")

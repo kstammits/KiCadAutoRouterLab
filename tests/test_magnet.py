@@ -50,15 +50,13 @@ MAGNET_PARAMS = PlacementParams(
     # 3x2mm parts: 6mm halo preserves this test's original ~5.4mm
     # (1.5x radii sum) near-miss reach under the bounded-halo regime.
     wall_halo_m=0.006,
-    boundary_k_N=0.5,
     convergence_eps_m=0.0001,
 )
 
 
 # ---------------------------------------------------------------------------
-# Board constants
+# Board constants (scatter range comes from the minimal board region bbox)
 # ---------------------------------------------------------------------------
-BOARD_SIZE_MM = 100.0
 MARGIN_MM = 5.0
 COURTYARD_HALF_W = 1.5
 COURTYARD_HALF_H = 1.0
@@ -81,13 +79,19 @@ def _make_pad(number: str, net_name: str, local_x: float, local_y: float) -> Pad
     )
 
 
-def _make_courtyard() -> Tuple[Tuple[Point, Point], ...]:
-    """Return courtyard segments for 3x2mm rectangle centered at origin."""
+def _make_courtyard(x_mm: float = 0.0, y_mm: float = 0.0) -> Tuple[Tuple[Point, Point], ...]:
+    """Return courtyard segments for 3x2mm rectangle centered at (x_mm, y_mm).
+
+    Courtyards are stored in board coordinates (matching the parser output
+    and the Footprint dataclass contract): the placement engine fits them
+    to the (board-frame) pad positions, so a local-frame courtyard would
+    pose at the origin.
+    """
     hw, hh = COURTYARD_HALF_W, COURTYARD_HALF_H
     corners = [
-        Point(-hw, -hh), Point(hw, -hh),
-        Point(hw, hh), Point(-hw, hh),
-        Point(-hw, -hh),
+        Point(x_mm - hw, y_mm - hh), Point(x_mm + hw, y_mm - hh),
+        Point(x_mm + hw, y_mm + hh), Point(x_mm - hw, y_mm + hh),
+        Point(x_mm - hw, y_mm - hh),
     ]
     return tuple((corners[i], corners[i + 1]) for i in range(4))
 
@@ -112,7 +116,7 @@ def _create_resistor(
         replace(pad2, position=to_board(pad2.position.x_mm, pad2.position.y_mm)),
     )
 
-    courtyard = _make_courtyard()
+    courtyard = _make_courtyard(x_mm, y_mm)
 
     return Footprint(
         ref=ref,
@@ -130,11 +134,21 @@ def _create_resistor(
     )
 
 
-def _random_position(rng: random.Random) -> Tuple[float, float]:
-    """Generate random position within board margins."""
+def _random_position(rng: random.Random,
+                     bbox: Tuple[float, float, float, float]) -> Tuple[float, float]:
+    """Generate random position inside the board region (with margins).
+
+    Parts must start INSIDE the outline, like production scatter: the old
+    [5, 95]² scatter predates the minimal-board regions (55..215,
+    45..145) and dropped most parts 10s of mm outside, forcing them to
+    file in past locked MH1 in the SW doorway — a traffic jam at the
+    door that no wall tuning can seat (and the old kb=0.5 sledgehammer
+    only overpowered). Containment here means: never leave.
+    """
+    min_x, max_x, min_y, max_y = bbox
     return (
-        rng.uniform(MARGIN_MM, BOARD_SIZE_MM - MARGIN_MM),
-        rng.uniform(MARGIN_MM, BOARD_SIZE_MM - MARGIN_MM),
+        rng.uniform(min_x + MARGIN_MM, max_x - MARGIN_MM),
+        rng.uniform(min_y + MARGIN_MM, max_y - MARGIN_MM),
     )
 
 
@@ -169,8 +183,9 @@ def _build_magnet_board(seed) -> BoardModel:
     ]
 
     test_resistors = []
+    region_bbox = minimal_model.board_regions[0].bbox
     for ref, uuid_str, shared_net, unique_net in resistor_specs:
-        x, y = _random_position(rng)
+        x, y = _random_position(rng, region_bbox)
         test_resistors.append(_create_resistor(ref, uuid_str, shared_net, unique_net, x, y))
 
     all_footprints = locked_footprints + tuple(test_resistors)
@@ -336,17 +351,23 @@ class TestNetMagnet:
             displacement = math.hypot(dx, dy)
             assert displacement > 0.1, f"{ref} barely moved: {displacement:.3f}mm"
 
-    def test_boundary_repulsion_keeps_within_outline(self, magnet_model: BoardModel):
-        """With high repulsion, all components should stay within board boundaries."""
-        boundary_params = PlacementParams(
-            max_iterations=200,
+    def test_wall_keeps_within_outline(self, magnet_model: BoardModel):
+        """With high repulsion, the board wall must keep parts inside.
+
+        Unified model: the region polygon is an inverted courtyard with
+        the same wall law, so containment comes from wall_k_N — no
+        separate boundary knob. Parts start inside the outline (like
+        production scatter); containment means never leaving, with the
+        courtyard fully inside plus a 0.5mm margin.
+        """
+        wall_params = PlacementParams(
+            max_iterations=400,
             repulsion_k_N_m2=5.0000000000000004e-08,
             attraction_k_N=0.0005,
-            wall_k_N=0.02,
-            boundary_k_N=0.5,
+            wall_k_N=0.08,
             convergence_eps_m=0.0001,
         )
-        prop = run_placement(magnet_model, boundary_params)
+        prop = run_placement(magnet_model, wall_params)
 
         region = magnet_model.board_regions[0]
         min_x, max_x, min_y, max_y = region.bbox

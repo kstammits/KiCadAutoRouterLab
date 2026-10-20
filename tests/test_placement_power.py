@@ -85,7 +85,7 @@ def _decap_params(**kw):
         repulsion_k_N_m2=1e-09,
         attraction_k_N=5e-05,
             wall_k_N=1e-15,
-            boundary_k_N=1e-15,
+
             # SI rename: friction_threshold_mm (displacement deadband) is
             # now friction_N (force deadband); 0.0 still disables it.
             friction_N=0.0,

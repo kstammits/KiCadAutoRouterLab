@@ -12,7 +12,6 @@ the owning submodule instead (e.g. ``...placement.contact``).
 """
 
 from .contact import (
-    _boundary_edge_push,
     _contact_weights,
     _courtyard_outline_polygon,
     _footprint_courtyard_polygon,
@@ -28,6 +27,7 @@ from .params import (
     FRAME_ANGLE_DECIMALS,
     FRAME_XY_DECIMALS,
     MIN_ROT_STEP_RAD,
+    STALL_MEAN_EPS_MULT,
     PlacementParams,
 )
 from .rigid import _clamp_rigid_step, _rigid_pose_vertices
@@ -41,7 +41,7 @@ __all__ = [
     "FRAME_ANGLE_DECIMALS",
     "FRAME_XY_DECIMALS",
     "MIN_ROT_STEP_RAD",
-    "_boundary_edge_push",
+    "STALL_MEAN_EPS_MULT",
     "_build_net_edges_pad_level",
     "_clamp_rigid_step",
     "_collect_pad_nodes",

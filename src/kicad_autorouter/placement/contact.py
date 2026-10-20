@@ -312,9 +312,13 @@ def _analytical_collision(
         overlaps, normal, penetration = _circle_circle_contact(shape_i_params, shape_j_params)
         return penetration, (-normal[0], -normal[1]), overlaps
     if shape_i_type == ShapeType.RECTANGLE and shape_j_type == ShapeType.CIRCLE:
+        # _rect_circle_contact returns normal from rect to circle (i to j).
+        # We need normal from j to i (circle to rect), so negate.
         overlaps, normal, penetration = _rect_circle_contact(shape_i_params, shape_j_params)
         return penetration, (-normal[0], -normal[1]), overlaps
     if shape_i_type == ShapeType.CIRCLE and shape_j_type == ShapeType.RECTANGLE:
+        # Args swapped: _rect_circle_contact(rect, circle) returns normal from rect to circle (j to i).
+        # This is already the correct direction (j to i), so DON'T negate.
         overlaps, normal, penetration = _rect_circle_contact(shape_j_params, shape_i_params)
         return penetration, normal, overlaps
     return None
@@ -369,18 +373,7 @@ def _wall_mag(
     return k_wall_N * (1.0 - s_mm / halo_mm) ** exponent
 
 
-def _boundary_edge_push(dist_m: float, threshold_m: float, k_b_N: float) -> float:
-    """Inward push from one region edge in newtons: bounded linear falloff.
 
-    Returns 0 past the threshold, rising linearly to 2*k_b exactly at the
-    edge; already-outside parts get an ~k_b saturating pull back in.
-    """
-    if dist_m < 0:
-        d = abs(dist_m)
-        return k_b_N * d / (d + 1e-9)
-    if dist_m < threshold_m:
-        return k_b_N * 2.0 * (threshold_m - dist_m) / threshold_m
-    return 0.0
 
 
 # ---------------------------------------------------------------------------

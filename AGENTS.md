@@ -5,10 +5,12 @@ browser workflow UI. Works on real boards, DRC-validated.
 
 ## Layout
 
-- `src/kicad_autorouter/` — engine: `placement.py` (force-spring sim),
-  `board_model.py` (parse model, power/ground helpers), `routing/` (grid,
-  obstacles, A* router, pipeline, pour/stitch/power), `io.py`, `sexpr.py`,
-  `drc.py`, `validate.py`, `ghost.py`, `svg_render.py`.
+- `src/kicad_autorouter/` — engine: `placement/` package (force-spring
+  sim: `force.py`, `runner.py`, `contact.py`, `rigid.py`, `params.py`,
+  `model.py`, `integrate.py`), `board_model.py` (parse model, power/ground
+  helpers), `routing/` (grid, obstacles, A* router, pipeline,
+  pour/stitch/power), `io.py`, `sexpr.py`, `drc.py`, `validate.py`,
+  `ghost.py`, `svg_render.py`.
 - `ui/server.py` — stdlib-HTTP API + state (no framework); `ui/index.html` —
   the whole frontend (single file, inline CSS/JS).
 - `tests/fixtures/` — `tube111.*` (105 parts, 73 nets, reference board),
@@ -48,6 +50,54 @@ browser workflow UI. Works on real boards, DRC-validated.
 - KiCad file formats are S-expressions, not JSON (`sexpr.py`).
   `kicad-cli` lives at
   `/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli` (not on PATH).
+
+## Placement dynamics (state as of 2026-10-20)
+
+- One wall law (`_wall_mag` in `contact.py`): part courtyards push apart;
+  the board region polygon is an inverted courtyard pushing inside with
+  the same `wall_k_N` / `wall_halo_m`. There is no `boundary_k_N`
+  anywhere (removed from params, UI, scripts, docs, figures);
+  `from_dict` drops it from old files.
+- Ghost walls join a region by courtyard overlap, not centroid
+  (`_assign_board_regions` fallback in `board_model.py`): a wall
+  straddling the board edge has its centroid outside and would otherwise
+  score region -1 and exert nothing.
+- Per-pair contact: deepest penetration wins, then its normal blends with
+  the prior step (50/50 when aligned, 25/75 prior-dominant when opposing
+  — a 180° flip slews instead of snapping). State lives in
+  `ForceContext.last_contact` and is pruned when pairs separate. Never
+  reintroduce beat-by-margin winner switching; blending is the mechanism.
+- Poly-cache rebuild thresholds are tight (20µm / 0.02°) so refresh
+  jumps stay small enough to blend out (stale polygons were a flip-flop
+  source at 0.1mm).
+- Rigid: Kabsch snap per step, rotation halved, 10° cap, 0.1° deadband
+  (`MIN_ROT_STEP_RAD`) applied after halving. Translation untouched,
+  rotation stays free.
+- Convergence: `residual_max_force_N` = max over movable footprints of
+  NET force (rigid-aware — per-pad loads cancel across a body in
+  contact, so per-pad max could never settle). Stop reasons: `converged`
+  (quiet step + settled nets), `stalled` (window-averaged pose shows no
+  net progress over a full `stall_window`, default 100, with forces
+  remaining: wedged or chattering in place — per-step quiet never arrives
+  under contact chatter, so the rule compares window means with tolerance
+  `STALL_MEAN_EPS_MULT * convergence_eps_m`, never rest), `budget` (still
+  moving), `empty`. A wedged single-part run converging inside overlap is
+  honest; all-movable runs are what resolve piles.
+- Force causes are four: repulsion / attraction / courtyard (includes the
+  board wall) / ghost. SVG overlay + UI legend match; server
+  `/api/placement/forces` asserts the same set.
+- `tests/fixtures/2B.kicad_pcb` is UNTRACKED by owner request — do NOT
+  `git add`/`git commit` it; write synthetic regression tests instead
+  (see `test_straddling_ghost_wall_joins_region_and_pushes`,
+  `test_loaded_contact_settles_despite_per_pad_loads`,
+  `test_quiet_without_progress_stops_stalled`).
+- DCCF overlap allowlist (`KNOWN_DCCF_OVERLAPS_200`) re-characterized
+  2026-10-20 (19 pairs — reshuffled within the same shared-net wedge
+  family by the damped-snap/deadband/blending retime; see its comment).
+- Magnet boards scatter INSIDE the outline (like production); the old
+  [5,95]² scatter predated the minimal-board regions and piled parts at
+  the SW door behind locked MH1 — contain locally, don't widen bounds.
+  Wall test asserts courtyards fully inside + 0.5mm under 25x gain.
 
 ## Context sources (not vendored)
 

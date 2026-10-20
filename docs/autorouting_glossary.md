@@ -102,10 +102,12 @@ stiffness-capped stepper).
 - **Halo** (`wall_halo_m`, m): near-miss reach where the wall ramps in
   before touch, saturating at `wall_k_N` and falling linearly to zero at
   the edge (`PlacementParams.wall_halo_m`).
-- **Boundary** (`boundary_k_N`, N): bounded linear falloff from region
-  edges (max 2·kb at the edge, saturating pull-back outside); reach is
-  dynamic — 10% of body size, min 1 mm
-  (`PlacementParams.boundary_k_N`, `_boundary_edge_push`).
+- **Board wall**: the region polygon is an inverted courtyard with the
+  SAME wall law — the edge pushes parts inside exactly like a
+  neighbour's courtyard pushes them apart (halo pull-off inside,
+  contact strength at touch, growing push-out when straddling,
+  bounded pull-home when fully outside or inside a cutout). No
+  separate boundary knob; containment stiffness is `wall_k_N`.
 - **Ghost pull** (`ghost_k_N`, N): fixed pseudo-part attractor; file
   `TARGET,ka` values weight it, no reaction on the ghost
   (`PlacementParams.ghost_k_N`).
@@ -157,19 +159,20 @@ stiffness-capped stepper).
   committed board — the unit the UI accepts
   (`PlacementProposal`, `apply_deltas`).
 - **Rigid-step clamp**: bounds post-projection body motion per step —
-  centroid shift ≤ `vmax·dt`, rotation ≤ 5°/step — so tunneling is
-  impossible by construction (`_clamp_rigid_step`).
-- **Angular deadband** (`MIN_ROT_STEP_RAD`, 0.1°): sub-threshold per-step
-  rotations dropped as creep noise; genuine torque passes through. A noise
-  floor, not a tuning knob — deliberately not a slider
+  centroid shift ≤ `vmax·dt`, rotation half the measured step capped at
+  5°/step (damped snap) — so tunneling is impossible by construction
   (`_clamp_rigid_step`).
+- **Angular deadband** (`MIN_ROT_STEP_RAD`, currently 0.0 = disabled):
+  disabled — measured 2026-10-20 that parking micro-rotations wedges
+  pairs that otherwise work themselves apart; idle burn is bounded by
+  the stall rule instead (`_clamp_rigid_step`).
 - **Speed ceiling** (`vmax_m_s`, m/s): caps velocities and, via the clamp,
   body motion (`PlacementParams.vmax_m_s`).
 - **Frames**: stride-sampled `(dx, dy, da)` vs start for the SVG motion
   player; first frame is the zero start, last is final
   (`PlacementProposal`, `_thin_frames`, `run_placement`).
 - **Force frames / components**: per-frame `{uuid: {cause: (fx, fy)}}` for
-  `repulsion / attraction / courtyard / boundary / ghost` — what the UI
+  `repulsion / attraction / courtyard / ghost` — what the UI
   force overlay draws (`PlacementProposal`, `FORCE_CAUSE_ORDER` in
   `ui/index.html`, `applyMotionFrame` pivoting about committed origins).
 - **Proposal**: deltas + frames from `run_placement`; empty means
@@ -234,7 +237,8 @@ stiffness-capped stepper).
 - **Retired names** (do not use): `repulsion_kr` → `repulsion_k_N_m2`,
   `attraction_ka` → `attraction_k_N`, `courtyard_repulsion_kc` →
   `wall_k_N`, `courtyard_halo_mm` → `wall_halo_m`,
-  `boundary_repulsion_kb` → `boundary_k_N`,
+  `boundary_repulsion_kb` → `boundary_k_N` (retired with the separate
+  boundary law; the board wall now uses `wall_k_N`),
   `convergence_eps_mm` → `convergence_eps_m`,
   `friction_threshold_mm` → `friction_N`, `max_step_mm` → `vmax_m_s`.
   `from_dict` still silently drops these for old files.

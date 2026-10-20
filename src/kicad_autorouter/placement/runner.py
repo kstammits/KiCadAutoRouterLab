@@ -33,6 +33,7 @@ from .params import (
     FRAME_ANGLE_DECIMALS,
     FRAME_DEFAULT_MAX,
     FRAME_XY_DECIMALS,
+    STALL_MEAN_EPS_MULT,
     PlacementParams,
     _validate,
 )
@@ -59,17 +60,22 @@ class PlacementProposal:
 
     force_frames (parallel to frames): per-sampled-iteration force breakdown
     for each movable footprint. Each frame is {uuid: {cause: (fx, fy)}} with
-    causes in {"repulsion", "attraction", "courtyard", "boundary", "ghost"}.
+    causes in {"repulsion", "attraction", "courtyard", "ghost"} (courtyard
+    includes the board wall).
     Values rounded to 3 significant figures for compact JSON.
 
     stop_reason reports how the run ended: "converged" (per-step displacement
     below eps AND residual forces below the settle threshold — genuinely at
-    rest), "budget" (max_iterations reached with work still outstanding —
-    headless callers must treat this as needs-attention, not settled), or
-    "empty" (nothing movable / nothing to integrate). residual_max_force_N
-    is the largest movable-pad total-force norm (newtons, post-friction) on
-    the final iteration: near zero at true rest, large when the run stopped
-    with pushes still unserved (e.g. a wedged overlap).
+    rest), "stalled" (the window-averaged pose shows no net progress over a
+    full stall window while forces remain unserved — wedged or chattering
+    in place; move the neighbors, like budget it needs attention, never
+    rest), "budget" (max_iterations reached with work still
+    outstanding — headless callers must treat this as needs-attention, not
+    settled), or "empty" (nothing movable / nothing to integrate). residual_max_force_N
+    is the largest movable-footprint net-force norm (newtons, post-friction)
+    on the final iteration: near zero at true rest, large when the run stopped
+    with pushes still unserved (e.g. a wedged overlap). Net — not per-pad:
+    rigid bodies in contact carry canceling per-pad loads that never vanish.
     """
 
     deltas: Dict[str, Tuple[float, float, float]]
@@ -203,7 +209,7 @@ def _run_region_simulation(
     )
     has_net_edges = len(src_idx) > 0
 
-    # Build mapping from footprint UUID to local pad indices for boundary checks
+    # Build mapping from footprint UUID to local pad indices for wall checks
     region_fp_to_pad_indices = {}
     for fp_uuid, pad_indices in region_fp_uuid_to_pad_indices.items():
         region_fp_to_pad_indices[fp_uuid] = pad_indices
@@ -291,14 +297,48 @@ def _run_region_simulation(
                 "layer": _fp.layer,
             }
         pins = []
-        for pad in _fp.pads:
-            if pad.is_through_hole or pad.pad_type == "np_thru_hole":
-                pad_r = 0.5 * math.hypot(pad.size_mm[0], pad.size_mm[1]) + 0.5
-                pins.append({
-                    "center": (pad.position.x_mm, pad.position.y_mm),
-                    "radius": pad_r,
-                    "layer": "*.Cu",
-                })
+        # For footprints with courtyards: add all THT pins, but mark which
+        # extend significantly beyond the courtyard bounds (threshold 0.5mm).
+        # Pins fully inside or barely extending (<0.5mm) are redundant with
+        # courtyard collision (same-layer); pins extending significantly beyond
+        # are needed for mounting holes etc. Cross-layer always needs pins.
+        EXTENDS_THRESHOLD_MM = 0.5
+        if body["kind"] == "courtyard":
+            body_poly = body.get("verts")  # np.array of courtyard vertices
+            if body_poly is not None and len(body_poly) > 0:
+                minx = float(body_poly[:, 0].min())
+                maxx = float(body_poly[:, 0].max())
+                miny = float(body_poly[:, 1].min())
+                maxy = float(body_poly[:, 1].max())
+            else:
+                minx = maxx = miny = maxy = 0.0
+            for pad in _fp.pads:
+                if pad.is_through_hole or pad.pad_type == "np_thru_hole":
+                    pad_r = 0.5 * math.hypot(pad.size_mm[0], pad.size_mm[1]) + 0.5
+                    px, py = pad.position.x_mm, pad.position.y_mm
+                    # Does this pin extend significantly beyond the courtyard?
+                    extends_x = (px - pad_r < minx - EXTENDS_THRESHOLD_MM or
+                                 px + pad_r > maxx + EXTENDS_THRESHOLD_MM)
+                    extends_y = (py - pad_r < miny - EXTENDS_THRESHOLD_MM or
+                                 py + pad_r > maxy + EXTENDS_THRESHOLD_MM)
+                    extends = extends_x or extends_y
+                    pins.append({
+                        "center": (px, py),
+                        "radius": pad_r,
+                        "layer": _fp.layer,
+                        "extends_beyond_courtyard": extends,
+                    })
+        else:
+            # No courtyard: add all THT pins as collision shapes
+            for pad in _fp.pads:
+                if pad.is_through_hole or pad.pad_type == "np_thru_hole":
+                    pad_r = 0.5 * math.hypot(pad.size_mm[0], pad.size_mm[1]) + 0.5
+                    pins.append({
+                        "center": (pad.position.x_mm, pad.position.y_mm),
+                        "radius": pad_r,
+                        "layer": _fp.layer,
+                        "extends_beyond_courtyard": True,  # no courtyard = always needed
+                    })
         _pad_idx = np.array(fp_pad_indices.get(_fp.uuid, []), dtype=int)
         _orig_pos = np.array(
             [(p.position.x_mm, p.position.y_mm) for p in _fp.pads],
@@ -343,12 +383,32 @@ def _run_region_simulation(
     positions = pad_positions.copy()
     prev_positions = pad_positions.copy()
 
-    # Polygon cache for courtyard collision - persists across iterations
+    # Polygon cache for courtyard collision - persists across iterations.
+    # Rebuild thresholds are TIGHT (20µm/0.02°): a stale body polygon snaps
+    # the contact winner discretely when it refreshes, which reads as force
+    # flip-flop at the sample rate. Small thresholds keep the refresh jumps
+    # below what the normal blending slews out invisibly.
     poly_cache: Dict[str, dict] = {}
-    cache_rebuild_threshold_mm = 0.1
-    cache_rebuild_threshold_rad = math.radians(0.1)
+    cache_rebuild_threshold_mm = 0.02
+    cache_rebuild_threshold_rad = math.radians(0.02)
 
     # Shared force-evaluation context (static caches + region bounds).
+    # Build region polygons list and fp_uuid -> region mapping for the board wall
+    region_polygons = []
+    fp_uuid_to_region = {}
+    if model.board_regions:
+        for ridx, reg in enumerate(model.board_regions):
+            # Convert BoardRegion polygon to shapely Polygon
+            from shapely.geometry import Polygon as ShapelyPolygon
+            if reg.polygon:
+                region_polygons.append(ShapelyPolygon([(p.x_mm, p.y_mm) for p in reg.polygon]))
+            else:
+                region_polygons.append(ShapelyPolygon())
+    # Map each footprint in this region to its region index
+    for fp_uuid, ridx in model.footprint_region.items():
+        if ridx == region_idx:
+            fp_uuid_to_region[fp_uuid] = ridx
+
     fctx = ForceContext(
         fp_uuids=fp_uuids,
         fp_local_to_rows=fp_local_to_rows,
@@ -360,10 +420,8 @@ def _run_region_simulation(
         pad_movable=pad_movable,
         fp_pad_indices=fp_pad_indices,
         fp_uuid_to_local_idx=fp_uuid_to_local_idx,
-        region_min_x=min_x,
-        region_max_x=max_x,
-        region_min_y=min_y,
-        region_max_y=max_y,
+        region_polygons=region_polygons,
+        fp_uuid_to_region=fp_uuid_to_region,
         cy_cache=cy_cache,
     )
 
@@ -463,7 +521,7 @@ def _run_region_simulation(
     force_settle_N = max(
         20.0 * params.friction_N,
         4.0 * params.ghost_k_N,
-        1e-3 * max(params.wall_k_N, params.attraction_k_N, params.boundary_k_N),
+        1e-3 * max(params.wall_k_N, params.attraction_k_N),
     )
     # Energy-guard absolute floor: a fraction of the characteristic single-pad
     # kinetic energy (0.5*m*vmax^2). KE jumps below this are legitimate force
@@ -475,6 +533,20 @@ def _run_region_simulation(
     stop_reason = "budget"
     residual_max_force_N = 0.0
     iteration = 0  # defined when max_iterations=0 (static probe: loop never runs)
+    # Stall detection: window-averaged pose progress. Per-step displacement
+    # never goes quiet under contact chatter — a part jittering in place
+    # against a locked neighbor moves every step, so a consecutive-quiet
+    # gate burns budget forever. Instead the mean pose over each stall
+    # window is compared against the previous window's mean: a limit cycle
+    # averages itself out (its center sits still) while real transit moves
+    # the mean orders of magnitude more. A mean shift below
+    # STALL_MEAN_EPS_MULT * convergence_eps_m stops the run as "stalled".
+    # Slow creep still moves the mean, so only true standstills stop here.
+    # stall_window=0 disables. The initial pose seeds the reference, so a
+    # run that starts wedged stops after exactly one window.
+    stall_mean_ref = positions[pad_movable].copy()
+    stall_acc = np.zeros_like(stall_mean_ref)
+    stall_n = 0
 
     for iteration in range(params.max_iterations):
         force, _ = _compute_total_force(
@@ -498,8 +570,23 @@ def _run_region_simulation(
         _frozen[~pad_movable] = True
 
         if pad_movable.any():
-            _mov_force = force[pad_movable]
-            residual_max_force_N = float(np.max(np.linalg.norm(_mov_force, axis=1)))
+            # Rigid-aware residual: net force per movable FOOTPRINT (pads
+            # summed), not per-pad max. Pads of one rigid body routinely
+            # carry large canceling contact loads (wall on the contact pads
+            # vs attraction spread over all pads); per-pad max then never
+            # settles even at a true rigid equilibrium and every
+            # contact rest runs to budget. Net force vanishes exactly when
+            # the body has nothing left to obey. (Persistent torque still
+            # moves pads, so the displacement gate covers rotation.)
+            _res = 0.0
+            for _rows, _mov in zip(fp_local_to_rows, fp_movable_list):
+                if not _mov or len(_rows) == 0:
+                    continue
+                _res = max(
+                    _res,
+                    float(np.linalg.norm(force[_rows].sum(axis=0))),
+                )
+            residual_max_force_N = _res
         else:
             residual_max_force_N = 0.0
 
@@ -564,6 +651,32 @@ def _run_region_simulation(
         if max_disp < params.convergence_eps_m and residual_max_force_N < force_settle_N:
             stop_reason = "converged"
             break
+
+        # Stall check: no NET progress of the window-averaged pose over a
+        # full stall window means the run sits in place with unserved
+        # forces (wedged, or chattering with no resolvable drift) —
+        # converged can't fire (forces remain), but burning budget changes
+        # nothing. The mean (not endpoints, not per-step quiet) is what
+        # oscillates out: endpoint comparison is phase-luck on a limit
+        # cycle, and per-step quiet never arrives under chatter. Slow creep
+        # still moves the mean, so only true standstills stop here.
+        # stall_window=0 disables.
+        if params.stall_window > 0:
+            stall_acc += positions[pad_movable]
+            stall_n += 1
+            if stall_n >= params.stall_window:
+                stall_mean = stall_acc / stall_n
+                if stall_mean.shape[0]:
+                    stall_shift_m = float(np.max(np.linalg.norm(
+                        stall_mean - stall_mean_ref, axis=1))) * 1e-3
+                else:
+                    stall_shift_m = 0.0
+                if stall_shift_m < STALL_MEAN_EPS_MULT * params.convergence_eps_m:
+                    stop_reason = "stalled"
+                    break
+                stall_mean_ref = stall_mean
+                stall_acc[:] = 0.0
+                stall_n = 0
 
         prev_positions = positions.copy()
 
@@ -760,7 +873,7 @@ def run_placement(
                     record_frames, _eff_stride, extra_power_nets,
                 )
                 any_region = True
-                if region_stop != "converged":
+                if region_stop not in ("converged", "empty"):
                     all_stop = region_stop
                 all_residual = max(all_residual, region_residual)
                 all_deltas.update(region_deltas)

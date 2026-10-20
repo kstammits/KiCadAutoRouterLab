@@ -42,7 +42,7 @@ def _base_params(**kw):
         attraction_k_N=5e-05,
         wall_k_N=0.002,
         wall_halo_m=0.003,
-        boundary_k_N=1e-06,
+
     )
     base.update(kw)
     return PlacementParams(**base)

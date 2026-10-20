@@ -70,9 +70,13 @@ def _clamp_rigid_step(
 
     Per movable body: clamp centroid shift to ``cap_mm`` and rotation change
     (vs the pre-step pose) to ``max_rot_rad``, re-posing pads rigidly from
-    the old pose. Rotations below ``min_rot_rad`` are dropped outright
-    (angular deadband against creep spin). Single-pad footprints never
-    appear here (trivially rigid; already bounded by the velocity cap alone).
+    the old pose. Only half the measured rotation is applied (damped snap:
+    rotation stays free over many steps but settles geometrically instead
+    of ringing).     ``min_rot_rad`` deadband is applied after halving (currently 0.0 =
+    disabled — see ``MIN_ROT_STEP_RAD``: parking micro-rotations was
+    measured to wedge pairs that otherwise work apart). Single-pad
+    footprints never appear here (trivially rigid; already bounded by the
+    velocity cap alone).
     """
     if cap_mm <= 0 or max_rot_rad <= 0:
         return
@@ -114,6 +118,11 @@ def _clamp_rigid_step(
             dth -= 2.0 * math.pi
         while dth < -math.pi:
             dth += 2.0 * math.pi
+        # Damped snap: apply only half the measured rotation step. Full
+        # Kabsch snaps let per-step torque ring as sustained spin/jitter;
+        # halving keeps rotation fully free over many steps while each step
+        # settles geometrically toward rest.
+        dth *= 0.5
         if abs(dth) < min_rot_rad:
             dth = 0.0
         if dth > max_rot_rad:

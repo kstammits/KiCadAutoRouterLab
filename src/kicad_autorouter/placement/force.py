@@ -7,7 +7,8 @@ simulation loop stays readable. Force components:
 - attraction: constant-magnitude pull along net edges
 - ghost: fixed-anchor springs from ghost footprints to target pads
 - courtyard: penalty wall forces from SAT/shapely collision (deepest contact wins per pair)
-- boundary: region-edge repulsion
+  plus the board wall — the region polygon treated as an inverted courtyard
+  with the same wall law, so parts stay inside the outline / out of cutouts.
 """
 
 from __future__ import annotations
@@ -22,7 +23,6 @@ from shapely.ops import nearest_points
 from .contact import (
     ShapeType,
     _analytical_collision,
-    _boundary_edge_push,
     _classify_shape,
     _contact_weights,
     _wall_mag,
@@ -67,10 +67,8 @@ class ForceContext:
         halo_matrix: Optional[np.ndarray] = None,
         fp_pad_indices: Optional[Dict[str, List[int]]] = None,
         fp_uuid_to_local_idx: Optional[Dict[str, int]] = None,
-        region_min_x: float = -1e6,
-        region_max_x: float = 1e6,
-        region_min_y: float = -1e6,
-        region_max_y: float = 1e6,
+        region_polygons: Optional[List] = None,
+        fp_uuid_to_region: Optional[Dict[str, int]] = None,
         cy_cache: Optional[Dict[str, dict]] = None,
     ):
         self.fp_uuids = fp_uuids
@@ -86,11 +84,17 @@ class ForceContext:
         self.pad_movable = pad_movable
         self.fp_pad_indices: Dict[str, List[int]] = fp_pad_indices or {}
         self.fp_uuid_to_local_idx: Dict[str, int] = fp_uuid_to_local_idx or {}
-        self.region_min_x = region_min_x
-        self.region_max_x = region_max_x
-        self.region_min_y = region_min_y
-        self.region_max_y = region_max_y
+        self.region_polygons: List = region_polygons or []
+        self.fp_uuid_to_region: Dict[str, int] = fp_uuid_to_region or {}
         self.cy_cache: Dict[str, dict] = cy_cache or {}
+        # Last applied contact normal per footprint pair, keyed by
+        # (min, max) local indices. The winner's fresh normal is mixed
+        # with the prior step's so near-tie winner switches (body vs pin,
+        # SAT axis A vs B) rotate the push instead of flipping it — the
+        # wall response stays a continuous surface instead of chattering
+        # between discrete candidates. Opposing winners slew in slowly
+        # (prior-dominant blend) so a 180° flip can never land at once.
+        self.last_contact: Dict[Tuple[int, int], Tuple[float, float]] = {}
 
 
 def _compute_total_force(
@@ -110,7 +114,8 @@ def _compute_total_force(
     """Compute total force on each pad at given positions.
 
     With ``return_components`` also returns the per-cause breakdown
-    ``{cause: (n_pads, 2)}`` for repulsion/attraction/ghost/courtyard/boundary.
+    ``{cause: (n_pads, 2)}`` for repulsion/attraction/ghost/courtyard
+    (courtyard includes the board wall).
     """
     # ------------------------------------------------------------------
     # Repulsion: all-pairs Coulomb k/d^2 in SI (d in meters).
@@ -165,10 +170,9 @@ def _compute_total_force(
 
     force = repulsion + attraction + ghost_attr_force
 
-    # Courtyard/boundary force accumulators
+    # Courtyard force accumulator
     n_pads_local = pos.shape[0]
     poly_force = np.zeros((n_pads_local, 2), dtype=np.float64)
-    boundary_force = np.zeros((n_pads_local, 2), dtype=np.float64)
 
     # ------------------------------------------------------------------
     # Polygon-based courtyard collision from cached shapes.
@@ -269,14 +273,14 @@ def _compute_total_force(
                             pin_vert = np.array([[local_cx, local_cy]], dtype=np.float64)
                             posed_center = _rigid_pose_vertices(pin_vert, orig_pos, cp)[0]
                             pin_poly = Point(posed_center[0], posed_center[1]).buffer(pin["radius"])
-                            fp_pins.append((pin_poly, (posed_center[0], posed_center[1]), pin["radius"]))
+                            fp_pins.append((pin_poly, (posed_center[0], posed_center[1]), pin["radius"], pin.get("layer", ""), pin.get("extends_beyond_courtyard", False)))
                     elif pins:
                         for pin in pins:
                             local_cx, local_cy = pin["center"]
                             pin_poly = Point(local_cx, local_cy).buffer(pin["radius"])
-                            fp_pins.append((pin_poly, (local_cx, local_cy), pin["radius"]))
+                            fp_pins.append((pin_poly, (local_cx, local_cy), pin["radius"], pin.get("layer", ""), pin.get("extends_beyond_courtyard", False)))
                     pins_data[fp_uuid] = fp_pins
-                    pins_empty[fp_uuid] = [bool(p.is_empty) for p, _, _ in fp_pins]
+                    pins_empty[fp_uuid] = [bool(p.is_empty) for p, _, _, _, _ in fp_pins]
 
                     shape_type, shape_params = _classify_shape(body_poly)
 
@@ -518,6 +522,7 @@ def _compute_total_force(
                 pins_j_empty = pins_empty[fp_j_uuid]
 
                 cand: List = []
+                has_body_body = False
 
                 # 1. Body-body collision (same layer only)
                 if _close[i, j]:
@@ -537,9 +542,11 @@ def _compute_total_force(
                             _apply_contact_push_analytical(
                                 i, j, penetration, normal, is_overlap, cand
                             )
+                            has_body_body = True
                         else:
                             if body_i.intersects(body_j):
                                 _apply_contact_push(i, j, body_i, body_j, 0.0, cand)
+                                has_body_body = True
                             else:
                                 body_dist = body_i.distance(body_j)
                                 halo_reach = float(_halo_matrix_local[i, j])
@@ -547,11 +554,24 @@ def _compute_total_force(
                                     _apply_contact_push(
                                         i, j, body_i, body_j, -body_dist, cand
                                     )
+                                    has_body_body = True
+
+                # For same-layer courtyard parts, body-body is authoritative.
+                # Skip pin-body/pin-pin only for pins fully inside their courtyards
+                # (redundant with body-body). Pins extending beyond courtyard
+                # (e.g. mounting holes) are kept for cross-layer and mounting-pin collisions.
+                same_layer_courtyard = (
+                    body_layers_arr[i] == body_layers_arr[j]
+                    and not body_i_empty and not body_j_empty
+                )
 
                 # 2. Pins_i vs body_j
                 if pins_i and not body_j_empty:
-                    for pin_k, (pin_poly, pin_center, pin_radius) in enumerate(pins_i):
+                    for pin_k, (pin_poly, pin_center, pin_radius, pin_layer, pin_extends) in enumerate(pins_i):
                         if pins_i_empty[pin_k]:
+                            continue
+                        # Skip same-layer pin-body if pin is fully inside courtyard (redundant)
+                        if pin_layer and pin_layer == body_layers_arr[j] and not pin_extends:
                             continue
                         pin_cx, pin_cy = pin_center
                         body_cx, body_cy = (
@@ -590,8 +610,11 @@ def _compute_total_force(
 
                 # 3. Body_i vs pins_j
                 if pins_j and not body_i_empty:
-                    for pin_k, (pin_poly, pin_center, pin_radius) in enumerate(pins_j):
+                    for pin_k, (pin_poly, pin_center, pin_radius, pin_layer, pin_extends) in enumerate(pins_j):
                         if pins_j_empty[pin_k]:
+                            continue
+                        # Skip same-layer pin-body if pin is fully inside courtyard (redundant)
+                        if pin_layer and pin_layer == body_layers_arr[i] and not pin_extends:
                             continue
                         body_cx, body_cy = (
                             fp_centroids_arr[i, 0], fp_centroids_arr[i, 1]
@@ -630,11 +653,14 @@ def _compute_total_force(
 
                 # 4. Pins_i vs pins_j
                 if pins_i and pins_j:
-                    for pin_ik, (pin_i_poly, pin_i_center, pin_i_radius) in enumerate(pins_i):
+                    for pin_ik, (pin_i_poly, pin_i_center, pin_i_radius, pin_i_layer, pin_i_extends) in enumerate(pins_i):
                         if pins_i_empty[pin_ik]:
                             continue
-                        for pin_jk, (pin_j_poly, pin_j_center, pin_j_radius) in enumerate(pins_j):
+                        for pin_jk, (pin_j_poly, pin_j_center, pin_j_radius, pin_j_layer, pin_j_extends) in enumerate(pins_j):
                             if pins_j_empty[pin_jk]:
+                                continue
+                            # Skip same-layer pin-pin if both pins are fully inside courtyards (redundant)
+                            if pin_i_layer and pin_i_layer == pin_j_layer and not pin_i_extends and not pin_j_extends:
                                 continue
                             dx = pin_i_center[0] - pin_j_center[0]
                             dy = pin_i_center[1] - pin_j_center[1]
@@ -672,6 +698,28 @@ def _compute_total_force(
                 if cand:
                     _win = min(cand, key=lambda c: c[1])
                     _s_mm, _ux, _uy = _win[1], _win[2], _win[3]
+                    # Mix the fresh normal with the prior step's so the applied
+                    # push rotates smoothly instead of snapping between
+                    # near-tie candidates (jitter source). Aligned winners
+                    # blend halfway; an opposing winner slews in slowly
+                    # (prior-dominant) so a 180° flip can never land in one
+                    # step — its average would cancel to zero and bypass any
+                    # blend, which is exactly the chatter pattern.
+                    _pair = (i, j) if i < j else (j, i)
+                    _prev = ctx.last_contact.get(_pair) if ctx is not None else None
+                    if _prev is not None:
+                        _dot = _ux * _prev[0] + _uy * _prev[1]
+                        if _dot < 0.0:
+                            _w_new, _w_old = 0.25, 0.75
+                        else:
+                            _w_new, _w_old = 0.5, 0.5
+                        _bx = _w_new * _ux + _w_old * _prev[0]
+                        _by = _w_new * _uy + _w_old * _prev[1]
+                        _bn = math.hypot(_bx, _by)
+                        if _bn > 1e-12:
+                            _ux, _uy = _bx / _bn, _by / _bn
+                    if ctx is not None:
+                        ctx.last_contact[_pair] = (_ux, _uy)
                     _halo_mm = params.wall_halo_m * 1000.0
                     _mag = _wall_mag(
                         params.wall_k_N, _s_mm, _halo_mm,
@@ -690,60 +738,128 @@ def _compute_total_force(
                             fp_radii_arr[j], -_ux, -_uy, -_fx, -_fy,
                         )
 
-            force += poly_force
+            # Drop blended normals for pairs no longer in contact range so a
+            # part that leaves and returns doesn't mix with a stale direction.
+            if ctx is not None and ctx.last_contact:
+                _live = set()
+                for _a, _b in candidate_pairs:
+                    _live.add((_a, _b) if _a < _b else (_b, _a))
+                for _k in list(ctx.last_contact):
+                    if _k not in _live:
+                        del ctx.last_contact[_k]
 
-            # Boundary repulsion
-            boundary_k = params.boundary_k_N
-            fp_bounds = {}
-            for fp_uuid, pad_indices in ctx.fp_pad_indices.items():
-                if pad_indices:
-                    fp_pad_pos = pos[pad_indices]
-                    fp_local_idx = ctx.fp_uuid_to_local_idx.get(fp_uuid)
-                    if fp_local_idx is not None:
-                        radius = float(fp_radii_arr[fp_local_idx])
+            # Board wall: the region polygon is an inverted courtyard. Same
+            # wall law as part-part contact (wall_k_N / halo / exponent /
+            # cap), so the board edge pushes parts inside exactly like a
+            # neighbour's courtyard pushes them apart. Uses region.boundary
+            # (outer ring + holes) so cutouts act as walls for free once
+            # regions carry holes. Signed separation follows the same
+            # convention: gap +, penetration -.
+            if ctx.region_polygons and ctx.fp_uuid_to_region:
+                halo_mm = params.wall_halo_m * 1000.0
+                for fp_local_idx, fp_uuid in enumerate(ctx.fp_uuids):
+                    if not fp_movable_arr[fp_local_idx]:
+                        continue
+                    region_idx = ctx.fp_uuid_to_region.get(fp_uuid)
+                    if region_idx is None or region_idx < 0 or region_idx >= len(ctx.region_polygons):
+                        continue
+                    region_poly = ctx.region_polygons[region_idx]
+                    if region_poly.is_empty:
+                        continue
+                    body_poly = ctx.poly_cache.get(fp_uuid, {}).get("body_poly")
+                    if body_poly is None or body_poly.is_empty:
+                        continue
+                    try:
+                        covered = region_poly.covers(body_poly)
+                    except Exception:
+                        continue
+                    clearance_boundary = region_poly.boundary
+                    if clearance_boundary.is_empty:
+                        continue
+                    if covered:
+                        # Fully inside copper: halo-scaled push off the edge.
+                        try:
+                            gap = clearance_boundary.distance(body_poly)
+                        except Exception:
+                            continue
+                        if gap >= halo_mm:
+                            continue
+                        s_mm = gap
+                        try:
+                            proj = clearance_boundary.project(body_poly.centroid)
+                            nearest = clearance_boundary.interpolate(proj)
+                        except Exception:
+                            continue
+                        # Inward: from the edge toward the body.
+                        dx = body_poly.centroid.x - nearest.x
+                        dy = body_poly.centroid.y - nearest.y
+                    elif body_poly.disjoint(region_poly):
+                        # Fully outside (or sitting in a cutout): bounded
+                        # pull home at contact strength, independent of how
+                        # far out it drifted.
+                        try:
+                            q_region, q_body = nearest_points(region_poly, body_poly)
+                        except Exception:
+                            continue
+                        dx = q_region.x - q_body.x
+                        dy = q_region.y - q_body.y
+                        s_mm = 0.0
                     else:
-                        radius = 1.0
-                    fp_bounds[fp_uuid] = (
-                        float(fp_pad_pos[:, 0].min()) - radius,
-                        float(fp_pad_pos[:, 1].min()) - radius,
-                        float(fp_pad_pos[:, 0].max()) + radius,
-                        float(fp_pad_pos[:, 1].max()) + radius,
+                        # Straddling the edge: protrusion depth of the verts
+                        # sticking out, capped by the shared wall law.
+                        try:
+                            coords = list(body_poly.exterior.coords)
+                        except Exception:
+                            continue
+                        depth = 0.0
+                        for vx, vy in coords:
+                            try:
+                                depth = max(
+                                    depth,
+                                    region_poly.distance(Point(vx, vy)),
+                                )
+                            except Exception:
+                                continue
+                        s_mm = -max(depth, 0.0)
+                        try:
+                            outside = body_poly.difference(region_poly)
+                            ref = (
+                                outside.centroid
+                                if not outside.is_empty
+                                else body_poly.centroid
+                            )
+                            proj = clearance_boundary.project(ref)
+                            nearest = clearance_boundary.interpolate(proj)
+                        except Exception:
+                            continue
+                        # Inward: from the outside chunk toward the edge.
+                        dx = nearest.x - ref.x
+                        dy = nearest.y - ref.y
+                    dist = math.hypot(dx, dy)
+                    if dist < 1e-8:
+                        # Degenerate (e.g. concentric): fall back to the
+                        # region centre, which is inward by construction.
+                        dx = region_poly.centroid.x - body_poly.centroid.x
+                        dy = region_poly.centroid.y - body_poly.centroid.y
+                        dist = math.hypot(dx, dy)
+                    if dist < 1e-8:
+                        continue
+                    ux, uy = dx / dist, dy / dist
+                    if s_mm >= halo_mm:
+                        continue
+                    force_mag = _wall_mag(
+                        params.wall_k_N, s_mm, halo_mm,
+                        params.wall_exponent, params.wall_cap_depth_mm,
                     )
+                    fx, fy = force_mag * ux, force_mag * uy
+                    rows = ctx.fp_local_to_rows[fp_local_idx]
+                    if rows is not None and len(rows) > 0:
+                        _spread(
+                            rows, fp_centroids_arr[fp_local_idx, 0], fp_centroids_arr[fp_local_idx, 1],
+                            fp_radii_arr[fp_local_idx], ux, uy, fx, fy,
+                        )
 
-            for pad_idx in range(n_pads_local):
-                fp_i_local = pad_to_fp_local[pad_idx]
-                if fp_i_local < 0 or not fp_movable_arr[fp_i_local]:
-                    continue
-                fp_i_uuid = fp_uuids[fp_i_local]
-                if fp_i_uuid not in fp_bounds:
-                    continue
-                minx, miny, maxx, maxy = fp_bounds[fp_i_uuid]
-                fp_width = maxx - minx
-                fp_height = maxy - miny
-                threshold = max(1.0, min(10.0, 0.1 * max(fp_width, fp_height)))
-                threshold_m = threshold * 1e-3
-
-                dist_left = (minx - ctx.region_min_x) * 1e-3
-                boundary_force[pad_idx, 0] += _boundary_edge_push(
-                    dist_left, threshold_m, boundary_k
-                )
-
-                dist_right = (ctx.region_max_x - maxx) * 1e-3
-                boundary_force[pad_idx, 0] -= _boundary_edge_push(
-                    dist_right, threshold_m, boundary_k
-                )
-
-                dist_bottom = (miny - ctx.region_min_y) * 1e-3
-                boundary_force[pad_idx, 1] += _boundary_edge_push(
-                    dist_bottom, threshold_m, boundary_k
-                )
-
-                dist_top = (ctx.region_max_y - maxy) * 1e-3
-                boundary_force[pad_idx, 1] -= _boundary_edge_push(
-                    dist_top, threshold_m, boundary_k
-                )
-
-            force += boundary_force
+            force += poly_force
 
     # Replace NaN
     force = np.nan_to_num(force, nan=0.0, posinf=0.0, neginf=0.0)
@@ -757,7 +873,6 @@ def _compute_total_force(
         "attraction": np.nan_to_num(attraction, nan=0.0, posinf=0.0, neginf=0.0),
         "ghost": np.nan_to_num(ghost_attr_force, nan=0.0, posinf=0.0, neginf=0.0),
         "courtyard": np.nan_to_num(poly_force, nan=0.0, posinf=0.0, neginf=0.0),
-        "boundary": np.nan_to_num(boundary_force, nan=0.0, posinf=0.0, neginf=0.0),
     }
     for comp in components.values():
         comp[~pad_movable] = 0.0

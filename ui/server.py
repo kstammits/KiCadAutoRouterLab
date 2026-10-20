@@ -1773,7 +1773,6 @@ class Handler(BaseHTTPRequestHandler):
                 wall_k_N=req.get("wall_k_N", base_params.wall_k_N),
                 wall_halo_m=req.get("wall_halo_m", base_params.wall_halo_m),
                 wall_exponent=req.get("wall_exponent", base_params.wall_exponent),
-                boundary_k_N=req.get("boundary_k_N", base_params.boundary_k_N),
                 ghost_k_N=req.get("ghost_k_N", base_params.ghost_k_N),
                 damping_Ns_m=req.get("damping_Ns_m", base_params.damping_Ns_m),
                 friction_N=req.get("friction_N", base_params.friction_N),
@@ -2417,16 +2416,35 @@ class Handler(BaseHTTPRequestHandler):
 def main() -> None:
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8000
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    print(f"Workflow UI: http://127.0.0.1:{port}")
+    print(f"Workflow UI: http://127.0.0.1:{port}", flush=True)
+
+    # Idempotent: Ctrl-C raises SIGINT in the shell wrapper too, which used
+    # to forward a second SIGTERM mid-shutdown and print a traceback. The
+    # guard makes repeats a no-op; shutdown() runs off-thread because it
+    # blocks until serve_forever() returns.
+    _shutting_down = threading.Event()
 
     def shutdown(signum, frame):
-        print("\nShutting down...")
+        if _shutting_down.is_set():
+            return
+        _shutting_down.set()
+        print("\nShutting down...", flush=True)
         threading.Thread(target=server.shutdown, daemon=True).start()
 
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
 
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        # Fallback if a SIGINT arrives before the handler is installed or
+        # from an untrapped source; the handler path above already prints.
+        shutdown(signal.SIGINT, None)
+        # serve_forever() returns via shutdown(); block briefly so the
+        # message above isn't lost on interpreter teardown.
+        _shutting_down.wait(timeout=5.0)
+    finally:
+        server.server_close()
 
 
 if __name__ == "__main__":

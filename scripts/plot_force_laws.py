@@ -15,7 +15,6 @@ Figures (all PNG, committed under `docs/figures/`):
     fig_attraction_fanout.png       signal / power /(fanout-1) / decap-boost weighting
     fig_wall_profile.png            unified wall law F=k*(1-s/h), halo variants
     fig_wall_exponent.png           wall-law exponent F=k*(1-s/h)^p comparison
-    fig_boundary_profile.png        boundary edge push vs distance-to-edge
     fig_damping_decay.png           implicit-Euler velocity decay for several damping values
     fig_mass_acceleration.png       a=F/m sanity anchor vs courtyard area
     fig_integrator_stability.png    per-step drift vs dt for typical forces + vmax ceiling
@@ -139,41 +138,6 @@ def fig_wall_profile(p: PlacementParams, out: pathlib.Path, dpi: int) -> pathlib
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
     dest = out / "fig_wall_profile.png"
-    _save_optimized(fig, dest, dpi)
-    plt.close(fig)
-    return dest
-
-
-def fig_boundary_profile(p: PlacementParams, out: pathlib.Path, dpi: int) -> pathlib.Path:
-    """Inward push vs distance-to-edge for the bounded-linear boundary law.
-
-    F = 0 past threshold, 2*kb*(t-d)/t inside, ~kb saturating pull outside.
-    Threshold is dynamic (10% of body size, min 1 mm); plot the 1 mm floor
-    and a 3 mm body-scale example.
-    """
-    kb = p.boundary_k_N
-    d_mm = np.linspace(-2.0, 5.0, 500)  # negative = outside region
-    fig, ax = plt.subplots(figsize=(10, 5))
-    for t_mm in (1.0, 3.0):
-        f = np.empty_like(d_mm)
-        for i, d in enumerate(d_mm):
-            if d < 0:
-                a = abs(d)
-                f[i] = kb * a / (a + 1e-9)
-            elif d < t_mm:
-                f[i] = kb * 2.0 * (t_mm - d) / t_mm
-            else:
-                f[i] = 0.0
-        ax.plot(d_mm, f * 1000, linewidth=2,
-                label=f"threshold = {t_mm:g} mm")
-    ax.axvline(0, color="k", linestyle=":", alpha=0.5, label="region edge")
-    ax.set_xlabel("Distance inside region to edge (mm; negative = outside)")
-    ax.set_ylabel("Inward push (mN)")
-    ax.set_title(f"Boundary Repulsion (kb = {kb * 1000:g} mN; 2·kb at edge, ~kb outside)")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    fig.tight_layout()
-    dest = out / "fig_boundary_profile.png"
     _save_optimized(fig, dest, dpi)
     plt.close(fig)
     return dest
@@ -377,7 +341,6 @@ FIGURES = (
     ("wall", fig_wall_profile),
     ("wall_exponent", fig_wall_exponent),
     ("wall_exponent_rescaled", fig_wall_exponent_rescaled),
-    ("boundary", fig_boundary_profile),
     ("damping", fig_damping_decay),
     ("mass", fig_mass_acceleration),
     ("integrator", fig_integrator_stability),
@@ -403,7 +366,7 @@ def main(argv: list[str] | None = None) -> int:
     out.mkdir(parents=True, exist_ok=True)
     params = _defaults()
     print(f"PlacementParams defaults: kr={params.repulsion_k_N_m2:g} ka={params.attraction_k_N:g} "
-          f"wall={params.wall_k_N:g} halo={params.wall_halo_m:g} kb={params.boundary_k_N:g} "
+          f"wall={params.wall_k_N:g} halo={params.wall_halo_m:g} "
           f"ghost={params.ghost_k_N:g} c={params.damping_Ns_m:g} dt={params.dt_s:g}")
     made: list[pathlib.Path] = []
     for name, fn in FIGURES:

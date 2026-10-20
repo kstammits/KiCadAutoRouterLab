@@ -294,14 +294,12 @@ def main(argv=None):
         grid = {
             "attraction_k_N": [0.02, 0.05, 0.1],
             "wall_k_N": [0.01, 0.03],
-            "boundary_k_N": [0.005, 0.01],
             "vmax_m_s": [1.0],
         }
     else:
         grid = {
             "attraction_k_N": [0.02, 0.04, 0.06, 0.1],
             "wall_k_N": [0.01, 0.03, 0.08],
-            "boundary_k_N": [0.005, 0.01],
             "vmax_m_s": [1.0, 1.5],
         }
     # Fixed for this round (repulsion negligible at clustering scales;
@@ -352,8 +350,8 @@ def main(argv=None):
         print(
             f"{r['score']:6.3f} {m['tighten_mean']:6.3f} {m['boundary_violations']:3d} "
             f"{m['overlap_mm2']:6.2f} {m['iters_mean']:6.0f}  "
-            f"attr={p['attraction_k_N']} wall={p['wall_k_N']} "
-            f"bnd={p['boundary_k_N']} vmax={p['vmax_m_s']}"
+             f"attr={p['attraction_k_N']} wall={p['wall_k_N']} "
+             f"vmax={p['vmax_m_s']}"
         )
     if args.out:
         Path(args.out).write_text(json.dumps(rows, indent=1), encoding="utf-8")

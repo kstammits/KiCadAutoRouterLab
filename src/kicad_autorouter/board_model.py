@@ -1085,6 +1085,12 @@ def _assign_board_regions(
 
     Returns {fp.uuid: region_idx} for footprints with UUID.
     Footprints not in any region get -1.
+
+    Centroid decides first (unchanged). Fallback: a footprint whose
+    centroid falls outside every region but whose courtyard/pads overlap
+    one (e.g. a ghost wall straddling the board edge) joins the first
+    overlapped region — otherwise edge-straddling walls silently leave
+    every region's simulation and exert no force.
     """
     assignment: Dict[str, int] = {}
     for fp in footprints:
@@ -1096,8 +1102,28 @@ def _assign_board_regions(
             if _point_in_polygon(centroid, poly):
                 region_idx = idx
                 break
+        if region_idx < 0:
+            outline = _footprint_outline_points(fp)
+            for idx, poly in enumerate(board_polygons):
+                if any(_point_in_polygon(pt, poly) for pt in outline):
+                    region_idx = idx
+                    break
         assignment[fp.uuid] = region_idx
     return assignment
+
+
+def _footprint_outline_points(fp) -> List[Point]:
+    """Board-frame sample points of a footprint's extent (courtyard, else pads)."""
+    pts: List[Point] = []
+    for a, b in fp.courtyard or ():
+        pts.append(a)
+        pts.append(b)
+    if not pts:
+        for pad in fp.pads:
+            pts.append(pad.position)
+    if not pts:
+        pts.append(Point(fp.x_mm, fp.y_mm))
+    return pts
 
 
 def netclasses(tree: SExpr) -> Tuple[Tuple[NetClass, ...], Dict[str, str]]:

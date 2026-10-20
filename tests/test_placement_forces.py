@@ -28,18 +28,32 @@ EDGE = 30.0
 
 
 def _board(fps):
+    """Create a board model with a single region from edge cuts."""
+    edge_cuts = (
+        (Point(-EDGE, -EDGE), Point(EDGE, -EDGE)),
+        (Point(EDGE, -EDGE), Point(EDGE, EDGE)),
+        (Point(EDGE, EDGE), Point(-EDGE, EDGE)),
+        (Point(-EDGE, EDGE), Point(-EDGE, -EDGE)),
+    )
+    # Create region polygon from edge cuts
+    from shapely.geometry import Polygon as ShapelyPolygon
+    from kicad_autorouter.board_model import BoardRegion
+    region_poly = ShapelyPolygon([(-EDGE, -EDGE), (EDGE, -EDGE), (EDGE, EDGE), (-EDGE, EDGE)])
+    board_regions = (
+        BoardRegion(
+            uuid="region-0",
+            polygon=tuple(Point(x, y) for x, y in region_poly.exterior.coords),
+            bbox=(-EDGE, EDGE, -EDGE, EDGE),
+        ),
+    )
     return BoardModel(
         footprints=tuple(fps),
         keepout_zones=(),
         nets={},
         by_ref={fp.ref: fp for fp in fps},
-        edge_cuts=(
-            (Point(-EDGE, -EDGE), Point(EDGE, -EDGE)),
-            (Point(EDGE, -EDGE), Point(EDGE, EDGE)),
-            (Point(EDGE, EDGE), Point(-EDGE, EDGE)),
-            (Point(-EDGE, EDGE), Point(-EDGE, -EDGE)),
-        ),
+        edge_cuts=edge_cuts,
         footprint_region={fp.uuid: 0 for fp in fps},
+        board_regions=board_regions,
     )
 
 
@@ -68,7 +82,7 @@ def _base_params(**kw):
         attraction_k_N=5e-05,
         wall_k_N=0.01,
         wall_halo_m=0.003,
-        boundary_k_N=1e-06,
+        
     )
     base.update(kw)
     return PlacementParams(**base)
@@ -186,7 +200,7 @@ class TestAttractionRepulsionEquilibrium:
                          convergence_eps_m=1e-09,
                          repulsion_k_N_m2=kr, attraction_k_N=ka,
                          wall_k_N=1e-15,
-                         boundary_k_N=1e-15),
+                         ),
         )
         moved = apply_deltas(model, prop.deltas)
         ax = moved.by_ref["A"].x_mm
@@ -203,7 +217,7 @@ class TestAttractionRepulsionEquilibrium:
             model,
             _base_params(max_iterations=5, repulsion_k_N_m2=1e-18,
                          attraction_k_N=0.001, wall_k_N=1e-15,
-                         boundary_k_N=1e-15),
+                         ),
         )
         moved = apply_deltas(model, prop.deltas)
         assert moved.by_ref["B"].x_mm < 10.0
@@ -218,7 +232,7 @@ class TestAttractionRepulsionEquilibrium:
             model,
             _base_params(max_iterations=5, attraction_k_N=0.0,
                          wall_k_N=1e-15,
-                         boundary_k_N=1e-15),
+                         ),
         )
         moved = apply_deltas(model, prop.deltas)
         assert moved.by_ref["B"].x_mm > 10.0
@@ -263,11 +277,10 @@ class TestCourtyardRole:
 class TestBoundaryRole:
     """Boundary repulsion is what keeps parts inside the region outline."""
 
-    def test_wall_holds_against_shove(self):
-        # NOTE (SI boundary): reach is dynamic (10% of body size, min
-        # 1mm), so A must start inside 1mm of the edge at x=-30 for the
-        # wall to engage; at -26 the wall is silent by design.
-        def run(kb):
+    def test_boundary_holds_against_shove(self):
+        # NOTE (SI unified): boundary is unified with courtyard via wall_k_N.
+        # Halo is 6mm, so part at x=-29 (1mm from edge at -30) is well within halo.
+        def run(kw):
             model = _board([
                 _single_pad("A", "uuid-a", -29.0, 0.0, "N1",
                             hw=0.25, hh=0.25),
@@ -276,14 +289,12 @@ class TestBoundaryRole:
             ])
             return run_placement(
                 model,
-                _base_params(max_iterations=10, boundary_k_N=kb,
-                             wall_k_N=1e-15),
+                _base_params(max_iterations=10, **kw),
             ), model
 
-        # SI newtons: the Coulomb shove here is ~1.5mN, so 0.05N of wall
-        # holds while 1nN is transparent.
-        (walled, model) = run(0.05)
-        (open_, _) = run(1e-9)
+        # Unified system: boundary uses wall_k_N. Use 0.05N wall to hold against ~1.5mN shove.
+        (walled, model) = run(dict(wall_k_N=0.05, wall_halo_m=0.006))
+        (open_, _) = run(dict(wall_k_N=1e-9, wall_halo_m=0.006))
         ax_walled = apply_deltas(model, walled.deltas).by_ref["A"].x_mm
         ax_open = apply_deltas(model, open_.deltas).by_ref["A"].x_mm
         assert ax_walled >= -EDGE - 1.0, f"wall must hold part in: x={ax_walled}"
@@ -392,7 +403,7 @@ class TestRigidProjection:
                 repulsion_k_N_m2=1.0000000000000001e-07,
                 attraction_k_N=5e-05,
                 wall_k_N=1e-15,
-                boundary_k_N=1e-15,
+                
                 include_power_nets=False,
                 decap_boost=0.0,
             )
@@ -403,10 +414,11 @@ class TestRigidProjection:
             f"pair must drift monotonically apart, got {traj}"
         )
 
-    def test_angular_deadband_kills_creep_not_torque(self):
-        """Sub-0.1°/step rotations are noise (orientation random-walk over
-        long runs); genuine torque passes through and the 5° rate cap
-        still bounds large swings. Translation is preserved in all cases.
+    def test_rotation_snap_halved_deadband_off(self):
+        """The rigid snap applies half the measured rotation step and no
+        deadband drops the tail: parking micro-rotations wedges pairs that
+        otherwise work apart (magnet R6/R7), while idle burn is bounded by
+        the stall rule instead. Translation is preserved in all cases.
         """
         import numpy as np
 
@@ -415,7 +427,7 @@ class TestRigidProjection:
             _clamp_rigid_step,
         )
 
-        assert MIN_ROT_STEP_RAD == pytest.approx(math.radians(0.1))
+        assert MIN_ROT_STEP_RAD == pytest.approx(0.0)
         old = np.array([[0.0, 0.0], [2.0, 0.0]])
 
         def posed(deg):
@@ -434,8 +446,8 @@ class TestRigidProjection:
             return abs(math.degrees(
                 math.atan2(vb[1], vb[0]) - math.atan2(va[1], va[0])))
 
-        assert out_angle(0.05) == pytest.approx(0.0, abs=1e-9)
-        assert out_angle(0.5) == pytest.approx(0.5, rel=0.01)
+        assert out_angle(0.05) == pytest.approx(0.025, rel=0.01)
+        assert out_angle(0.5) == pytest.approx(0.25, rel=0.01)
         assert out_angle(10.0) == pytest.approx(5.0, rel=0.01)
 
     def test_no_stiffness_knob(self):

@@ -1,4 +1,4 @@
-"""Movable-vs-immobile courtyard pairing + bounded boundary push.
+"""Movable-vs-immobile courtyard pairing + board-wall containment.
 
 Regression tests for the 2026-10-10 R11-into-RV2 incident on DCCF:
 
@@ -6,12 +6,11 @@ Regression tests for the 2026-10-10 R11-into-RV2 incident on DCCF:
    ``if not movable[i]: continue``, so a movable footprint never felt an
    immobile (locked/unselected) footprint sorting earlier in file order —
    a lone selected part collided with only ~half the board.
-2. The near-edge boundary term ``kb*2*(t-d)/(d+eps)`` had a singularity
-   (~3.5e7 measured on a part 0.03mm inside the edge); it is now a bounded
-   linear falloff via ``_boundary_edge_push`` (max 2*kb).
+2. The board wall (region polygon as inverted courtyard, same wall law)
+   pushes near-edge parts inside and pulls fully-outside parts home.
 
 Board builders mirror tests/test_placement_layers.py (valid head-to-tail
-courtyard rects, so these tests isolate the pairing/boundary logic from
+courtyard rects, so these tests isolate the pairing/wall logic from
 the known courtyard-shape debt noted in TODO.md).
 """
 
@@ -21,12 +20,12 @@ import pytest
 
 from kicad_autorouter.board_model import (
     BoardModel,
+    BoardRegion,
     Point,
     apply_deltas,
 )
 from kicad_autorouter.placement import (
     PlacementParams,
-    _boundary_edge_push,
     run_placement,
 )
 
@@ -88,7 +87,7 @@ PARAMS = PlacementParams(
     attraction_k_N=5e-05,
     wall_k_N=0.01,
     wall_halo_m=0.003,
-    boundary_k_N=1e-06,  # negligible: parts start at board center
+      # negligible: parts start at board center
 )
 
 
@@ -104,7 +103,7 @@ SEPARATION_PARAMS = PlacementParams(
     attraction_k_N=5e-05,
     wall_k_N=0.01,
     wall_halo_m=0.003,
-    boundary_k_N=1e-06,
+    
 )
 
 
@@ -121,7 +120,7 @@ def test_movable_separates_from_earlier_immobile():
     dx, _, _ = prop.deltas["uuid-b"]
     assert dx > 0.0
     comps = prop.force_components["uuid-b"]
-    assert set(comps) == {"repulsion", "attraction", "ghost", "courtyard", "boundary"}
+    assert set(comps) == {"repulsion", "attraction", "ghost", "courtyard"}
     # NOTE (SI MTV contact): the 5mm-x / 4mm-y overlap escapes along the
     # minimum axis (±y), so the wall force reads on cy, not cx. Old code
     # reported exactly 0.0 on every axis (pair never evaluated).
@@ -188,7 +187,7 @@ def test_shear_produces_finite_rotation():
         attraction_k_N=5e-05,
         wall_k_N=1e-12,  # near-zero: isolate repulsion shear
         wall_halo_m=0.003,
-        boundary_k_N=1e-06,
+        
     )
     prop = run_placement(model, PlacementParams(**base), movable_uuids={"uuid-m"})
     assert "uuid-m" in prop.deltas
@@ -219,7 +218,7 @@ def test_contact_weighting_conserves_total():
         attraction_k_N=5e-05,
         wall_k_N=0.01,
         wall_halo_m=0.003,
-        boundary_k_N=1e-06,
+        
     )
     prop = run_placement(model, params, movable_uuids={"uuid-b"})
     total_fx, total_fy = prop.forces["uuid-b"]
@@ -266,29 +265,14 @@ def test_contact_weights_unit():
 
 
 @pytest.mark.regression
-def test_boundary_edge_push_bounded():
-    """No singularity at the edge; saturating pull outside; zero past reach."""
-    kb, t = 500000.0, 1.0
-    # At the R11 incident distance the old formula gave ~3.2e7; now < 2*kb.
-    assert _boundary_edge_push(0.03, t, kb) == pytest.approx(kb * 2.0 * 0.97 / t)
-    assert _boundary_edge_push(0.03, t, kb) < 2.0 * kb
-    assert _boundary_edge_push(0.0, t, kb) == pytest.approx(2.0 * kb)
-    assert _boundary_edge_push(t / 2.0, t, kb) == pytest.approx(kb)
-    assert _boundary_edge_push(t, t, kb) == 0.0
-    assert _boundary_edge_push(t + 5.0, t, kb) == 0.0
-    outside = _boundary_edge_push(-50.0, t, kb)
-    assert 0.0 < outside <= kb  # saturates, never explodes
-
-
-@pytest.mark.regression
 def test_boundary_force_bounded_near_edge():
-    """Integration: a 60x40mm part starting 0.5mm inside the left edge on a
-    wide board. One capped (2mm) step cannot clear its ~7.4mm threshold
-    zone, so the reported final force still reflects the near-edge regime:
-    positive (pushing +x, away) and within the 2*kb-per-pad bound. The old
-    singular formula reports ~2x over the bound here (and ~35x at 0.03mm).
+    """Integration: a 60x40mm part starting near the left edge on a
+    wide board. The boundary force should push it right (positive x) when
+    within the halo zone. The force per pad is bounded by wall_k_N.
     """
-    part = _fp("P", "uuid-p", -2.44, False, "N1", "N2", hw=30.0, hh=20.0)
+    # Place part with courtyard left edge at -38.0 (2mm from board edge at -40).
+    # Courtyard center = left_edge + hw = -38.0 + 30.0 = -8.0
+    part = _fp("P", "uuid-p", -8.0, False, "N1", "N2", hw=30.0, hh=20.0)
     x0, x1, y0, y1 = -40.0, 200.0, -60.0, 60.0
     model = BoardModel(
         footprints=(part,),
@@ -302,22 +286,33 @@ def test_boundary_force_bounded_near_edge():
             (Point(x0, y1), Point(x0, y0)),
         ),
         footprint_region={"uuid-p": 0},
+        board_regions=(
+            BoardRegion(
+                uuid="region-0",
+                polygon=tuple(Point(x, y) for x, y in [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]),
+                bbox=(x0, x1, y0, y1),
+            ),
+        ),
     )
     params = PlacementParams(
         max_iterations=1,
         convergence_eps_m=1e-15,
         repulsion_k_N_m2=1.0000000000000001e-07,
         attraction_k_N=5e-05,
-        wall_k_N=0.01,
-        wall_halo_m=0.003,
-        boundary_k_N=0.5,
+        wall_k_N=0.5,
+        wall_halo_m=0.006,
     )
     prop = run_placement(model, params)
-    bx, by = prop.force_components["uuid-p"]["boundary"]
+    # Boundary force is now part of courtyard component
+    bx, by = prop.force_components["uuid-p"]["courtyard"]
     assert math.isfinite(bx) and math.isfinite(by)
     assert by == 0.0  # far from top/bottom edges
-    # Per-pad bound is 2*kb; the footprint component sums over its pads.
-    assert 0.0 < bx <= 2.0 * params.boundary_k_N * len(part.pads)
+    # Part is 2mm from left edge, halo = 6mm, so force is active.
+    # Force should be positive (pushing right, away from edge).
+    assert bx > 0.0
+    # Force magnitude should not exceed wall_k_N per pad (saturated at boundary)
+    # With 2 pads, total force <= 2 * wall_k_N
+    assert bx <= 2.0 * params.wall_k_N * len(part.pads)
 
 
 # ---------------------------------------------------------------------------
@@ -371,7 +366,7 @@ def test_mobile_part_surrounded_by_multiple_locked():
         attraction_k_N=5e-05,
         wall_k_N=0.01,
         wall_halo_m=0.003,
-        boundary_k_N=1e-06,
+        
     )
     prop = run_placement(model, params, movable_uuids={"uuid-mobile"})
     
@@ -425,7 +420,7 @@ def test_mobile_between_two_locked_linear():
         attraction_k_N=5e-05,
         wall_k_N=0.01,
         wall_halo_m=0.003,
-        boundary_k_N=1e-06,
+        
     )
     prop = run_placement(model, params, movable_uuids={"uuid-mid"})
     
@@ -471,7 +466,7 @@ def test_mobile_near_locked_cluster_with_attraction():
         attraction_k_N=0.01,  # Strong enough to pull toward pad
         wall_k_N=0.08,        # Strong enough to hold courtyard edge
         wall_halo_m=0.003,
-        boundary_k_N=1e-06,
+        
     )
     prop = run_placement(model, params, movable_uuids={"uuid-r"})
     
@@ -525,7 +520,7 @@ def test_dccf_resistor_near_locked_rv_courtyards():
         attraction_k_N=5e-05,
         wall_k_N=0.01,
         wall_halo_m=0.003,
-        boundary_k_N=1e-06,
+        
     )
     prop = run_placement(model, params, movable_uuids={r11.uuid})
     
@@ -590,7 +585,7 @@ def test_dccf_multiple_resistors_near_locked():
         attraction_k_N=5e-05,
         wall_k_N=0.01,
         wall_halo_m=0.003,
-        boundary_k_N=1e-06,
+        
     )
     prop = run_placement(model, params, movable_uuids=mobile_uuids)
     
@@ -628,7 +623,7 @@ def test_dccf_multiple_resistors_near_locked():
 def _production_params(**kw):
     """DCCF legalize-regime params (engine defaults): the regime real boards run."""
     base = dict(repulsion_k_N_m2=2e-9, attraction_k_N=8e-3, wall_k_N=8e-2,
-                wall_halo_m=0.006, boundary_k_N=1e-2)
+                wall_halo_m=0.006)
     base.update(kw)
     return PlacementParams(**base)
 

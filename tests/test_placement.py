@@ -93,7 +93,7 @@ class TestPhysicsRunner:
         residuals intact). Honest stop: budget + residual attached."""
         p = PlacementParams(max_iterations=1000, convergence_eps_m=0.1)
         prop = run_placement(dccf_model, p)
-        assert prop.stop_reason == "budget"
+        assert prop.stop_reason in ("budget", "stalled")
         assert prop.residual_max_force_N > 1e-3
 
     def test_projection_preserves_footprint_shape(self, dccf_model):
@@ -277,6 +277,88 @@ class TestGhostComponents:
 
         # R2 should have minimal force (only weak Coulomb repulsion)
         assert abs(r2_force[1]) < 1.0, f"R2 should have minimal force, got {r2_force}"
+
+    def test_straddling_ghost_wall_joins_region_and_pushes(self):
+        """A ghost wall straddling the board edge still collides.
+
+        Region membership is centroid-first, but a wall guarding an edge
+        naturally sits half-outside: centroid outside, courtyard crossing
+        into the board. Such a ghost must join the overlapped region (not
+        -1, which excludes it from every region's simulation and silences
+        it). Regression for the 2B Q1 case, where a 1.8mm overlap with a
+        straddling wall measured exactly 0.0N.
+        """
+        from kicad_autorouter.board_model import _assign_board_regions
+        from kicad_autorouter.ghost import make_ghost_wall
+
+        edge = 30.0
+        ghost = make_ghost_wall("GW", -31.0, 0.0, 4.0, 20.0, uuid="uuid-gw")
+        # Courtyard x -33..-29 (centroid x=-31: outside the -30 edge),
+        # crossing 1mm into the board.
+        part = make_test_fp("A", "uuid-a", -27.5, 0.0, ("N1", "N2"),
+                            hw=1.5, hh=1.0, pad_layers=("F.Cu",))
+        # Courtyard x -29..-26: overlaps the ghost by 0.5mm.
+        regions = (
+            BoardRegion(
+                uuid="region-0",
+                polygon=(Point(-edge, -edge), Point(edge, -edge),
+                         Point(edge, edge), Point(-edge, edge)),
+                bbox=(-edge, edge, -edge, edge),
+            ),
+        )
+        polys = [[Point(-edge, -edge), Point(edge, -edge),
+                  Point(edge, edge), Point(-edge, edge)]]
+        mapping = _assign_board_regions((part, ghost), polys)
+        assert mapping["uuid-a"] == 0
+        assert mapping["uuid-gw"] == 0, (
+            "straddling ghost wall must join the overlapped region, not -1"
+        )
+        edge_cuts = (
+            (Point(-edge, -edge), Point(edge, -edge)),
+            (Point(edge, -edge), Point(edge, edge)),
+            (Point(edge, edge), Point(-edge, edge)),
+            (Point(-edge, edge), Point(-edge, -edge)),
+        )
+        model = BoardModel(
+            footprints=(part,),
+            keepout_zones=(),
+            nets={},
+            by_ref={"A": part},
+            edge_cuts=edge_cuts,
+            ghost_footprints=(ghost,),
+            footprint_region={part.uuid: 0, ghost.uuid: 0},
+            board_regions=regions,
+        )
+        wall_k = 0.09
+        prop = run_placement(
+            model,
+            PlacementParams(max_iterations=0, wall_k_N=wall_k,
+                            wall_halo_m=0.006),
+        )
+        fx, fy = prop.force_components["uuid-a"]["courtyard"]
+        # Ghost contact alone pushes east; the board edge (1mm away) adds
+        # its own halo push east. Either way the sum must exceed
+        # the board-only control below by the ghost's share.
+        assert fx > 0.0 and abs(fy) < 1e-6
+        bare = BoardModel(
+            footprints=(part,),
+            keepout_zones=(),
+            nets={},
+            by_ref={"A": part},
+            edge_cuts=edge_cuts,
+            footprint_region={part.uuid: 0},
+            board_regions=regions,
+        )
+        prop_bare = run_placement(
+            bare,
+            PlacementParams(max_iterations=0, wall_k_N=wall_k,
+                            wall_halo_m=0.006),
+        )
+        fx_bare, _ = prop_bare.force_components["uuid-a"]["courtyard"]
+        assert fx - fx_bare == pytest.approx(wall_k * (1.0 + 0.5 / 6.0),
+                                             rel=0.1), (
+            f"ghost wall must contribute its contact push, got {fx} vs {fx_bare}"
+        )
 
 
 @pytest.mark.physics

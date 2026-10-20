@@ -546,18 +546,16 @@ def _arrow_marker() -> str:
 # Per-cause force colors. Deliberately avoids the semantic palette (locked
 # red, selected green, pinned/move orange, ghost purple, DRC red/orange) as
 # far as a dark board with rainbow net tracks allows; the static HTML legend
-# next to the forces toggle is the authority. Boundary/ghost additionally
-# differ by dash pattern so they survive hue collisions with net tracks.
+# next to the forces toggle is the authority. Ghost additionally differs by
+# dash pattern so it survives hue collisions with net tracks.
 FORCE_CAUSE_COLORS = {
     "repulsion": "#22d3ee",  # cyan
     "attraction": "#a3e635",  # lime
-    "courtyard": "#f472b6",  # pink
-    "boundary": "#e2e8f0",  # near-white, dashed
+    "courtyard": "#f472b6",  # pink (part contact + board wall)
     "ghost": "#c4b5fd",  # pale lavender, dotted
 }
-FORCE_CAUSE_ORDER = ("repulsion", "attraction", "courtyard", "boundary", "ghost")
+FORCE_CAUSE_ORDER = ("repulsion", "attraction", "courtyard", "ghost")
 FORCE_CAUSE_DASH = {
-    "boundary": ' stroke-dasharray="1.5 1.0"',
     "ghost": ' stroke-dasharray="1 1.2"',
 }
 
@@ -580,7 +578,7 @@ def _forces_overlay(model: BoardModel, proposal: PlacementProposal,
                     max_len: float = 5.0) -> List[str]:
     """Draw per-cause force vectors at footprint centroids.
 
-    One arrow per force cause (repulsion/attraction/courtyard/boundary/
+    One arrow per force cause (repulsion/attraction/courtyard/
     ghost) so parameter tuning can see which knob is doing the pushing.
     Lengths use a log scale normalized to the largest visible magnitude —
     raw forces span orders of magnitude (e.g. repulsion ~3 vs courtyard

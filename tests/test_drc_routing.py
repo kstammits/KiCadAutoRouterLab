@@ -43,7 +43,6 @@ MAGNET_PARAMS = PlacementParams(
     # test_magnet.py uses 0.006 with 200 iterations.
     attraction_k_N=0.03,
     wall_k_N=0.03,
-    boundary_k_N=0.5,
     convergence_eps_m=0.0001,
 )
 

@@ -182,7 +182,8 @@ def test_forces_overlay_per_cause_arrows():
     for cause in ("repulsion", "attraction", "courtyard"):
         assert f"url(#force-{cause})" in s
         assert f'id="force-{cause}"' in s
-    # Negligible rigid/ghost/boundary contributions are hidden.
+    # Negligible rigid/ghost contributions are hidden, as are unknown
+    # causes (e.g. the retired "boundary" key).
     assert "url(#force-rigid)" not in s
     assert "url(#force-ghost)" not in s
     assert "url(#force-boundary)" not in s

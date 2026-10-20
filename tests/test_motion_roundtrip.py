@@ -81,7 +81,7 @@ def _run_frames():
         PlacementParams(max_iterations=20, convergence_eps_m=1e-15,
                         repulsion_k_N_m2=1e-06, attraction_k_N=5e-05,
                         wall_k_N=0.002, wall_halo_m=0.003,
-                        boundary_k_N=1e-06),
+        ),
         movable_uuids={UUID_M},
         record_frames=True, frame_stride=1,
     )

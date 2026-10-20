@@ -113,7 +113,7 @@ Velocity re-derivation runs after the clamp, so it reflects clamped motion.
 Adaptive-dt guard (convergence safety net, 5 lines): track system kinetic
 energy; halve `dt` when it rises iteration-over-iteration, regrow ×1.1 when
 it falls, floored at `dt_min`, capped at `dt_max`. This is FIRE's
-blowup-proofing without FIRE's extra state. Floor `dt_min = 2e-4` (not
+blowup-proofing without FIRE's extra state. Floor `dt_min = 5e-5` (not
 1e-5): the halve/regrow asymmetry ratchets `dt` to the floor under
 oscillation, where tiny steps fake convergence while forces are still
 large. Ceiling `dt_max = 2e-3` keeps dense-board steps accurate.
@@ -134,7 +134,7 @@ position is set by the squeeze geometry, not by the wall stiffness.
 
 Convergence: max `‖Δx‖ < eps_m` (meters) per step AND residual forces
 below the settle scale (`force_settle_N = max(20·friction, 4·ghost_k,
-1e-3·max(wall, attraction, boundary))` — far above the deadband so frozen
+1e-3·max(wall, attraction))` — far above the deadband so frozen
 rest still terminates, far below contact scales so any real push keeps the
 run alive). Displacement alone lied: damper-strangled crawls tripped eps
 with ~0.1N pushes unserved (DCCF legalize fake-settled at 234/500 with 9
@@ -155,12 +155,11 @@ deadband cruises past any iteration budget.
 | `wall_k_N` | N | 8e-2 | contact/halo strength |
 | `wall_halo_m` | m | 0.006 | near-miss reach AND depth scale (single law) |
 | `wall_exponent` | — | 1.0 | wall-law exponent (experimental; `≥ 1`) |
-| `boundary_k_N` | N | 1e-2 | edge push |
 | `ghost_k_N` | N | 5e-5 | ghost spring pull (untuned) |
 | `damping_Ns_m` | N·s/m | 0.12 | viscous damper |
 | `friction_N` | N | 1e-6 | motion deadband |
 | `dt_s` | s | 1e-3 | timestep |
-| `dt_min_s` | s | 2e-4 | guard floor |
+| `dt_min_s` | s | 5e-5 | guard floor |
 | `dt_max_s` | s | 2e-3 | guard ceiling |
 | `vmax_m_s` | m/s | 1.0 | speed ceiling |
 | `convergence_eps_m` | m | 2e-5 | settled threshold |
@@ -192,12 +191,18 @@ crawling along their net gradient, so wedge depth can GROW with longer
 budgets on attraction-dominated traps (legalize@200: RV1/R13 15→27 mm²
 once every region runs the full budget). Depth is not progress there —
 capping it needs a no-progress (stall) stop rule and/or anchor-side
-rebalance, not more iterations; tracked as the headless-trust follow-up. sub-0.1°/step rotation
-creep is dropped by the angular deadband (`MIN_ROT_STEP_RAD` in the
-rigid-step clamp — a noise floor, not a slider), but large slow flips
-still occur when the torque is genuine (observed: 0805 flipping ~160°
-toward its rail over 400 iters — a compass-needle response, kept
-deliberately since gradual movement must keep working).
+rebalance, not more iterations. The stall rule exists now
+(`stall_window`, default 100: no net progress of the window-averaged pose
+over the window stops as "stalled" with residual attached — per-step quiet
+never arrives under contact chatter, so the rule compares window means); anchor-side rebalance
+is still the headless-trust follow-up. The
+rigid snap applies half the measured rotation per step (damped snap),
+with the angular deadband (`MIN_ROT_STEP_RAD`) currently 0.0 (disabled:
+parking micro-rotations wedged pairs that otherwise separate) — but
+large slow flips still occur when the torque is genuine
+(observed: 0805 flipping ~160° toward its rail over 400 iters — a
+compass-needle response, kept deliberately since gradual movement must
+keep working).
 
 Future, not planned: orientation-matching neighboring parts. It conflicts
 with the force-driven orientation above (neighbors agreeing on an angle

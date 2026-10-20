@@ -180,7 +180,7 @@ def test_attraction_closes_distance():
     prop = run_placement(m, PlacementParams(
         max_iterations=800, attraction_k_N=0.04, repulsion_k_N_m2=1e-08,
         wall_k_N=0.002, wall_halo_m=0.003,
-        boundary_k_N=1e-15,
+        
         damping_Ns_m=1e-3,
         convergence_eps_m=0.0))  # disable convergence check
     assert gap(prop.deltas) < 0.7 * d0
@@ -295,7 +295,7 @@ def test_pair_settles_early_at_equilibrium():
     prop = run_placement(m, PlacementParams(
         max_iterations=500, repulsion_k_N_m2=kr, attraction_k_N=ka,
         wall_k_N=1e-15, wall_halo_m=0.003,
-        boundary_k_N=1e-15,
+        
         convergence_eps_m=1e-6,  # small threshold to allow early stop
         damping_Ns_m=1e-3))  # lighter damping so equilibrium is reachable
     assert prop.iterations < 500, "settling run must early-stop"

@@ -223,7 +223,7 @@ def main(argv=None) -> int:
 
     out: dict = {"cells": []}
     base_kw = dict(convergence_eps_m=1e-12, repulsion_k_N_m2=1e-15,
-                   boundary_k_N=1e-15, ghost_k_N=1e-15, damping_Ns_m=0.12,
+                   ghost_k_N=1e-15, damping_Ns_m=0.12,
                    dt_s=1e-3, friction_N=1e-6)
 
     # ---- A. head-on press probe (analytic ground truth) ----

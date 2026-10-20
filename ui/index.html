@@ -244,7 +244,6 @@
   .footprint g.motion-force-vectors line.force-repulsion { stroke: #22d3ee; }
   .footprint g.motion-force-vectors line.force-attraction { stroke: #a3e635; }
   .footprint g.motion-force-vectors line.force-courtyard { stroke: #f472b6; }
-  .footprint g.motion-force-vectors line.force-boundary { stroke: #e2e8f0; stroke-dasharray: 1.5 1.0; }
   .footprint g.motion-force-vectors line.force-ghost { stroke: #c4b5fd; stroke-dasharray: 1 1.2; }
 
   /* Decap footprints: server paints the courtyard halo (teal, svg_render
@@ -439,8 +438,7 @@
       <span id="forces-legend" class="chip" style="font-size:0.6rem; display:none; gap:0.5rem; align-items:center;">
         <span><i style="display:inline-block; width:1.2rem; border-top:2px solid #22d3ee;"></i> repulsion</span>
         <span><i style="display:inline-block; width:1.2rem; border-top:2px solid #a3e635;"></i> attraction</span>
-        <span><i style="display:inline-block; width:1.2rem; border-top:2px solid #f472b6;"></i> courtyard</span>
-        <span><i style="display:inline-block; width:1.2rem; border-top:2px dashed #e2e8f0;"></i> boundary</span>
+        <span><i style="display:inline-block; width:1.2rem; border-top:2px solid #f472b6;"></i> courtyard+wall</span>
         <span><i style="display:inline-block; width:1.2rem; border-top:2px dotted #c4b5fd;"></i> ghost</span>
       </span>
       <label class="chk"><input type="checkbox" id="drc-toggle"> DRC</label>
@@ -733,7 +731,6 @@ const PARAM_DEFS = [
   // display: UI shows millimeters, engine/API stay SI (see toDisplay/fromDisplay).
   { key: "wall_halo_m", label: "Wall halo (mm)", min: 0, max: 0.015, step: 0.0005,
     display: { unit: "mm", scale: 1000, step: 0.5 } },
-  { key: "boundary_k_N", label: "Boundary push (N)", min: 1e-4, max: 1, step: 1e-4, log: true },
   { key: "damping_Ns_m", label: "Damping (N·s/m)", min: 1e-3, max: 1, step: 1e-4, log: true },
   { key: "max_iterations", label: "Max iterations", min: 1, max: 20000, step: 10 },
 ];
@@ -758,7 +755,6 @@ const PARAM_DESC = {
   attraction_k_N: "Constant-magnitude attraction between net-connected pads (newtons). Legalize: 0.005-0.01; Cluster: 0.04-0.06. Log scale.",
   wall_k_N: "Elastic collision stiffness when courtyards overlap or enter the halo (newtons). One linear law F = k*(1-s/h) in signed distance s (gap +, penetration -): zero past the halo, k at contact, growing with depth. Deepest contact wins per pair. Legalize: 0.08-0.1; Cluster: 0.02-0.03. Log scale.",
   wall_halo_m: "Near-miss reach past part outlines. Shown in mm; stored in meters. Default 6mm.",
-  boundary_k_N: "Push from board region edges (newtons). Decisive at the edge without shoving edge-near parts into neighbors. Log scale.",
   damping_Ns_m: "Viscous damping F = −c·v (N·s/m). The physics damper: higher settles faster with less overshoot. Legalize: 0.12-0.15; Cluster: 0.08. Log scale.",
   max_iterations: "Hard limit on simulation steps (dimensionless).",
   power_attraction_scale: "Power-rail attraction trim (fanout-scaled k/(fanout-1) per edge). 1 = full participation; 0 restores the old exclude-power behavior.",
@@ -2501,7 +2497,7 @@ function motionFpNode(uuid) {
 
 // Force cause order (paint lives in CSS: .motion-force-vectors line.force-<cause>).
 // Keep server svg_render.FORCE_CAUSE_COLORS and the #forces-legend chips in sync.
-const FORCE_CAUSE_ORDER = ["repulsion", "attraction", "courtyard", "boundary", "ghost"];
+const FORCE_CAUSE_ORDER = ["repulsion", "attraction", "courtyard", "ghost"];
 
 function drawForceVectors(svg, frameIdx) {
   // Remove existing motion force vectors from footprint groups

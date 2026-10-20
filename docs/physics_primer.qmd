@@ -37,9 +37,9 @@ All quantities in the solver are SI: **meters** for geometry, **newtons** for fo
 
 ## 1. Force Laws Overview
 
-The net force on each pad is the sum of five independent causes:
+The net force on each pad is the sum of four independent causes:
 
-$$\mathbf{F}_{\text{total}} = \mathbf{F}_{\text{repulsion}} + \mathbf{F}_{\text{attraction}} + \mathbf{F}_{\text{courtyard}} + \mathbf{F}_{\text{boundary}} + \mathbf{F}_{\text{ghost}}$$
+$$\mathbf{F}_{\text{total}} = \mathbf{F}_{\text{repulsion}} + \mathbf{F}_{\text{attraction}} + \mathbf{F}_{\text{courtyard}} + \mathbf{F}_{\text{ghost}}$$
 
 Each cause has a distinct role and color in the SVG force overlay:
 
@@ -47,8 +47,7 @@ Each cause has a distinct role and color in the SVG force overlay:
 |-------|-------|------|----------------|
 | **Repulsion** | Cyan `#22d3ee` | Pad-to-pad Coulomb push ($k_{\text{rep}}/d^2$) | `repulsion_k_N_m2` |
 | **Attraction** | Lime `#a3e635` | Net springs pulling connected pads together | `attraction_k_N` |
-| **Courtyard** | Pink `#f472b6` | Collision response (SAT minimum-translation axis) | `wall_k_N`, `wall_halo_m` |
-| **Boundary** | Near-white `#e2e8f0` (dashed) | Keeps footprints inside board region | `boundary_k_N` |
+| **Courtyard** | Pink `#f472b6` | Collision response (SAT minimum-translation axis), plus the board wall (region polygon as inverted courtyard) | `wall_k_N`, `wall_halo_m` |
 | **Ghost** | Lavender `#c4b5fd` (dotted) | Pulls target parts toward ghost anchors | `ghost_k_N` |
 
 ```{python}
@@ -58,8 +57,7 @@ Each cause has a distinct role and color in the SVG force overlay:
 FORCE_CAUSE_COLORS = {
     "repulsion": "#22d3ee",    # cyan
     "attraction": "#a3e635",   # lime
-    "courtyard": "#f472b6",    # pink
-    "boundary": "#e2e8f0",     # near-white, dashed
+    "courtyard": "#f472b6",    # pink (part contact + board wall)
     "ghost": "#c4b5fd",        # pale lavender, dotted
 }
 ```
@@ -339,7 +337,6 @@ for i, wk in enumerate(wall_k_vals):
             damping_Ns_m=damp,
             repulsion_k_N_m2=1e-15,  # disable repulsion
             attraction_k_N=1e-15,    # disable attraction
-            boundary_k_N=1e-15,
             ghost_k_N=1e-15,
         )
         prop = run_placement(model, params)
@@ -376,33 +373,23 @@ plt.show()
 
 ---
 
-## 5. Boundary Repulsion
+## 5. Board Wall (Region Edge)
 
-**Formula** (from `si_force_laws.md`, per board-region edge):
+There is no separate boundary law: the board region polygon is an
+**inverted courtyard** evaluated with the same wall law
+$F = k(1-s/h)^p$ from §4. Inside the outline the signed separation is
+the gap to the region boundary (halo pull-off, $k$ at touch);
+straddling the edge it is minus the protrusion depth (growing
+push-out); fully outside — or inside a cutout — it is a bounded
+pull-home at contact strength. Cutouts act as walls for free, since
+the distance is measured to the full region boundary (outer ring +
+holes). Containment stiffness is `wall_k_N`: under 25x repulsion gain
+a corner pile-up can rest ~2mm over the line, while production gain
+seats parts fully inside.
 
-$$F_{\text{edge}} = \begin{cases}
-0 & d \geq t \\
-2\,k_b\,\dfrac{t - d}{t} & 0 \leq d < t \\
-\sim k_b\ \text{(saturating)} & d < 0\ \text{(outside)}
-\end{cases}$$
-
-where $d$ is the pad-to-edge distance in meters and $t$ is a **dynamic
-threshold**: 10% of the footprint's largest extent, clamped to 1–10 mm
-(`placement.py`, region loop). Each of the four region edges pushes
-independently (left/bottom positive, right/top negative), applied per pad —
-so a part straddling a corner feels the vector sum. Default
-`boundary_k_N = 1e-2` N (10 mN).
-
-**Key insight**: the threshold scales with part size, so small passives feel
-the wall only in the last 1 mm while a 100 mm board-edge connector gets the
-full 10 mm lookahead. There is no user-facing threshold knob — size-relative
-behavior is automatic.
-
-**Parameter tradeoff**:
-
-| Parameter | Effect | Typical Range |
-|-----------|--------|---------------|
-| `boundary_k_N` | Wall stiffness. Higher = harder containment, but fights net attraction near edges (parts with pads near the edge get pinned by the sum) | 0.005–0.02 N |
+**Key insight**: one law, two roles — a neighbour's courtyard pushes
+parts apart, the board's inverted courtyard pushes them inside. There
+is no boundary knob to tune against the wall.
 
 ---
 
@@ -487,7 +474,6 @@ for i, ka in enumerate(ka_vals):
         convergence_eps_m=1e-15,
         repulsion_k_N_m2=1e-15,  # disable repulsion
         attraction_k_N=1e-15,    # disable attraction
-        boundary_k_N=1e-15,      # disable boundary
     )
     prop = run_placement(make_ghost_model(float(ka)), params)
     pull_in[i] = prop.deltas.get("uuid-a", (0.0, 0.0, 0.0))[0]
@@ -507,7 +493,7 @@ plt.show()
 
 **Key insight**: weak pulls also crawl for a second reason — a lone
 constant force accelerating from rest trips the adaptive-dt guard (§8) down
-to its floor, so the run spends its whole budget at 0.2 ms steps. Terminal
+to its floor, so the run spends its whole budget at 0.05 ms steps. Terminal
 velocity still scales with `F`, which is why the curve stays linear, but
 budget your iterations (or your `ka`) accordingly.
 
@@ -628,7 +614,7 @@ Two guards sit on top:
   over 400 iters — a compass-needle response, kept deliberately).
 - **Adaptive-dt guard** (convergence safety net): tracks system kinetic
   energy; halves `dt` when it rises iteration-over-iteration, regrows ×1.1
-  when it falls, floored at `dt_min_s = 0.2 ms`, capped at `dt_max_s = 2 ms`.
+  when it falls, floored at `dt_min_s = 0.05 ms`, capped at `dt_max_s = 2 ms`.
   The halve/regrow asymmetry ratchets `dt` to the floor under sustained
   acceleration — e.g. a lone constant force spinning up from rest (see §6) —
   where tiny steps fake slow progress while forces stay large. The floor
@@ -694,7 +680,7 @@ the clamp); drop below it and runs burn budget inside the friction deadband.
 |-----------|--------|---------------|
 | `dt_s` | Step size. Larger = faster but coarser; the guard adapts downward under instability | 1 ms default (legalize), 2 ms cluster |
 | `vmax_m_s` | Speed ceiling + rigid-step clamp scale. Higher = faster, less stable | 1.0 m/s default |
-| `dt_min_s` / `dt_max_s` | Guard rails, not knobs. Floor stops fake convergence; ceiling keeps dense steps accurate | 0.2 ms / 2 ms |
+| `dt_min_s` / `dt_max_s` | Guard rails, not knobs. Floor stops fake convergence; ceiling keeps dense steps accurate | 0.05 ms / 2 ms |
 
 ---
 
