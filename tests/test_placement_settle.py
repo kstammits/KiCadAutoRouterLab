@@ -21,7 +21,7 @@ import math
 
 import pytest
 
-from kicad_autorouter.board_model import BoardModel, Point, apply_deltas
+from kicad_autorouter.board_model import BoardModel, Point, Footprint, apply_deltas
 from kicad_autorouter.placement import PlacementParams, run_placement
 
 from .helpers import make_fp, overlap_area
@@ -253,3 +253,160 @@ def test_r5_legalize_chatter_stops_stalled(dccf_model):
     assert prop.stop_reason == "stalled"
     assert prop.iterations < 1000
     assert prop.residual_max_force_N > 1e-3
+
+
+# --- Legality tests (per docs/legality_spec.md) ---
+
+@pytest.mark.physics
+def test_illegal_overlap_blocks_converged():
+    """Two movable squares with shared net overlapping must report stalled,
+    not converged, when overlap exceeds tolerance."""
+    fa = make_fp("A", "uuid-a", 0.0, 0.0, ("N1", "N2"),
+                 footprint_id="test:R", hw=3.0, hh=2.0,
+                 pad_layers=("F.Cu",), pad_shape="circle")
+    fb = make_fp("B", "uuid-b", 1.0, 0.0, ("N1", "N4"),  # Shared net N1
+                 footprint_id="test:R", hw=3.0, hh=2.0,
+                 pad_layers=("F.Cu",), pad_shape="circle")
+    model = _board([fa, fb], edge=30.0)
+    assert overlap_area(model, {}) > 10.0
+    prop = run_placement(
+        model,
+        PlacementParams(max_iterations=200, convergence_eps_m=1e-3,
+                        repulsion_k_N_m2=1e-15, attraction_k_N=0.5,
+                        wall_k_N=0.02, wall_halo_m=0.006,
+                        ghost_k_N=1e-15, damping_Ns_m=0.12),
+    )
+    assert prop.stop_reason == "stalled", (
+        f"illegal overlap must stall, got {prop.stop_reason}")
+    assert not prop.legality_is_legal
+    assert len(prop.overlapping_pairs) == 1
+    ua, ub, area = prop.overlapping_pairs[0]
+    assert {ua, ub} == {"uuid-a", "uuid-b"}
+    assert area > 0.1
+
+
+@pytest.mark.physics
+def test_ghost_overlap_is_illegal():
+    """Movable overlapping a ghost wall must be illegal and report stalled."""
+    from kicad_autorouter.board_model import Footprint
+    fa = make_fp("A", "uuid-a", 0.0, 0.0, ("N1", "N2"),
+                 footprint_id="test:R", hw=3.0, hh=2.0,
+                 pad_layers=("F.Cu",), pad_shape="circle")
+    # Ghost wall at same position
+    ghost = Footprint(
+        ref="GW1", footprint_id="test:wall", layer="F.Cu",
+        x_mm=0.0, y_mm=0.0, angle_deg=0.0, pads=(),
+        courtyard=(
+            (Point(-5, -5), Point(5, -5)),
+            (Point(5, -5), Point(5, 5)),
+            (Point(5, 5), Point(-5, 5)),
+            (Point(-5, 5), Point(-5, -5)),
+        ),
+        locked=False, uuid="uuid-gw", ghost=True, ghost_attractions=(),
+    )
+    model = _board([fa, ghost], edge=30.0)
+    assert overlap_area(model, {}, uuids=("uuid-a", "uuid-gw")) > 10.0
+    prop = run_placement(
+        model,
+        PlacementParams(max_iterations=100, convergence_eps_m=1e-3,
+                        repulsion_k_N_m2=1e-15, attraction_k_N=1e-15,
+                        wall_k_N=0.08, wall_halo_m=0.006,
+                        ghost_k_N=1e-15, damping_Ns_m=0.12),
+    )
+    assert prop.stop_reason == "stalled"
+    assert not prop.legality_is_legal
+    assert len(prop.overlapping_pairs) == 1
+    ua, ub, area = prop.overlapping_pairs[0]
+    assert {ua, ub} == {"uuid-a", "uuid-gw"}
+    assert area > 0.1
+
+
+@pytest.mark.physics
+def test_ghost_over_locked_is_exempt():
+    """Ghost overlapping a locked part is exempt by design."""
+    from kicad_autorouter.board_model import Footprint
+    fb = make_fp("B", "uuid-b", 0.0, 0.0, ("N1", "N2"),
+                 footprint_id="test:R", hw=3.0, hh=2.0,
+                 pad_layers=("F.Cu",), pad_shape="circle", locked=True)
+    ghost = Footprint(
+        ref="GW1", footprint_id="test:wall", layer="F.Cu",
+        x_mm=0.0, y_mm=0.0, angle_deg=0.0, pads=(),
+        courtyard=(
+            (Point(-5, -5), Point(5, -5)),
+            (Point(5, -5), Point(5, 5)),
+            (Point(5, 5), Point(-5, 5)),
+            (Point(-5, 5), Point(-5, -5)),
+        ),
+        locked=False, uuid="uuid-gw", ghost=True, ghost_attractions=(),
+    )
+    model = _board([fb, ghost], edge=30.0)
+    prop = run_placement(
+        model,
+        PlacementParams(max_iterations=10, convergence_eps_m=1e-3),
+    )
+    # Ghost-locked overlap is exempt, so no overlapping_pairs recorded
+    assert prop.legality_is_legal
+    assert len(prop.overlapping_pairs) == 0
+    # Exempt pair should be recorded
+    assert ("uuid-b", "uuid-gw") in prop.exempt_pairs or ("uuid-gw", "uuid-b") in prop.exempt_pairs
+
+
+@pytest.mark.physics
+def test_wall_penetration_blocks_converged():
+    """Movable straddling the region edge must be illegal and report stalled."""
+    from kicad_autorouter.board_model import BoardRegion
+    # Part inside board, pulled toward edge by ghost attraction
+    # Ghost outside board pulls part against wall
+    fa = make_fp("A", "uuid-a", 15.0, 0.0, ("N1", "N2"),
+                 footprint_id="test:R", hw=3.0, hh=2.0,
+                 pad_layers=("F.Cu",), pad_shape="circle")
+    ghost = Footprint(
+        ref="GW1", footprint_id="test:wall", layer="F.Cu",
+        x_mm=30.0, y_mm=0.0, angle_deg=0.0, pads=(),
+        courtyard=(
+            (Point(25, -5), Point(35, -5)),
+            (Point(35, -5), Point(35, 5)),
+            (Point(35, 5), Point(25, 5)),
+            (Point(25, 5), Point(25, -5)),
+        ),
+        locked=False, uuid="uuid-gw", ghost=True,
+        ghost_attractions=(("A", 0.5),),  # Pull A toward x=30
+    )
+    # Board x in [-20, 20], ghost at x=30 (outside)
+    region_poly = (
+        Point(-20, -20), Point(20, -20),
+        Point(20, 20), Point(-20, 20), Point(-20, -20)
+    )
+    region = BoardRegion(
+        uuid='region-0',
+        polygon=region_poly,
+        bbox=(-20.0, 20.0, -20.0, 20.0)
+    )
+    model = BoardModel(
+        footprints=(fa,),
+        ghost_footprints=(ghost,),
+        keepout_zones=(),
+        nets={},
+        by_ref={fa.ref: fa},
+        edge_cuts=(
+            (Point(-20, -20), Point(20, -20)),
+            (Point(20, -20), Point(20, 20)),
+            (Point(20, 20), Point(-20, 20)),
+            (Point(-20, 20), Point(-20, -20)),
+        ),
+        board_regions=(region,),
+        footprint_region={fa.uuid: 0, ghost.uuid: 0},
+    )
+    prop = run_placement(
+        model,
+        PlacementParams(max_iterations=200, convergence_eps_m=1e-3,
+                        wall_k_N=0.05, wall_halo_m=0.006,
+                        ghost_k_N=1.0, damping_Ns_m=0.12),
+    )
+    assert prop.stop_reason == "stalled", (
+        f"wall penetration must stall, got {prop.stop_reason}")
+    assert not prop.legality_is_legal
+    assert len(prop.wall_violations) == 1
+    uuid, depth = prop.wall_violations[0]
+    assert uuid == "uuid-a"
+    assert depth > 0.1

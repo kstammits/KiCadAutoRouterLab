@@ -105,6 +105,10 @@ class PlacementParams:
     decap_boost: float = 4.0
     # Kill-switch for power participation.
     include_power_nets: bool = True
+    # Courtyard-overlap area (mm^2) above which a pair is illegal.
+    overlap_tolerance_mm2: float = 0.1
+    # Board-wall protrusion depth (mm) above which a part is illegal.
+    wall_tolerance_mm: float = 0.1
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -113,9 +117,20 @@ class PlacementParams:
     def from_dict(cls, data: dict) -> "PlacementParams":
         """Build params from a JSON-style dict; missing keys take defaults and
         unknown keys are ignored (forward compatibility with newer param sets,
-        and silent drop of legacy v1 keys)."""
+        and silent drop of legacy v1 keys).
+
+        ``dt_min_s``/``dt_max_s`` are solver-internal timestep guards; they are
+        never exposed on the UI and are deliberately not user-controllable, so
+        any values present in ``data`` (e.g. a stale placement.json round-trip)
+        are dropped here and the dataclass defaults take over. This keeps
+        lowering ``dt_s`` from ever failing validation against a stale
+        ``dt_min_s``.
+        """
         known = {f.name for f in fields(cls)}
-        params = cls(**{name: data[name] for name in known if name in data})
+        params = cls(**{
+            name: data[name] for name in known
+            if name in data and name not in ("dt_min_s", "dt_max_s")
+        })
         _validate(params)
         return params
 
@@ -140,6 +155,8 @@ def _validate(params: PlacementParams) -> None:
         "decap_boost",
         "wall_exponent",
         "wall_cap_depth_mm",
+        "overlap_tolerance_mm2",
+        "wall_tolerance_mm",
     )
     for name in numeric:
         value = getattr(params, name)

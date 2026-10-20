@@ -37,6 +37,7 @@ from .params import (
     PlacementParams,
     _validate,
 )
+from .legality import LegalityReport, check_legality
 from .rigid import (
     _clamp_rigid_step,
     _compute_footprint_pose_from_pads,
@@ -92,6 +93,13 @@ class PlacementProposal:
     frame_stride: int = 1
     stop_reason: str = "budget"
     residual_max_force_N: float = 0.0
+    # Legality fields (post-hoc geometric check on final positions)
+    legality_is_legal: bool = True
+    overlapping_pairs: Tuple[Tuple[str, str, float], ...] = ()
+    wall_violations: Tuple[Tuple[str, float], ...] = ()
+    max_pair_overlap_mm2: float = 0.0
+    max_wall_penetration_mm: float = 0.0
+    exempt_pairs: Tuple[Tuple[str, str], ...] = ()
 
 
 def _run_region_simulation(
@@ -686,7 +694,14 @@ def _run_region_simulation(
     footprint_forces: Dict[str, Tuple[float, float]] = {}
     footprint_components: Dict[str, Dict[str, Tuple[float, float]]] = {}
 
-    final_force, final_components = initial_force, initial_components
+    final_force, final_components = _compute_total_force(
+        positions, len(region_pads), pad_movable,
+        params, has_net_edges, src_idx, dst_idx, edge_weights,
+        ghost_attractions,
+        same_fp_mask,
+        return_components=True,
+        ctx=fctx,
+    )
 
     for fp in model.footprints:
         if model.footprint_region.get(fp.uuid) != region_idx:
@@ -894,6 +909,17 @@ def run_placement(
         merged_force_frames = _thin_frames(
             _merge_region_force_frames(all_region_force_frames), max_frames
         ) if record_frames else []
+
+        # Post-hoc legality check on final merged deltas
+        legality = check_legality(
+            model, all_deltas,
+            overlap_tolerance_mm2=params.overlap_tolerance_mm2,
+            wall_tolerance_mm=params.wall_tolerance_mm,
+        )
+        final_stop = all_stop if any_region else "empty"
+        if final_stop == "converged" and not legality.is_legal:
+            final_stop = "stalled"
+
         return PlacementProposal(
             deltas=all_deltas,
             iterations=total_iterations,
@@ -905,8 +931,14 @@ def run_placement(
             frames=merged_frames,
             force_frames=merged_force_frames,
             frame_stride=_eff_stride if record_frames else 1,
-            stop_reason=all_stop if any_region else "empty",
+            stop_reason=final_stop,
             residual_max_force_N=all_residual,
+            legality_is_legal=legality.is_legal,
+            overlapping_pairs=legality.overlapping_pairs,
+            wall_violations=legality.wall_violations,
+            max_pair_overlap_mm2=legality.max_pair_overlap_mm2,
+            max_wall_penetration_mm=legality.max_wall_penetration_mm,
+            exempt_pairs=legality.exempt_pairs,
         )
 
     # Single region mode: create a virtual region covering the whole board
@@ -936,6 +968,17 @@ def run_placement(
 
     thin_frames = _thin_frames(region_frames, max_frames) if record_frames else []
     thin_force_frames = _thin_frames(region_force_frames, max_frames) if record_frames else []
+
+    # Post-hoc legality check on final deltas
+    legality = check_legality(
+        model, region_deltas,
+        overlap_tolerance_mm2=params.overlap_tolerance_mm2,
+        wall_tolerance_mm=params.wall_tolerance_mm,
+    )
+    final_stop = region_stop
+    if final_stop == "converged" and not legality.is_legal:
+        final_stop = "stalled"
+
     return PlacementProposal(
         deltas=region_deltas,
         iterations=region_iters,
@@ -949,6 +992,12 @@ def run_placement(
         frames=thin_frames,
         force_frames=thin_force_frames,
         frame_stride=_eff_stride if record_frames else 1,
-        stop_reason=region_stop,
+        stop_reason=final_stop,
         residual_max_force_N=region_residual,
+        legality_is_legal=legality.is_legal,
+        overlapping_pairs=legality.overlapping_pairs,
+        wall_violations=legality.wall_violations,
+        max_pair_overlap_mm2=legality.max_pair_overlap_mm2,
+        max_wall_penetration_mm=legality.max_wall_penetration_mm,
+        exempt_pairs=legality.exempt_pairs,
     )

@@ -8,6 +8,7 @@ Test categories (pytest markers):
 """
 
 import math
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -374,11 +375,11 @@ class TestForceComponents:
         assert comps["ghost"][1] < 0, "ghost pull on U1 should point up"
 
     def test_forces_predict_next_step_not_residual(self):
-        """Reported forces are evaluated at the committed board (F0).
+        """Reported forces are evaluated at the final committed position.
 
-        They must be horizon-independent (identical for a static probe and a
-        multi-iteration run from the same pose) so the overlay predicts the
-        next Step instead of showing the residual at the preview end.
+        A static force probe rebuilt at the final positions of a stepping run
+        must reproduce the stepping run's reported forces, so the overlay
+        matches where parts actually ended up (not the stale F0 pose).
         """
         m = _two_squares_model(gap_mm=2.0)
         base = dict(
@@ -386,17 +387,34 @@ class TestForceComponents:
             wall_k_N=9.999999999999999e-05,
             wall_halo_m=0.003,
         )
-        static_prop = run_placement(m, PlacementParams(max_iterations=0, **base))
-        stepping_prop = run_placement(m, PlacementParams(max_iterations=5, **base))
-        assert static_prop.forces.keys() == stepping_prop.forces.keys()
-        for uuid, f_static in static_prop.forces.items():
-            f_step = stepping_prop.forces[uuid]
-            assert f_step == pytest.approx(f_static)
-            c_static = static_prop.force_components[uuid]
-            c_step = stepping_prop.force_components[uuid]
-            assert set(c_step) == set(c_static)
-            for cause, v_static in c_static.items():
-                assert c_step[cause] == pytest.approx(v_static)
+        stepping = run_placement(m, PlacementParams(max_iterations=5, **base))
+
+        shifted = []
+        for fp in m.footprints:
+            dx, dy, da = stepping.deltas.get(fp.uuid, (0.0, 0.0, 0.0))
+            shifted.append(
+                replace(fp, x_mm=fp.x_mm + dx, y_mm=fp.y_mm + dy,
+                        angle_deg=fp.angle_deg + da)
+            )
+        at_end = BoardModel(
+            footprints=tuple(shifted),
+            keepout_zones=(),
+            nets={},
+            by_ref={fp.ref: fp for fp in shifted},
+            board_regions=m.board_regions,
+            footprint_region={fp.uuid: 0 for fp in shifted},
+        )
+        static_at_end = run_placement(at_end, PlacementParams(max_iterations=0, **base))
+
+        assert stepping.forces.keys() == static_at_end.forces.keys()
+        for uuid, f_step in stepping.forces.items():
+            f_end = static_at_end.forces[uuid]
+            assert f_end == pytest.approx(f_step, rel=1e-3)
+            c_step = stepping.force_components[uuid]
+            c_end = static_at_end.force_components[uuid]
+            assert set(c_end) == set(c_step)
+            for cause, v_step in c_step.items():
+                assert c_end[cause] == pytest.approx(v_step, rel=1e-3)
 
     def test_single_step_delta_follows_reported_force(self):
         """For a 1-iteration run the displacement must head along F0."""

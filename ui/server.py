@@ -1102,6 +1102,12 @@ def proposal_to_json(proposal, include_frames=True) -> dict:
         "params": proposal.params,
         "stop_reason": getattr(proposal, "stop_reason", "budget"),
         "residual_max_force_N": r5(getattr(proposal, "residual_max_force_N", 0.0)),
+        "legality_is_legal": getattr(proposal, "legality_is_legal", True),
+        "overlapping_pairs": getattr(proposal, "overlapping_pairs", []),
+        "wall_violations": getattr(proposal, "wall_violations", []),
+        "max_pair_overlap_mm2": r5(getattr(proposal, "max_pair_overlap_mm2", 0.0)),
+        "max_wall_penetration_mm": r5(getattr(proposal, "max_wall_penetration_mm", 0.0)),
+        "exempt_pairs": getattr(proposal, "exempt_pairs", []),
     }
     frames = getattr(proposal, "frames", None) or []
     if include_frames and frames:
@@ -1737,6 +1743,14 @@ class Handler(BaseHTTPRequestHandler):
                 "version": version,
                 "frame_count": len(getattr(proposal, "frames", None) or []),
                 "frame_stride": getattr(proposal, "frame_stride", 1),
+                "stop_reason": getattr(proposal, "stop_reason", "budget"),
+                "residual_max_force_N": getattr(proposal, "residual_max_force_N", 0.0),
+                "legality_is_legal": getattr(proposal, "legality_is_legal", True),
+                "overlapping_pairs": getattr(proposal, "overlapping_pairs", []),
+                "wall_violations": getattr(proposal, "wall_violations", []),
+                "max_pair_overlap_mm2": getattr(proposal, "max_pair_overlap_mm2", 0.0),
+                "max_wall_penetration_mm": getattr(proposal, "max_wall_penetration_mm", 0.0),
+                "exempt_pairs": getattr(proposal, "exempt_pairs", []),
             }
             self._send(200, json.dumps(payload).encode(), "application/json")
             return

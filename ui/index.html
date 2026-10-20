@@ -53,6 +53,9 @@
   .state-movable { background:#1a2a1a; color:#5aaa5a; border:1px solid #2a4a2a; }
   .state-fixed { background:#2a2a2a; color:#5b6b7a; border:1px solid #3a3a3a; }
   .state-ghost { background:#3d1a3d; color:#a85cf5; border:1px solid #5a2a5a; }
+  .state-illegal { background:#3d1a1a; color:#e06c75; border:1px solid #5a2a2a; }
+  
+  .fp-table tr.fp-illegal-row td { background:#3d1a1a; }
   
   .sidebar-footer { padding:.5rem .75rem; border-top:1px solid #2a3540; display:flex; gap:.4rem; flex-wrap:wrap; }
   .sidebar-footer button { flex:1; min-width:0; padding:.3rem .5rem; font-size:.65rem; }
@@ -1765,6 +1768,9 @@ function selectNetFromCopper(net, additive) {
 
 // Load footprints list from server
 let allFootprints = []; // Cache of all footprints from server
+// Legality state from last placement run
+let illegalUuids = new Set(); // UUIDs in overlapping_pairs or wall_violations
+let lastLegality = {};        // Full legality report for diagnostics/tooltips
 let fpSortKey = null; // Current sort column: ref | footprint | layer | nets | state
 let fpSortDir = 1; // 1 = asc, -1 = desc
 
@@ -1881,7 +1887,29 @@ function getStateBadge(fp) {
   if (fp.locked) return '<span class="state-badge state-locked">Locked</span>';
   if (fp.pinned) return '<span class="state-badge state-pinned">Pinned</span>';
   if (fp.selected) return '<span class="state-badge state-selected">Selected</span>';
+  if (illegalUuids.has(fp.uuid)) return '<span class="state-badge state-illegal">⚠ Illegal</span>';
   return '<span class="state-badge state-movable">Movable</span>';
+}
+
+function getLegalityTooltip(fp) {
+  if (!lastLegality || !illegalUuids.has(fp.uuid)) return "";
+  const parts = [];
+  if (lastLegality.overlapping_pairs) {
+    for (const [ua, ub, area] of lastLegality.overlapping_pairs) {
+      if (ua === fp.uuid || ub === fp.uuid) {
+        const peer = ua === fp.uuid ? ub : ua;
+        parts.push(`Overlaps ${peer} (${area.toFixed(3)} mm²)`);
+      }
+    }
+  }
+  if (lastLegality.wall_violations) {
+    for (const [uuid, depth] of lastLegality.wall_violations) {
+      if (uuid === fp.uuid) {
+        parts.push(`Wall penetration ${depth.toFixed(3)} mm`);
+      }
+    }
+  }
+  return parts.join("; ");
 }
 
 function renderFootprintTable() {
@@ -1892,8 +1920,10 @@ function renderFootprintTable() {
     const netsStr = fp.nets.slice(0, 3).join(", ") + (fp.nets.length > 3 ? ` +${fp.nets.length - 3}` : "");
     const layerClass = fp.layer === "B" ? "B" : "F";
     const isGhostSel = fp.ghost && selectedGhostUuid === fp.uuid;
+    const isIllegal = illegalUuids.has(fp.uuid);
+    const tooltip = getLegalityTooltip(fp);
     return `
-      <tr class="${fp.selected || isGhostSel ? 'fp-selected-row' : ''} ${fp.locked ? 'fp-locked-row' : ''} ${fp.pinned ? 'fp-pinned-row' : ''} ${fp.ghost ? 'fp-ghost-row' : ''}" data-uuid="${fp.uuid}">
+      <tr class="${fp.selected || isGhostSel ? 'fp-selected-row' : ''} ${fp.locked ? 'fp-locked-row' : ''} ${fp.pinned ? 'fp-pinned-row' : ''} ${fp.ghost ? 'fp-ghost-row' : ''} ${isIllegal ? 'fp-illegal-row' : ''}" data-uuid="${fp.uuid}" ${tooltip ? `title="${tooltip}"` : ''}>
         <td class="fp-col-select"><input type="checkbox" ${fp.selected ? 'checked' : ''} ${fp.locked || fp.pinned || fp.ghost ? 'disabled' : ''} data-uuid="${fp.uuid}"></td>
         <td class="fp-col-ref" title="${fp.ref}">${fp.ref}</td>
         <td class="fp-col-footprint" title="${fp.footprint_id}">${fp.footprint_id}</td>
@@ -2062,6 +2092,8 @@ async function selectByNet(net) {
 
 // Load pinned on board load
 async function loadSelectionState() {
+  illegalUuids.clear();
+  lastLegality = {};
   await fetchPinned();
   await fetchSelected();
   await fetchFootprints();
@@ -2808,15 +2840,38 @@ async function runPlacement(movableUuids, iterations) {
     });
     if (!res.ok) throw new Error(await res.text());
     const r = await res.json();
+    
+    // Capture legality data for parts table
+    illegalUuids.clear();
+    lastLegality = r;
+    if (r.overlapping_pairs) {
+      for (const [ua, ub] of r.overlapping_pairs) {
+        illegalUuids.add(ua);
+        illegalUuids.add(ub);
+      }
+    }
+    if (r.wall_violations) {
+      for (const [uuid] of r.wall_violations) {
+        illegalUuids.add(uuid);
+      }
+    }
+    
     await loadMotionFrames(true);
     if (r.moved > 0) {
-      diagEl.textContent = `v${r.version} — ${r.moved} moved, max Δ ${r.final_max_disp_mm.toFixed(2)} mm, ${r.iterations} iters, ${r.elapsed_s.toPrecision(2)} s`;
+      let diag = `v${r.version} — ${r.moved} moved, max Δ ${r.final_max_disp_mm.toFixed(2)} mm, ${r.iterations} iters, ${r.elapsed_s.toPrecision(2)} s`;
+      if (r.stop_reason === "stalled" && !r.legality_is_legal) {
+        const nOverlap = r.overlapping_pairs ? r.overlapping_pairs.length : 0;
+        const nWall = r.wall_violations ? r.wall_violations.length : 0;
+        if (nOverlap || nWall) diag += ` — ${nOverlap} overlap${nOverlap !== 1 ? "s" : ""}, ${nWall} wall violation${nWall !== 1 ? "s" : ""}`;
+      }
+      diagEl.textContent = diag;
       document.getElementById("accept-btn").disabled = false;
     } else {
       diagEl.textContent = `v${r.version} — no movement (nothing movable, no nets, or already converged)`;
       document.getElementById("accept-btn").disabled = true;
     }
     document.getElementById("step-selected-btn").textContent = "Step Again";
+    renderFootprintTable(); // Re-render to show illegal state
   } catch (err) {
     diagEl.textContent = err?.name === "AbortError"
       ? `run timed out after ${fmtDuration(timeoutMs)} — try fewer footprints or a smaller iteration budget`
@@ -2871,10 +2926,13 @@ document.getElementById("accept-btn").addEventListener("click", async () => {
 
 document.getElementById("clear-btn").addEventListener("click", async () => {
   await fetch("/api/placement/clear", { method: "POST" });
+  illegalUuids.clear();
+  lastLegality = {};
   diagEl.textContent = "proposal cleared";
   document.getElementById("accept-btn").disabled = true;
   document.getElementById("step-selected-btn").textContent = "Step";
   resetMotionState();
+  renderFootprintTable();
 });
 
 document.getElementById("undo-btn").addEventListener("click", async () => {
@@ -2882,10 +2940,13 @@ document.getElementById("undo-btn").addEventListener("click", async () => {
     const res = await fetch("/api/placement/undo", { method: "POST" });
     if (!res.ok) throw new Error(await res.text());
     const r = await res.json();
+    illegalUuids.clear();
+    lastLegality = {};
     diagEl.textContent = `undone — board reverted to v${r.version}`;
     document.getElementById("accept-btn").disabled = true;
     document.getElementById("step-selected-btn").textContent = "Step";
     resetMotionState();
+    renderFootprintTable();
   } catch (err) {
     diagEl.textContent = `undo failed: ${err.message}`;
   }
@@ -2913,11 +2974,14 @@ document.getElementById("reset-btn").addEventListener("click", async () => {
     const res = await fetch("/api/board/reset", { method: "POST" });
     if (!res.ok) throw new Error(await res.text());
     const r = await res.json();
+    illegalUuids.clear();
+    lastLegality = {};
     diagEl.textContent = `board reset to original (v${r.version})`;
     document.getElementById("accept-btn").disabled = true;
     const runBtn = document.getElementById("run-btn");
     if (runBtn) runBtn.textContent = "Step placement";
     document.getElementById("undo-btn").disabled = true;
+    renderFootprintTable();
   } catch (err) {
     diagEl.textContent = `reset failed: ${err.message}`;
   }

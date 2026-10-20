@@ -32,11 +32,14 @@ from .params import (
 )
 from .rigid import _clamp_rigid_step, _rigid_pose_vertices
 from .runner import PlacementProposal, _run_region_simulation, run_placement
+from .legality import LegalityReport, check_legality
 
 __all__ = [
     "PlacementParams",
     "PlacementProposal",
     "run_placement",
+    "LegalityReport",
+    "check_legality",
     # Backward-compat re-exports (import from submodules in new code):
     "FRAME_ANGLE_DECIMALS",
     "FRAME_XY_DECIMALS",
