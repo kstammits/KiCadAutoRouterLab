@@ -153,19 +153,22 @@ def _compute_footprint_pose_from_pads(
         new_pos = pad_positions[pad_indices[0]]
         return float(new_pos[0]), float(new_pos[1]), fp.angle_deg
 
-    # Original pad positions in footprint-local coordinates
+    # Original pad positions in true footprint-local coordinates (Y down).
+    # ``_to_board`` maps local -> board with R(-angle_deg), so the inverse
+    # used here is R(+angle_deg). Building this frame with the same R(-angle)
+    # as ``_to_board`` (the old behavior) returned a delta whose sign was
+    # opposite to the simulated rigid rotation; ``apply_deltas`` then swung
+    # the part the wrong way (2B Q1 appeared to rotate into C6).
     orig_local = []
     for global_idx in pad_indices:
         local_idx = global_pad_idx_to_local[global_idx]
         pad = fp.pads[local_idx]
-        # Transform from board to local (inverse of _to_board; no mirroring
-        # on either layer — verified against pcbnew, see board_model docstring)
         rad = math.radians(fp.angle_deg)
         cos_a, sin_a = math.cos(rad), math.sin(rad)
         bx = pad.position.x_mm - fp.x_mm
         by = pad.position.y_mm - fp.y_mm
-        lx = bx * cos_a + by * sin_a
-        ly = -bx * sin_a + by * cos_a
+        lx = bx * cos_a - by * sin_a
+        ly = bx * sin_a + by * cos_a
         orig_local.append([lx, ly])
     orig_local = np.array(orig_local, dtype=np.float64)
 
@@ -194,9 +197,11 @@ def _compute_footprint_pose_from_pads(
             Vt[-1, :] *= -1
             R = Vt.T @ U.T
 
-        # Extract angle from rotation matrix
+        # Kabsch returns the row-vector map new = old @ R.T. ``_to_board``
+        # applies R(-angle), so the footprint angle is the negative of the
+        # matrix angle.
         angle_rad = math.atan2(R[1, 0], R[0, 0])
-        angle_deg = math.degrees(angle_rad)
+        angle_deg = math.degrees(-angle_rad)
 
         # New footprint position = new_center - R @ orig_center
         new_fp_pos = new_center - R @ orig_center
@@ -214,7 +219,9 @@ def _compute_footprint_pose_from_pads(
             p1_new = new_positions[1]
             orig_angle = math.atan2(p1_orig[1] - p0_orig[1], p1_orig[0] - p0_orig[0])
             new_angle = math.atan2(p1_new[1] - p0_new[1], p1_new[0] - p0_new[0])
-            angle_deg = math.degrees(new_angle - orig_angle + math.radians(fp.angle_deg))
+            # True local -> board is R(-angle): a local vector at orig_angle
+            # appears at orig_angle - angle_deg.
+            angle_deg = math.degrees(orig_angle - new_angle)
         else:
             angle_deg = fp.angle_deg
         return new_x, new_y, angle_deg

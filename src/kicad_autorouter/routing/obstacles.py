@@ -92,9 +92,17 @@ def build_occupancy_grid(
         clearance_mm = clr * grid.resolution_mm
         _mark_track(cost_grid, grid, track, clearance_mm)
 
-    # 4. Vias -> blocked on both layers at location
+    # 4. Vias -> blocked on both layers with full copper+clearance halo
     for via in model.vias:
-        _mark_via(cost_grid, grid, via)
+        clr = clearance_cells.get(via.net_name, default_clearance_cells) if via.net_name else default_clearance_cells
+        clearance_mm = clr * grid.resolution_mm
+        # Use default track width for the via's net (0.25mm default, or power width if net is power)
+        track_width_mm = 0.25  # default signal width
+        if via.net_name:
+            # We don't have net class info here, but track half-width is used for halo
+            # The actual track width will be resolved later during routing
+            pass
+        _mark_via(cost_grid, grid, via, clearance_mm=clearance_mm, track_half_mm=track_width_mm / 2.0)
 
     # 5. Zones (copper pours) -> blocked on their layer
     for zone in model.zones:
@@ -177,6 +185,24 @@ def build_fanout_cost(
                     _mark_circular_zone(
                         secondary[layer_idx], row, col, inner, FANOUT_HALO_INNER
                     )
+
+    # Foreign vias: hard exclusion ring (like foreign THT pads)
+    for via in model.vias:
+        if not via.net_name or via.net_name == current_net:
+            continue
+        col, row = board_to_grid(grid, via.position.x_mm, via.position.y_mm)
+        # Via spans both layers
+        layers = (0, 1)
+        inner = via_halo_radius_cells(
+            via.size_mm, clearance_mm, track_half_mm, res_mm
+        )
+        for layer_idx in layers:
+            if layer_idx >= n_layers:
+                continue
+            # Hard exclusion: foreign copper must keep clear of the via annulus + clearance + track half-width
+            _mark_circular_zone(
+                secondary[layer_idx], row, col, inner, THT_EXCLUSION
+            )
     return secondary
 
 
@@ -439,6 +465,8 @@ def _mark_pad(
     cells inside a pad's copper.
 
     Through-hole pads: mark on BOTH layers (free via).
+    NPTH (np_thru_hole) and no-net mounting holes get the board hole
+    clearance (0.25 mm) instead of the trace clearance.
     """
     x_mm, y_mm = pad.position.x_mm, pad.position.y_mm
     col, row = board_to_grid(grid, x_mm, y_mm)
@@ -450,6 +478,14 @@ def _mark_pad(
     # Get clearance for this pad's net
     net_name = pad.net_name
     clearance = clearance_cells.get(net_name, default_clearance) if net_name else default_clearance
+
+    # NPTH mounting holes and no-net through-hole pads use hole clearance (0.25 mm)
+    if is_through_hole and (pad.pad_type == "np_thru_hole" or not net_name):
+        # Hole clearance is 0.25 mm per board setup constraints
+        hole_clearance_mm = 0.25
+        hole_clearance_cells = max(1, int(math.ceil(hole_clearance_mm / grid.resolution_mm)))
+        if hole_clearance_cells > clearance:
+            clearance = hole_clearance_cells
 
     # Widen the ring to cover the pad copper itself (+ track half width).
     res_mm = grid.resolution_mm
@@ -480,11 +516,22 @@ def _mark_track(cost_grid: np.ndarray, grid, track, clearance_mm: float = 0.2):
                 layer_grid[r, c] = BLOCKED
 
 
-def _mark_via(cost_grid: np.ndarray, grid, via):
-    """Mark via as blocked on all layers it spans."""
+def _mark_via(
+    cost_grid: np.ndarray,
+    grid,
+    via,
+    clearance_mm: float = 0.2,
+    track_half_mm: float = 0.125,
+):
+    """Mark via with full copper+clearance halo on both layers.
+
+    The halo covers the via annulus (size/2) plus clearance and half the
+    track width, so subsequent nets keep DRC distance to the via copper.
+    """
     col, row = board_to_grid(grid, via.position.x_mm, via.position.y_mm)
+    radius = via_halo_radius_cells(via.size_mm, clearance_mm, track_half_mm, grid.resolution_mm)
     for layer_idx in range(cost_grid.shape[0]):
-        cost_grid[layer_idx, row, col] = max(cost_grid[layer_idx, row, col], BLOCKED)
+        stamp_square(cost_grid[layer_idx], row, col, radius, BLOCKED)
 
 
 def _mark_polygon_on_layers(cost_grid: np.ndarray, grid, polygon, layers, value: int) -> None:

@@ -44,7 +44,7 @@ Segment = Tuple[Point, Point]
 # classify the same in both stages (2026-10-11: placement used an
 # exact-match frozenset and disagreed with routing on such names).
 _POWER_KEYWORDS = (
-    "vcc", "vdd", "v+", "v-", "pwr", "power",
+    "vcc", "vdd", "vin", "v+", "v-", "pwr", "power",
     "+5v", "-5v", "+12v", "-12v", "3v3", "1v8", "1v2", "vbat",
 )
 _GROUND_KEYWORDS = ("gnd", "ground", "vgnd")
@@ -1222,11 +1222,11 @@ def _to_local(
     No mirroring on either layer (see module docstring); ``layer`` is
     accepted for API compatibility and ignored.
 
-    Note: :func:`placement._compute_footprint_pose_from_pads` uses its own
-    inline frame (same ``R(-angle)`` as :func:`_to_board`, not this
-    transpose). That is load-bearing for its Kabsch angle extraction and
-    still yields the correct delta because 2D rotations commute; do not
-    "unify" the two without re-verifying no-move ``da == 0`` at 90/270°.
+    Note: :func:`placement._compute_footprint_pose_from_pads` inverts
+    :func:`_to_board` the same way (``R(+angle)``) before running Kabsch.
+    Its extracted angle must be negated (``atan2(R)`` is the *negative*
+    footprint angle, because ``_to_board`` applies ``R(-angle)``); using
+    the raw angle rotates ``apply_deltas`` opposite to the simulated pose.
     """
     rad = math.radians(-angle_deg)
     cos_a, sin_a = math.cos(rad), math.sin(rad)

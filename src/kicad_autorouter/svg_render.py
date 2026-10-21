@@ -15,7 +15,7 @@ from typing import Collection, Dict, List, Optional, Set, Tuple
 
 from .board_model import BoardModel, Point, apply_deltas, is_ground_net, is_power_net_effective
 from .drc import DEFAULT_IGNORED_TYPES
-from .placement import PlacementProposal
+from .placement import PlacementProposal, _footprint_courtyard_polygon
 
 # Fixed hues for power/ground nets (override the golden-angle sweep in
 # net_colors so rails read instantly; mirrored in ui/index.html legend +
@@ -200,6 +200,20 @@ def _zones_svg(
     return out
 
 
+def _courtyard_edges(fp) -> List[Tuple[Tuple[float, float], Tuple[float, float]]]:
+    """Courtyard edges exactly as placement collision/legality sees them."""
+    if not fp.courtyard:
+        return []
+    poly = _footprint_courtyard_polygon(fp)
+    if poly is None or poly.is_empty:
+        return []
+    coords = list(poly.exterior.coords)
+    return [
+        (tuple(coords[i]), tuple(coords[i + 1]))
+        for i in range(len(coords) - 1)
+    ]
+
+
 def _footprint_courtyard_svg(
     fp,
     is_locked: bool,
@@ -228,10 +242,10 @@ def _footprint_courtyard_svg(
         stroke = FP_DEFAULT_COLOR
         extras = ' stroke-width="0.1" opacity="0.8"'
     lines = []
-    for a, b in fp.courtyard:
+    for (x1, y1), (x2, y2) in _courtyard_edges(fp):
         lines.append(
-            f'<line x1="{_fmt(a.x_mm)}" y1="{_fmt(a.y_mm)}" '
-            f'x2="{_fmt(b.x_mm)}" y2="{_fmt(b.y_mm)}" '
+            f'<line x1="{_fmt(x1)}" y1="{_fmt(y1)}" '
+            f'x2="{_fmt(x2)}" y2="{_fmt(y2)}" '
             f'stroke="{stroke}"{extras}/>'
         )
     return "\n".join(lines)
@@ -435,10 +449,10 @@ def _ghost_footprints_svg(
         # (click-select, motion transforms, force vectors).
         out.append(f'<g class="{cls}" data-fp-uuid="{fp.uuid or ""}">')
         # Courtyard lines
-        for a, b in fp.courtyard:
+        for (x1, y1), (x2, y2) in _courtyard_edges(fp):
             out.append(
-                f'<line x1="{_fmt(a.x_mm)}" y1="{_fmt(a.y_mm)}" '
-                f'x2="{_fmt(b.x_mm)}" y2="{_fmt(b.y_mm)}"/>'
+                f'<line x1="{_fmt(x1)}" y1="{_fmt(y1)}" '
+                f'x2="{_fmt(x2)}" y2="{_fmt(y2)}"/>'
             )
         # Pads (smaller, ghost color)
         for pad in fp.pads:
@@ -741,10 +755,10 @@ def _proposal_overlay(model: BoardModel, proposal: PlacementProposal) -> List[st
     for fp in model.footprints:
         if fp.uuid not in proposal.deltas:
             continue
-        for a, b in fp.courtyard:
+        for (x1, y1), (x2, y2) in _courtyard_edges(fp):
             out.append(
-                f'<line x1="{_fmt(a.x_mm)}" y1="{_fmt(a.y_mm)}" '
-                f'x2="{_fmt(b.x_mm)}" y2="{_fmt(b.y_mm)}"/>'
+                f'<line x1="{_fmt(x1)}" y1="{_fmt(y1)}" '
+                f'x2="{_fmt(x2)}" y2="{_fmt(y2)}"/>'
             )
     out.append("</g>")
     arrows = [f'<g stroke="{MOVE_ARROW}" stroke-width="0.2">']

@@ -294,3 +294,170 @@ class TestTightSpotRipupPolicy:
     def test_same_net_reroute_allowed(self):
         ripup = RipUpManager()
         assert ripup.can_rip("VIN", "VIN")
+
+
+class TestViaHaloAndForeignExclusion:
+    """Tests for via halo reservation and foreign-via exclusion."""
+
+    def test_via_halo_matches_track_halo(self):
+        """Via halo radius equals track corridor radius for same net/clearance."""
+        from kicad_autorouter.routing.obstacles import (
+            track_corridor_radius_cells,
+            via_halo_radius_cells,
+        )
+        width_mm = 0.25
+        clearance_mm = 0.2
+        via_size_mm = 0.8
+        via_drill_mm = 0.4
+        track_half_mm = width_mm / 2.0
+        res_mm = 0.1
+
+        track_radius = track_corridor_radius_cells(width_mm, clearance_mm + track_half_mm, res_mm)
+        via_radius = via_halo_radius_cells(via_size_mm, clearance_mm, track_half_mm, res_mm)
+
+        # Via halo should be >= track corridor (via annulus + clearance + track half-width)
+        assert via_radius >= track_radius
+
+    def test_foreign_via_exclusion_in_secondary_grid(self):
+        """Foreign vias get hard exclusion ring in secondary grid."""
+        from kicad_autorouter.routing.obstacles import build_fanout_cost, THT_EXCLUSION
+        from kicad_autorouter.board_model import BoardModel, Point, Footprint, Pad, NetConnection
+        from tests.helpers import make_smd_pad
+        from dataclasses import replace
+
+        # Two footprints: net A and net B
+        pad_a = make_smd_pad("1", "NET_A", size_mm=(1.5, 1.5))
+        pad_b = make_smd_pad("1", "NET_B", size_mm=(1.5, 1.5))
+        fp_a = Footprint(ref="A", footprint_id="Test:A", layer="F.Cu", x_mm=0, y_mm=0, angle_deg=0,
+                         pads=(pad_a,), courtyard=(), uuid="uuid-a")
+        fp_b = Footprint(ref="B", footprint_id="Test:B", layer="F.Cu", x_mm=5, y_mm=0, angle_deg=0,
+                         pads=(pad_b,), courtyard=(), uuid="uuid-b")
+        # Add a foreign via for net B near net A's pad
+        from kicad_autorouter.board_model import Via
+        via_b = Via(position=Point(2.5, 0), size_mm=0.8, drill_mm=0.4, layers=("F.Cu", "B.Cu"), net_name="NET_B")
+
+        model = BoardModel(
+            footprints=(fp_a, fp_b),
+            keepout_zones=(),
+            nets={"NET_A": (NetConnection(ref="A", pad_number="1"),),
+                  "NET_B": (NetConnection(ref="B", pad_number="1"), NetConnection(ref="B", pad_number="2"))},
+            by_ref={"A": fp_a, "B": fp_b},
+            vias=(via_b,),
+        )
+
+        grid = create_grid_from_model(model, 0.1, 2.0)
+        secondary = build_fanout_cost(model, grid, "NET_A", clearance_mm=0.2, track_half_mm=0.125)
+
+        # The foreign via at (2.5, 0) should create a hard exclusion ring
+        col, row = board_to_grid(grid, 2.5, 0.0)
+        assert secondary[0, row, col] >= THT_EXCLUSION - 1  # center cell should be excluded
+
+    def test_npth_mounting_hole_clearance(self):
+        """NPTH mounting holes get 0.25mm hole clearance in cost grid.
+
+        The hole clearance (0.25mm) should add extra cells beyond the pad's
+        copper extent, compared to a regular through-hole pad with the same
+        copper size but a net name.
+        """
+        from kicad_autorouter.routing.obstacles import build_occupancy_grid
+        from kicad_autorouter.board_model import BoardModel, Point, Footprint
+        from tests.helpers import make_tht_pad
+        from dataclasses import replace
+
+        def make_model(pad_type, net_name):
+            pad = make_tht_pad("MP", net_name, drill_mm=1.0, size_mm=(2.0, 2.0))
+            pad = replace(pad, position=Point(0.0, 0.0), pad_type=pad_type, net_name=net_name)
+            fp = Footprint(ref="TEST", footprint_id="Test:Test", layer="F.Cu", x_mm=0, y_mm=0, angle_deg=0,
+                           pads=(pad,), courtyard=(), uuid="uuid-test", locked=True)
+            return BoardModel(footprints=(fp,), keepout_zones=(), nets={}, by_ref={"TEST": fp})
+
+        # NPTH no-net pad: should get 0.25mm hole clearance
+        model_npth = make_model("np_thru_hole", None)
+        grid = create_grid_from_model(model_npth, 0.1, 2.0)
+        cost_npth = build_occupancy_grid(model_npth, grid, default_clearance_mm=0.2)
+        col, row = board_to_grid(grid, 0.0, 0.0)
+
+        # Regular THT pad with net: uses trace clearance (0.2mm)
+        model_tht = make_model("thru_hole", "NET")
+        grid = create_grid_from_model(model_tht, 0.1, 2.0)
+        cost_tht = build_occupancy_grid(model_tht, grid, default_clearance_mm=0.2)
+
+        # NPTH should have strictly larger HIGH_COST radius due to 0.25mm hole clearance
+        # vs 0.2mm trace clearance. Difference is 0.05mm = 0.5 cells at 0.1mm grid.
+        # Since we ceil, both might be 3 cells, but the NPTH should not be smaller.
+        def max_high_cost_radius(cost_grid, row, col):
+            """Find max radius of HIGH_COST (>=50) cells from center."""
+            max_r = 0
+            for dr in range(-10, 11):
+                r = row + dr
+                if 0 <= r < cost_grid.shape[1] and cost_grid[0, r, col] >= 50:
+                    max_r = max(max_r, abs(dr))
+            return max_r
+
+        radius_npth = max_high_cost_radius(cost_npth, row, col)
+        radius_tht = max_high_cost_radius(cost_tht, row, col)
+
+        # NPTH should have >= radius (hole clearance 0.25mm >= trace clearance 0.2mm)
+        assert radius_npth >= radius_tht, f"NPTH radius {radius_npth} should be >= THT radius {radius_tht}"
+
+    def test_via_halo_in_apply_route_to_grid(self):
+        """_apply_route_to_grid reserves via halo on both layers."""
+        from kicad_autorouter.routing.pipeline import _apply_route_to_grid
+        from kicad_autorouter.routing.router import RouteResult
+        from kicad_autorouter.routing.grid import create_grid_from_model
+        from kicad_autorouter.routing.obstacles import build_occupancy_grid, via_halo_radius_cells
+        from kicad_autorouter.board_model import BoardModel, Point, Footprint, Pad, NetConnection
+        from tests.helpers import make_smd_pad
+        import numpy as np
+
+        # Simple two-pad net with a via
+        pad1 = make_smd_pad("1", "TEST", size_mm=(1.5, 1.5))
+        pad2 = make_smd_pad("2", "TEST", size_mm=(1.5, 1.5))
+        fp1 = Footprint(ref="U1", footprint_id="Test:U", layer="F.Cu", x_mm=0, y_mm=0, angle_deg=0,
+                        pads=(pad1,), courtyard=(), uuid="uuid-u1")
+        fp2 = Footprint(ref="U2", footprint_id="Test:U", layer="F.Cu", x_mm=5, y_mm=0, angle_deg=0,
+                        pads=(pad2,), courtyard=(), uuid="uuid-u2")
+
+        model = BoardModel(
+            footprints=(fp1, fp2),
+            keepout_zones=(),
+            nets={"TEST": (NetConnection(ref="U1", pad_number="1"),
+                          NetConnection(ref="U2", pad_number="1"))},
+            by_ref={"U1": fp1, "U2": fp2},
+        )
+
+        grid = create_grid_from_model(model, 0.1, 2.0)
+        cost_grid = build_occupancy_grid(model, grid, default_clearance_mm=0.2)
+
+        # Simulate a route with one via at (2.5, 0) on layer 0->1
+        # Path: (0,0,0) -> (2.5,0,0) -> (2.5,0,1) -> (5,0,1)
+        path = [(0, 0, 0), (25, 0, 0), (25, 0, 1), (50, 0, 1)]  # grid coords at 0.1mm
+        result = RouteResult(path=path, wire_mm=5.0, via_count=1, cost=0.0, success=True)
+
+        width_mm = 0.25
+        clearance_mm = 0.2
+        half_width_cells = 1  # half-width cells
+        clearance_radius = 2  # clearance + track half in cells
+        via_clearance_cells = via_halo_radius_cells(0.8, 0.2, 0.125, 0.1)
+
+        _apply_route_to_grid(result, cost_grid, grid,
+                             half_width_cells=half_width_cells,
+                             extra_radius=clearance_radius,
+                             via_clearance_cells=via_clearance_cells)
+
+        # Check via landing cells on both layers have BLOCKED with via_radius
+        r, c = 0, 25  # via at (2.5, 0) -> grid (0, 25) at 0.1mm
+        # Both layers should have BLOCKED in a disc of via_radius
+        for layer_idx in (0, 1):
+            found_blocked = False
+            for dr in range(-via_clearance_cells, via_clearance_cells + 1):
+                for dc in range(-via_clearance_cells, via_clearance_cells + 1):
+                    if dr*dr + dc*dc <= via_clearance_cells*via_clearance_cells:
+                        rr, cc = r + dr, c + dc
+                        if 0 <= rr < cost_grid.shape[1] and 0 <= cc < cost_grid.shape[2]:
+                            if cost_grid[layer_idx, rr, cc] >= 100:  # BLOCKED
+                                found_blocked = True
+                                break
+                if found_blocked:
+                    break
+            assert found_blocked, f"Via halo should be BLOCKED on layer {layer_idx}"

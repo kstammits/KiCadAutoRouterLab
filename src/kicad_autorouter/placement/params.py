@@ -119,6 +119,10 @@ class PlacementParams:
     overlap_tolerance_mm2: float = 0.1
     # Board-wall protrusion depth (mm) above which a part is illegal.
     wall_tolerance_mm: float = 0.1
+    # Debug instrumentation: when True, run_placement attaches a debug_trace
+    # dict to the proposal with per-iteration per-pad forces/positions and
+    # depen-pass diagnostics. Off by default (zero overhead in production).
+    debug: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -195,6 +199,8 @@ def _validate(params: PlacementParams) -> None:
         raise ValueError("decap_boost must be >= 0")
     if not isinstance(params.include_power_nets, bool):
         raise ValueError("include_power_nets must be a boolean")
+    if not isinstance(params.debug, bool):
+        raise ValueError("debug must be a boolean")
     if isinstance(params.max_iterations, bool) or not isinstance(
         params.max_iterations, int
     ):

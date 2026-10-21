@@ -33,6 +33,7 @@ def _model(extra_nets=("VCC", "GND", "MOTOR_A", "N1")):
 class TestEffectiveClassifier:
     def test_keyword_unchanged(self):
         assert is_power_net_effective("VCC")
+        assert is_power_net_effective("VIN")
         assert is_power_net_effective("Net-+12V")
         assert not is_power_net_effective("MOTOR_A")
         assert not is_power_net_effective(None)

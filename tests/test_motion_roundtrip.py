@@ -35,7 +35,12 @@ from kicad_autorouter.board_model import (
     Point,
     apply_deltas,
 )
-from kicad_autorouter.placement import PlacementParams, PlacementProposal, run_placement
+from kicad_autorouter.placement import (
+    PlacementParams,
+    PlacementProposal,
+    _footprint_courtyard_polygon,
+    run_placement,
+)
 from kicad_autorouter.svg_render import render_board_svg
 
 from .helpers import make_fp as make_test_fp
@@ -153,12 +158,27 @@ def test_rendered_svg_matches_player_pose():
         r'<line x1="([\d.\-]+)" y1="([\d.\-]+)" '
         r'x2="([\d.\-]+)" y2="([\d.\-]+)"', grp.group(0),
     )
-    assert len(lines) == len(fp.courtyard)
-    for (x1, y1, x2, y2), (a_old, b_old) in zip(lines, fp.courtyard):
-        want_a = _player_pose(base, a_old.x_mm, a_old.y_mm, frame[UUID_M])
-        want_b = _player_pose(base, b_old.x_mm, b_old.y_mm, frame[UUID_M])
-        assert (float(x1), float(y1)) == pytest.approx(want_a, abs=2e-3)
-        assert (float(x2), float(y2)) == pytest.approx(want_b, abs=2e-3)
+    poly = _footprint_courtyard_polygon(fp)
+    base_edges = list(zip(poly.exterior.coords, poly.exterior.coords[1:]))
+    assert len(lines) == len(base_edges)
+
+    def key(point):
+        return (round(point[0], 3), round(point[1], 3))
+
+    want = set()
+    for a_old, b_old in base_edges:
+        want.add(frozenset((
+            key(_player_pose(base, a_old[0], a_old[1], frame[UUID_M])),
+            key(_player_pose(base, b_old[0], b_old[1], frame[UUID_M])),
+        )))
+    got = {
+        frozenset((
+            key((float(x1), float(y1))),
+            key((float(x2), float(y2))),
+        ))
+        for x1, y1, x2, y2 in lines
+    }
+    assert got == want
 
 
 @pytest.mark.server

@@ -396,6 +396,46 @@ class TestRigidProjection:
             f"projection must preserve shape ({before} vs {after})"
         )
 
+    def test_pose_from_pads_roundtrips_nonzero_angle(self):
+        """Kabsch angle must invert ``_to_board``'s ``R(-angle)``.
+
+        Regression: returning ``atan2(R)`` directly made ``apply_deltas``
+        rotate a part opposite to its integrated pads (2B Q1 appeared to
+        swing into C6). A +20 deg board-space pad rotation must produce
+        ``da = -20`` and reproduce the rotated pads exactly.
+        """
+        import numpy as np
+
+        from kicad_autorouter.placement import _collect_pad_nodes
+        from kicad_autorouter.placement.rigid import (
+            _compute_footprint_pose_from_pads,
+        )
+
+        fp = make_fp("U1", "uuid-u1", 5.0, -2.0, ("N1", "N2", "N3"),
+                     footprint_id="test:R", hw=1.0, hh=0.6,
+                     pad_layers=("F.Cu",), pad_shape="circle")
+        fp = replace(fp, angle_deg=35.0)
+        model = _board([fp])
+        pads, _, uuid_to_idx, global_to_local, _ = _collect_pad_nodes(model)
+        pos = np.array([(p.position.x_mm, p.position.y_mm) for p in pads])
+        rows = uuid_to_idx[fp.uuid]
+        center = pos[rows].mean(axis=0)
+        theta = math.radians(20.0)
+        rot = np.array([[math.cos(theta), -math.sin(theta)],
+                        [math.sin(theta), math.cos(theta)]])
+        rotated = (pos[rows] - center) @ rot.T + center
+
+        x_mm, y_mm, angle_deg = _compute_footprint_pose_from_pads(
+            fp, rotated, rows, global_to_local
+        )
+        delta = (x_mm - fp.x_mm, y_mm - fp.y_mm, angle_deg - fp.angle_deg)
+
+        assert delta[2] == pytest.approx(-20.0, abs=1e-6)
+        moved = apply_deltas(model, {fp.uuid: delta})
+        moved_pads, _, moved_idx, _, _ = _collect_pad_nodes(moved)
+        got = np.array([(p.position.x_mm, p.position.y_mm) for p in moved_pads])
+        assert np.allclose(got[moved_idx[fp.uuid]], rotated, atol=1e-9)
+
     def test_isolated_pair_drifts_monotonically(self):
         """Regression for the rigid-snap reversal: an isolated 2-pad pair
         under repulsion-only drift must move monotonically apart — no

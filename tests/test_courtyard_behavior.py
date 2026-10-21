@@ -225,8 +225,8 @@ class TestCourtyardParsing:
         assert abs(width - 10.0) < 0.2
         assert abs(height - 76.0) < 0.2
 
-    def test_disconnected_segments_falls_back_to_pad_bbox(self):
-        """Open polyline (disconnected segments) falls back to pad bbox + margin."""
+    def test_disconnected_segments_falls_back_to_courtyard_bbox(self):
+        """Open polyline uses the declared courtyard bbox, not the pad bbox."""
         # Create footprint with invalid courtyard (open polyline)
         open_courtyard = (
             (Point(0, 0), Point(5, 0)),
@@ -235,22 +235,59 @@ class TestCourtyardParsing:
         )
         fp = Footprint(
             ref="TEST", footprint_id="Test", layer="F.Cu", x_mm=0, y_mm=0, angle_deg=0,
+            # Pads are deliberately a small 1x1 cluster inside the courtyard.
             pads=(
-                replace(make_fp("", "", 0, 0, ("N1",)).pads[0], position=Point(0, 0)),
-                replace(make_fp("", "", 0, 0, ("N2",)).pads[0], position=Point(5, 3)),
+                replace(make_fp("", "", 0, 0, ("N1",)).pads[0], position=Point(1, 1)),
+                replace(make_fp("", "", 0, 0, ("N2",)).pads[0], position=Point(2, 2)),
             ),
             courtyard=open_courtyard,
             uuid="uuid-test",
         )
-        
+
+        assert _courtyard_outline_polygon(open_courtyard) is None
         poly = _footprint_courtyard_polygon(fp)
-        
-        # Should fall back to pad bbox (5x3) + 0.1mm margin
+
+        # Declared courtyard bbox (5x3) + 0.1mm margin, not the 1x1 pad bbox.
         assert poly is not None
         assert poly.is_valid
         bounds = poly.bounds
-        assert abs(bounds[2] - bounds[0] - 5.2) < 0.01  # 5 + 0.1 + 0.1
+        assert abs(bounds[2] - bounds[0] - 5.2) < 0.01
         assert abs(bounds[3] - bounds[1] - 3.2) < 0.01
+
+    def test_micro_gap_courtyard_closes(self):
+        """A 0.01mm endpoint gap must not collapse the courtyard to pad bbox."""
+        gapped = (
+            (Point(0, 0), Point(10, 0)),
+            (Point(10, 0), Point(10, 10)),
+            (Point(10, 10), Point(5.005, 10)),
+            (Point(4.995, 10), Point(0, 10)),
+            (Point(0, 10), Point(0, 0)),
+        )
+
+        poly = _courtyard_outline_polygon(gapped)
+
+        assert poly is not None
+        assert poly.is_valid
+        assert poly.area == pytest.approx(100.0, abs=1e-6)
+        assert poly.bounds == pytest.approx((0.0, 0.0, 10.0, 10.0))
+
+    def test_valid_polygon_with_near_vertices_is_not_snapped(self):
+        """Repair runs only on polygonize failure; valid near vertices stay put."""
+        stepped = (
+            (Point(0, 0), Point(10, 0)),
+            (Point(10, 0), Point(10, 10)),
+            (Point(10, 10), Point(5, 10)),
+            (Point(5, 10), Point(5, 10.01)),
+            (Point(5, 10.01), Point(0, 10.01)),
+            (Point(0, 10.01), Point(0, 0)),
+        )
+
+        poly = _courtyard_outline_polygon(stepped)
+
+        assert poly is not None
+        assert poly.is_valid
+        assert poly.area == pytest.approx(100.05, abs=1e-9)
+        assert poly.bounds == pytest.approx((0.0, 0.0, 10.0, 10.01))
 
     def test_self_intersecting_ring_picks_largest_loop(self):
         """Figure-8 or spike courtyard picks largest valid ring by area."""
@@ -277,6 +314,38 @@ class TestCourtyardParsing:
         assert poly.is_valid
         # Should pick the 10x5 rectangle (area 50), not the degenerate spike
         assert abs(poly.area - 50.0) < 1.0
+
+
+class TestCourtyardGapRepair:
+    """Micro-gap courtyards must collide as their full declared body."""
+
+    def test_mover_is_ejected_from_gapped_courtyard(self):
+        large = make_smd_resistor(
+            "LARGE", "uuid-large", 0.0, 0.0, "N1", "N2", hw=5.0, hh=5.0
+        )
+        gapped = (
+            (Point(-5, -5), Point(5, -5)),
+            (Point(5, -5), Point(5, 5)),
+            (Point(5, 5), Point(0.005, 5)),
+            (Point(-0.005, 5), Point(-5, 5)),
+            (Point(-5, 5), Point(-5, -5)),
+        )
+        large = replace(large, courtyard=gapped, locked=True)
+        # Small part is well inside the 10x10 body but outside the thin pad
+        # strip the old fallback used.
+        small = make_smd_resistor(
+            "SMALL", "uuid-small", 0.0, 3.0, "N3", "N4", hw=1.0, hh=0.5
+        )
+        model = _board([large, small])
+
+        prop = run_placement(model, _base_params(max_iterations=300))
+
+        final_area = overlap_area(
+            model, prop.deltas, uuids=("uuid-large", "uuid-small")
+        )
+        assert final_area < 0.01, (
+            f"gapped courtyard should eject contained part, got {final_area:.3f}mm²"
+        )
 
 
 class TestOverlapForce:

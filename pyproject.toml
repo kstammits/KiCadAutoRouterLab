@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kicad-autorouter"
-version = "0.4.0"
+version = "0.5.0"
 description = "KiCad autorouter: force-spring placement and grid routing for .kicad_pcb boards"
 readme = "README.md"
 requires-python = ">=3.11"

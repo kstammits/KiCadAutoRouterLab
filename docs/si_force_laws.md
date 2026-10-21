@@ -32,6 +32,11 @@ F_attr = k_attr · w_edge · û(src→dst)   k_attr in N, w_edge dimensionless
 Unchanged shape (no Hooke length term). `w_edge` keeps the existing
 fanout/decap/power weighting (dimensionless, already unit-clean).
 
+Decap-incident edges are **one-sided**: the decap receives the attraction,
+the non-decap endpoint does not (`edge_sides` in `force.py`). This keeps a
+large part from being dragged onto its decoupling cap when a rail pulls the
+cap toward the part; decap–decap edges stay symmetric.
+
 ### Courtyard collision (walls)
 One linear law in signed separation `s` (meters) along the pair normal
 (`s > 0` gap, `s = 0` touching, `s = −penetration depth`):

@@ -107,6 +107,10 @@ class PlacementProposal:
     max_pair_overlap_mm2: float = 0.0
     max_wall_penetration_mm: float = 0.0
     exempt_pairs: Tuple[Tuple[str, str], ...] = ()
+    # Debug instrumentation (only populated when params.debug is True).
+    # Keys: "per_iteration" (list of per-iteration snapshots), "depen"
+    # (before/after overlap + steps applied for the depenetration pass).
+    debug_trace: dict = field(default_factory=dict)
 
 
 # Final de-penetration pass (legalize eject): positional projection applied
@@ -134,6 +138,7 @@ def _depenetrate_positions(
     fp_local_to_rows: List[np.ndarray],
     fp_by_uuid: Dict[str, Footprint],
     proj_bodies: List[Tuple[np.ndarray, np.ndarray]],
+    debug_sink: Optional[List[dict]] = None,
 ) -> bool:
     """Eject residual courtyard overlaps left by the force dynamics.
 
@@ -160,10 +165,11 @@ def _depenetrate_positions(
                 continue
             rows = fp_local_to_rows[li]
             if fp.ghost or len(rows) == 0:
-                outline = _courtyard_outline_polygon(fp.courtyard)
-                if outline is None or outline.is_empty:
+                if not fp.courtyard:
                     continue
-                poly = outline
+                poly = _footprint_courtyard_polygon(fp)
+                if poly is None or poly.is_empty:
+                    continue
             else:
                 try:
                     poly = _footprint_courtyard_polygon(
@@ -252,6 +258,17 @@ def _depenetrate_positions(
             step = depth * _DEPEN_RELAX
             sa = step * (0.5 if (ma and mb) else 1.0) if ma else 0.0
             sb = step * (0.5 if (ma and mb) else 1.0) if mb else 0.0
+            if debug_sink is not None:
+                debug_sink.append({
+                    "pair": [ua, ub],
+                    "area_mm2": float(area),
+                    "depth_mm": float(depth),
+                    "step_mm": float(step),
+                    "sa_mm": float(sa),
+                    "sb_mm": float(sb),
+                    "a_movable": bool(ma),
+                    "b_movable": bool(mb),
+                })
             if sa > 0:
                 _push_rows(delta, a, ux, uy, sa)
                 moved_any = True
@@ -300,7 +317,7 @@ def _run_region_simulation(
     # Filter pads for this region
     n_pads = len(region_pads)
     if n_pads == 0:
-        return {}, {}, 0, {}, [], [], "empty", 0.0
+        return {}, {}, 0, {}, [], [], "empty", 0.0, {}
 
     # Build pad positions array
     pad_positions = np.zeros((n_pads, 2), dtype=np.float64)
@@ -363,7 +380,7 @@ def _run_region_simulation(
     pad_mass_kg = np.maximum(pad_mass_kg, _fallback_mass_kg)
 
     if not pad_movable.any():
-        return {}, {}, 0, {}, [], [], "empty", 0.0
+        return {}, {}, 0, {}, [], [], "empty", 0.0, {}
 
     # Net attraction edges for this region.
     _ref_by_idx: Dict[int, str] = {}
@@ -382,6 +399,16 @@ def _run_region_simulation(
         extra_power=extra_power_nets,
     )
     has_net_edges = len(src_idx) > 0
+
+    # Decap protection: decap-incident edges pull the cap toward its target
+    # but do not drag the target (often a large, anchored part) into the cap.
+    # Decap-decap edges stay symmetric (neither side is a target).
+    edge_sides = np.zeros(len(src_idx), dtype=np.int8)
+    if _decap_pads and len(src_idx):
+        _src_decap = np.isin(src_idx, list(_decap_pads))
+        _dst_decap = np.isin(dst_idx, list(_decap_pads))
+        edge_sides[_src_decap & ~_dst_decap] = 1
+        edge_sides[_dst_decap & ~_src_decap] = 2
 
     # Build mapping from footprint UUID to local pad indices for wall checks
     region_fp_to_pad_indices = {}
@@ -444,6 +471,11 @@ def _run_region_simulation(
         if _fp.uuid:
             fp_by_uuid[_fp.uuid] = _fp
 
+    # ---- Debug instrumentation (zero overhead when params.debug is False) ----
+    _dbg_enabled = bool(params.debug)
+    _dbg_iters: List[dict] = [] if _dbg_enabled else None
+    _dbg_depen: Optional[List[dict]] = [] if _dbg_enabled else None
+
     def _local_shape(_fp: Optional[Footprint]) -> dict:
         if _fp is None:
             return {"body": {"kind": "empty", "empty": True}, "pins": [],
@@ -455,6 +487,14 @@ def _run_region_simulation(
                 "kind": "courtyard",
                 "empty": False,
                 "verts": np.array(outline.exterior.coords, dtype=np.float64),
+                "layer": _fp.layer,
+            }
+        elif _fp.courtyard:
+            fallback = _footprint_courtyard_polygon(_fp)
+            body = {
+                "kind": "courtyard",
+                "empty": False,
+                "verts": np.array(fallback.exterior.coords, dtype=np.float64),
                 "layer": _fp.layer,
             }
         elif _fp.pads:
@@ -610,6 +650,7 @@ def _run_region_simulation(
         params, has_net_edges, src_idx, dst_idx, edge_weights,
         ghost_attractions,
         same_fp_mask,
+        edge_sides=edge_sides,
         return_components=True,
         ctx=fctx,
         pad_velocities=_vel,
@@ -656,6 +697,7 @@ def _run_region_simulation(
             params, has_net_edges, src_idx, dst_idx, edge_weights,
             ghost_attractions,
             same_fp_mask,
+            edge_sides=edge_sides,
             return_components=True,
             ctx=fctx,
             pad_velocities=_vel,
@@ -732,9 +774,28 @@ def _run_region_simulation(
             params, has_net_edges, src_idx, dst_idx, edge_weights,
             ghost_attractions,
             same_fp_mask,
+            edge_sides=edge_sides,
             ctx=fctx,
             pad_velocities=_vel,
         )
+
+        # --- debug: per-iteration snapshot of positions + raw forces ---
+        if _dbg_iters is not None:
+            _snap = {"iteration": iteration, "footprints": {}}
+            for fi, uuid in enumerate(fp_uuids):
+                if not fp_movable_list[fi]:
+                    continue
+                _rows = fp_local_to_rows[fi]
+                if _rows is None or len(_rows) == 0:
+                    continue
+                _pos = positions[_rows]
+                _frc = force[_rows]
+                _snap["footprints"][uuid] = {
+                    "pad_positions": [[float(x), float(y)] for x, y in _pos],
+                    "pad_forces": [[float(fx), float(fy)] for fx, fy in _frc],
+                    "net_force": [float(_frc.sum(axis=0)[0]), float(_frc.sum(axis=0)[1])],
+                }
+            _dbg_iters.append(_snap)
 
         # Dry friction: freeze a whole footprint whose largest pad-force
         # norm is below friction_N. Frozen bodies also lose velocity.
@@ -874,6 +935,7 @@ def _run_region_simulation(
         _depen_moved = _depenetrate_positions(
             positions, pad_movable, fp_uuids, fp_movable_list,
             fp_local_to_rows, fp_by_uuid, _proj_bodies,
+            debug_sink=_dbg_depen,
         )
         if _depen_moved:
             _vel[:] = 0.0
@@ -889,6 +951,7 @@ def _run_region_simulation(
         params, has_net_edges, src_idx, dst_idx, edge_weights,
         ghost_attractions,
         same_fp_mask,
+        edge_sides=edge_sides,
         return_components=True,
         ctx=fctx,
         pad_velocities=_vel,
@@ -952,6 +1015,7 @@ def _run_region_simulation(
     return (
         deltas, footprint_forces, iteration + 1, footprint_components,
         _region_frames, _region_force_frames, stop_reason, residual_max_force_N,
+        {"per_iteration": _dbg_iters or [], "depen": _dbg_depen or []},
     )
 
 
@@ -1039,6 +1103,7 @@ def run_placement(
             forces={},
             stop_reason="empty",
             residual_max_force_N=0.0,
+            debug_trace={},
         )
 
     # Group pads by board region
@@ -1052,6 +1117,7 @@ def run_placement(
         all_region_force_frames: List[List[Dict[str, Dict[str, Tuple[float, float]]]]] = []
         all_stop = "converged"
         all_residual = 0.0
+        all_dbg = {"per_iteration": [], "depen": []}
         any_region = False
 
         for region_idx, region in enumerate(model.board_regions):
@@ -1085,7 +1151,7 @@ def run_placement(
             if region_pads:
                 (region_deltas, region_forces, region_iters, region_comps,
                  region_frames, region_force_frames, region_stop,
-                 region_residual) = _run_region_simulation(
+                 region_residual, region_dbg) = _run_region_simulation(
                     region_idx, model.board_regions[region_idx],
                     region_pad_indices, region_pads, region_pad_to_fp_idx,
                     region_fp_uuid_to_pad_indices, region_global_pad_idx_to_local,
@@ -1107,6 +1173,8 @@ def run_placement(
                 if record_frames and region_frames:
                     all_region_frames.append(region_frames)
                     all_region_force_frames.append(region_force_frames)
+                all_dbg["per_iteration"].extend(region_dbg.get("per_iteration", []))
+                all_dbg["depen"].extend(region_dbg.get("depen", []))
 
         merged_frames = _thin_frames(
             _merge_region_frames(all_region_frames), max_frames
@@ -1144,6 +1212,7 @@ def run_placement(
             max_pair_overlap_mm2=legality.max_pair_overlap_mm2,
             max_wall_penetration_mm=legality.max_wall_penetration_mm,
             exempt_pairs=legality.exempt_pairs,
+            debug_trace=all_dbg,
         )
 
     # Single region mode: create a virtual region covering the whole board
@@ -1163,7 +1232,7 @@ def run_placement(
 
     (region_deltas, region_forces, region_iters, region_comps,
      region_frames, region_force_frames, region_stop,
-     region_residual) = _run_region_simulation(
+     region_residual, region_dbg) = _run_region_simulation(
         0, virtual_region,
         region_pad_indices, region_pads, region_pad_to_fp_idx,
         region_fp_uuid_to_pad_indices, region_global_pad_idx_to_local,
@@ -1205,4 +1274,5 @@ def run_placement(
         max_pair_overlap_mm2=legality.max_pair_overlap_mm2,
         max_wall_penetration_mm=legality.max_wall_penetration_mm,
         exempt_pairs=legality.exempt_pairs,
+        debug_trace=region_dbg,
     )

@@ -46,21 +46,11 @@ def _build_posed_courtyard(
 ) -> Polygon:
     """Build the posed courtyard polygon for a footprint."""
     if fp.ghost:
-        # Ghosts have no pads; use their fixed position and courtyard
+        # Ghosts have no pads; their courtyard is already in board coords.
         if not fp.courtyard:
             return Polygon()
-        # Build polygon from courtyard segments at ghost's position
-        vertices = []
-        for a, b in fp.courtyard:
-            vertices.append((a.x_mm, a.y_mm))
-        if len(vertices) >= 3:
-            try:
-                poly = Polygon(vertices)
-                if poly.is_valid and poly.area > 0:
-                    return poly
-            except Exception:
-                pass
-        return Polygon()
+        poly = _footprint_courtyard_polygon(fp)
+        return poly if poly is not None and not poly.is_empty else Polygon()
     if not pad_indices:
         return Polygon()
     return _footprint_courtyard_polygon(fp, pad_positions=pad_positions, pad_indices=pad_indices)

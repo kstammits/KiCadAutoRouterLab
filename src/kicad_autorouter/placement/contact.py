@@ -380,12 +380,76 @@ def _wall_mag(
 # Courtyard geometry
 # ---------------------------------------------------------------------------
 
+# Courtyard edges in real footprints are occasionally a few microns short of
+# meeting (KiCad writes segment endpoints independently). Polygonize needs an
+# exact node, so a sub-10um drafting gap can otherwise collapse a large body to
+# the pad-bbox fallback. Repair only when the normal polygonize pass fails so
+# valid, complex courtyards keep their exact vertices.
+_COURTYARD_GAP_TOL_MM = 0.02
+_COURTYARD_FALLBACK_MARGIN_MM = 0.1
+
+
+def _add_courtyard_gap_connectors(
+    linestrings: list, tol_mm: float
+) -> list:
+    """Return connector segments for distinct endpoints within ``tol_mm``."""
+    endpoints = []
+    for idx, line in enumerate(linestrings):
+        coords = list(line.coords)
+        if len(coords) < 2:
+            continue
+        endpoints.append((idx, coords[0]))
+        endpoints.append((idx, coords[-1]))
+
+    connectors = []
+    seen = set()
+    for i in range(len(endpoints)):
+        idx_a, p = endpoints[i]
+        for j in range(i + 1, len(endpoints)):
+            idx_b, q = endpoints[j]
+            if idx_a == idx_b:
+                continue
+            dist = math.hypot(q[0] - p[0], q[1] - p[1])
+            if not (1e-9 < dist <= tol_mm):
+                continue
+            key = tuple(sorted((p, q)))
+            if key in seen:
+                continue
+            seen.add(key)
+            connectors.append(LineString([p, q]))
+    return connectors
+
+
+def _courtyard_segment_bbox_polygon(
+    segments: Tuple[Segment, ...],
+    margin_mm: float = _COURTYARD_FALLBACK_MARGIN_MM,
+) -> Optional[Polygon]:
+    """Bounding box of declared courtyard segments (broken-ring fallback)."""
+    xs = []
+    ys = []
+    for a, b in segments or ():
+        xs.extend((a.x_mm, b.x_mm))
+        ys.extend((a.y_mm, b.y_mm))
+    if not xs:
+        return None
+    min_x, max_x = min(xs) - margin_mm, max(xs) + margin_mm
+    min_y, max_y = min(ys) - margin_mm, max(ys) + margin_mm
+    return Polygon([
+        (min_x, min_y),
+        (max_x, min_y),
+        (max_x, max_y),
+        (min_x, max_y),
+    ])
+
+
 def _courtyard_outline_polygon(segments: Tuple[Segment, ...]) -> Optional[Polygon]:
     """Build the courtyard outline polygon from raw segments, any order.
 
     ``shapely.ops.polygonize`` assembles closed rings regardless of segment
-    order/orientation. Returns the largest closed ring by area, or None when
-    nothing closes.
+    order/orientation. If nothing closes, retry after adding short connectors
+    between endpoint pairs within :data:`_COURTYARD_GAP_TOL_MM` (T1/T2 style
+    drafting gaps). Existing vertices are never moved. Returns the largest
+    closed ring by area, or None when nothing closes.
     """
     from shapely import set_precision
 
@@ -400,10 +464,19 @@ def _courtyard_outline_polygon(segments: Tuple[Segment, ...]) -> Optional[Polygo
 
     linestrings = [set_precision(ls, grid_size=0.001) for ls in linestrings]
 
-    try:
-        rings = [r for r in polygonize(linestrings) if r.is_valid and r.area > 0]
-    except Exception:
-        return None
+    def _rings(lines):
+        try:
+            return [r for r in polygonize(lines) if r.is_valid and r.area > 0]
+        except Exception:
+            return []
+
+    rings = _rings(linestrings)
+    if not rings:
+        connectors = _add_courtyard_gap_connectors(
+            linestrings, _COURTYARD_GAP_TOL_MM
+        )
+        if connectors:
+            rings = _rings(linestrings + connectors)
     if not rings:
         return None
     if len(rings) == 1:
@@ -430,7 +503,10 @@ def _footprint_courtyard_polygon(
 ) -> Polygon:
     """Build a shapely Polygon from footprint's courtyard segments.
 
-    If no courtyard, falls back to pad bounding box.
+    Closed/repaired courtyards use their true outline. A non-empty courtyard
+    that still cannot close falls back to the bounding box of its declared
+    segments (plus the same 0.1mm margin as the pad fallback). Only footprints
+    with no courtyard at all fall back to the pad bounding box.
     """
 
     def _get_courtyard_vertices() -> list:
@@ -452,22 +528,38 @@ def _footprint_courtyard_polygon(
         )
         return [tuple(map(float, row)) for row in posed.tolist()]
 
+    def _pose_vertices(vertices):
+        if pad_positions is None or not pad_indices or not fp.pads:
+            return vertices
+        orig_pad_pos = _get_original_pad_positions()
+        curr_pad_pos = pad_positions[pad_indices]
+        if len(orig_pad_pos) != len(curr_pad_pos) or len(orig_pad_pos) == 0:
+            return vertices
+        return _transform_vertices(vertices, orig_pad_pos, curr_pad_pos)
+
+    def _as_polygon(vertices) -> Optional[Polygon]:
+        if len(vertices) < 3:
+            return None
+        try:
+            poly = Polygon(vertices)
+            if poly.is_valid and poly.area > 0:
+                return poly
+        except Exception:
+            pass
+        return None
+
     courtyard_vertices = _get_courtyard_vertices()
     if courtyard_vertices:
-        if pad_positions is not None and pad_indices and len(pad_indices) > 0:
-            orig_pad_pos = _get_original_pad_positions()
-            curr_pad_pos = pad_positions[pad_indices]
-            if len(orig_pad_pos) == len(curr_pad_pos):
-                courtyard_vertices = _transform_vertices(
-                    courtyard_vertices, orig_pad_pos, curr_pad_pos
-                )
-        if len(courtyard_vertices) >= 3:
-            try:
-                poly = Polygon(courtyard_vertices)
-                if poly.is_valid and poly.area > 0:
-                    return poly
-            except Exception:
-                pass
+        poly = _as_polygon(_pose_vertices(courtyard_vertices))
+        if poly is not None:
+            return poly
+
+    if fp.courtyard:
+        fallback = _courtyard_segment_bbox_polygon(fp.courtyard)
+        if fallback is not None:
+            poly = _as_polygon(_pose_vertices(list(fallback.exterior.coords)))
+            if poly is not None:
+                return poly
 
     if pad_positions is not None and pad_indices:
         xs = pad_positions[pad_indices, 0]

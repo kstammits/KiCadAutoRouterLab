@@ -99,7 +99,7 @@ class TestSharedClassification:
     """Placement and routing agree on power/ground names (substring rules)."""
 
     def test_power_names(self):
-        for name in ("VCC", "VDD", "+12V", "-12V", "Net-+12V", "VCC_IO", "3V3", "VBAT"):
+        for name in ("VCC", "VDD", "VIN", "+12V", "-12V", "Net-+12V", "VCC_IO", "3V3", "VBAT"):
             assert is_power_net(name), name
 
     def test_ground_names(self):
@@ -256,6 +256,18 @@ class TestPowerBehavior:
         assert ax == pytest.approx(-0.0004), (
             f"decap attraction must be 2 boosted edges x ka=5e-5 x boost 4, got {ax}"
         )
+
+    def test_decap_edges_pull_only_the_decap(self):
+        """One-sided decap edges protect the target from being dragged in.
+
+        The cap must still feel its boosted attraction, but the IC side of
+        a decap-incident edge is silent; otherwise a large neighbor can be
+        pulled onto the cap (2B Q1/C6).
+        """
+        prop = run_placement(_decap_board(), _decap_params())
+        ax, _ = prop.force_components["uuid-c1"]["attraction"]
+        assert ax < 0.0
+        assert prop.force_components["uuid-u1"]["attraction"] == (0.0, 0.0)
 
     def test_decap_drifts_without_power(self):
         """Control at identical gains: powerless decap feels zero

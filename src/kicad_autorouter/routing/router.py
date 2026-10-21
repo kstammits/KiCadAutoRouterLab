@@ -12,7 +12,7 @@ import numpy as np
 from .corridor import find_corridor
 from .grid import RoutingGrid
 from .obstacles import POUR
-from .pair_cost import kruskal_connect
+from .pair_cost import kruskal_connect, ordered_pairs, UnionFind
 from .search_window import Window, for_pair, full_board, grow
 from .via_sites import build_via_ok_mask
 
@@ -185,7 +185,7 @@ class SingleNetRouter:
                 SECONDARY_BLOCKED,
             )
 
-        def _search_pair(i: int, j: int):
+        def _search_pair(i: int, j: int, goal_mask: Optional[np.ndarray] = None):
             """Windowed A* with growth + full-board fallback; (ok, path, cost).
 
             When the first (smallest) window fails, a coarse corridor is
@@ -236,6 +236,7 @@ class SingleNetRouter:
                     via_ok=via_ok,
                     allow_mask=allow_mask,
                     heuristic_weight=weight_override,
+                    goal_mask=goal_mask,
                 )
                 expansions_total += result.expansions
                 base += result.expansions
@@ -284,20 +285,89 @@ class SingleNetRouter:
             pair_cstats.append(cstats)
             return result.success, result.path, result.cost
 
-        mst_edges, path_matrix, cost_matrix, connected = None, {}, {}, False
-        mst_edges, path_matrix, cost_matrix, _, connected = kruskal_connect(
-            terminals, _search_pair
-        )
+        # Component state for Steiner connections
+        class UnionFindLocal:
+            """Disjoint-set with path compression for Kruskal assembly."""
+            def __init__(self, n: int):
+                self.root = list(range(n))
+                self.components = n
+
+            def find(self, x: int) -> int:
+                root = self.root
+                while root[x] != x:
+                    root[x] = root[root[x]]
+                    x = root[x]
+                return x
+
+            def union(self, a: int, b: int) -> bool:
+                ra, rb = self.find(a), self.find(b)
+                if ra == rb:
+                    return False
+                self.root[rb] = ra
+                self.components -= 1
+                return True
+
+        # Component root -> set of branch cells (for goal masks)
+        component_branches: dict[int, set[Tuple[int, int, int]]] = {}
+
+        # Build goal mask from component branches
+        def build_goal_mask(comp_root: int) -> Optional[np.ndarray]:
+            cells = component_branches.get(comp_root)
+            if not cells:
+                return None
+            mask = np.zeros((self.n_layers, self.H, self.W), dtype=bool)
+            for (c, r, l) in cells:
+                if 0 <= l < self.n_layers and 0 <= r < self.H and 0 <= c < self.W:
+                    mask[l, r, c] = True
+            return mask
+
+        # Custom Kruskal loop with Steiner support
+        uf = UnionFindLocal(len(terminals))
+        mst_edges: List[Tuple[int, int]] = []
+        path_matrix: Dict[Tuple[int, int], List[Tuple[int, int, int]]] = {}
+        cost_matrix: Dict[Tuple[int, int], float] = {}
+        searches = 0
+
+        for i, j in ordered_pairs(terminals):
+            if uf.components == 1:
+                break
+            if uf.find(i) == uf.find(j):
+                continue
+            searches += 1
+
+            # Build goal mask from j's component (if it has existing branches)
+            comp_j = uf.find(j)
+            goal_mask = build_goal_mask(comp_j)
+
+            success, path, cost = _search_pair(i, j, goal_mask)
+            if success:
+                uf.union(i, j)
+                new_root = uf.find(i)
+                mst_edges.append((i, j))
+                path_matrix[(i, j)] = path_matrix[(j, i)] = path
+                cost_matrix[(i, j)] = cost_matrix[(j, i)] = cost
+
+                # Merge branch cells into the new component
+                path_cells = set(path)
+                old_root_i = uf.find(i)  # after union, this is the new root
+                old_root_j = uf.find(j)  # same as old_root_i after union
+
+                # Merge branch cells from both components
+                merged_cells = set()
+                for root in (old_root_i, old_root_j):
+                    if root in component_branches:
+                        merged_cells.update(component_branches[root])
+                        del component_branches[root]
+                merged_cells.update(path_cells)
+                component_branches[new_root] = merged_cells
+
+        connected = uf.components == 1
         if not connected:
             return RouteResult([], 0.0, 0, 0.0, False, expansions_total)
         if not mst_edges:
             return RouteResult([], 0.0, 0, 0.0, False, expansions_total)
 
-        # Branch model: keep each MST edge path separate. A single
-        # polyline cannot represent a degree-3+ star without either a
-        # teleport jump (the old endpoint-only merge) or wasteful
-        # backtracking over the hub. Branches share hub cells; each is
-        # individually continuous terminal-to-terminal copper.
+        # Branch model: keep each MST edge path separate.
         branches: List[List[Tuple[int, int, int]]] = []
         total_cost = 0.0
         total_wire = 0.0
@@ -436,8 +506,15 @@ class SingleNetRouter:
         via_ok: Optional[np.ndarray] = None,  # precomputed landing mask (H, W)
         allow_mask: Optional[np.ndarray] = None,  # corridor restriction (H, W); None = anywhere
         heuristic_weight: Optional[float] = None,  # override CostMap weight for this search
+        goal_mask: Optional[np.ndarray] = None,  # (n_layers, H, W) bool: any True cell is a valid goal
     ) -> RouteResult:
-        """A* search on 3D grid with via transitions."""
+        """A* search on 3D grid with via transitions.
+
+        If ``goal_mask`` is provided (3D bool array ``n_layers × H × W``), the
+        search terminates when ANY cell in the mask is expanded, not just the
+        single ``goal`` cell. The path is reconstructed to the actual goal cell
+        reached. The heuristic still uses the original ``goal`` for guidance.
+        """
         sc, sr, sl = start
         gc, gr, gl = goal
 
@@ -461,6 +538,10 @@ class SingleNetRouter:
         hw = self.cost_map.heuristic_weight if heuristic_weight is None else heuristic_weight
         def heuristic(c, r, l):
             return (abs(c - gc) + abs(r - gr) + abs(l - gl)) * self.cost_map.base_cost * hw
+
+        # Quick goal_mask check for start cell
+        if goal_mask is not None and goal_mask[sl, sr, sc]:
+            return RouteResult([start], 0.0, 0, 0.0, True)
 
         # A* with (f, g, col, row, layer, parent)
         # f = g + h
@@ -498,6 +579,16 @@ class SingleNetRouter:
                         progress_cb(expansions)
                     except Exception:
                         pass
+
+            # Goal check: if goal_mask provided, any cell in mask is a valid goal
+            if goal_mask is not None and goal_mask[l, r, c]:
+                # Reconstruct path to this goal cell
+                path = [(c, r, l)]
+                while p is not None:
+                    path.append(p[:3])
+                    p = parent.get(p[:3])
+                path.reverse()
+                return RouteResult(path, 0.0, 0, g, True, expansions)
 
             if (c, r, l) == (gc, gr, gl):
                 # Reconstruct path

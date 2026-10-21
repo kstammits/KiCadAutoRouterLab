@@ -117,6 +117,7 @@ def _compute_total_force(
     edge_weights: np.ndarray,
     ghost_attractions: List[Tuple[np.ndarray, List[int], float]],
     same_fp_mask: Optional[np.ndarray] = None,
+    edge_sides: Optional[np.ndarray] = None,
     return_components: bool = False,
     ctx: Optional[ForceContext] = None,
     pad_velocities: Optional[np.ndarray] = None,
@@ -126,6 +127,11 @@ def _compute_total_force(
     With ``return_components`` also returns the per-cause breakdown
     ``{cause: (n_pads, 2)}`` for repulsion/attraction/ghost/courtyard
     (courtyard includes the board wall).
+
+    ``edge_sides`` optionally marks attraction edges as one-sided
+    (0 = symmetric, 1 = src only, 2 = dst only). Decap-incident edges are
+    one-sided so a decoupling cap is pulled toward its target without
+    dragging the target (often a large anchored part) into the cap.
     """
     # ------------------------------------------------------------------
     # Repulsion: all-pairs Coulomb k/d^2 in SI (d in meters).
@@ -156,8 +162,15 @@ def _compute_total_force(
         unit = diff_edge / dist_edge
         force_mag_edge = (params.attraction_k_N * edge_weights)[:, None]
         force_vec_edge = unit * force_mag_edge
-        np.add.at(attraction, src_idx, force_vec_edge)
-        np.add.at(attraction, dst_idx, -force_vec_edge)
+        if edge_sides is None:
+            np.add.at(attraction, src_idx, force_vec_edge)
+            np.add.at(attraction, dst_idx, -force_vec_edge)
+        else:
+            sides = np.asarray(edge_sides)
+            src_mask = sides != 2
+            dst_mask = sides != 1
+            np.add.at(attraction, src_idx[src_mask], force_vec_edge[src_mask])
+            np.add.at(attraction, dst_idx[dst_mask], -force_vec_edge[dst_mask])
 
     # ------------------------------------------------------------------
     # Ghost attraction: centroid-to-centroid springs from ghost to target.

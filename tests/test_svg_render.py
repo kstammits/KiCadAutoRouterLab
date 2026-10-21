@@ -6,10 +6,19 @@ from pathlib import Path
 
 import pytest
 
-from kicad_autorouter.board_model import apply_deltas, board_model
-from kicad_autorouter.placement import PlacementProposal
+from kicad_autorouter.board_model import (
+    BoardModel,
+    Point,
+    apply_deltas,
+    board_model,
+)
+from kicad_autorouter.placement import (
+    PlacementProposal,
+    _footprint_courtyard_polygon,
+)
 from kicad_autorouter.sexpr import parse_file
 from kicad_autorouter.svg_render import render_board_svg
+from tests.helpers import make_fp
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -20,6 +29,92 @@ def _c11_uuid(m):
 
 def _tube111_model():
     return board_model(parse_file(FIXTURES / "tube111.kicad_pcb"))
+
+
+def _synthetic_model(fp):
+    return BoardModel(
+        footprints=(fp,),
+        keepout_zones=(),
+        nets={},
+        by_ref={fp.ref: fp},
+    )
+
+
+def _courtyard_lines(svg: str, uuid: str):
+    grp = re.search(
+        rf'<g class="[^"]*" data-fp-uuid="{re.escape(uuid)}".*?</g>',
+        svg, re.DOTALL,
+    )
+    assert grp, f"no SVG group for {uuid}"
+    return [
+        tuple(map(float, m.groups()))
+        for m in re.finditer(
+            r'<line x1="([\d.\-]+)" y1="([\d.\-]+)" '
+            r'x2="([\d.\-]+)" y2="([\d.\-]+)"',
+            grp.group(0),
+        )
+    ]
+
+
+def test_svg_renders_repaired_micro_gap_courtyard():
+    """T1/T2-style 0.01mm gap renders the repaired collision polygon."""
+    from dataclasses import replace
+
+    fp = make_fp(
+        "U1", "uuid-u1", 0.0, 0.0, ("N1", "N2"),
+        hw=5.0, hh=5.0, pad_layers=("F.Cu",),
+    )
+    gapped = (
+        (Point(-5, -5), Point(5, -5)),
+        (Point(5, -5), Point(5, 5)),
+        (Point(5, 5), Point(0.005, 5)),
+        (Point(-0.005, 5), Point(-5, 5)),
+        (Point(-5, 5), Point(-5, -5)),
+    )
+    fp = replace(fp, courtyard=gapped)
+    model = _synthetic_model(fp)
+
+    svg = render_board_svg(model)
+    lines = _courtyard_lines(svg, fp.uuid)
+    poly = _footprint_courtyard_polygon(fp)
+
+    assert len(lines) == len(poly.exterior.coords) - 1
+    assert len(lines) == len(fp.courtyard) + 1
+    lengths = [
+        math.hypot(x2 - x1, y2 - y1)
+        for x1, y1, x2, y2 in lines
+    ]
+    assert any(abs(length - 0.01) < 5e-4 for length in lengths)
+    xs = [x for x1, _, x2, _ in lines for x in (x1, x2)]
+    ys = [y for _, y1, _, y2 in lines for y in (y1, y2)]
+    assert (min(xs), min(ys), max(xs), max(ys)) == pytest.approx(
+        poly.bounds, abs=2e-3
+    )
+
+
+def test_svg_renders_broken_courtyard_segment_bbox():
+    """Open courtyard renders the segment-bbox fallback placement uses."""
+    from dataclasses import replace
+
+    fp = make_fp(
+        "U1", "uuid-u1", 0.0, 0.0, ("N1", "N2"),
+        hw=1.0, hh=0.5, pad_layers=("F.Cu",),
+    )
+    fp = replace(fp, courtyard=(
+        (Point(0, 0), Point(10, 0)),
+        (Point(10, 0), Point(10, 6)),
+    ))
+    model = _synthetic_model(fp)
+
+    svg = render_board_svg(model)
+    lines = _courtyard_lines(svg, fp.uuid)
+
+    assert len(lines) == 4
+    xs = [x for x1, _, x2, _ in lines for x in (x1, x2)]
+    ys = [y for _, y1, _, y2 in lines for y in (y1, y2)]
+    assert (min(xs), min(ys), max(xs), max(ys)) == pytest.approx(
+        (-0.1, -0.1, 10.1, 6.1), abs=2e-3
+    )
 
 
 def test_preview_matches_accept_with_rotation():

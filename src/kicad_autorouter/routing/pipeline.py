@@ -203,15 +203,16 @@ def _apply_route_to_grid(
     grid: RoutingGrid,
     half_width_cells: int = 1,
     extra_radius: int = 0,
+    via_clearance_cells: int = 0,
 ) -> None:
     """Mark routed tracks and vias as BLOCKED in the cost grid.
 
     The corridor covers ``max(half_width_cells - 1, extra_radius)`` around
     the centerline so emitted tracks reserve their true footprint *plus*
     clearance to neighboring copper for subsequent nets. Via landings
-    stamp the same halo on both layers (via annulus needs clearance too).
-    Every MST branch is reserved (not just a flattened union), so later
-    nets keep clearance to the actual copper. Updates the cost_grid
+    stamp a via-specific halo (via annulus + clearance + track half-width)
+    on both layers. Every MST branch is reserved (not just a flattened union),
+    so later nets keep clearance to the actual copper. Updates the cost_grid
     in-place.
 
     Args:
@@ -219,14 +220,16 @@ def _apply_route_to_grid(
         cost_grid: (n_layers, H, W) int16 array to update
         grid: RoutingGrid for coordinate transforms
         half_width_cells: corridor half-width in cells (>= 1)
-        extra_radius: clearance halo in cells (>= 0)
+        extra_radius: clearance halo in cells (>= 0) for tracks
+        via_clearance_cells: via halo radius in cells (via size/2 + clearance + track half-width)
     """
     if not result.success or not result.path:
         return
 
     n_layers = cost_grid.shape[0]
     H, W = cost_grid.shape[1], cost_grid.shape[2]
-    radius = max(max(0, half_width_cells - 1), max(0, extra_radius))
+    track_radius = max(max(0, half_width_cells - 1), max(0, extra_radius))
+    via_radius = max(1, via_clearance_cells)
 
     for path in _branch_paths(result):
         for i in range(len(path) - 1):
@@ -236,15 +239,12 @@ def _apply_route_to_grid(
             # Mark the segment cells as blocked
             if l1 == l2:
                 # Same layer - mark track corridor along the line
-                _mark_line_blocked(cost_grid[l1], r1, c1, r2, c2, radius)
+                _mark_line_blocked(cost_grid[l1], r1, c1, r2, c2, track_radius)
             else:
                 # Layer transition - mark via halo at both layers
                 for _l, _r, _c in ((l1, r1, c1), (l2, r2, c2)):
                     if 0 <= _l < n_layers and 0 <= _r < H and 0 <= _c < W:
-                        if radius:
-                            stamp_square(cost_grid[_l], _r, _c, radius, BLOCKED)
-                        else:
-                            cost_grid[_l, _r, _c] = BLOCKED
+                        stamp_square(cost_grid[_l], _r, _c, via_radius, BLOCKED)
 
 
 def _mark_line_blocked(layer_grid: np.ndarray, r1: int, c1: int, r2: int, c2: int, radius: int = 0) -> None:
@@ -614,6 +614,7 @@ def route_nets(
                 _apply_route_to_grid(
                     result, cost_grid, routing_grid, corridor,
                     extra_radius=clearance_radius,
+                    via_clearance_cells=router.via_clearance_cells,
                 )
                 ripup.record_success(net_name, result.path)
                 all_results[net_name] = result

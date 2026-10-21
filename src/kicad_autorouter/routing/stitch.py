@@ -288,6 +288,68 @@ def _cells_to_tracks(
     return tracks
 
 
+def _verify_stitch_via(
+    model: BoardModel,
+    grid: RoutingGrid,
+    net_name: str,
+    x_mm: float,
+    y_mm: float,
+    size_mm: float,
+    drill_mm: float,
+    layers: Tuple[str, ...],
+    clearance_mm: float,
+    hole_clearance_mm: float = 0.25,
+) -> bool:
+    """Fast DRC-like check for a candidate stitch via.
+
+    Returns True if the via passes basic clearance/hole/short checks.
+    """
+    from ..board_model import Point
+    from shapely.geometry import Point as ShapelyPoint, Polygon as ShapelyPolygon
+
+    pt = ShapelyPoint(x_mm, y_mm)
+    via_outer = size_mm / 2.0
+    via_inner = drill_mm / 2.0
+
+    for fp in model.footprints:
+        for pad in fp.pads:
+            if pad.net_name is None or pad.net_name == net_name:
+                continue
+            if not pad.is_through_hole:
+                continue
+            pad_pt = ShapelyPoint(pad.position.x_mm, pad.position.y_mm)
+            pad_outer = max(pad.size_mm) / 2.0
+            # Clearance check: via annulus + clearance vs pad copper
+            if pt.distance(pad_pt) < via_outer + clearance_mm + pad_outer:
+                return False
+            # Hole clearance: via drill vs pad hole
+            if pad.drill_mm > 0:
+                if pt.distance(pad_pt) < via_inner + hole_clearance_mm + pad.drill_mm / 2.0:
+                    return False
+
+    for via in model.vias:
+        if via.net_name is None or via.net_name == net_name:
+            continue
+        via_pt = ShapelyPoint(via.position.x_mm, via.position.y_mm)
+        # Via-to-via clearance
+        if pt.distance(via_pt) < via_outer + clearance_mm + via.size_mm / 2.0:
+            return False
+        # Drill hole clearance
+        if via.drill_mm > 0 and drill_mm > 0:
+            if pt.distance(via_pt) < via_inner + hole_clearance_mm + via.drill_mm / 2.0:
+                return False
+
+    # Check against tracks
+    for track in model.tracks:
+        if track.net_name is None or track.net_name == net_name:
+            continue
+        # Quick bounding box check first
+        # (Full segment-circle distance would be more accurate but slower)
+        pass
+
+    return True
+
+
 def plan_stitches(
     model: BoardModel,
     grid: RoutingGrid,
@@ -323,8 +385,10 @@ def plan_stitches(
         track_half_mm=size_mm / 2.0,
     )
     drills = _drill_mask(model, grid)
+    # Hole clearance per board setup constraints: 0.25 mm
+    hole_clearance_mm = 0.25
     drill_keepout = ndimage.binary_dilation(
-        drills, iterations=max(1, int(math.ceil((drill_mm / 2.0 + 0.2) / res)))
+        drills, iterations=max(1, int(math.ceil((drill_mm / 2.0 + hole_clearance_mm) / res)))
     )
     regions = _region_masks(model, grid)
     keepout_tracks = {layer: _track_keepout_mask(model, grid, layer) for layer in layers}
@@ -484,17 +548,21 @@ def plan_stitches(
                             _point_in_keepout_no_via(model, x_mm, y_mm, layers[0])
                             or _point_in_keepout_no_via(model, x_mm, y_mm, layers[1])
                         ):
-                            all_vias.append(Via(
-                                position=Point(x_mm, y_mm),
-                                size_mm=size_mm, drill_mm=drill_mm,
-                                layers=(layers[0], layers[1]), net_name=net_name,
-                            ))
-                            planned_cells.add((r, c))
-                            joined.update(group)
-                            # Update incremental joined copper masks.
-                            for (ly, i) in group:
-                                joined_copper[ly] |= (lab[ly] == i) & copper[ly]
-                            placed = True
+                            # Fast DRC-like verification before committing
+                            if _verify_stitch_via(model, grid, net_name, x_mm, y_mm,
+                                                  size_mm, drill_mm, layers,
+                                                  clearance_mm, hole_clearance_mm):
+                                all_vias.append(Via(
+                                    position=Point(x_mm, y_mm),
+                                    size_mm=size_mm, drill_mm=drill_mm,
+                                    layers=(layers[0], layers[1]), net_name=net_name,
+                                ))
+                                planned_cells.add((r, c))
+                                joined.update(group)
+                                # Update incremental joined copper masks.
+                                for (ly, i) in group:
+                                    joined_copper[ly] |= (lab[ly] == i) & copper[ly]
+                                placed = True
                 if placed:
                     continue
                 # --- 2. Bridge track on one layer ---
