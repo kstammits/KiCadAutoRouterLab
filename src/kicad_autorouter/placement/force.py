@@ -95,6 +95,8 @@ class ForceContext:
         # between discrete candidates. Opposing winners slew in slowly
         # (prior-dominant blend) so a 180° flip can never land at once.
         self.last_contact: Dict[Tuple[int, int], Tuple[float, float]] = {}
+        # Pad velocities (n_pads, 2) in m/s — used for tangential sliding assist
+        self.pad_velocities: Optional[np.ndarray] = None
 
 
 def _compute_total_force(
@@ -110,6 +112,7 @@ def _compute_total_force(
     same_fp_mask: Optional[np.ndarray] = None,
     return_components: bool = False,
     ctx: Optional[ForceContext] = None,
+    pad_velocities: Optional[np.ndarray] = None,
 ) -> Tuple[np.ndarray, Optional[Dict[str, np.ndarray]]]:
     """Compute total force on each pad at given positions.
 
@@ -188,6 +191,10 @@ def _compute_total_force(
         poly_cache = ctx.poly_cache
         cache_rebuild_threshold_mm = ctx.cache_rebuild_threshold_mm
         cache_rebuild_threshold_rad = ctx.cache_rebuild_threshold_rad
+        # Pad velocities for tangential sliding assist
+        pad_vel = pad_velocities if pad_velocities is not None else ctx.pad_velocities
+        if pad_vel is not None and len(pad_vel) != n_pads:
+            pad_vel = None  # size mismatch, disable tangential assist
 
         n_fp = len(fp_uuids)
         if n_fp:
@@ -460,6 +467,18 @@ def _compute_total_force(
                     params.wall_exponent, params.wall_cap_depth_mm,
                 )
                 fx, fy = force_mag * ux, force_mag * uy
+                # Tangential assist
+                if pad_vel is not None and params.contact_tangent_gamma > 0.0:
+                    tx, ty = -uy, ux
+                    rows_i = fp_local_to_rows[li]
+                    rows_j = fp_local_to_rows[lj]
+                    if len(rows_i) > 0 and len(rows_j) > 0:
+                        v_i = pad_vel[rows_i].mean(axis=0)
+                        v_j = pad_vel[rows_j].mean(axis=0)
+                        v_rel_t = (v_i[0] - v_j[0]) * tx + (v_i[1] - v_j[1]) * ty
+                        f_t = params.contact_tangent_gamma * force_mag * (1.0 if v_rel_t >= 0 else -1.0)
+                        fx += f_t * tx
+                        fy += f_t * ty
                 rows_i = fp_local_to_rows[li]
                 _spread(
                     rows_i, fp_centroids_arr[li, 0], fp_centroids_arr[li, 1],
@@ -493,6 +512,21 @@ def _compute_total_force(
                     params.wall_exponent, params.wall_cap_depth_mm,
                 )
                 fx, fy = force_mag * ux, force_mag * uy
+                # Tangential assist: add force along tangential direction to help parts slide
+                if pad_vel is not None and params.contact_tangent_gamma > 0.0:
+                    tx, ty = -uy, ux  # tangential axis (perp to normal)
+                    # Average velocity of footprint i and j pads
+                    rows_i = fp_local_to_rows[li]
+                    rows_j = fp_local_to_rows[lj]
+                    if len(rows_i) > 0 and len(rows_j) > 0:
+                        v_i = pad_vel[rows_i].mean(axis=0)
+                        v_j = pad_vel[rows_j].mean(axis=0)
+                        # Relative tangential velocity
+                        v_rel_t = (v_i[0] - v_j[0]) * tx + (v_i[1] - v_j[1]) * ty
+                        # Add tangential force in direction of relative tangential motion
+                        f_t = params.contact_tangent_gamma * force_mag * (1.0 if v_rel_t >= 0 else -1.0)
+                        fx += f_t * tx
+                        fy += f_t * ty
                 rows_i = fp_local_to_rows[li]
                 _spread(
                     rows_i, fp_centroids_arr[li, 0], fp_centroids_arr[li, 1],

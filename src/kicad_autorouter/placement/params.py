@@ -71,6 +71,11 @@ class PlacementParams:
     # rigid projection (0 = fully re-derive from displacement, 1 = keep old).
     # Default 0.7 provides momentum persistence to nudge past wedges.
     momentum_alpha: float = 0.7
+    # Tangential assist coefficient: fraction of normal force applied along
+    # the tangential direction at contact to help parts slide past each other.
+    # 0 = disabled, >0 adds force along the tangential (MTV-perp) axis.
+    # Typical values 0.1-0.3. This helps wedged parts slide along walls.
+    contact_tangent_gamma: float = 0.15
     # Ghost attraction scale (newtons).
     ghost_k_N: float = 5e-5
     # Viscous damping coefficient (N*s/m).
@@ -183,6 +188,8 @@ def _validate(params: PlacementParams) -> None:
         raise ValueError("wall_exponent must be >= 1.0 (p < 1 is singular at the halo edge)")
     if not (0.0 <= params.momentum_alpha <= 1.0):
         raise ValueError("momentum_alpha must be in [0.0, 1.0]")
+    if params.contact_tangent_gamma < 0.0:
+        raise ValueError("contact_tangent_gamma must be >= 0.0")
     if params.decap_boost < 0:
         raise ValueError("decap_boost must be >= 0")
     if not isinstance(params.include_power_nets, bool):

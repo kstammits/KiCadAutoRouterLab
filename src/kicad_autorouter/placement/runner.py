@@ -433,6 +433,11 @@ def _run_region_simulation(
         cy_cache=cy_cache,
     )
 
+    # SI integrator state: per-pad velocities (m/s) and adaptive timestep (s).
+    _vel = np.zeros((len(region_pads), 2), dtype=np.float64)
+    _dt = float(params.dt_s)
+    _prev_ke: Optional[float] = None
+
     # Initial forces predict the NEXT step from the committed board positions.
     initial_force, initial_components = _compute_total_force(
         positions, len(region_pads), pad_movable,
@@ -441,6 +446,7 @@ def _run_region_simulation(
         same_fp_mask,
         return_components=True,
         ctx=fctx,
+        pad_velocities=_vel,
     )
 
     # ---- Trajectory frames (opt-in motion viz) ----
@@ -486,6 +492,7 @@ def _run_region_simulation(
             same_fp_mask,
             return_components=True,
             ctx=fctx,
+            pad_velocities=_vel,
         )
         force_frame: Dict[str, Dict[str, Tuple[float, float]]] = {}
         for _fp, _pi in _frame_fps:
@@ -508,11 +515,6 @@ def _run_region_simulation(
     if record_frames and _frame_fps:
         _region_frames.append(_capture_frame(positions))
         _region_force_frames.append(_capture_force_frame(positions))
-
-    # SI integrator state: per-pad velocities (m/s) and adaptive timestep (s).
-    _vel = np.zeros((len(region_pads), 2), dtype=np.float64)
-    _dt = float(params.dt_s)
-    _prev_ke: Optional[float] = None
 
     # Rigid-body projection data (PBD): per movable multi-pad footprint.
     _proj_bodies: List[Tuple[np.ndarray, np.ndarray]] = []
@@ -557,12 +559,15 @@ def _run_region_simulation(
     stall_n = 0
 
     for iteration in range(params.max_iterations):
+        # Update context with current velocities for tangential assist
+        fctx.pad_velocities = _vel
         force, _ = _compute_total_force(
             positions, len(region_pads), pad_movable,
             params, has_net_edges, src_idx, dst_idx, edge_weights,
             ghost_attractions,
             same_fp_mask,
             ctx=fctx,
+            pad_velocities=_vel,
         )
 
         # Dry friction: freeze a whole footprint whose largest pad-force
@@ -704,6 +709,7 @@ def _run_region_simulation(
         same_fp_mask,
         return_components=True,
         ctx=fctx,
+        pad_velocities=_vel,
     )
 
     for fp in model.footprints:
