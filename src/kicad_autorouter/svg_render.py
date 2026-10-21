@@ -175,7 +175,7 @@ def _zones_svg(
         layer_zones = [z for z in model.zones if layer in z.layers]
         if not layer_zones:
             continue
-        opacity = "0.18" if layer == "F.Cu" else "0.12"
+        opacity = "0.08" if layer == "F.Cu" else "0.06"
         out.append(f'<g id="layer-{layer}-zones">')
         for zone in layer_zones:
             if len(zone.polygon) < 3:
