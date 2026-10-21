@@ -56,6 +56,21 @@ ingest and result reporting). Normative formulas:
 attraction replaced springs; semi-implicit Euler + projection replaced the
 stiffness-capped stepper).
 
+### SI dynamics quick reference
+
+| Term | Definition | `si_force_laws.md` | `placement.py` symbol |
+|------|------------|--------------------|----------------------|
+| **wall / halo** | One linear law in signed separation `s` (gap +, penetration −): `F = k_wall·(1 − s/halo)` | §1 Courtyard collision | `PlacementParams.wall_k_N`, `PlacementParams.wall_halo_m`, `_wall_mag` |
+| **MTV (minimum-translation vector)** | SAT overlap direction — out the nearest edge; correct for containment/small-in-large | §1 Courtyard collision (Contact direction rule) | `_apply_contact_push_analytical`, `_sat_rect_rect`, `_rect_circle_contact` |
+| **Per-pair aggregation** | Deepest contact wins per pair (summed areas, strongest direction); pin circles don't stack | §1 Per-pair aggregation | `_apply_contact_push_analytical`, `_contact_weights` |
+| **Kabsch snap / projection** | SVD rigid fit of proposed pads vs reference shape; bodies stay exact with no stiffness parameter | §2 Integrator (Rigid-step clamp) | `_project_rigid_poses` |
+| **Rigid-step clamp** | Bounds post-projection body motion: centroid shift ≤ `vmax·dt`, rotation half measured step capped at 5°/step | §2 Rigid-step clamp | `_clamp_rigid_step` |
+| **Deadband (angular)** | `MIN_ROT_STEP_RAD` (currently 0.0 = disabled); parking micro-rotations wedged pairs | §2 Rigid-step clamp | `_clamp_rigid_step`, `MIN_ROT_STEP_RAD` |
+| **Adaptive-dt guard** | Halve dt + bleed velocity on KE jumps (>1.25×), regrow ×1.1; bounded by `dt_min_s`/`dt_max_s` | §2 Adaptive-dt guard | `_run_region_simulation` (adaptive-dt block) |
+| **Tightening ratio** | Final vs start pooled intra-group distance; <1 means the board clusters | §3 Regime map | `tighten_mean`, `tighten_max` (calibration) |
+| **Broadphase** | 15 mm uniform-grid + bounding-circle cull before exact courtyard geometry | §1 Broadphase (TODO Phase 1) | `_run_region_simulation` (courtyard cache) |
+| **Decap / power / GND rules** | Fanout scaling on power edges; ground excluded except decap-incident; `decap_boost` multiplier | §1 Decap boost, Fanout scaling, Ground exclusion | `_build_net_edges_pad_level`, `PlacementParams.decap_boost`, `PlacementParams.power_attraction_scale` |
+
 ### Units & integrator
 
 - **m/N/s foundation**: the solver runs entirely in meters, newtons,

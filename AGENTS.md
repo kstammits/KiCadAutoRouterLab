@@ -51,60 +51,53 @@ browser workflow UI. Works on real boards, DRC-validated.
   `kicad-cli` lives at
   `/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli` (not on PATH).
 
-## Placement dynamics (state as of 2026-10-20)
+## Placement dynamics (concise)
 
 - One wall law (`_wall_mag` in `contact.py`): part courtyards push apart;
   the board region polygon is an inverted courtyard pushing inside with
-  the same `wall_k_N` / `wall_halo_m`. There is no `boundary_k_N`
-  anywhere (removed from params, UI, scripts, docs, figures);
-  `from_dict` drops it from old files.
-- Ghost walls join a region by courtyard overlap, not centroid
-  (`_assign_board_regions` fallback in `board_model.py`): a wall
-  straddling the board edge has its centroid outside and would otherwise
-  score region -1 and exert nothing.
-- Per-pair contact: deepest penetration wins, then its normal blends with
-  the prior step (50/50 when aligned, 25/75 prior-dominant when opposing
-  — a 180° flip slews instead of snapping). State lives in
-  `ForceContext.last_contact` and is pruned when pairs separate. Never
-  reintroduce beat-by-margin winner switching; blending is the mechanism.
-- Poly-cache rebuild thresholds are tight (20µm / 0.02°) so refresh
-  jumps stay small enough to blend out (stale polygons were a flip-flop
-  source at 0.1mm).
-- Rigid: Kabsch snap per step, rotation halved, 10° cap, 0.1° deadband
-  (`MIN_ROT_STEP_RAD`) applied after halving. Translation untouched,
-  rotation stays free.
-- Convergence: `residual_max_force_N` = max over movable footprints of
-  NET force (rigid-aware — per-pad loads cancel across a body in
-  contact, so per-pad max could never settle). Stop reasons: `converged`
-  (quiet step + settled nets), `stalled` (window-averaged pose shows no
-  net progress over a full `stall_window`, default 100, with forces
-  remaining: wedged or chattering in place — per-step quiet never arrives
-  under contact chatter, so the rule compares window means with tolerance
-  `STALL_MEAN_EPS_MULT * convergence_eps_m`, never rest), `budget` (still
-  moving), `empty`. A wedged single-part run converging inside overlap is
-  honest; all-movable runs are what resolve piles.
-- Force causes are four: repulsion / attraction / courtyard (includes the
-  board wall) / ghost. SVG overlay + UI legend match; server
-  `/api/placement/forces` asserts the same set.
-- `tests/fixtures/2B.kicad_pcb` is UNTRACKED by owner request — do NOT
-  `git add`/`git commit` it; write synthetic regression tests instead
-  (see `test_straddling_ghost_wall_joins_region_and_pushes`,
-  `test_loaded_contact_settles_despite_per_pad_loads`,
-  `test_quiet_without_progress_stops_stalled`).
+  the same `wall_k_N` / `wall_halo_m`. `boundary_k_N` removed everywhere.
+- Region-based placement; ghost footprints are fixed anchors, never movable.
+- Stop reasons: `converged` (quiet + settled forces), `stalled` (no window
+  progress, forces remain), `budget` (max iters reached), `empty`.
+- `dt_min_s`/`dt_max_s` are solver internals — never user-controllable;
+  `from_dict` purges stale values so lowering `dt_s` never fails validation.
+- Force causes: repulsion / attraction / courtyard (includes board wall) / ghost.
+- `tests/fixtures/2B.kicad_pcb` is UNTRACKED — do NOT `git add`/`git commit`;
+  write synthetic regression tests instead (see `test_straddling_ghost_wall_...`,
+  `test_loaded_contact_settles...`, `test_quiet_without_progress...`).
 - DCCF overlap allowlist (`KNOWN_DCCF_OVERLAPS_200`) re-characterized
-  2026-10-20 (19 pairs — reshuffled within the same shared-net wedge
-  family by the damped-snap/deadband/blending retime; see its comment).
-- Magnet boards scatter INSIDE the outline (like production); the old
-  [5,95]² scatter predated the minimal-board regions and piled parts at
-  the SW door behind locked MH1 — contain locally, don't widen bounds.
-  Wall test asserts courtyards fully inside + 0.5mm under 25x gain.
+  2026-10-20 (19 pairs). Magnet boards scatter INSIDE the outline; wall
+  test asserts courtyards fully inside + 0.5mm under 25x gain.
+
+Detailed physics constants (blend ratios, cache thresholds, Kabsch caps,
+stall multiplier) live in `si_force_laws.md` / code comments.
+
+## Low-powered / fast placement mode
+
+For quick iterations (not production quality), tune:
+
+| Param | Default | Fast-mode | Effect |
+|-------|---------|-----------|--------|
+| `max_iterations` | 1000 | 50–200 | caps runtime |
+| `dt_s` | 1 ms | 2 ms | larger steps |
+| `convergence_eps_m` | 1 µm | 10–50 µm | looser settle |
+| `stall_window` | 100 | 20–50 | stops sooner |
+| `wall_k_N` | 0.09 | 0.02–0.05 | weaker pushes |
+
+Low-power runs report `stalled`/`budget` more often — expected, not a bug.
+Treat as "needs attention," not settled.
+
+## Fixtures for fast testing
+
+- `minimal.*` (4 parts, no nets) — fastest, no `kicad-cli` needed.
+- `tube111.*` / `DCCF.sved.*` — heavy (105/97 parts); avoid for quick loops.
+- Never use untracked `2B.kicad_pcb`.
 
 ## Context sources (not vendored)
 
-`docs/kicad/` + `docs/wikipedia/` were removed to keep the repo small.
-Restore locally via the recipes in `docs/README.md`, or read upstream:
-KiCad 10.0 manuals at `https://docs.kicad.org/10.0/en/`
-(`kicad/`, `pcbnew/`, `eeschema/`, `cli/`);
+`docs/kicad/` + `docs/wikipedia/` removed. Restore via `docs/README.md`
+recipes, or read upstream: KiCad 10.0 manuals at
+`https://docs.kicad.org/10.0/en/` (`kicad/`, `pcbnew/`, `eeschema/`, `cli/`);
 Wikipedia: `Autorouter`, `Maze_routing`, `Lee_algorithm`,
 `Force-directed_graph_drawing`, `Barnes%E2%80%93Hut_simulation`,
-`A*_search_algorithm`. The digested guidance is `docs/autorouting_glossary.md`.
+`A*_search_algorithm`. Digested guidance in `docs/autorouting_glossary.md`.

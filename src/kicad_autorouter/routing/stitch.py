@@ -421,6 +421,11 @@ def plan_stitches(
         }
         max_bridge_cells = max_bridge_mm / res if res > 0 else 0
 
+        # Hoisted: binary erosion of copper is invariant per net (copper never
+        # changes during stitch; only `grown` is updated). Compute once per net.
+        copper_eroded = {layer: ndimage.binary_erosion(copper[layer])
+                         for layer in layers}
+
         for region_idx in sorted(by_region):
             region_groups = sorted(
                 by_region[region_idx],
@@ -431,14 +436,16 @@ def plan_stitches(
             joined: Set[Tuple[str, int]] = set(region_groups[0])
             remaining = list(region_groups[1:])
 
+            # Incremental joined copper masks: updated when groups join.
+            joined_copper = {layer: np.zeros_like(copper[layer], dtype=bool)
+                             for layer in layers}
+            # Seed with the initially joined group (region_groups[0]).
+            for (ly, i) in joined:
+                joined_copper[ly] |= (lab[ly] == i) & copper[ly]
+
             def joined_mask(layer: str) -> np.ndarray:
-                m = np.zeros_like(grown[layer], dtype=bool)
-                for (ly, i) in joined:
-                    if ly == layer:
-                        m |= (lab[layer] == i) & copper[layer]
-                # Bridge tracks laid so far belong to the joined network.
-                m |= grown[layer] & ~copper[layer]
-                return m
+                # Joined copper + bridge tracks grown since last join.
+                return joined_copper[layer] | (grown[layer] & ~copper[layer])
 
             absorbed: Set[int] = set()
             for idx, group in enumerate(remaining):
@@ -462,10 +469,7 @@ def plan_stitches(
                     jF, jB = joined_mask(layers[0]), joined_mask(layers[1])
                     overlap = ((gF & jB) | (gB & jF)) & clear[layers[0]] & clear[layers[1]]
                     overlap &= ~drill_keepout & ~via_block
-                    overlap &= (
-                        ndimage.binary_erosion(copper[layers[0]])
-                        & ndimage.binary_erosion(copper[layers[1]])
-                    )
+                    overlap &= copper_eroded[layers[0]] & copper_eroded[layers[1]]
                     for (pr, pc) in planned_cells:
                         overlap[max(0, pr - min_spacing):pr + min_spacing + 1,
                                 max(0, pc - min_spacing):pc + min_spacing + 1] = False
@@ -487,6 +491,9 @@ def plan_stitches(
                             ))
                             planned_cells.add((r, c))
                             joined.update(group)
+                            # Update incremental joined copper masks.
+                            for (ly, i) in group:
+                                joined_copper[ly] |= (lab[ly] == i) & copper[ly]
                             placed = True
                 if placed:
                     continue
@@ -554,7 +561,13 @@ def plan_stitches(
                         if touch:
                             absorbed.add(jdx)
                             joined.update(remaining[jdx])
+                            # Update incremental joined copper for absorbed group.
+                            for (ly, i) in remaining[jdx]:
+                                joined_copper[ly] |= (lab[ly] == i) & copper[ly]
                     joined.update(group)
+                    # Update incremental joined copper masks for the joined group.
+                    for (ly, i) in group:
+                        joined_copper[ly] |= (lab[ly] == i) & copper[ly]
                     bridged = True
                 if not bridged:
                     unjoined += 1
