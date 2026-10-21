@@ -553,8 +553,9 @@ FORCE_CAUSE_COLORS = {
     "attraction": "#a3e635",  # lime
     "courtyard": "#f472b6",  # pink (part contact + board wall)
     "ghost": "#c4b5fd",  # pale lavender, dotted
+    "tangential": "#eab308",  # yellow (sliding assist along contact)
 }
-FORCE_CAUSE_ORDER = ("repulsion", "attraction", "courtyard", "ghost")
+FORCE_CAUSE_ORDER = ("repulsion", "attraction", "courtyard", "ghost", "tangential")
 FORCE_CAUSE_DASH = {
     "ghost": ' stroke-dasharray="1 1.2"',
 }
@@ -579,7 +580,8 @@ def _forces_overlay(model: BoardModel, proposal: PlacementProposal,
     """Draw per-cause force vectors at footprint centroids.
 
     One arrow per force cause (repulsion/attraction/courtyard/
-    ghost) so parameter tuning can see which knob is doing the pushing.
+    ghost/tangential) so parameter tuning can see which knob is doing
+    the pushing.
     Lengths use a log scale normalized to the largest visible magnitude —
     raw forces span orders of magnitude (e.g. repulsion ~3 vs courtyard
     ~3800), which pegged the old linear scale at its cap for every part.

@@ -61,9 +61,10 @@ class PlacementParams:
     attraction_k_N: float = 8e-3
     # Courtyard contact strength (newtons; elastic push-out on collision).
     wall_k_N: float = 8e-2
-    # Near-miss halo reach (meters).
-    wall_halo_m: float = 0.0078
+    # Near-miss halo reach (meters). Calibrated 6mm (sweep_wall_hardening.py).
+    wall_halo_m: float = 0.006
     # Wall-law exponent (dimensionless, default 2 = quadratic).
+    # Quadratic reduces overlaps on real boards (sweep_wall_hardening.py).
     wall_exponent: float = 2.0
     # Deep-penetration cap (mm of penetration depth, 0 = uncapped).
     wall_cap_depth_mm: float = 0.0
@@ -94,9 +95,9 @@ class PlacementParams:
     # rotation <= 5 deg/step).
     vmax_m_s: float = 1.0
     # Settled threshold: max pad displacement per step (meters).
-    # 1 micron is well below manufacturing tolerance but tight enough to
-    # ensure forces have actually settled.
-    convergence_eps_m: float = 1e-6
+    # Calibrated 20 µm (si_force_laws.md): tighter eps fake-settles under
+    # contact chatter; this is the honest-floor where residual gate still catches.
+    convergence_eps_m: float = 2e-5
     # Stall window (iterations): no NET progress of the window-averaged
     # pose over the window stops the run as "stalled" instead of burning
     # budget. A stalled run sits in place with unserved forces

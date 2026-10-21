@@ -120,7 +120,7 @@ def test_movable_separates_from_earlier_immobile():
     dx, _, _ = prop.deltas["uuid-b"]
     assert dx > 0.0
     comps = prop.force_components["uuid-b"]
-    assert set(comps) == {"repulsion", "attraction", "ghost", "courtyard"}
+    assert set(comps) == {"repulsion", "attraction", "ghost", "courtyard", "tangential"}
     # NOTE (SI MTV contact): the 5mm-x / 4mm-y overlap escapes along the
     # minimum axis (±y), so the wall force reads on cy, not cx. Old code
     # reported exactly 0.0 on every axis (pair never evaluated).

@@ -1,25 +1,19 @@
 """SI dynamics calibration sweep on the synthetic magnet board.
 
-Why this exists: the SI rewrite (feature/si-dynamics) replaced the legacy
-pseudo-force stepper with real m/N/s physics. The committed
-``PlacementParams`` defaults are starting guesses from docs/si_force_laws.md,
-not tuned values. A prior session burned tokens hand-tuning test constants
-against those guesses.
+Why this exists: the SI rewrite replaced the legacy pseudo-force stepper with
+real m/N/s physics. The committed PlacementParams defaults are starting guesses,
+not tuned values. This script sweeps parameter grids on the cheap synthetic
+magnet board (7 resistors, shared nets NET_A/B/C) and reports which parameter
+sets make the physics behave: groups tighten vs their own scattered start,
+parts stay inside the board region, runs converge within budget or stall
+honestly with residual force.
 
-This script sweeps a SMALL focused grid on the cheap synthetic magnet board
-(7 resistors, shared nets NET_A/B/C) and reports which parameter sets make
-the physics behave: groups tighten vs their own scattered start, parts stay
-inside the board region, runs converge within budget.
-
-Region-aware: the old test_magnet.py scatters parts in a hardcoded 100x100mm
-square, but minimal.kicad_pcb's region is x 55-215 / y 45-145, so most parts
-started OUTSIDE the board and the boundary force dominated. This harness
-samples start poses inside the actual region bbox (inset by margin), with a
-minimum center separation so the board starts overlap-free.
+Region-aware: samples start poses inside the actual region bbox (inset by
+margin), with a minimum center separation so the board starts overlap-free.
 
 Usage:
-    python3 scripts/calibrate_si.py --quick        # 24 combos x 3 seeds
-    python3 scripts/calibrate_si.py                # 72 combos x 3 seeds
+    python3 scripts/calibrate_si.py --quick        # small grid x 3 seeds
+    python3 scripts/calibrate_si.py                # full grid x 3 seeds
     python3 scripts/calibrate_si.py --out /tmp/si_sweep.json --top 10
 """
 
@@ -156,10 +150,6 @@ def build_magnet_board(seed):
         ("R6", "mag-r6-uuid-0006", "NET_C", "NET_I"),
         ("R7", "mag-r7-uuid-0007", "NET_C", "NET_J"),
     ]
-    # Keep clear of locked parts too (e.g. corner mounting holes): the old
-    # harness only separated resistors from each other, so some starts
-    # overlapped a locked MH courtyard and the wall force blasted light
-    # parts into spins on iteration 1.
     locked_xy = [(fp.x_mm, fp.y_mm) for fp in locked]
     placed = []
     for ref, uid, shared, unique in specs:
@@ -237,6 +227,8 @@ def evaluate(params, seeds):
     overlap_total = 0.0
     iters_list = []
     converged_all = True
+    stalled_all = True
+    budget_all = True
     for seed in seeds:
         model = build_magnet_board(seed)
         start = {r: (model.by_ref[r].x_mm, model.by_ref[r].y_mm) for r in REFS}
@@ -260,6 +252,12 @@ def evaluate(params, seeds):
         iters_list.append(prop.iterations)
         if prop.iterations >= params.max_iterations:
             converged_all = False
+            budget_all = False
+        if prop.stop_reason == "stalled":
+            stalled_all = False
+        if prop.stop_reason == "converged":
+            budget_all = False
+            stalled_all = False
     return {
         "tighten_mean": sum(tighten_ratios) / len(tighten_ratios),
         "tighten_max": max(tighten_ratios),
@@ -268,6 +266,8 @@ def evaluate(params, seeds):
         "iters_mean": sum(iters_list) / len(iters_list),
         "iters_max": max(iters_list),
         "converged_all": converged_all,
+        "stalled_any": not stalled_all,
+        "budget_any": not budget_all,
     }
 
 
@@ -283,7 +283,7 @@ def score(metrics):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="SI magnet calibration sweep")
-    ap.add_argument("--quick", action="store_true", help="24-combo smoke sweep")
+    ap.add_argument("--quick", action="store_true", help="small grid smoke sweep")
     ap.add_argument("--max-iters", type=int, default=200)
     ap.add_argument("--seeds", type=int, nargs="+", default=[42, 7, 123])
     ap.add_argument("--out", type=str, default="")
@@ -293,38 +293,39 @@ def main(argv=None):
     if args.quick:
         grid = {
             "attraction_k_N": [0.02, 0.05, 0.1],
-            "wall_k_N": [0.01, 0.03],
-            "vmax_m_s": [1.0],
+            "wall_k_N": [0.01, 0.03, 0.08],
+            "wall_halo_m": [0.004, 0.006, 0.008],
+            "wall_exponent": [1.0, 2.0],
+            "convergence_eps_m": [5e-6, 2e-5, 1e-4],
+            "damping_Ns_m": [0.08, 0.12],
+            "dt_s": [1e-3, 2e-3],
         }
     else:
         grid = {
-            "attraction_k_N": [0.02, 0.04, 0.06, 0.1],
-            "wall_k_N": [0.01, 0.03, 0.08],
-            "vmax_m_s": [1.0, 1.5],
+            "attraction_k_N": [0.01, 0.02, 0.04, 0.06, 0.1],
+            "wall_k_N": [0.01, 0.03, 0.05, 0.08, 0.12],
+            "wall_halo_m": [0.003, 0.005, 0.006, 0.008, 0.01],
+            "wall_exponent": [1.0, 1.5, 2.0, 2.5],
+            "convergence_eps_m": [1e-6, 5e-6, 2e-5, 5e-5, 1e-4],
+            "damping_Ns_m": [0.06, 0.08, 0.1, 0.12, 0.15],
+            "dt_s": [5e-4, 1e-3, 2e-3],
         }
-    # Fixed for this round (repulsion negligible at clustering scales;
-    # damping/dt explored after the force balance is sane). Mirrors the
-    # calibrated engine defaults (docs/si_force_laws.md section 3).
-    fixed = dict(
-        max_iterations=args.max_iters,
-        repulsion_k_N_m2=2e-9,
-        wall_halo_m=0.006,
-        ghost_k_N=5e-5,
-        damping_Ns_m=0.12,
-        friction_N=1e-6,
-        dt_s=1e-3,
-        dt_min_s=2e-4,
-        dt_max_s=2e-3,
-        convergence_eps_m=2e-5,
-    )
+
+    # Use engine defaults for parameters not in grid (PlacementParams() dataclass)
+    base_params = PlacementParams()
+    fixed_keys = set(base_params.__dataclass_fields__.keys()) - set(grid.keys())
+    fixed = {k: getattr(base_params, k) for k in fixed_keys}
+
     keys = list(grid)
     combos = list(itertools.product(*[grid[k] for k in keys]))
     print(f"magnet sweep: {len(combos)} combos x {len(args.seeds)} seeds")
+    print(f"fixed params: {fixed}")
     t0 = time.perf_counter()
     rows = []
     for combo in combos:
         pdict = dict(fixed)
         pdict.update(dict(zip(keys, combo)))
+        pdict["max_iterations"] = args.max_iters
         params = PlacementParams(**pdict)
         try:
             m = evaluate(params, args.seeds)
@@ -338,20 +339,24 @@ def main(argv=None):
                 "iters_mean": args.max_iters,
                 "iters_max": args.max_iters,
                 "converged_all": False,
+                "stalled_any": False,
+                "budget_any": True,
             }
         rows.append({"params": pdict, "metrics": m, "score": score(m)})
     rows.sort(key=lambda r: r["score"])
     dt = time.perf_counter() - t0
     print(f"done in {dt:.1f}s")
-    print(f"{'score':>6} {'tight':>6} {'bv':>3} {'ovlp':>6} {'iters':>6}  params")
+    print(f"{'score':>6} {'tight':>6} {'bv':>3} {'ovlp':>6} {'iters':>6} {'stop':>10}  params")
     for r in rows[: args.top]:
         m = r["metrics"]
         p = r["params"]
+        stop_str = "conv" if m["converged_all"] else ("stall" if m["stalled_any"] else "budget")
         print(
             f"{r['score']:6.3f} {m['tighten_mean']:6.3f} {m['boundary_violations']:3d} "
-            f"{m['overlap_mm2']:6.2f} {m['iters_mean']:6.0f}  "
-             f"attr={p['attraction_k_N']} wall={p['wall_k_N']} "
-             f"vmax={p['vmax_m_s']}"
+            f"{m['overlap_mm2']:6.2f} {m['iters_mean']:6.0f} {stop_str:>10}  "
+            f"attr={p['attraction_k_N']:.4f} wall={p['wall_k_N']:.4f} "
+            f"halo={p['wall_halo_m']*1000:.0f}mm p={p['wall_exponent']} "
+            f"eps={p['convergence_eps_m']*1e6:.0f}um damp={p['damping_Ns_m']:.2f} dt={p['dt_s']*1000:.0f}ms"
         )
     if args.out:
         Path(args.out).write_text(json.dumps(rows, indent=1), encoding="utf-8")

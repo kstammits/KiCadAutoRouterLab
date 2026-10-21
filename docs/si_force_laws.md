@@ -76,6 +76,37 @@ F_ghost = k_ghost · û(target→anchor)              k_ghost in N
 ```
 Split equally over target pads; no reaction on the ghost (infinite mass).
 
+### Tangential assist (sliding assist)
+Applied at courtyard contact pairs only (same-layer body/pin overlap), never for halo-only approach. The board wall counts as a ghost courtyard with zero velocity on its side:
+
+```
+F_t = γ · |F_n| · sign(v_rel_t)   k_wall at contact, applied along MTV-perp
+```
+
+- `γ = contact_tangent_gamma` (default 0.15) — fraction of the contact normal force applied perpendicular to the MTV axis
+- `v_rel_t` = relative tangential velocity between the two footprints (pad-average along the MTV-perp axis)
+- `sign` is latched per contact pair: once decisive motion sets the direction, near-zero noise keeps it so a part pressed at an angle settles to one slide direction instead of rubbing left/right each step
+- Applied at the contact point via contact-weighted pad spread, so differential pad loading becomes torque through Kabsch — parts pressed against long walls slide along them rather than jam
+- Zero default (disabled at 0.0); effective range 0.1–0.3; legalize regime uses 0.15
+
+Sign latch behavior: `sign(v_rel_t)` updates only when `|v_rel_t| > 1e-9` m/s; below that the last sign is held, defaulting to +1 (the old `>= 0` branch) on first contact. This is internal solver memory (`ctx.last_tangent`), not a user param.
+
+### Final depenetration pass (legalize eject)
+Applied **once** after dynamics settle, before the final force readback:
+
+```
+x_i ← x_i + 0.5 · depth_i · û_MTV     per overlapping pair
+```
+
+- Runs after dynamics stop (converged/stalled/budget), on the committed pad positions
+- Only true penetration (`s < 0`), never halo proximity — halo-only near-misses are untouched
+- Locked and ghost sides never move; both-movable pairs split the correction evenly
+- Jacobi (frozen-geometry) accumulation: all pairs' corrections are computed against the same pose, then applied together — sequential in-place pushes would let later pairs steer on stale geometry and walk wedged parts around
+- Rotation is clamped to 2°/pass via the existing rigid-step clamp, re-posed rigidly (Kabsch) so bodies stay exact; velocities re-derived from the projected displacement
+- One round only: iterating re-measures after each shove and ping-pongs closed wedges between neighbors (measured: R13 walked 12–20 mm while worst overlap grew); the remainder is honestly reported via legality (`overlapping_pairs`, `max_pair_overlap_mm2`) for the next legalize run to integrate
+- Skipped entirely for static probes (`max_iterations=0` — report, never move) and walls-off configs (`wall_k_N`/`wall_halo_m == 0`)
+- Velocities zeroed after the pass; residual force is re-read at the ejected pose so the stop reason stays honest
+
 ### Viscous damping (the physics damper)
 ```
 F_damp = −c · v                                   c in N·s/m
@@ -156,6 +187,7 @@ deadband cruises past any iteration budget.
 | `wall_halo_m` | m | 0.006 | near-miss reach AND depth scale (single law) |
 | `wall_exponent` | — | 1.0 | wall-law exponent (experimental; `≥ 1`) |
 | `ghost_k_N` | N | 5e-5 | ghost spring pull (untuned) |
+| `contact_tangent_gamma` | — | 0.15 | sliding assist: γ fraction of contact normal force along MTV-perp (0 = disabled) |
 | `damping_Ns_m` | N·s/m | 0.12 | viscous damper |
 | `friction_N` | N | 1e-6 | motion deadband |
 | `dt_s` | s | 1e-3 | timestep |

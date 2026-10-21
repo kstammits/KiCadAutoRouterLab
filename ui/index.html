@@ -248,6 +248,7 @@
   .footprint g.motion-force-vectors line.force-attraction { stroke: #a3e635; }
   .footprint g.motion-force-vectors line.force-courtyard { stroke: #f472b6; }
   .footprint g.motion-force-vectors line.force-ghost { stroke: #c4b5fd; stroke-dasharray: 1 1.2; }
+  .footprint g.motion-force-vectors line.force-tangential { stroke: #eab308; }
 
   /* Decap footprints: server paints the courtyard halo (teal, svg_render
      DECAP_HALO_COLOR) and adds .fp-decap to the group; no override needed.
@@ -443,6 +444,7 @@
         <span><i style="display:inline-block; width:1.2rem; border-top:2px solid #a3e635;"></i> attraction</span>
         <span><i style="display:inline-block; width:1.2rem; border-top:2px solid #f472b6;"></i> courtyard+wall</span>
         <span><i style="display:inline-block; width:1.2rem; border-top:2px dotted #c4b5fd;"></i> ghost</span>
+        <span><i style="display:inline-block; width:1.2rem; border-top:2px solid #eab308;"></i> tangential</span>
       </span>
       <label class="chk"><input type="checkbox" id="drc-toggle"> DRC</label>
       <button id="drc-run-btn" title="Run kicad-cli DRC on the current board">Run DRC</button>
@@ -759,9 +761,9 @@ const ALL_PARAM_DEFS = [...PARAM_DEFS, ...ADVANCED_PARAM_DEFS];
 
 const PARAM_DESC = {
   attraction_k_N: "Constant-magnitude attraction between net-connected pads (newtons). Legalize: 0.005-0.01; Cluster: 0.04-0.06. Log scale.",
-  wall_k_N: "Elastic collision stiffness when courtyards overlap or enter the halo (newtons). One linear law F = k*(1-s/h) in signed distance s (gap +, penetration -): zero past the halo, k at contact, growing with depth. Deepest contact wins per pair. Legalize: 0.08-0.1; Cluster: 0.02-0.03. Log scale.",
-  wall_halo_m: "Near-miss reach past part outlines. Shown in mm; stored in meters. Default 7.8mm.",
-  damping_Ns_m: "Viscous damping F = −c·v (N·s/m). The physics damper: higher settles faster with less overshoot. Legalize: 0.12-0.15; Cluster: 0.08. Log scale.",
+  wall_k_N: "Elastic collision stiffness when courtyards overlap or enter the halo (newtons). One linear law F = k*(1-s/h) in signed distance s (gap +, penetration -): zero past the halo, k at contact, growing with depth. Deepest contact wins per pair. Legalize: 0.08; Cluster: 0.02-0.03. Log scale.",
+  wall_halo_m: "Near-miss reach past part outlines. Shown in mm; stored in meters. Default 6mm (calibrated).",
+  damping_Ns_m: "Viscous damping F = −c·v (N·s/m). The physics damper: higher settles faster with less overshoot. Legalize: 0.12; Cluster: 0.08. Log scale.",
   max_iterations: "Hard limit on simulation steps (dimensionless).",
   power_attraction_scale: "Power-rail attraction trim (fanout-scaled k/(fanout-1) per edge). 1 = full participation; 0 restores the old exclude-power behavior.",
   decap_boost: "Decoupling-cap edge multiplier (on top of fanout scaling). Also gates the decap GND-side exception: 0 removes decap GND edges.",
@@ -769,7 +771,7 @@ const PARAM_DESC = {
   wall_exponent: "Exponent p in wall force F = k*(1-s/h)^p. 1 = linear, 2 = quadratic (stiffens deep penetration). Legalize: 2.0; Cluster: 1.0-1.5.",
   momentum_alpha: "Velocity blending alpha after rigid projection: 0 = re-derive from displacement, 1 = keep old velocity. Higher = more momentum persistence to nudge past wedges. Default 0.7.",
   contact_tangent_gamma: "Tangential assist coefficient γ: fraction of normal force applied along the tangential axis at contact. Helps parts slide along walls instead of wedging. 0 = disabled, 0.1-0.3 typical. Default 0.15.",
-  convergence_eps_m: "Stop when max pad displacement per step falls below this. Shown in mm; stored in meters. Smaller runs longer; larger stops earlier. Log scale.",
+  convergence_eps_m: "Stop when max pad displacement per step falls below this. Shown in mm; stored in meters. Calibrated 20µm (si_force_laws.md): smaller fake-settles under contact chatter, larger stops earlier. Log scale.",
   vmax_m_s: "Speed ceiling for pad velocities and rigid-step clamp (m/s). Higher allows faster movement but less stable. Default 1.0 m/s.",
   dt_s: "Simulation timestep: 0.2-2ms, bounded by the dt_min/dt_max solver guards (wider values fail validation). Adaptive guard halves on energy rise, regrows on fall. Default 1ms.",
   friction_N: "Dry-friction deadband (newtons). Whole footprint freezes when all pad forces below this. Default 1e-6 N.",
@@ -933,9 +935,11 @@ async function loadParams(defaultsOnly = false) {
 // Regime presets from docs/si_force_laws.md §3: no single ratio clusters
 // AND legalizes, so offer the two calibrated starting points. dt_s, vmax,
 // friction ride along via the merge-POST even though they have no main-panel sliders.
+// Calibrated values (2026-10-21): wall_halo_m=0.006, wall_exponent=2.0,
+// convergence_eps_m=2e-5 included via merge-POST.
 const REGIME_PRESETS = {
-  cluster: { attraction_k_N: 0.05, wall_k_N: 0.025, damping_Ns_m: 0.08, dt_s: 2e-3, vmax_m_s: 1.0, friction_N: 1e-6 },
-  legalize: { attraction_k_N: 0.008, wall_k_N: 0.09, damping_Ns_m: 0.13, dt_s: 1e-3, vmax_m_s: 1.0, friction_N: 1e-6 },
+  cluster: { attraction_k_N: 0.05, wall_k_N: 0.025, damping_Ns_m: 0.08, dt_s: 2e-3, vmax_m_s: 1.0, friction_N: 1e-6, wall_halo_m: 0.006, wall_exponent: 1.0, convergence_eps_m: 2e-5 },
+  legalize: { attraction_k_N: 0.008, wall_k_N: 0.08, damping_Ns_m: 0.12, dt_s: 1e-3, vmax_m_s: 1.0, friction_N: 1e-6, wall_halo_m: 0.006, wall_exponent: 2.0, convergence_eps_m: 2e-5 },
 };
 
 async function applyRegimePreset(name) {
@@ -2535,7 +2539,7 @@ function motionFpNode(uuid) {
 
 // Force cause order (paint lives in CSS: .motion-force-vectors line.force-<cause>).
 // Keep server svg_render.FORCE_CAUSE_COLORS and the #forces-legend chips in sync.
-const FORCE_CAUSE_ORDER = ["repulsion", "attraction", "courtyard", "ghost"];
+const FORCE_CAUSE_ORDER = ["repulsion", "attraction", "courtyard", "ghost", "tangential"];
 
 function drawForceVectors(svg, frameIdx) {
   // Remove existing motion force vectors from footprint groups

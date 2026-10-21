@@ -70,6 +70,8 @@ stiffness-capped stepper).
 | **Tightening ratio** | Final vs start pooled intra-group distance; <1 means the board clusters | §3 Regime map | `tighten_mean`, `tighten_max` (calibration) |
 | **Broadphase** | 15 mm uniform-grid + bounding-circle cull before exact courtyard geometry | §1 Broadphase (TODO Phase 1) | `_run_region_simulation` (courtyard cache) |
 | **Decap / power / GND rules** | Fanout scaling on power edges; ground excluded except decap-incident; `decap_boost` multiplier | §1 Decap boost, Fanout scaling, Ground exclusion | `_build_net_edges_pad_level`, `PlacementParams.decap_boost`, `PlacementParams.power_attraction_scale` |
+| **Tangential assist** | Sliding assist along contact (MTV-perp): `γ·|F_n|·sign(v_rel_t)`, latched per contact pair so near-zero velocity noise doesn't flip-slide | §1 Tangential assist | `PlacementParams.contact_tangent_gamma`, `_tangent_sign` |
+| **Final depenetration pass** | One relaxed MTV round after dynamics settle: ejects residual courtyard overlap the penalty law couldn't clear; contraction + rigid reproject each pass | `src/kicad_autorouter/placement/runner.py` (`_depenetrate_positions`) | `_DEPEN_RELAX`, `_DEPEN_CLEAN_AREA_MM2`, `_DEPEN_MAX_ROT_RAD` |
 
 ### Units & integrator
 
@@ -136,6 +138,19 @@ stiffness-capped stepper).
 - **Ground exclusion**: ground nets get zero attraction edges (except
   decap-incident ones) — pours connect GND anywhere, so general GND
   pull would only clump parts (`_build_net_edges_pad_level`).
+- **Final depenetration pass**: one relaxed MTV round after dynamics
+  settle; ejects residual courtyard overlap the penalty wall law couldn't
+  clear (force balance ≠ zero overlap). Jacobi accumulation from frozen
+  geometry, contact-weighted spread so Kabsch derives rotation (full
+  motion), rotation clamped to 2° per round. Single round — iterating
+  ping-pongs closed wedges between neighbors. Remainder reported via
+  legality (`overlapping_pairs`, `max_pair_overlap_mm2`) for the next
+  legalize run to integrate (`_depenetrate_positions`).
+- **Tangential assist** (`contact_tangent_gamma`, dimensionless): sliding
+  assist along courtyard contacts — `γ·|F_n|` along the MTV-perp axis,
+  latched per contact pair so near-zero velocity noise doesn't flip-slide.
+  Applied contact-weighted through Kabsch, so parts pressed at an angle to
+  long walls slide and lay flat (`0.15` default, `0` disabled).
 
 ### Contact & collision
 
@@ -187,7 +202,7 @@ stiffness-capped stepper).
   player; first frame is the zero start, last is final
   (`PlacementProposal`, `_thin_frames`, `run_placement`).
 - **Force frames / components**: per-frame `{uuid: {cause: (fx, fy)}}` for
-  `repulsion / attraction / courtyard / ghost` — what the UI
+  `repulsion / attraction / courtyard / ghost / tangential` — what the UI
   force overlay draws (`PlacementProposal`, `FORCE_CAUSE_ORDER` in
   `ui/index.html`, `applyMotionFrame` pivoting about committed origins).
 - **Proposal**: deltas + frames from `run_placement`; empty means

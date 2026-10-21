@@ -95,6 +95,13 @@ class ForceContext:
         # between discrete candidates. Opposing winners slew in slowly
         # (prior-dominant blend) so a 180° flip can never land at once.
         self.last_contact: Dict[Tuple[int, int], Tuple[float, float]] = {}
+        # Latched tangential direction per contact, keyed like last_contact
+        # (board-wall uses (fp, -1)). Holds +1/-1 so a part pressed at an
+        # angle keeps sliding one way instead of flip-flopping each step
+        # when the relative tangential velocity hovers near zero — letting
+        # the contact-weighted spread settle it flat. Internal solver
+        # memory, not a user param.
+        self.last_tangent: Dict[Tuple[int, int], float] = {}
         # Pad velocities (n_pads, 2) in m/s — used for tangential sliding assist
         self.pad_velocities: Optional[np.ndarray] = None
 
@@ -176,6 +183,7 @@ def _compute_total_force(
     # Courtyard force accumulator
     n_pads_local = pos.shape[0]
     poly_force = np.zeros((n_pads_local, 2), dtype=np.float64)
+    tangential_force = np.zeros((n_pads_local, 2), dtype=np.float64)
 
     # ------------------------------------------------------------------
     # Polygon-based courtyard collision from cached shapes.
@@ -394,6 +402,22 @@ def _compute_total_force(
                 poly_force[rows, 0] += w * fx
                 poly_force[rows, 1] += w * fy
 
+            def _spread_tangential(rows, cx, cy, radius, nx, ny, tx, ty, ft_x, ft_y):
+                """Spread tangential force using normal direction for contact weights."""
+                if rows is None or len(rows) == 0:
+                    return
+                r = float(radius)
+                if not math.isfinite(r) or r < 1e-9:
+                    n = len(rows)
+                    if n > 0:
+                        tangential_force[rows, 0] += ft_x / n
+                        tangential_force[rows, 1] += ft_y / n
+                    return
+                proj = ((pos[rows, 0] - cx) * nx + (pos[rows, 1] - cy) * ny) / r
+                w = _contact_weights(proj)
+                tangential_force[rows, 0] += w * ft_x
+                tangential_force[rows, 1] += w * ft_y
+
             def _apply_halo_push(li, lj, pi, pj, margin):
                 if margin <= 0:
                     return
@@ -428,6 +452,34 @@ def _compute_total_force(
                             rows_j, fp_centroids_arr[lj, 0], fp_centroids_arr[lj, 1],
                             fp_radii_arr[lj], -ux, -uy, -fx, -fy,
                         )
+
+            def _fp_tangential_vel(fp_local_idx, tx, ty):
+                """Get average tangential velocity for a footprint.
+                Returns (0, 0) if footprint has no pads (e.g., wall ghost)."""
+                rows = fp_local_to_rows[fp_local_idx]
+                if len(rows) == 0:
+                    return 0.0
+                v = pad_vel[rows].mean(axis=0)
+                return v[0] * tx + v[1] * ty
+
+            def _tangent_sign(pair, v_rel_t):
+                """Latched sign of relative tangential motion for a contact.
+
+                Updates only on decisive motion; near-zero noise keeps the
+                previous direction so sustained pushes settle instead of
+                rubbing left/right each step. Defaults to +1 (matches the
+                old v_rel_t >= 0 branch) on first contact."""
+                prev = ctx.last_tangent.get(pair) if ctx is not None else None
+                if abs(v_rel_t) > 1e-9:
+                    sgn = 1.0 if v_rel_t > 0 else -1.0
+                    if ctx is not None:
+                        ctx.last_tangent[pair] = sgn
+                    return sgn
+                if prev is None:
+                    if ctx is not None:
+                        ctx.last_tangent[pair] = 1.0
+                    return 1.0
+                return prev
 
             def _apply_contact_push(
                 li, lj, pi, pj, intersection_area, sink=None,
@@ -467,29 +519,37 @@ def _compute_total_force(
                     params.wall_exponent, params.wall_cap_depth_mm,
                 )
                 fx, fy = force_mag * ux, force_mag * uy
-                # Tangential assist
+                # Tangential assist: works even if one footprint has no pads (wall)
+                ft_x = ft_y = 0.0
                 if pad_vel is not None and params.contact_tangent_gamma > 0.0:
                     tx, ty = -uy, ux
-                    rows_i = fp_local_to_rows[li]
-                    rows_j = fp_local_to_rows[lj]
-                    if len(rows_i) > 0 and len(rows_j) > 0:
-                        v_i = pad_vel[rows_i].mean(axis=0)
-                        v_j = pad_vel[rows_j].mean(axis=0)
-                        v_rel_t = (v_i[0] - v_j[0]) * tx + (v_i[1] - v_j[1]) * ty
-                        f_t = params.contact_tangent_gamma * force_mag * (1.0 if v_rel_t >= 0 else -1.0)
-                        fx += f_t * tx
-                        fy += f_t * ty
+                    v_i_t = _fp_tangential_vel(li, tx, ty)
+                    v_j_t = _fp_tangential_vel(lj, tx, ty)
+                    v_rel_t = v_i_t - v_j_t
+                    sgn = _tangent_sign((li, lj) if li < lj else (lj, li), v_rel_t)
+                    f_t = params.contact_tangent_gamma * force_mag * sgn
+                    ft_x, ft_y = f_t * tx, f_t * ty
                 rows_i = fp_local_to_rows[li]
                 _spread(
                     rows_i, fp_centroids_arr[li, 0], fp_centroids_arr[li, 1],
                     fp_radii_arr[li], ux, uy, fx, fy,
                 )
+                if ft_x != 0.0 or ft_y != 0.0:
+                    _spread_tangential(
+                        rows_i, fp_centroids_arr[li, 0], fp_centroids_arr[li, 1],
+                        fp_radii_arr[li], ux, uy, tx, ty, ft_x, ft_y,
+                    )
                 if fp_movable_arr[lj]:
                     rows_j = fp_local_to_rows[lj]
                     _spread(
                         rows_j, fp_centroids_arr[lj, 0], fp_centroids_arr[lj, 1],
                         fp_radii_arr[lj], -ux, -uy, -fx, -fy,
                     )
+                    if ft_x != 0.0 or ft_y != 0.0:
+                        _spread_tangential(
+                            rows_j, fp_centroids_arr[lj, 0], fp_centroids_arr[lj, 1],
+                            fp_radii_arr[lj], -ux, -uy, -tx, -ty, -ft_x, -ft_y,
+                        )
 
             def _apply_contact_push_analytical(
                 li, lj, penetration, normal, is_overlap, sink=None,
@@ -513,31 +573,36 @@ def _compute_total_force(
                 )
                 fx, fy = force_mag * ux, force_mag * uy
                 # Tangential assist: add force along tangential direction to help parts slide
+                ft_x = ft_y = 0.0
                 if pad_vel is not None and params.contact_tangent_gamma > 0.0:
                     tx, ty = -uy, ux  # tangential axis (perp to normal)
-                    # Average velocity of footprint i and j pads
-                    rows_i = fp_local_to_rows[li]
-                    rows_j = fp_local_to_rows[lj]
-                    if len(rows_i) > 0 and len(rows_j) > 0:
-                        v_i = pad_vel[rows_i].mean(axis=0)
-                        v_j = pad_vel[rows_j].mean(axis=0)
-                        # Relative tangential velocity
-                        v_rel_t = (v_i[0] - v_j[0]) * tx + (v_i[1] - v_j[1]) * ty
-                        # Add tangential force in direction of relative tangential motion
-                        f_t = params.contact_tangent_gamma * force_mag * (1.0 if v_rel_t >= 0 else -1.0)
-                        fx += f_t * tx
-                        fy += f_t * ty
+                    v_i_t = _fp_tangential_vel(li, tx, ty)
+                    v_j_t = _fp_tangential_vel(lj, tx, ty)
+                    v_rel_t = v_i_t - v_j_t
+                    sgn = _tangent_sign((li, lj) if li < lj else (lj, li), v_rel_t)
+                    f_t = params.contact_tangent_gamma * force_mag * sgn
+                    ft_x, ft_y = f_t * tx, f_t * ty
                 rows_i = fp_local_to_rows[li]
                 _spread(
                     rows_i, fp_centroids_arr[li, 0], fp_centroids_arr[li, 1],
                     fp_radii_arr[li], ux, uy, fx, fy,
                 )
+                if ft_x != 0.0 or ft_y != 0.0:
+                    _spread_tangential(
+                        rows_i, fp_centroids_arr[li, 0], fp_centroids_arr[li, 1],
+                        fp_radii_arr[li], ux, uy, tx, ty, ft_x, ft_y,
+                    )
                 if fp_movable_arr[lj]:
                     rows_j = fp_local_to_rows[lj]
                     _spread(
                         rows_j, fp_centroids_arr[lj, 0], fp_centroids_arr[lj, 1],
                         fp_radii_arr[lj], -ux, -uy, -fx, -fy,
                     )
+                    if ft_x != 0.0 or ft_y != 0.0:
+                        _spread_tangential(
+                            rows_j, fp_centroids_arr[lj, 0], fp_centroids_arr[lj, 1],
+                            fp_radii_arr[lj], -ux, -uy, -tx, -ty, -ft_x, -ft_y,
+                        )
                 return True
 
             # Compute collision forces per footprint pair
@@ -760,27 +825,48 @@ def _compute_total_force(
                         params.wall_exponent, params.wall_cap_depth_mm,
                     )
                     _fx, _fy = _mag * _ux, _mag * _uy
+                    # Tangential assist for aggregated contact
+                    _ft_x = _ft_y = 0.0
+                    if pad_vel is not None and params.contact_tangent_gamma > 0.0:
+                        _tx, _ty = -_uy, _ux
+                        _v_rel_t = _fp_tangential_vel(i, _tx, _ty) - _fp_tangential_vel(j, _tx, _ty)
+                        _sgn = _tangent_sign((i, j) if i < j else (j, i), _v_rel_t)
+                        _f_t = params.contact_tangent_gamma * _mag * _sgn
+                        _ft_x, _ft_y = _f_t * _tx, _f_t * _ty
                     rows_i = fp_local_to_rows[i]
                     _spread(
                         rows_i, fp_centroids_arr[i, 0], fp_centroids_arr[i, 1],
                         fp_radii_arr[i], _ux, _uy, _fx, _fy,
                     )
+                    if _ft_x != 0.0 or _ft_y != 0.0:
+                        _spread_tangential(
+                            rows_i, fp_centroids_arr[i, 0], fp_centroids_arr[i, 1],
+                            fp_radii_arr[i], _ux, _uy, _tx, _ty, _ft_x, _ft_y,
+                        )
                     if fp_movable_arr[j]:
                         rows_j = fp_local_to_rows[j]
                         _spread(
                             rows_j, fp_centroids_arr[j, 0], fp_centroids_arr[j, 1],
                             fp_radii_arr[j], -_ux, -_uy, -_fx, -_fy,
                         )
+                        if _ft_x != 0.0 or _ft_y != 0.0:
+                            _spread_tangential(
+                                rows_j, fp_centroids_arr[j, 0], fp_centroids_arr[j, 1],
+                                fp_radii_arr[j], -_ux, -_uy, -_tx, -_ty, -_ft_x, -_ft_y,
+                            )
 
             # Drop blended normals for pairs no longer in contact range so a
             # part that leaves and returns doesn't mix with a stale direction.
-            if ctx is not None and ctx.last_contact:
+            if ctx is not None and (ctx.last_contact or ctx.last_tangent):
                 _live = set()
                 for _a, _b in candidate_pairs:
                     _live.add((_a, _b) if _a < _b else (_b, _a))
                 for _k in list(ctx.last_contact):
                     if _k not in _live:
                         del ctx.last_contact[_k]
+                for _k in list(ctx.last_tangent):
+                    if _k[1] != -1 and _k not in _live:
+                        del ctx.last_tangent[_k]
 
             # Board wall: the region polygon is an inverted courtyard. Same
             # wall law as part-part contact (wall_k_N / halo / exponent /
@@ -886,14 +972,28 @@ def _compute_total_force(
                         params.wall_exponent, params.wall_cap_depth_mm,
                     )
                     fx, fy = force_mag * ux, force_mag * uy
+                    # Tangential assist for board wall (wall velocity = 0)
+                    ft_x = ft_y = 0.0
+                    if pad_vel is not None and params.contact_tangent_gamma > 0.0:
+                        tx, ty = -uy, ux
+                        v_i_t = _fp_tangential_vel(fp_local_idx, tx, ty)
+                        sgn = _tangent_sign((fp_local_idx, -1), v_i_t)
+                        f_t = params.contact_tangent_gamma * force_mag * sgn
+                        ft_x, ft_y = f_t * tx, f_t * ty
                     rows = ctx.fp_local_to_rows[fp_local_idx]
                     if rows is not None and len(rows) > 0:
                         _spread(
                             rows, fp_centroids_arr[fp_local_idx, 0], fp_centroids_arr[fp_local_idx, 1],
                             fp_radii_arr[fp_local_idx], ux, uy, fx, fy,
                         )
+                        if ft_x != 0.0 or ft_y != 0.0:
+                            _spread_tangential(
+                                rows, fp_centroids_arr[fp_local_idx, 0], fp_centroids_arr[fp_local_idx, 1],
+                                fp_radii_arr[fp_local_idx], ux, uy, tx, ty, ft_x, ft_y,
+                            )
 
             force += poly_force
+    force += tangential_force
 
     # Replace NaN
     force = np.nan_to_num(force, nan=0.0, posinf=0.0, neginf=0.0)
@@ -907,6 +1007,7 @@ def _compute_total_force(
         "attraction": np.nan_to_num(attraction, nan=0.0, posinf=0.0, neginf=0.0),
         "ghost": np.nan_to_num(ghost_attr_force, nan=0.0, posinf=0.0, neginf=0.0),
         "courtyard": np.nan_to_num(poly_force, nan=0.0, posinf=0.0, neginf=0.0),
+        "tangential": np.nan_to_num(tangential_force, nan=0.0, posinf=0.0, neginf=0.0),
     }
     for comp in components.values():
         comp[~pad_movable] = 0.0

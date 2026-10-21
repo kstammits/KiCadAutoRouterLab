@@ -102,6 +102,33 @@ def test_three_part_linear_squeeze():
 
 
 @pytest.mark.regression
+def test_depenetration_round_shrinks_overlap():
+    """Post-dynamics eject: one relaxed MTV round per overlapping pair.
+
+    With repulsion/attraction neutered the force dynamics cannot separate
+    the pair, so any improvement comes from the final geometric pass.
+    """
+    fa = make_fp("A", "uuid-a", 0.0, 0.0, ("N1", "N2"),
+                 footprint_id="test:R", hw=3.0, hh=2.0,
+                 pad_layers=("F.Cu",), pad_shape="circle")
+    fb = make_fp("B", "uuid-b", 2.0, 0.0, ("N3", "N4"),
+                 footprint_id="test:R", hw=3.0, hh=2.0,
+                 pad_layers=("F.Cu",), pad_shape="circle")
+    model = _board([fa, fb])
+    before = _pair_overlap(model, {})
+    assert before > 1.0
+    prop = run_placement(
+        model,
+        PlacementParams(max_iterations=50, convergence_eps_m=1e-15,
+                        repulsion_k_N_m2=1e-15, attraction_k_N=1e-15,
+                        wall_k_N=0.01, wall_halo_m=0.003,
+                        ghost_k_N=1e-15),
+    )
+    after = _pair_overlap(model, prop.deltas)
+    assert after < before, f"eject round must shrink overlap ({before:.3f} -> {after:.3f})"
+
+
+@pytest.mark.regression
 def test_corner_wedge_escapes():
     """Mobile part tucked into a locked corner (two walls) moves out."""
     wall_h = make_fp("H", "uuid-h", 0.0, -4.0, ("H1", "H2"),
@@ -178,13 +205,15 @@ def test_corridor_settles_without_overlap():
 # 200→400 iters): the documented wedge-growth phenomenon (si_force_laws,
 # headless-trust follow-up), not a new failure mode.
 #
-# Re-characterized 2026-10-20 with exponent=2.0, wall_halo_m=0.0078,
-# momentum_alpha=0.7 — count remains 19, family shifts slightly.
+# Re-characterized 2026-10-21 with exponent=2.0, wall_halo_m=0.006,
+# convergence_eps_m=2e-5 — 20 pairs >1mm² (was 19 at exponent=1.0).
+# New pairs: C14/RV3, C2/R2, R13/R3 — same squeeze family.
 KNOWN_DCCF_OVERLAPS_200 = frozenset({
     tuple(sorted(p)) for p in [
         ("C1", "U1"), ("C10", "RV2"), ("C10", "U2"), ("C11", "R11"),
-        ("C14", "U3"), ("C15", "U3"), ("C16", "R15"), ("C19", "RV5"),
-        ("C19", "U4"), ("C4", "RV1"), ("D5", "Q2"), ("R13", "RV1"),
+        ("C14", "RV3"), ("C14", "U3"), ("C15", "U3"), ("C16", "R15"),
+        ("C19", "RV5"), ("C19", "U4"), ("C2", "R2"), ("C4", "RV1"),
+        ("D5", "Q2"), ("R13", "R3"), ("R13", "RV1"),
         ("R17", "RV6"), ("R18", "RV6"), ("R2", "U1"), ("R3", "R6"),
         ("R4", "RV1"), ("R7", "RV4"), ("R9", "RV3"),
     ]

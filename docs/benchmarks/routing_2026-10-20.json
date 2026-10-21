@@ -32,11 +32,11 @@
       "grid_cells_M": 9.58,
       "net": "B1",
       "via_radius_cells": 8,
-      "occupancy_s": 0.186,
-      "tht_mask_s": 0.063,
-      "via_block_mask_s": 0.001,
-      "fanout_s": 0.069,
-      "via_ok_mask_s": 0.527,
+      "occupancy_s": 0.184,
+      "tht_mask_s": 0.08,
+      "via_block_mask_s": 0.002,
+      "fanout_s": 0.07,
+      "via_ok_mask_s": 0.525,
       "via_ok_frac": 0.924
     },
     {
@@ -44,11 +44,11 @@
       "grid_cells_M": 2.99,
       "net": "C1InCVLED",
       "via_radius_cells": 8,
-      "occupancy_s": 0.251,
+      "occupancy_s": 0.248,
       "tht_mask_s": 0.0,
       "via_block_mask_s": 0.0,
-      "fanout_s": 0.037,
-      "via_ok_mask_s": 0.165,
+      "fanout_s": 0.038,
+      "via_ok_mask_s": 0.164,
       "via_ok_frac": 0.686
     },
     {
@@ -56,7 +56,7 @@
       "grid_cells_M": 3.41,
       "net": "none",
       "via_radius_cells": 0,
-      "occupancy_s": 0.022,
+      "occupancy_s": 0.021,
       "tht_mask_s": 0.0,
       "via_block_mask_s": 0.0,
       "fanout_s": 0.0,
@@ -67,6 +67,23 @@
   "cases": [
     {
       "board": "DCCF",
+      "nets_requested": 1,
+      "net_names": [
+        "B1"
+      ],
+      "nets_routed": 1,
+      "nets_failed": 0,
+      "expansions": 50089,
+      "total_s": 2.844,
+      "route_s": 0.85,
+      "astar_s": 0.754,
+      "smooth_s": 0.003,
+      "occupancy_s": 0.182,
+      "s_per_net": 2.844,
+      "ms_per_kexp": 56.8
+    },
+    {
+      "board": "DCCF",
       "nets_requested": 2,
       "net_names": [
         "B1",
@@ -75,13 +92,96 @@
       "nets_routed": 2,
       "nets_failed": 0,
       "expansions": 97680,
-      "total_s": 3.737,
-      "route_s": 1.68,
-      "astar_s": 1.493,
-      "smooth_s": 0.005,
-      "occupancy_s": 0.182,
-      "s_per_net": 1.868,
-      "ms_per_kexp": 38.3
+      "total_s": 3.684,
+      "route_s": 1.656,
+      "astar_s": 1.463,
+      "smooth_s": 0.001,
+      "occupancy_s": 0.183,
+      "s_per_net": 1.842,
+      "ms_per_kexp": 37.7
+    },
+    {
+      "board": "DCCF",
+      "nets_requested": 5,
+      "net_names": [
+        "B1",
+        "B2",
+        "B3",
+        "B4",
+        "B5"
+      ],
+      "nets_routed": 5,
+      "nets_failed": 0,
+      "expansions": 240453,
+      "total_s": 6.15,
+      "route_s": 4.129,
+      "astar_s": 3.666,
+      "smooth_s": 0.002,
+      "occupancy_s": 0.185,
+      "s_per_net": 1.23,
+      "ms_per_kexp": 25.6
+    },
+    {
+      "board": "DCCF",
+      "nets_requested": 10,
+      "net_names": [
+        "B1",
+        "B2",
+        "B3",
+        "B4",
+        "B5",
+        "B6",
+        "Net-(D1-Pad2)",
+        "Net-(D2-Pad2)",
+        "Net-(D3-Pad2)",
+        "Net-(D4-Pad2)"
+      ],
+      "nets_routed": 10,
+      "nets_failed": 0,
+      "expansions": 370511,
+      "total_s": 10.204,
+      "route_s": 7.974,
+      "astar_s": 6.959,
+      "smooth_s": 0.066,
+      "occupancy_s": 0.187,
+      "s_per_net": 1.02,
+      "ms_per_kexp": 27.5
+    },
+    {
+      "board": "DCCF",
+      "nets_requested": 20,
+      "net_names": [
+        "B1",
+        "B2",
+        "B3",
+        "B4",
+        "B5",
+        "B6",
+        "Net-(D1-Pad2)",
+        "Net-(D2-Pad2)",
+        "Net-(D3-Pad2)",
+        "Net-(D4-Pad2)",
+        "Net-(D5-Pad2)",
+        "Net-(D6-Pad2)",
+        "Net-(R1-Pad1)",
+        "Net-(R2-Pad1)",
+        "Net-(R3-Pad2)",
+        "Net-(R4-Pad2)",
+        "Net-(R5-Pad1)",
+        "Net-(R6-Pad1)",
+        "Net-(RV1-Pad2)",
+        "Net-(RV2-Pad2)"
+      ],
+      "nets_routed": 20,
+      "nets_failed": 0,
+      "expansions": 1086851,
+      "total_s": 19.777,
+      "route_s": 17.475,
+      "astar_s": 15.445,
+      "smooth_s": 0.128,
+      "occupancy_s": 0.184,
+      "s_per_net": 0.989,
+      "ms_per_kexp": 18.2
     },
     {
       "board": "tube111",
@@ -92,13 +192,52 @@
       "nets_routed": 1,
       "nets_failed": 0,
       "expansions": 51535,
-      "total_s": 1.305,
-      "route_s": 0.48,
+      "total_s": 1.344,
+      "route_s": 0.481,
       "astar_s": 0.43,
       "smooth_s": 0.004,
       "occupancy_s": 0.25,
-      "s_per_net": 1.305,
-      "ms_per_kexp": 25.3
+      "s_per_net": 1.344,
+      "ms_per_kexp": 26.1
+    },
+    {
+      "board": "tube111",
+      "nets_requested": 2,
+      "net_names": [
+        "C1InCVLED",
+        "C1Input"
+      ],
+      "nets_routed": 2,
+      "nets_failed": 0,
+      "expansions": 57447,
+      "total_s": 1.582,
+      "route_s": 0.725,
+      "astar_s": 0.626,
+      "smooth_s": 0.004,
+      "occupancy_s": 0.25,
+      "s_per_net": 0.791,
+      "ms_per_kexp": 27.5
+    },
+    {
+      "board": "tube111",
+      "nets_requested": 5,
+      "net_names": [
+        "C1InCVLED",
+        "C1Input",
+        "C1OutCVLED",
+        "C1TubeIn",
+        "C2Input"
+      ],
+      "nets_routed": 5,
+      "nets_failed": 0,
+      "expansions": 218099,
+      "total_s": 3.119,
+      "route_s": 2.272,
+      "astar_s": 1.968,
+      "smooth_s": 0.065,
+      "occupancy_s": 0.248,
+      "s_per_net": 0.624,
+      "ms_per_kexp": 14.3
     },
     {
       "board": "DCCF_power",
@@ -109,13 +248,47 @@
       "nets_routed": 1,
       "nets_failed": 0,
       "expansions": 959123,
-      "total_s": 7.783,
-      "route_s": 5.727,
-      "astar_s": 5.484,
+      "total_s": 8.064,
+      "route_s": 5.771,
+      "astar_s": 5.528,
       "smooth_s": 0.149,
-      "occupancy_s": 0.184,
-      "s_per_net": 7.783,
-      "ms_per_kexp": 8.1
+      "occupancy_s": 0.187,
+      "s_per_net": 8.064,
+      "ms_per_kexp": 8.4
+    },
+    {
+      "board": "DCCF_power",
+      "nets_requested": 1,
+      "net_names": [
+        "VIN"
+      ],
+      "nets_routed": 1,
+      "nets_failed": 0,
+      "expansions": 959123,
+      "total_s": 8.056,
+      "route_s": 5.751,
+      "astar_s": 5.512,
+      "smooth_s": 0.144,
+      "occupancy_s": 0.186,
+      "s_per_net": 8.056,
+      "ms_per_kexp": 8.4
+    },
+    {
+      "board": "DCCF_power",
+      "nets_requested": 1,
+      "net_names": [
+        "VIN"
+      ],
+      "nets_routed": 1,
+      "nets_failed": 0,
+      "expansions": 959123,
+      "total_s": 8.13,
+      "route_s": 5.797,
+      "astar_s": 5.558,
+      "smooth_s": 0.143,
+      "occupancy_s": 0.183,
+      "s_per_net": 8.13,
+      "ms_per_kexp": 8.5
     }
   ],
   "stitch_case": null

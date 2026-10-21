@@ -37,9 +37,9 @@ All quantities in the solver are SI: **meters** for geometry, **newtons** for fo
 
 ## 1. Force Laws Overview
 
-The net force on each pad is the sum of four independent causes:
+The net force on each pad is the sum of five independent causes:
 
-$$\mathbf{F}_{\text{total}} = \mathbf{F}_{\text{repulsion}} + \mathbf{F}_{\text{attraction}} + \mathbf{F}_{\text{courtyard}} + \mathbf{F}_{\text{ghost}}$$
+$$\mathbf{F}_{\text{total}} = \mathbf{F}_{\text{repulsion}} + \mathbf{F}_{\text{attraction}} + \mathbf{F}_{\text{courtyard}} + \mathbf{F}_{\text{ghost}} + \mathbf{F}_{\text{tangential}}$$
 
 Each cause has a distinct role and color in the SVG force overlay:
 
@@ -49,6 +49,7 @@ Each cause has a distinct role and color in the SVG force overlay:
 | **Attraction** | Lime `#a3e635` | Net springs pulling connected pads together | `attraction_k_N` |
 | **Courtyard** | Pink `#f472b6` | Collision response (SAT minimum-translation axis), plus the board wall (region polygon as inverted courtyard) | `wall_k_N`, `wall_halo_m` |
 | **Ghost** | Lavender `#c4b5fd` (dotted) | Pulls target parts toward ghost anchors | `ghost_k_N` |
+| **Tangential** | Yellow `#eab308` | Sliding assist along contact (MTV-perp), γ fraction of normal force in direction of relative tangential motion | `contact_tangent_gamma` |
 
 ```{python}
 #| label: force-color-legend
@@ -59,6 +60,7 @@ FORCE_CAUSE_COLORS = {
     "attraction": "#a3e635",   # lime
     "courtyard": "#f472b6",    # pink (part contact + board wall)
     "ghost": "#c4b5fd",        # pale lavender, dotted
+    "tangential": "#eab308",   # yellow (sliding assist)
 }
 ```
 
@@ -503,6 +505,37 @@ budget your iterations (or your `ka`) accordingly.
 |-----------|--------|---------------|
 | `ghost_k_N` | Global ghost spring scale. Higher = every ghost pulls harder; still split per-pad with no reaction | 50 µN default (untuned); raise order-of-magnitude for room-scale pulls |
 | `ka` (per spring) | File/UI weight on one ghost→target spring. The knob you actually turn — it lives in the Ghosts panel attractor row | 0.1 (UI default nudge) to ~160 (attraction-scale) |
+
+---
+
+## 6.5 Tangential Assist (Sliding Along Contacts)
+
+Parts pressed against long walls or neighbors at an angle rub left-right each
+step instead of settling: the wall normal pushes straight in, and anything
+perpendicular to that axis is noise. The tangential assist adds a small force
+along the contact tangent (MTV-perp axis) proportional to the contact normal
+force, so a part already sliding keeps sliding in the same direction — it
+settles flat against the wall instead of wedging.
+
+**Formula** (from `si_force_laws.md` §1):
+
+```
+F_t = γ · |F_n| · sign(v_rel_t)
+```
+
+- `γ = contact_tangent_gamma` (default 0.15) — fraction of the contact normal force applied along the tangent axis
+- `v_rel_t` = relative tangential velocity between the two footprints, averaged over pads along the MTV-perp axis
+- `sign` is **latched per contact pair**: once decisive motion sets a slide direction, near-zero noise keeps it — a part pressed at an angle slides one way and settles, instead of flip-flopping each step
+
+Applied at the contact point via contact-weighted pad spread, so differential pad loading becomes torque through Kabsch rigid projection: a rectangular part pressed at an angle to a long wall slides and rotates until its long edge lays flat against the wall, then stops.
+
+**Parameter tradeoff**:
+
+| Parameter | Effect | Typical Range |
+|-----------|--------|---------------|
+| `contact_tangent_gamma` | Fraction of contact normal force applied tangentially (0 = disabled) | 0.1–0.3 typical; 0.15 default (legalize regime) |
+
+**Why a latch?** A bare `sign(v_rel_t)` flips at near-zero velocity: tiny noise makes the part rub left-right each step and never settle. Holding the sign through near-zero noise (threshold `1e-9` m/s) lets sustained pushes converge to one direction. First contact defaults to +1, matching the historical behavior.
 
 ---
 

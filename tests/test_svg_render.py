@@ -175,11 +175,12 @@ def test_forces_overlay_per_cause_arrows():
             "rigid": (0.0, 0.0),
             "ghost": (0.0, 0.0),
             "courtyard": (0.0, 3.0),
+            "tangential": (3.0, 0.0),
             "boundary": (0.0, 0.0),
         }},
     )
     s = render_board_svg(m, proposal=prop, show_forces=True)
-    for cause in ("repulsion", "attraction", "courtyard"):
+    for cause in ("repulsion", "attraction", "courtyard", "tangential"):
         assert f"url(#force-{cause})" in s
         assert f'id="force-{cause}"' in s
     # Negligible rigid/ghost contributions are hidden, as are unknown

@@ -245,7 +245,12 @@ class TestCourtyardRole:
     """Courtyard collision is what separates bodies; pad Coulomb alone is
     too weak at body scale (and singular at pad scale)."""
 
-    def test_without_courtyard_overlap_persists(self):
+    def test_without_courtyard_force_eject_still_clears(self):
+        # Final geometric eject (not wall force) shrinks the overlap: the
+        # courtyard *force* stays negligible, proving weak pad Coulomb
+        # alone still cannot push bodies apart — separation comes from the
+        # post-dynamics de-penetration round (one relaxed round per run;
+        # repeated legalize runs converge it the rest of the way).
         model = _overlap(dx=1.0)
         before = overlap_area(model, {})
         prop = run_placement(
@@ -254,8 +259,11 @@ class TestCourtyardRole:
                          wall_k_N=1e-15),
         )
         after = overlap_area(model, prop.deltas)
-        assert after > before * 0.5, (
-            f"weak pad Coulomb alone must not resolve bodies ({before} -> {after})"
+        assert after < before, (
+            f"eject round must shrink overlap even with negligible wall force ({before} -> {after})"
+        )
+        assert _courtyard_mag(prop, "uuid-b") < 1e-9, (
+            "wall force must stay negligible: Coulomb alone still cannot push"
         )
 
     def test_halo_reaches_before_contact(self):

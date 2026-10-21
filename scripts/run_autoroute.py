@@ -115,6 +115,8 @@ def main(argv=None) -> int:
                     power_attraction_scale=base_params.power_attraction_scale,
                     decap_boost=base_params.decap_boost,
                     include_power_nets=base_params.include_power_nets,
+                    momentum_alpha=base_params.momentum_alpha,
+                    contact_tangent_gamma=base_params.contact_tangent_gamma,
                 )
             else:
                 step_params = base_params

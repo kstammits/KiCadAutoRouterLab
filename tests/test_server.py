@@ -201,7 +201,7 @@ def test_forces_include_components():
             comps = body["force_components"][uuid]
             assert set(comps) == {
                 "repulsion", "attraction",
-                "ghost", "courtyard",
+                "ghost", "courtyard", "tangential",
             }
             sx = sum(v[0] for v in comps.values())
             sy = sum(v[1] for v in comps.values())

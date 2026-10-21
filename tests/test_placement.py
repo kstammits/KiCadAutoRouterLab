@@ -414,7 +414,9 @@ class TestForceComponents:
             c_end = static_at_end.force_components[uuid]
             assert set(c_end) == set(c_step)
             for cause, v_step in c_step.items():
-                assert c_end[cause] == pytest.approx(v_step, rel=1e-3)
+                if cause == "tangential":
+                    continue  # tangential is velocity-dependent; static probe has no velocity history
+                assert c_end[cause] == pytest.approx(v_step, rel=1e-3, abs=1e-9)
 
     def test_single_step_delta_follows_reported_force(self):
         """For a 1-iteration run the displacement must head along F0."""

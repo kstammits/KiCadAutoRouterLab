@@ -21,8 +21,13 @@ import numpy as np
 
 from ..board_model import BoardModel, BoardRegion, Footprint, Pad
 from ..mass import courtyard_bbox_area_m2, footprint_mass_kg
-from .contact import _board_bbox, _courtyard_outline_polygon
-from .force import ForceContext, _compute_total_force
+from .contact import (
+    _board_bbox,
+    _contact_weights,
+    _courtyard_outline_polygon,
+    _footprint_courtyard_polygon,
+)
+from .force import ForceContext, _compute_total_force, _overlap_depth_mm
 from .integrate import _round_force_components, _thin_frames
 from .model import (
     _build_net_edges_pad_level,
@@ -61,8 +66,10 @@ class PlacementProposal:
 
     force_frames (parallel to frames): per-sampled-iteration force breakdown
     for each movable footprint. Each frame is {uuid: {cause: (fx, fy)}} with
-    causes in {"repulsion", "attraction", "courtyard", "ghost"} (courtyard
-    includes the board wall).
+    causes in {"repulsion", "attraction", "courtyard", "ghost",
+    "tangential"} (courtyard includes the board wall; tangential is the
+    velocity-dependent sliding assist — its sign follows relative
+    tangential motion, so static probes and dynamic runs can differ).
     Values rounded to 3 significant figures for compact JSON.
 
     stop_reason reports how the run ended: "converged" (per-step displacement
@@ -100,6 +107,165 @@ class PlacementProposal:
     max_pair_overlap_mm2: float = 0.0
     max_wall_penetration_mm: float = 0.0
     exempt_pairs: Tuple[Tuple[str, str], ...] = ()
+
+
+# Final de-penetration pass (legalize eject): positional projection applied
+# once after dynamics settle. The penalty wall law equilibrates against net
+# attraction at nonzero penetration, so wedged pairs keep residual overlap;
+# this pass ejects them geometrically. Fractional relaxation per pass with a
+# pass cap; corrections are distributed contact-weighted so the Kabsch rigid
+# projection derives rotation too (full motion, not translation-only).
+# Rotation is clamped per pass (translation is the eject and stays uncapped):
+# unclamped, repeated differential pushes spin small parts tens of degrees
+# into their neighbors instead of settling. The loop also stops when the
+# worst overlap stops shrinking (ping-pong between several neighbors),
+# accepting the remainder for the next legalize run.
+# Solver-internal constants, deliberately not PlacementParams sliders.
+_DEPEN_RELAX = 0.5
+_DEPEN_CLEAN_AREA_MM2 = 1e-6
+_DEPEN_MAX_ROT_RAD = math.radians(2.0)
+
+
+def _depenetrate_positions(
+    positions: np.ndarray,
+    pad_movable: np.ndarray,
+    fp_uuids: List[str],
+    fp_movable_list: List[bool],
+    fp_local_to_rows: List[np.ndarray],
+    fp_by_uuid: Dict[str, Footprint],
+    proj_bodies: List[Tuple[np.ndarray, np.ndarray]],
+) -> bool:
+    """Eject residual courtyard overlaps left by the force dynamics.
+
+    For each intersecting same-layer body pair (including movable-vs-ghost
+    courtyard walls), translates bodies apart along the MTV by
+    ``_DEPEN_RELAX`` of the penetration depth (locked / ghost sides never
+    move; the movable side takes the full correction, split evenly when
+    both are movable). Only true penetration (``s < 0``) is projected,
+    never halo proximity. The board outline itself is deliberately out of
+    scope: the wall force owns it in production, and geometric wall pulls
+    would corrupt walls-off isolation tests. Returns True when anything
+    moved.
+    """
+    from shapely.ops import nearest_points as _nearest_points
+
+    def _posed():
+        polys: Dict[str, object] = {}
+        cents: Dict[str, Tuple[float, float]] = {}
+        radii: Dict[str, float] = {}
+        layers: Dict[str, str] = {}
+        for li, uuid in enumerate(fp_uuids):
+            fp = fp_by_uuid.get(uuid)
+            if fp is None:
+                continue
+            rows = fp_local_to_rows[li]
+            if fp.ghost or len(rows) == 0:
+                outline = _courtyard_outline_polygon(fp.courtyard)
+                if outline is None or outline.is_empty:
+                    continue
+                poly = outline
+            else:
+                try:
+                    poly = _footprint_courtyard_polygon(
+                        fp, pad_positions=positions, pad_indices=[int(r) for r in rows]
+                    )
+                except Exception:
+                    continue
+                if poly is None or poly.is_empty:
+                    continue
+            try:
+                c = poly.centroid
+                coords = np.asarray(poly.exterior.coords, dtype=np.float64)
+                r = float(np.max(np.linalg.norm(coords - [c.x, c.y], axis=1)))
+            except Exception:
+                continue
+            if not math.isfinite(r) or r < 1e-9:
+                r = 1.0
+            polys[uuid] = poly
+            cents[uuid] = (float(c.x), float(c.y))
+            radii[uuid] = r
+            layers[uuid] = fp.layer
+        return polys, cents, radii, layers
+
+    def _push_rows(delta, li, ux, uy, dist_mm):
+        rows = fp_local_to_rows[li]
+        if rows is None or len(rows) == 0 or dist_mm <= 0:
+            return
+        uuid = fp_uuids[li]
+        cx, cy = cents[uuid]
+        proj = ((positions[rows, 0] - cx) * ux + (positions[rows, 1] - cy) * uy) / radii[uuid]
+        w = _contact_weights(proj)
+        delta[rows, 0] += w * (ux * dist_mm)
+        delta[rows, 1] += w * (uy * dist_mm)
+
+    # Single Jacobi round (deliberately not iterated): one relaxed eject
+    # per overlapping pair from frozen geometry. Iterating re-measures
+    # after each shove and ping-pongs wedged parts between neighbors
+    # (measured: R13 walked 12-20mm while worst overlap grew); one round
+    # halves every overlap and leaves the remainder — honestly reported
+    # via legality — for the next legalize run.
+    moved_any = False
+    _pass_old = positions.copy()
+    polys, cents, radii, layers = _posed()
+    delta = np.zeros_like(positions)
+    # Part-part (and part-ghost-wall): deepest MTV per pair.
+    for a in range(len(fp_uuids)):
+        ua = fp_uuids[a]
+        if ua not in polys:
+            continue
+        for b in range(a + 1, len(fp_uuids)):
+            ub = fp_uuids[b]
+            if ub not in polys:
+                continue
+            ma = bool(fp_movable_list[a])
+            mb = bool(fp_movable_list[b])
+            if not ma and not mb:
+                continue
+            if layers[ua] != layers[ub]:
+                continue
+            pa, pb = polys[ua], polys[ub]
+            try:
+                if not pa.intersects(pb):
+                    continue
+                inter = pa.intersection(pb)
+                area = float(inter.area) if not inter.is_empty else 0.0
+            except Exception:
+                continue
+            if area <= _DEPEN_CLEAN_AREA_MM2:
+                continue
+            try:
+                qa, qb = _nearest_points(pa, pb)
+                dx, dy = float(qa.x - qb.x), float(qa.y - qb.y)
+            except Exception:
+                dx = dy = 0.0
+            dist = math.hypot(dx, dy)
+            if dist <= 1e-8:
+                dx = cents[ua][0] - cents[ub][0]
+                dy = cents[ua][1] - cents[ub][1]
+                dist = math.hypot(dx, dy)
+            if dist <= 1e-9:
+                dx, dy, dist = 1.0, 0.0, 1.0
+            ux, uy = dx / dist, dy / dist
+            depth = _overlap_depth_mm(pa, pb, ux, uy)
+            if depth <= 1e-9:
+                continue
+            step = depth * _DEPEN_RELAX
+            sa = step * (0.5 if (ma and mb) else 1.0) if ma else 0.0
+            sb = step * (0.5 if (ma and mb) else 1.0) if mb else 0.0
+            if sa > 0:
+                _push_rows(delta, a, ux, uy, sa)
+                moved_any = True
+            if sb > 0:
+                _push_rows(delta, b, -ux, -uy, sb)
+                moved_any = True
+    if np.any(delta != 0.0):
+        positions += delta
+    _project_rigid_poses(positions, proj_bodies)
+    _clamp_rigid_step(
+        positions, _pass_old, proj_bodies, pad_movable,
+        cap_mm=1e9, max_rot_rad=_DEPEN_MAX_ROT_RAD,
+    )
+    return moved_any
 
 
 def _run_region_simulation(
@@ -696,6 +862,22 @@ def _run_region_simulation(
 
         prev_positions = positions.copy()
 
+    # Final de-penetration pass: eject residual overlaps the penalty wall
+    # law equilibrated against (force balance, not zero overlap). Skipped
+    # for static probes (max_iterations=0 must report, never move) and
+    # when the wall response itself is disabled (wall_k_N/halo == 0):
+    # geometric ejection is the wall law made positional, so walls-off
+    # configurations must stay untouched.
+    _depen_moved = False
+    if (params.max_iterations > 0 and params.wall_k_N > 0.0
+            and params.wall_halo_m > 0.0):
+        _depen_moved = _depenetrate_positions(
+            positions, pad_movable, fp_uuids, fp_movable_list,
+            fp_local_to_rows, fp_by_uuid, _proj_bodies,
+        )
+        if _depen_moved:
+            _vel[:] = 0.0
+
     # Compute footprint deltas from final pad positions
     deltas: Dict[str, Tuple[float, float, float]] = {}
     final_max_disp = 0.0
@@ -745,6 +927,20 @@ def _run_region_simulation(
                 if bool(np.all(np.isfinite(s))):
                     comp[cause] = (float(s[0]), float(s[1]))
             footprint_components[fp.uuid] = comp
+
+    if _depen_moved:
+        # Positions changed geometrically after the dynamics loop stopped,
+        # so the loop's residual is stale: re-read net per-footprint force
+        # at the ejected pose (same rigid-aware definition as the loop).
+        _res = 0.0
+        for _rows, _mov in zip(fp_local_to_rows, fp_movable_list):
+            if not _mov or len(_rows) == 0:
+                continue
+            _res = max(
+                _res,
+                float(np.linalg.norm(final_force[_rows].sum(axis=0))),
+            )
+        residual_max_force_N = _res
 
     if record_frames and _frame_fps:
         _final_frame = _capture_frame(positions)
