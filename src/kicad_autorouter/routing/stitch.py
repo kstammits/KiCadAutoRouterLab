@@ -517,25 +517,47 @@ def plan_stitches(
                     # Nearest FREE group cell to joined copper (cells inside
                     # the annulus cannot host a track centerline).
                     free = bridge_free[layer] & regions[region_idx]
-                    dist_to_joined = ndimage.distance_transform_edt(~jmask)
-                    startable = gmask & free
-                    if not startable.any():
-                        continue
-                    masked = np.where(startable, dist_to_joined, np.inf)
-                    if not np.isfinite(masked).any():
-                        continue
-                    sr, sc = (int(v) for v in np.unravel_index(int(np.argmin(masked)), masked.shape))
-                    if masked[sr, sc] * res > max_bridge_mm:
-                        continue
-                    # Windowed A*: bound the search to start ± (bridge cap +
-                    # margin) so one bridge cannot explore the whole board.
                     H, W = free.shape
+                    # Windowed EDT: compute only on group bbox + max_bridge_mm margin
+                    # to avoid full-grid distance_transform_edt per group per layer.
+                    # Find group bbox from gmask.
+                    g_rows, g_cols = np.nonzero(gmask)
+                    if len(g_rows) == 0:
+                        continue
+                    gr_min, gr_max = int(g_rows.min()), int(g_rows.max())
+                    gc_min, gc_max = int(g_cols.min()), int(g_cols.max())
+                    margin = int(max_bridge_mm / res) + 1 if res > 0 else 0
+                    r0 = max(0, gr_min - margin)
+                    r1 = min(H, gr_max + margin + 1)
+                    c0 = max(0, gc_min - margin)
+                    c1 = min(W, gc_max + margin + 1)
+                    if r0 >= r1 or c0 >= c1:
+                        continue
+                    # Slice arrays to window
+                    jmask_win = jmask[r0:r1, c0:c1]
+                    free_win = free[r0:r1, c0:c1]
+                    gmask_win = gmask[r0:r1, c0:c1]
+                    # Distance transform within window
+                    dist_to_joined_win = ndimage.distance_transform_edt(~jmask_win)
+                    startable_win = gmask_win & free_win
+                    if not startable_win.any():
+                        continue
+                    masked_win = np.where(startable_win, dist_to_joined_win, np.inf)
+                    if not np.isfinite(masked_win).any():
+                        continue
+                    sr_win, sc_win = (int(v) for v in np.unravel_index(int(np.argmin(masked_win)), masked_win.shape))
+                    if masked_win[sr_win, sc_win] * res > max_bridge_mm:
+                        continue
+                    # Translate back to full-grid coordinates
+                    sr = sr_win + r0
+                    sc = sc_win + c0
+                    # Windowed A*: bound the search to start ± (bridge cap + margin)
                     win = int(max_bridge_mm / res) + _cells(2.0, res) if res > 0 else H
-                    r0, r1 = max(0, sr - win), min(H, sr + win + 1)
-                    c0, c1 = max(0, sc - win), min(W, sc + win + 1)
-                    sub = _astar_path(free[r0:r1, c0:c1], (sr - r0, sc - c0),
-                                      jmask[r0:r1, c0:c1])
-                    path = [(r + r0, c + c0) for (r, c) in sub]
+                    ar0, ar1 = max(0, sr - win), min(H, sr + win + 1)
+                    ac0, ac1 = max(0, sc - win), min(W, sc + win + 1)
+                    sub = _astar_path(free[ar0:ar1, ac0:ac1], (sr - ar0, sc - ac0),
+                                      jmask[ar0:ar1, ac0:ac1])
+                    path = [(r + ar0, c + ac0) for (r, c) in sub]
                     if len(path) < 2 or (len(path) - 1) * res > max_bridge_mm:
                         continue
                     # Endpoints must sit on copper (start does by construction;
