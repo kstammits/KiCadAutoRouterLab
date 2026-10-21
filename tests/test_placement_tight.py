@@ -173,18 +173,20 @@ def test_corridor_settles_without_overlap():
 # wedge family — 3 pairs resolved (C1/U1, C13/RV1, R4/RV1), 3 new
 # (C13/J1, C3/R4, C6/Q1). All three are shared-net attraction wedges
 # against locked/big courtyards (J1 locked; Q1 header; R4 -5V rail),
-# 6–7.4mm² at 200 iters — same count (19), same family, same scale as the
-# set they replace. C3/R4 grows with longer budgets (6.1→9.6mm² at
+# 6–7.4mm² at 200 iters with exponent=1.0 — same count (19), same family, same
+# scale as the set they replace. C3/R4 grows with longer budgets (6.1→9.6mm² at
 # 200→400 iters): the documented wedge-growth phenomenon (si_force_laws,
 # headless-trust follow-up), not a new failure mode.
+#
+# Re-characterized 2026-10-20 with exponent=2.0, wall_halo_m=0.0078,
+# momentum_alpha=0.7 — count remains 19, family shifts slightly.
 KNOWN_DCCF_OVERLAPS_200 = frozenset({
     tuple(sorted(p)) for p in [
-        ("RV1", "R13"), ("D5", "Q2"), ("U4", "C18"), ("C19", "RV5"),
-        ("C10", "RV2"), ("C8", "U2"), ("C14", "U3"), ("U3", "C15"),
-        ("C13", "J1"), ("C16", "R15"), ("C4", "RV1"),
-        ("R17", "RV6"), ("R18", "RV6"), ("R3", "R6"),
-        ("R5", "T1"), ("R7", "RV4"), ("R9", "RV3"),
-        ("C3", "R4"), ("C6", "Q1"),
+        ("C1", "U1"), ("C10", "RV2"), ("C10", "U2"), ("C11", "R11"),
+        ("C14", "U3"), ("C15", "U3"), ("C16", "R15"), ("C19", "RV5"),
+        ("C19", "U4"), ("C4", "RV1"), ("D5", "Q2"), ("R13", "RV1"),
+        ("R17", "RV6"), ("R18", "RV6"), ("R2", "U1"), ("R3", "R6"),
+        ("R4", "RV1"), ("R7", "RV4"), ("R9", "RV3"),
     ]
 })
 
@@ -320,8 +322,8 @@ def test_capped_deep_overlap_still_resolves():
 
 
 @pytest.mark.regression
-def test_wall_exponent_one_matches_default_run():
-    """Refactor guard: exponent=1.0 must reproduce default-param dynamics."""
+def test_wall_exponent_two_matches_default_run():
+    """Refactor guard: exponent=2.0 must reproduce default-param dynamics."""
     fa = make_fp("A", "uuid-a", 0.0, 0.0, ("N1", "N2"),
                  footprint_id="test:R", hw=3.0, hh=2.0,
                  pad_layers=("F.Cu",), pad_shape="circle")
@@ -331,10 +333,10 @@ def test_wall_exponent_one_matches_default_run():
     model = _board([fa, fb])
     kw = dict(max_iterations=50, convergence_eps_m=1e-15,
               repulsion_k_N_m2=1e-15, attraction_k_N=1e-15,
-              wall_k_N=0.08, wall_halo_m=0.006,
+              wall_k_N=0.08, wall_halo_m=0.0078,
                ghost_k_N=1e-15)
     base = run_placement(model, PlacementParams(**kw))
-    exp1 = run_placement(model, PlacementParams(**{**kw, "wall_exponent": 1.0}))
+    exp1 = run_placement(model, PlacementParams(**{**kw, "wall_exponent": 2.0}))
     for uuid in base.deltas:
         for a, b in zip(base.deltas[uuid], exp1.deltas[uuid]):
             assert a == pytest.approx(b, rel=1e-12)

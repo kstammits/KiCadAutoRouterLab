@@ -585,7 +585,8 @@ def test_dccf_multiple_resistors_near_locked():
         attraction_k_N=5e-05,
         wall_k_N=0.01,
         wall_halo_m=0.003,
-        
+        wall_exponent=1.0,
+        momentum_alpha=0.0,
     )
     prop = run_placement(model, params, movable_uuids=mobile_uuids)
     

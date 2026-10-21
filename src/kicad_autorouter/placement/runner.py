@@ -625,9 +625,12 @@ def _run_region_simulation(
         )
         # Re-derive velocity from the actual projected displacement so the
         # projection can't inject phantom energy into the guard below.
+        # Blend with old velocity (momentum_alpha) for momentum persistence.
         if _dt > 0:
-            _vel[pad_movable] = (
+            vel_from_disp = (
                 (positions[pad_movable] - _old_positions[pad_movable]) * 1e-3 / _dt)
+            alpha = float(params.momentum_alpha)
+            _vel[pad_movable] = alpha * _vel[pad_movable] + (1.0 - alpha) * vel_from_disp
         _vel[_frozen] = 0.0
         _vel[~pad_movable] = 0.0
 

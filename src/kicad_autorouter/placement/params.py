@@ -62,11 +62,15 @@ class PlacementParams:
     # Courtyard contact strength (newtons; elastic push-out on collision).
     wall_k_N: float = 8e-2
     # Near-miss halo reach (meters).
-    wall_halo_m: float = 0.006
-    # Wall-law exponent (dimensionless, default 1 = linear).
-    wall_exponent: float = 1.0
+    wall_halo_m: float = 0.0078
+    # Wall-law exponent (dimensionless, default 2 = quadratic).
+    wall_exponent: float = 2.0
     # Deep-penetration cap (mm of penetration depth, 0 = uncapped).
     wall_cap_depth_mm: float = 0.0
+    # Velocity blending alpha: fraction of old velocity to retain after
+    # rigid projection (0 = fully re-derive from displacement, 1 = keep old).
+    # Default 0.7 provides momentum persistence to nudge past wedges.
+    momentum_alpha: float = 0.7
     # Ghost attraction scale (newtons).
     ghost_k_N: float = 5e-5
     # Viscous damping coefficient (N*s/m).
@@ -177,6 +181,8 @@ def _validate(params: PlacementParams) -> None:
         raise ValueError("power_attraction_scale must be >= 0")
     if params.wall_exponent < 1.0:
         raise ValueError("wall_exponent must be >= 1.0 (p < 1 is singular at the halo edge)")
+    if not (0.0 <= params.momentum_alpha <= 1.0):
+        raise ValueError("momentum_alpha must be in [0.0, 1.0]")
     if params.decap_boost < 0:
         raise ValueError("decap_boost must be >= 0")
     if not isinstance(params.include_power_nets, bool):

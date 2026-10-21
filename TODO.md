@@ -28,6 +28,10 @@
 - [ ] `pour_copper_mask` per-track `cut = zeros(H,W)` alloc+AND per zone — accumulate foreign cuts into one mask per zone. Smaller win now that painting is compiled; revisit if pour profile regresses.
 - [ ] `plan_stitches` loop-invariant hoists — `binary_erosion(copper)` out of the group loop, windowed `distance_transform_edt(~jmask)` on group bbox + `max_bridge_mm`, incremental `joined_mask` cache (kills O(groups²) full-grid ORs). DCCF stitch 17s → low single digits expected.
 - [x] Placement `is_empty` per-footprint bool cache — DONE 2026-10-15: `body_empty`/`pins_empty` cached per (re)build in `poly_cache`. Measured: tube111 35.8→24.1 ms/iter (1.5x), DCCF 55.7→19.4 ms/iter (2.9x); converged runs 25.4→15.1s / 0.91→0.44s.
+
+### Test Hygiene (NEW)
+
+- [ ] Update placement physics tests to use default params where possible, testing behavioral/heuristic outcomes rather than exact force values. Currently `test_placement_forces.py:_base_params` and `test_courtyard_behavior.py:_base_params` pin `wall_exponent=1.0, momentum_alpha=0.0` to reproduce legacy dynamics — migrate to default params (`wall_exponent=2.0, momentum_alpha=0.7`) and update assertions to check behavioral invariants (e.g., "force grows with penetration", "parts separate", "no force cliff at contact") rather than exact magnitude formulas.
 - [ ] Routing time estimator: move GUI `2 + 1.2·n` to a per-net pad-count model (`est.pairs` already computed) + failed-net allowance.
 
 ### Documentation (SI program support)

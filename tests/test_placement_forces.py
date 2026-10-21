@@ -82,7 +82,8 @@ def _base_params(**kw):
         attraction_k_N=5e-05,
         wall_k_N=0.01,
         wall_halo_m=0.003,
-        
+        wall_exponent=1.0,
+        momentum_alpha=0.0,
     )
     base.update(kw)
     return PlacementParams(**base)
