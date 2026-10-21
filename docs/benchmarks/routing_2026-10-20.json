@@ -32,11 +32,11 @@
       "grid_cells_M": 9.58,
       "net": "B1",
       "via_radius_cells": 8,
-      "occupancy_s": 0.185,
+      "occupancy_s": 0.186,
       "tht_mask_s": 0.063,
       "via_block_mask_s": 0.001,
-      "fanout_s": 0.07,
-      "via_ok_mask_s": 0.528,
+      "fanout_s": 0.069,
+      "via_ok_mask_s": 0.527,
       "via_ok_frac": 0.924
     },
     {
@@ -47,9 +47,21 @@
       "occupancy_s": 0.251,
       "tht_mask_s": 0.0,
       "via_block_mask_s": 0.0,
-      "fanout_s": 0.039,
+      "fanout_s": 0.037,
       "via_ok_mask_s": 0.165,
       "via_ok_frac": 0.686
+    },
+    {
+      "board": "minimal",
+      "grid_cells_M": 3.41,
+      "net": "none",
+      "via_radius_cells": 0,
+      "occupancy_s": 0.022,
+      "tht_mask_s": 0.0,
+      "via_block_mask_s": 0.0,
+      "fanout_s": 0.0,
+      "via_ok_mask_s": 0.0,
+      "via_ok_frac": 0.0
     }
   ],
   "cases": [
@@ -63,13 +75,13 @@
       "nets_routed": 2,
       "nets_failed": 0,
       "expansions": 97680,
-      "total_s": 3.664,
-      "route_s": 1.665,
-      "astar_s": 1.475,
-      "smooth_s": 0.003,
-      "occupancy_s": 0.184,
-      "s_per_net": 1.832,
-      "ms_per_kexp": 37.5
+      "total_s": 3.737,
+      "route_s": 1.68,
+      "astar_s": 1.493,
+      "smooth_s": 0.005,
+      "occupancy_s": 0.182,
+      "s_per_net": 1.868,
+      "ms_per_kexp": 38.3
     },
     {
       "board": "tube111",
@@ -80,13 +92,30 @@
       "nets_routed": 1,
       "nets_failed": 0,
       "expansions": 51535,
-      "total_s": 1.313,
-      "route_s": 0.481,
+      "total_s": 1.305,
+      "route_s": 0.48,
       "astar_s": 0.43,
       "smooth_s": 0.004,
-      "occupancy_s": 0.251,
-      "s_per_net": 1.313,
-      "ms_per_kexp": 25.5
+      "occupancy_s": 0.25,
+      "s_per_net": 1.305,
+      "ms_per_kexp": 25.3
+    },
+    {
+      "board": "DCCF_power",
+      "nets_requested": 1,
+      "net_names": [
+        "VIN"
+      ],
+      "nets_routed": 1,
+      "nets_failed": 0,
+      "expansions": 959123,
+      "total_s": 7.783,
+      "route_s": 5.727,
+      "astar_s": 5.484,
+      "smooth_s": 0.149,
+      "occupancy_s": 0.184,
+      "s_per_net": 7.783,
+      "ms_per_kexp": 8.1
     }
   ],
   "stitch_case": null

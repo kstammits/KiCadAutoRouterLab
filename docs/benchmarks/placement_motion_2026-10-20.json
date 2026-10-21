@@ -1,0 +1,668 @@
+{
+  "timing_budget": 30,
+  "profile_budget": 10,
+  "cases": [
+    {
+      "board": "tube111",
+      "footprints": 105,
+      "moved_parts": 4,
+      "refs": [
+        "C1",
+        "C10",
+        "C11",
+        "C12"
+      ],
+      "iterations": 30,
+      "total_s": 0.168,
+      "ms_per_iter": 5.593,
+      "deltas": 4
+    },
+    {
+      "board": "DCCF",
+      "footprints": 97,
+      "moved_parts": 4,
+      "refs": [
+        "C1",
+        "C10",
+        "C11",
+        "C12"
+      ],
+      "iterations": 30,
+      "total_s": 0.28,
+      "ms_per_iter": 9.32,
+      "deltas": 4
+    }
+  ],
+  "profiles": [
+    {
+      "board": "tube111",
+      "moved_parts": 4,
+      "refs": [
+        "C1",
+        "C10",
+        "C11",
+        "C12"
+      ],
+      "budget": 10,
+      "by_tottime": [
+        {
+          "func": "force.py:100:_compute_total_force",
+          "calls": 12,
+          "tottime": 0.0385,
+          "cumtime": 0.081
+        },
+        {
+          "func": "decorators.py:73:wrapped",
+          "calls": 16272,
+          "tottime": 0.0181,
+          "cumtime": 0.0502
+        },
+        {
+          "func": "mass.py:87:<listcomp>",
+          "calls": 315,
+          "tottime": 0.012,
+          "cumtime": 0.012
+        },
+        {
+          "func": "mass.py:88:<listcomp>",
+          "calls": 315,
+          "tottime": 0.0111,
+          "cumtime": 0.0111
+        },
+        {
+          "func": "predicates.py:181:is_empty",
+          "calls": 8033,
+          "tottime": 0.0067,
+          "cumtime": 0.0067
+        },
+        {
+          "func": "~:0:<method 'add' of 'set' objects>",
+          "calls": 150432,
+          "tottime": 0.0056,
+          "cumtime": 0.0056
+        },
+        {
+          "func": "decoder.py:343:raw_decode",
+          "calls": 315,
+          "tottime": 0.0048,
+          "cumtime": 0.0048
+        },
+        {
+          "func": "~:0:<method 'reduce' of 'numpy.ufunc' objects>",
+          "calls": 3173,
+          "tottime": 0.0048,
+          "cumtime": 0.0048
+        },
+        {
+          "func": "~:0:<built-in method io.open>",
+          "calls": 315,
+          "tottime": 0.0045,
+          "cumtime": 0.0047
+        },
+        {
+          "func": "~:0:<built-in method builtins.max>",
+          "calls": 1786,
+          "tottime": 0.0038,
+          "cumtime": 0.0038
+        },
+        {
+          "func": "~:0:<built-in method builtins.min>",
+          "calls": 1391,
+          "tottime": 0.0038,
+          "cumtime": 0.0038
+        },
+        {
+          "func": "decorators.py:75:<listcomp>",
+          "calls": 16272,
+          "tottime": 0.0035,
+          "cumtime": 0.0044
+        },
+        {
+          "func": "set_operations.py:112:intersection",
+          "calls": 1821,
+          "tottime": 0.0031,
+          "cumtime": 0.0031
+        },
+        {
+          "func": "runner.py:105:_run_region_simulation",
+          "calls": 3,
+          "tottime": 0.0027,
+          "cumtime": 0.1408
+        },
+        {
+          "func": "decorators.py:171:wrapper",
+          "calls": 3621,
+          "tottime": 0.0022,
+          "cumtime": 0.0183
+        },
+        {
+          "func": "_geometry.py:867:set_precision",
+          "calls": 808,
+          "tottime": 0.0022,
+          "cumtime": 0.0029
+        },
+        {
+          "func": "_methods.py:117:_mean",
+          "calls": 1165,
+          "tottime": 0.0022,
+          "cumtime": 0.0046
+        },
+        {
+          "func": "rigid.py:223:_rigid_pose_vertices",
+          "calls": 225,
+          "tottime": 0.0021,
+          "cumtime": 0.0049
+        },
+        {
+          "func": "legality.py:102:_check_pairwise_overlaps",
+          "calls": 1,
+          "tottime": 0.0021,
+          "cumtime": 0.0295
+        },
+        {
+          "func": "base.py:721:is_empty",
+          "calls": 8033,
+          "tottime": 0.002,
+          "cumtime": 0.0202
+        },
+        {
+          "func": "creation.py:140:linestrings",
+          "calls": 808,
+          "tottime": 0.0019,
+          "cumtime": 0.002
+        },
+        {
+          "func": "~:0:<built-in method builtins.isinstance>",
+          "calls": 36285,
+          "tottime": 0.0019,
+          "cumtime": 0.0019
+        },
+        {
+          "func": "decorators.py:77:<listcomp>",
+          "calls": 16272,
+          "tottime": 0.0017,
+          "cumtime": 0.0019
+        },
+        {
+          "func": "force.py:375:_spread",
+          "calls": 222,
+          "tottime": 0.0017,
+          "cumtime": 0.0025
+        },
+        {
+          "func": "numeric.py:2373:isclose",
+          "calls": 211,
+          "tottime": 0.0017,
+          "cumtime": 0.004
+        }
+      ],
+      "by_cumtime": [
+        {
+          "func": "runner.py:794:run_placement",
+          "calls": 1,
+          "tottime": 0.0005,
+          "cumtime": 0.1959
+        },
+        {
+          "func": "runner.py:105:_run_region_simulation",
+          "calls": 3,
+          "tottime": 0.0027,
+          "cumtime": 0.1408
+        },
+        {
+          "func": "force.py:100:_compute_total_force",
+          "calls": 12,
+          "tottime": 0.0385,
+          "cumtime": 0.081
+        },
+        {
+          "func": "legality.py:253:check_legality",
+          "calls": 1,
+          "tottime": 0.0,
+          "cumtime": 0.0542
+        },
+        {
+          "func": "decorators.py:73:wrapped",
+          "calls": 16272,
+          "tottime": 0.0181,
+          "cumtime": 0.0502
+        },
+        {
+          "func": "mass.py:84:courtyard_bbox_area_m2",
+          "calls": 315,
+          "tottime": 0.0004,
+          "cumtime": 0.0308
+        },
+        {
+          "func": "legality.py:102:_check_pairwise_overlaps",
+          "calls": 1,
+          "tottime": 0.0021,
+          "cumtime": 0.0295
+        },
+        {
+          "func": "legality.py:69:_collect_posed_polygons",
+          "calls": 1,
+          "tottime": 0.0001,
+          "cumtime": 0.0216
+        },
+        {
+          "func": "legality.py:42:_build_posed_courtyard",
+          "calls": 105,
+          "tottime": 0.0001,
+          "cumtime": 0.0207
+        },
+        {
+          "func": "contact.py:426:_footprint_courtyard_polygon",
+          "calls": 95,
+          "tottime": 0.0004,
+          "cumtime": 0.0206
+        },
+        {
+          "func": "base.py:721:is_empty",
+          "calls": 8033,
+          "tottime": 0.002,
+          "cumtime": 0.0202
+        },
+        {
+          "func": "decorators.py:171:wrapper",
+          "calls": 3621,
+          "tottime": 0.0022,
+          "cumtime": 0.0183
+        },
+        {
+          "func": "contact.py:383:_courtyard_outline_polygon",
+          "calls": 134,
+          "tottime": 0.001,
+          "cumtime": 0.0169
+        },
+        {
+          "func": "contact.py:436:_get_courtyard_vertices",
+          "calls": 95,
+          "tottime": 0.0002,
+          "cumtime": 0.0144
+        },
+        {
+          "func": "mass.py:65:footprint_mass_kg",
+          "calls": 315,
+          "tottime": 0.0004,
+          "cumtime": 0.0143
+        },
+        {
+          "func": "mass.py:42:resolve_table_mass_g",
+          "calls": 315,
+          "tottime": 0.0011,
+          "cumtime": 0.0138
+        },
+        {
+          "func": "mass.py:25:load_mass_table",
+          "calls": 315,
+          "tottime": 0.0002,
+          "cumtime": 0.0125
+        },
+        {
+          "func": "mass.py:87:<listcomp>",
+          "calls": 315,
+          "tottime": 0.012,
+          "cumtime": 0.012
+        },
+        {
+          "func": "mass.py:88:<listcomp>",
+          "calls": 315,
+          "tottime": 0.0111,
+          "cumtime": 0.0111
+        },
+        {
+          "func": "contact.py:109:_classify_shape",
+          "calls": 79,
+          "tottime": 0.0002,
+          "cumtime": 0.0108
+        },
+        {
+          "func": "base.py:668:intersection",
+          "calls": 1821,
+          "tottime": 0.0005,
+          "cumtime": 0.0078
+        },
+        {
+          "func": "contact.py:37:_classify_rectangle",
+          "calls": 79,
+          "tottime": 0.0012,
+          "cumtime": 0.0075
+        },
+        {
+          "func": "pathlib.py:1053:read_text",
+          "calls": 315,
+          "tottime": 0.0003,
+          "cumtime": 0.0067
+        },
+        {
+          "func": "predicates.py:181:is_empty",
+          "calls": 8033,
+          "tottime": 0.0067,
+          "cumtime": 0.0067
+        },
+        {
+          "func": "linestring.py:40:__new__",
+          "calls": 808,
+          "tottime": 0.001,
+          "cumtime": 0.0061
+        }
+      ]
+    },
+    {
+      "board": "DCCF",
+      "moved_parts": 4,
+      "refs": [
+        "C1",
+        "C10",
+        "C11",
+        "C12"
+      ],
+      "budget": 10,
+      "by_tottime": [
+        {
+          "func": "force.py:100:_compute_total_force",
+          "calls": 12,
+          "tottime": 0.1113,
+          "cumtime": 0.1988
+        },
+        {
+          "func": "decorators.py:73:wrapped",
+          "calls": 21779,
+          "tottime": 0.0241,
+          "cumtime": 0.0695
+        },
+        {
+          "func": "~:0:<method 'add' of 'set' objects>",
+          "calls": 465691,
+          "tottime": 0.0175,
+          "cumtime": 0.0175
+        },
+        {
+          "func": "~:0:<method 'reduce' of 'numpy.ufunc' objects>",
+          "calls": 4911,
+          "tottime": 0.0109,
+          "cumtime": 0.0109
+        },
+        {
+          "func": "predicates.py:181:is_empty",
+          "calls": 10989,
+          "tottime": 0.0092,
+          "cumtime": 0.0092
+        },
+        {
+          "func": "decorators.py:75:<listcomp>",
+          "calls": 21779,
+          "tottime": 0.0047,
+          "cumtime": 0.0059
+        },
+        {
+          "func": "rigid.py:223:_rigid_pose_vertices",
+          "calls": 431,
+          "tottime": 0.0039,
+          "cumtime": 0.0093
+        },
+        {
+          "func": "set_operations.py:112:intersection",
+          "calls": 2313,
+          "tottime": 0.0038,
+          "cumtime": 0.0038
+        },
+        {
+          "func": "constructive.py:136:buffer",
+          "calls": 325,
+          "tottime": 0.0036,
+          "cumtime": 0.0046
+        },
+        {
+          "func": "_methods.py:117:_mean",
+          "calls": 1829,
+          "tottime": 0.0035,
+          "cumtime": 0.0072
+        },
+        {
+          "func": "runner.py:105:_run_region_simulation",
+          "calls": 2,
+          "tottime": 0.0034,
+          "cumtime": 0.2389
+        },
+        {
+          "func": "mass.py:87:<listcomp>",
+          "calls": 194,
+          "tottime": 0.0031,
+          "cumtime": 0.0031
+        },
+        {
+          "func": "_geometry.py:867:set_precision",
+          "calls": 1152,
+          "tottime": 0.0031,
+          "cumtime": 0.004
+        },
+        {
+          "func": "decorators.py:171:wrapper",
+          "calls": 4944,
+          "tottime": 0.003,
+          "cumtime": 0.0282
+        },
+        {
+          "func": "decoder.py:343:raw_decode",
+          "calls": 194,
+          "tottime": 0.0029,
+          "cumtime": 0.0029
+        },
+        {
+          "func": "base.py:721:is_empty",
+          "calls": 10989,
+          "tottime": 0.0028,
+          "cumtime": 0.0276
+        },
+        {
+          "func": "mass.py:88:<listcomp>",
+          "calls": 194,
+          "tottime": 0.0028,
+          "cumtime": 0.0028
+        },
+        {
+          "func": "~:0:<built-in method io.open>",
+          "calls": 194,
+          "tottime": 0.0028,
+          "cumtime": 0.0029
+        },
+        {
+          "func": "legality.py:102:_check_pairwise_overlaps",
+          "calls": 1,
+          "tottime": 0.0028,
+          "cumtime": 0.0389
+        },
+        {
+          "func": "~:0:<built-in method builtins.isinstance>",
+          "calls": 51308,
+          "tottime": 0.0027,
+          "cumtime": 0.0027
+        },
+        {
+          "func": "creation.py:140:linestrings",
+          "calls": 1152,
+          "tottime": 0.0026,
+          "cumtime": 0.0028
+        },
+        {
+          "func": "decorators.py:77:<listcomp>",
+          "calls": 21779,
+          "tottime": 0.0025,
+          "cumtime": 0.0028
+        },
+        {
+          "func": "numeric.py:2373:isclose",
+          "calls": 295,
+          "tottime": 0.0025,
+          "cumtime": 0.0057
+        },
+        {
+          "func": "~:0:<built-in method numpy.array>",
+          "calls": 4238,
+          "tottime": 0.0018,
+          "cumtime": 0.0018
+        },
+        {
+          "func": "~:0:<method 'get' of 'dict' objects>",
+          "calls": 34435,
+          "tottime": 0.0018,
+          "cumtime": 0.0018
+        }
+      ],
+      "by_cumtime": [
+        {
+          "func": "runner.py:794:run_placement",
+          "calls": 1,
+          "tottime": 0.0004,
+          "cumtime": 0.3009
+        },
+        {
+          "func": "runner.py:105:_run_region_simulation",
+          "calls": 2,
+          "tottime": 0.0034,
+          "cumtime": 0.2389
+        },
+        {
+          "func": "force.py:100:_compute_total_force",
+          "calls": 12,
+          "tottime": 0.1113,
+          "cumtime": 0.1988
+        },
+        {
+          "func": "decorators.py:73:wrapped",
+          "calls": 21779,
+          "tottime": 0.0241,
+          "cumtime": 0.0695
+        },
+        {
+          "func": "legality.py:253:check_legality",
+          "calls": 1,
+          "tottime": 0.0,
+          "cumtime": 0.0612
+        },
+        {
+          "func": "legality.py:102:_check_pairwise_overlaps",
+          "calls": 1,
+          "tottime": 0.0028,
+          "cumtime": 0.0389
+        },
+        {
+          "func": "decorators.py:171:wrapper",
+          "calls": 4944,
+          "tottime": 0.003,
+          "cumtime": 0.0282
+        },
+        {
+          "func": "base.py:721:is_empty",
+          "calls": 10989,
+          "tottime": 0.0028,
+          "cumtime": 0.0276
+        },
+        {
+          "func": "contact.py:383:_courtyard_outline_polygon",
+          "calls": 162,
+          "tottime": 0.0015,
+          "cumtime": 0.0224
+        },
+        {
+          "func": "legality.py:69:_collect_posed_polygons",
+          "calls": 1,
+          "tottime": 0.0001,
+          "cumtime": 0.0214
+        },
+        {
+          "func": "legality.py:42:_build_posed_courtyard",
+          "calls": 97,
+          "tottime": 0.0001,
+          "cumtime": 0.0207
+        },
+        {
+          "func": "contact.py:426:_footprint_courtyard_polygon",
+          "calls": 87,
+          "tottime": 0.0004,
+          "cumtime": 0.0205
+        },
+        {
+          "func": "~:0:<method 'add' of 'set' objects>",
+          "calls": 465691,
+          "tottime": 0.0175,
+          "cumtime": 0.0175
+        },
+        {
+          "func": "contact.py:109:_classify_shape",
+          "calls": 115,
+          "tottime": 0.0004,
+          "cumtime": 0.016
+        },
+        {
+          "func": "contact.py:436:_get_courtyard_vertices",
+          "calls": 87,
+          "tottime": 0.0002,
+          "cumtime": 0.0148
+        },
+        {
+          "func": "runner.py:281:_local_shape",
+          "calls": 75,
+          "tottime": 0.0006,
+          "cumtime": 0.0116
+        },
+        {
+          "func": "~:0:<method 'reduce' of 'numpy.ufunc' objects>",
+          "calls": 4911,
+          "tottime": 0.0109,
+          "cumtime": 0.0109
+        },
+        {
+          "func": "contact.py:37:_classify_rectangle",
+          "calls": 115,
+          "tottime": 0.0016,
+          "cumtime": 0.0107
+        },
+        {
+          "func": "base.py:668:intersection",
+          "calls": 2313,
+          "tottime": 0.0006,
+          "cumtime": 0.0098
+        },
+        {
+          "func": "rigid.py:223:_rigid_pose_vertices",
+          "calls": 431,
+          "tottime": 0.0039,
+          "cumtime": 0.0093
+        },
+        {
+          "func": "predicates.py:181:is_empty",
+          "calls": 10989,
+          "tottime": 0.0092,
+          "cumtime": 0.0092
+        },
+        {
+          "func": "mass.py:65:footprint_mass_kg",
+          "calls": 194,
+          "tottime": 0.0002,
+          "cumtime": 0.009
+        },
+        {
+          "func": "mass.py:42:resolve_table_mass_g",
+          "calls": 194,
+          "tottime": 0.0009,
+          "cumtime": 0.0088
+        },
+        {
+          "func": "linestring.py:40:__new__",
+          "calls": 1152,
+          "tottime": 0.0013,
+          "cumtime": 0.0085
+        },
+        {
+          "func": "fromnumeric.py:69:_wrapreduction",
+          "calls": 795,
+          "tottime": 0.0005,
+          "cumtime": 0.0081
+        }
+      ]
+    }
+  ]
+}

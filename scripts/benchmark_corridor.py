@@ -114,12 +114,17 @@ def main() -> None:
                     help="A* expansion cap per search")
     ap.add_argument("--window-margin", type=int, default=32,
                     help="initial A* window margin (cells); smaller => more corridor triggers")
+    ap.add_argument("--window-margins", type=int, nargs="+", default=None,
+                    help="sweep window margins (default [16, 32, 64])")
     args = ap.parse_args()
 
+    window_margins = args.window_margins or [16, 32, 64]
+
     if args.quick:
-        plan = [("DCCF", 2, 4), ("tube111", 1, 3)]
+        plan = [("DCCF", 2, 4), ("tube111", 1, 3), ("minimal", 0, 1)]
+        window_margins = [32]  # single margin for quick
     else:
-        plan = [("DCCF", 3, 6), ("tube111", 2, 5)]
+        plan = [("DCCF", 3, 6), ("tube111", 2, 5), ("minimal", 0, 1)]
 
     rows = []
     for board_name, k_power, k_signal in plan:
@@ -144,24 +149,25 @@ def main() -> None:
         if not nets:
             continue
 
-        for corridor in (True, False):
-            params = RoutingParams(
-                grid_resolution_mm=args.resolution,
-                max_expansions=args.max_expansions,
-                max_attempts_per_net=1,
-                stitch_gnd_vias=False,
-                run_drc=False,
-                window_margin_cells=args.window_margin,
-                corridor=corridor,
-            )
-            tag = "on" if corridor else "off"
-            row = route_case(model, nets, params,
-                             f"{board_name} P{k_power}S{k_signal} corridor={tag}")
-            row.update(fill)
-            rows.append(row)
+        for margin in window_margins:
+            for corridor in (True, False):
+                params = RoutingParams(
+                    grid_resolution_mm=args.resolution,
+                    max_expansions=args.max_expansions,
+                    max_attempts_per_net=1,
+                    stitch_gnd_vias=False,
+                    run_drc=False,
+                    window_margin_cells=margin,
+                    corridor=corridor,
+                )
+                tag = "on" if corridor else "off"
+                row = route_case(model, nets, params,
+                                 f"{board_name} P{k_power}S{k_signal} W{margin} corridor={tag}")
+                row.update(fill)
+                rows.append(row)
 
     # Print comparison table.
-    print(f"{'board':<8}{'P':>3}{'S':>3}{'corr':>6}{'routed':>7}{'failed':>7}"
+    print(f"{'board':<8}{'P':>3}{'S':>3}{'W':>4}{'corr':>6}{'routed':>7}{'failed':>7}"
           f"{'expans':>10}{'astar_s':>8}{'wall_s':>8}{'blk%':>6}{'occ%':>6}"
           f"{'tried':>7}{'found':>7}{'used':>7}{'cells':>9}{'use%':>6}")
     for r in rows:
@@ -169,8 +175,9 @@ def main() -> None:
         board = parts[0]
         rest = parts[1]
         kp = rest.split("P")[1].split("S")[0]
-        ks = rest.split("S")[1].split()[0]
-        print(f"{board:<8}{kp:>3}{ks:>3}{'on' if 'on' in r['label'] else 'off':>6}"
+        ks = rest.split("S")[1].split("W")[0]
+        wm = rest.split("W")[1].split(" ")[0] if "W" in rest else "0"
+        print(f"{board:<8}{kp:>3}{ks:>3}{wm:>4}{'on' if 'on' in r['label'] else 'off':>6}"
               f"{r['nets_routed']:>7}{r['nets_failed']:>7}"
               f"{r['expansions']:>10}{r['astar_s']:>8.3f}{r['wall_s']:>8.3f}"
               f"{r['blocked_frac']*100:>6.1f}{r['occupied_frac']*100:>6.1f}"
@@ -183,7 +190,7 @@ def main() -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps({"params": {"resolution": args.resolution,
                                           "max_expansions": args.max_expansions,
-                                          "window_margin": args.window_margin},
+                                          "window_margins": window_margins},
                                "cases": rows}, indent=2) + "\n")
     print(f"\nSaved {out}")
 

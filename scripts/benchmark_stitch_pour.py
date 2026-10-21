@@ -65,6 +65,12 @@ def _rect_zone(uuid, net, layers=("F.Cu",), x0=0.0, y0=0.0, x1=40.0, y1=30.0,
     )
 
 
+def load_ghost_test():
+    """Load ghost_test fixture which has ghost footprints."""
+    path = FIXTURES / "ghost_test.kicad_pcb"
+    return board_model(parse_file(path))
+
+
 def _board(fps=(), zones=(), tracks=(), vias=(), edge=50.0):
     fps = tuple(fps)
     return BoardModel(
@@ -244,13 +250,15 @@ def main() -> None:
         cases = [
             ("synth-overlap", synthetic_overlap()),
             ("synth-bridge", synthetic_bridge()),
+            ("minimal", load_board("minimal")),
+            ("ghost_test", load_ghost_test()),
             ("tube111", load_board("tube111")),
             ("DCCF", load_board("DCCF")),
         ]
         budgets = full_budgets
         probe = args.resolutions or [0.1, 0.2]
-        # Resolution probe on tube111 only (DCCF at 0.05mm is too slow).
-        resolutions = {label: ([args.resolution] if label != "tube111"
+        # Resolution probe on tube111 and DCCF (DCCF at 0.2mm now fast enough).
+        resolutions = {label: ([args.resolution] if label not in ("tube111", "DCCF")
                                else sorted(set([args.resolution] + probe)))
                        for label, _ in cases}
 

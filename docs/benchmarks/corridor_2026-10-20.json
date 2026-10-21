@@ -1,0 +1,91 @@
+{
+  "params": {
+    "resolution": 0.1,
+    "max_expansions": 500000,
+    "window_margins": [
+      32
+    ]
+  },
+  "cases": [
+    {
+      "label": "DCCF P2S4 W32 corridor=on",
+      "nets_requested": 6,
+      "nets_routed": 6,
+      "nets_failed": 0,
+      "expansions": 3789562,
+      "wall_s": 26.9786,
+      "total_s": 26.9778,
+      "astar_s": 23.9973,
+      "occupancy_s": 0.1842,
+      "blocked_frac": 0.0,
+      "occupied_frac": 0.5783,
+      "tolled_frac": 0.5783,
+      "corridor_tried": 5,
+      "corridor_found": 5,
+      "corridor_used": 5,
+      "corridor_cells": 89104,
+      "corridor_use_rate": 1.0,
+      "grid_cells_M": 9.58
+    },
+    {
+      "label": "DCCF P2S4 W32 corridor=off",
+      "nets_requested": 6,
+      "nets_routed": 6,
+      "nets_failed": 0,
+      "expansions": 4168380,
+      "wall_s": 28.6595,
+      "total_s": 28.6586,
+      "astar_s": 25.7631,
+      "occupancy_s": 0.181,
+      "blocked_frac": 0.0,
+      "occupied_frac": 0.5783,
+      "tolled_frac": 0.5783,
+      "corridor_tried": 0,
+      "corridor_found": 0,
+      "corridor_used": 0,
+      "corridor_cells": 0,
+      "corridor_use_rate": 0.0,
+      "grid_cells_M": 9.58
+    },
+    {
+      "label": "tube111 P1S3 W32 corridor=on",
+      "nets_requested": 4,
+      "nets_routed": 4,
+      "nets_failed": 0,
+      "expansions": 2222428,
+      "wall_s": 13.645,
+      "total_s": 13.6445,
+      "astar_s": 12.4103,
+      "occupancy_s": 0.2455,
+      "blocked_frac": 0.0666,
+      "occupied_frac": 0.6878,
+      "tolled_frac": 0.6212,
+      "corridor_tried": 1,
+      "corridor_found": 0,
+      "corridor_used": 0,
+      "corridor_cells": 0,
+      "corridor_use_rate": 0.0,
+      "grid_cells_M": 2.99
+    },
+    {
+      "label": "tube111 P1S3 W32 corridor=off",
+      "nets_requested": 4,
+      "nets_routed": 4,
+      "nets_failed": 0,
+      "expansions": 2222428,
+      "wall_s": 13.6945,
+      "total_s": 13.6941,
+      "astar_s": 12.461,
+      "occupancy_s": 0.2446,
+      "blocked_frac": 0.0666,
+      "occupied_frac": 0.6878,
+      "tolled_frac": 0.6212,
+      "corridor_tried": 0,
+      "corridor_found": 0,
+      "corridor_used": 0,
+      "corridor_cells": 0,
+      "corridor_use_rate": 0.0,
+      "grid_cells_M": 2.99
+    }
+  ]
+}

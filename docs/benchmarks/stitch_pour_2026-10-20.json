@@ -30,14 +30,6 @@
     [
       32,
       16
-    ],
-    [
-      8,
-      4
-    ],
-    [
-      0,
-      0
     ]
   ],
   "cases": [
@@ -52,10 +44,10 @@
         "pour_nets": [
           "GND"
         ],
-        "label_s": 0.11,
-        "corridors_s": 0.103,
+        "label_s": 0.109,
+        "corridors_s": 0.101,
         "severance_s": 0.004,
-        "islands_s": 0.041,
+        "islands_s": 0.04,
         "islands_per_layer": {
           "F.Cu": 2,
           "B.Cu": 1
@@ -64,7 +56,7 @@
         "unfed_islands": 1,
         "severance_nonzero": 13268
       },
-      "pour_total_s": 0.257,
+      "pour_total_s": 0.254,
       "stitches": [
         {
           "max_vias": 32,
@@ -74,34 +66,12 @@
           "repaired": 2,
           "vias": 1,
           "tracks": 0,
-          "stitch_s": 0.128,
-          "deterministic": true
-        },
-        {
-          "max_vias": 8,
-          "max_bridges": 4,
-          "islands_before": 3,
-          "islands_after": 1,
-          "repaired": 2,
-          "vias": 1,
-          "tracks": 0,
-          "stitch_s": 0.127,
-          "deterministic": true
-        },
-        {
-          "max_vias": 0,
-          "max_bridges": 0,
-          "islands_before": 0,
-          "islands_after": 0,
-          "repaired": 0,
-          "vias": 0,
-          "tracks": 0,
-          "stitch_s": 0.0,
+          "stitch_s": 0.126,
           "deterministic": true
         }
       ],
-      "ms_per_Mcell_pour": 118.9,
-      "ms_per_Mcell_stitch": 59.2
+      "ms_per_Mcell_pour": 117.5,
+      "ms_per_Mcell_stitch": 58.2
     },
     {
       "case": "synth-bridge@0.1mm",
@@ -136,34 +106,12 @@
           "repaired": 1,
           "vias": 0,
           "tracks": 5,
-          "stitch_s": 0.148,
-          "deterministic": true
-        },
-        {
-          "max_vias": 8,
-          "max_bridges": 4,
-          "islands_before": 2,
-          "islands_after": 1,
-          "repaired": 1,
-          "vias": 0,
-          "tracks": 5,
-          "stitch_s": 0.147,
-          "deterministic": true
-        },
-        {
-          "max_vias": 0,
-          "max_bridges": 0,
-          "islands_before": 0,
-          "islands_after": 0,
-          "repaired": 0,
-          "vias": 0,
-          "tracks": 0,
-          "stitch_s": 0.0,
+          "stitch_s": 0.146,
           "deterministic": true
         }
       ],
-      "ms_per_Mcell_pour": 60.7,
-      "ms_per_Mcell_stitch": 68.4
+      "ms_per_Mcell_pour": 60.6,
+      "ms_per_Mcell_stitch": 67.5
     },
     {
       "case": "tube111@0.1mm",
@@ -176,10 +124,10 @@
         "pour_nets": [
           "GND"
         ],
-        "label_s": 0.555,
-        "corridors_s": 0.643,
+        "label_s": 0.534,
+        "corridors_s": 0.598,
         "severance_s": 0.006,
-        "islands_s": 0.698,
+        "islands_s": 0.706,
         "islands_per_layer": {
           "F.Cu": 10,
           "B.Cu": 26
@@ -188,7 +136,7 @@
         "unfed_islands": 21,
         "severance_nonzero": 209531
       },
-      "pour_total_s": 1.901,
+      "pour_total_s": 1.844,
       "stitches": [
         {
           "max_vias": 32,
@@ -198,158 +146,12 @@
           "repaired": 32,
           "vias": 17,
           "tracks": 8,
-          "stitch_s": 1.077,
-          "deterministic": true
-        },
-        {
-          "max_vias": 8,
-          "max_bridges": 4,
-          "islands_before": 36,
-          "islands_after": 15,
-          "repaired": 21,
-          "vias": 8,
-          "tracks": 6,
-          "stitch_s": 0.971,
-          "deterministic": true
-        },
-        {
-          "max_vias": 0,
-          "max_bridges": 0,
-          "islands_before": 0,
-          "islands_after": 0,
-          "repaired": 0,
-          "vias": 0,
-          "tracks": 0,
-          "stitch_s": 0.0,
+          "stitch_s": 1.017,
           "deterministic": true
         }
       ],
-      "ms_per_Mcell_pour": 634.8,
-      "ms_per_Mcell_stitch": 359.7
-    },
-    {
-      "case": "tube111@0.2mm",
-      "grid_cells_M": 0.75,
-      "grid_WxH": [
-        565,
-        663
-      ],
-      "pour": {
-        "pour_nets": [
-          "GND"
-        ],
-        "label_s": 0.18,
-        "corridors_s": 0.197,
-        "severance_s": 0.002,
-        "islands_s": 0.267,
-        "islands_per_layer": {
-          "F.Cu": 13,
-          "B.Cu": 29
-        },
-        "islands_total": 42,
-        "unfed_islands": 21,
-        "severance_nonzero": 47819
-      },
-      "pour_total_s": 0.646,
-      "stitches": [
-        {
-          "max_vias": 32,
-          "max_bridges": 16,
-          "islands_before": 42,
-          "islands_after": 9,
-          "repaired": 33,
-          "vias": 10,
-          "tracks": 5,
-          "stitch_s": 0.371,
-          "deterministic": true
-        },
-        {
-          "max_vias": 8,
-          "max_bridges": 4,
-          "islands_before": 42,
-          "islands_after": 12,
-          "repaired": 30,
-          "vias": 8,
-          "tracks": 4,
-          "stitch_s": 0.363,
-          "deterministic": true
-        },
-        {
-          "max_vias": 0,
-          "max_bridges": 0,
-          "islands_before": 0,
-          "islands_after": 0,
-          "repaired": 0,
-          "vias": 0,
-          "tracks": 0,
-          "stitch_s": 0.0,
-          "deterministic": true
-        }
-      ],
-      "ms_per_Mcell_pour": 862.8,
-      "ms_per_Mcell_stitch": 495.2
-    },
-    {
-      "case": "DCCF@0.1mm",
-      "grid_cells_M": 9.58,
-      "grid_WxH": [
-        2348,
-        2040
-      ],
-      "pour": {
-        "pour_nets": [
-          "GND"
-        ],
-        "label_s": 0.966,
-        "corridors_s": 1.294,
-        "severance_s": 0.019,
-        "islands_s": 2.318,
-        "islands_per_layer": {
-          "F.Cu": 54,
-          "B.Cu": 50
-        },
-        "islands_total": 104,
-        "unfed_islands": 0,
-        "severance_nonzero": 161552
-      },
-      "pour_total_s": 4.597,
-      "stitches": [
-        {
-          "max_vias": 32,
-          "max_bridges": 16,
-          "islands_before": 104,
-          "islands_after": 51,
-          "repaired": 53,
-          "vias": 0,
-          "tracks": 13,
-          "stitch_s": 5.633,
-          "deterministic": true
-        },
-        {
-          "max_vias": 8,
-          "max_bridges": 4,
-          "islands_before": 104,
-          "islands_after": 52,
-          "repaired": 52,
-          "vias": 0,
-          "tracks": 5,
-          "stitch_s": 4.538,
-          "deterministic": true
-        },
-        {
-          "max_vias": 0,
-          "max_bridges": 0,
-          "islands_before": 0,
-          "islands_after": 0,
-          "repaired": 0,
-          "vias": 0,
-          "tracks": 0,
-          "stitch_s": 0.0,
-          "deterministic": true
-        }
-      ],
-      "ms_per_Mcell_pour": 479.9,
-      "ms_per_Mcell_stitch": 588.0
+      "ms_per_Mcell_pour": 615.7,
+      "ms_per_Mcell_stitch": 339.6
     }
   ]
 }

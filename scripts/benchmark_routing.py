@@ -83,6 +83,43 @@ def pick_nets(model, k: int) -> list[str]:
     return [name for _, name in cands[:k]]
 
 
+def pick_power_nets(model, k: int) -> list[str]:
+    """Deterministic power-net pick: 2-8 pad nets, smallest first."""
+    cands = []
+    for net_name, conns in model.nets.items():
+        if not 2 <= len(conns) <= 8:
+            continue
+        if net_name.upper() in POWER_NAMES or is_ground_net(net_name):
+            cands.append((len(conns), net_name))
+    cands.sort()
+    return [name for _, name in cands[:k]]
+
+
+def pick_all_signal_nets(model) -> list[str]:
+    """All signal nets (2-4 pads) sorted by pad count."""
+    cands = []
+    for net_name, conns in model.nets.items():
+        if not 2 <= len(conns) <= 4:
+            continue
+        if net_name.upper() in POWER_NAMES or is_ground_net(net_name):
+            continue
+        cands.append((len(conns), net_name))
+    cands.sort()
+    return [name for _, name in cands]
+
+
+def pick_all_power_nets(model) -> list[str]:
+    """All power nets (2-8 pads) sorted by pad count."""
+    cands = []
+    for net_name, conns in model.nets.items():
+        if not 2 <= len(conns) <= 8:
+            continue
+        if net_name.upper() in POWER_NAMES or is_ground_net(net_name):
+            cands.append((len(conns), net_name))
+    cands.sort()
+    return [name for _, name in cands]
+
+
 def micro_case(board_name: str, model, grid, params: RoutingParams) -> dict:
     """Time the one-off per-board / per-net stage costs (the fixed stages).
 
@@ -107,7 +144,32 @@ def micro_case(board_name: str, model, grid, params: RoutingParams) -> dict:
     via_block_s = time.perf_counter() - t0
 
     # Representative net for the per-net stages (first pick).
-    net_name = pick_nets(model, 1)[0]
+    signal_nets = pick_nets(model, 1)
+    if not signal_nets:
+        # Fallback: use first power net or skip
+        power_nets = pick_power_nets(model, 1)
+        if not power_nets:
+            return {
+                "board": board_name,
+                "grid_cells_M": round(
+                    len(grid.layers) * grid.width_cells * grid.height_cells / 1e6, 2
+                ),
+                "net": "none",
+                "via_radius_cells": 0,
+                "occupancy_s": round(
+                    _time_fn(build_occupancy_grid, model, grid,
+                             default_clearance_mm=params.clearance_mm),
+                    3,
+                ),
+                "tht_mask_s": round(tht_s, 3),
+                "via_block_mask_s": round(via_block_s, 3),
+                "fanout_s": 0.0,
+                "via_ok_mask_s": 0.0,
+                "via_ok_frac": 0.0,
+            }
+        net_name = power_nets[0]
+    else:
+        net_name = signal_nets[0]
     width_mm = resolve_track_width(model, params, net_name, ())
     clearance_mm = resolve_clearance(model, params, net_name)
 
@@ -215,12 +277,14 @@ def main() -> None:
 
     if args.quick:
         plan = [("DCCF", [2]), ("tube111", [1])]
+        power_plan = [("DCCF", [1]), ("tube111", [1])]
     else:
-        plan = [("DCCF", [1, 2, 5, 10]), ("tube111", [1, 2])]
+        plan = [("DCCF", [1, 2, 5, 10, 20]), ("tube111", [1, 2, 5])]
+        power_plan = [("DCCF", [1, 2, 4]), ("tube111", [1, 2])]
 
     # Micro (fixed-stage) profile, once per board.
     micros = []
-    for board_name in dict.fromkeys(b for b, _ in plan):
+    for board_name in dict.fromkeys(b for b, _ in plan + [("minimal", [1])]):
         model = load_board(board_name)
         grid = create_grid_from_model(
             model, params.grid_resolution_mm, params.margin_mm
@@ -235,26 +299,35 @@ def main() -> None:
               f"{m['via_block_mask_s']:>8.3f}{m['fanout_s']:>8.3f}"
               f"{m['via_ok_mask_s']:>8.3f}")
 
-    # Scaling runs: route first-k nets fresh each time.
+    # Scaling runs: route first-k signal nets fresh each time.
     rows = []
     for board_name, counts in plan:
         model = load_board(board_name)
         for k in counts:
             nets = pick_nets(model, k)
-            rows.append(time_case(board_name, nets, params))
+            if nets:
+                rows.append(time_case(board_name, nets, params))
 
-    print(f"\n{'board':<10}{'nets':>5}{'routed':>7}{'failed':>7}"
+    # Power net scaling runs (wide tracks, different clearances).
+    for board_name, counts in power_plan:
+        model = load_board(board_name)
+        for k in counts:
+            nets = pick_power_nets(model, k)
+            if nets:
+                rows.append(time_case(board_name, nets, params, label=f"{board_name}_power"))
+
+    print(f"\n{'board':<16}{'nets':>5}{'routed':>7}{'failed':>7}"
           f"{'expans':>9}{'total_s':>9}{'astar_s':>9}{'smooth_s':>9}"
           f"{'s/net':>8}")
     for r in rows:
-        print(f"{r['board']:<10}{r['nets_requested']:>5}"
+        print(f"{r['board']:<16}{r['nets_requested']:>5}"
               f"{r['nets_routed']:>7}{r['nets_failed']:>7}"
               f"{r['expansions']:>9}{r['total_s']:>9.3f}"
               f"{r['astar_s']:>9.3f}{r['smooth_s']:>9.3f}"
               f"{r['s_per_net']:>8.3f}")
 
     stitch_row = None
-    if args.with_stitch and not args.quick:
+    if args.with_stitch:
         model = load_board("DCCF")
         nets = pick_nets(model, 5)
         stitch_params = RoutingParams(
