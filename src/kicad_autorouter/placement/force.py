@@ -387,36 +387,42 @@ def _compute_total_force(
             fp_centroids_arr = body_centroids_arr
             fp_radii_arr = body_radii_arr
 
-            def _spread(rows, cx, cy, radius, ux, uy, fx, fy):
-                if rows is None or len(rows) == 0:
-                    return
-                r = float(radius)
-                if not math.isfinite(r) or r < 1e-9:
-                    n = len(rows)
-                    if n > 0:
-                        poly_force[rows, 0] += fx / n
-                        poly_force[rows, 1] += fy / n
-                    return
-                proj = ((pos[rows, 0] - cx) * ux + (pos[rows, 1] - cy) * uy) / r
-                w = _contact_weights(proj)
-                poly_force[rows, 0] += w * fx
-                poly_force[rows, 1] += w * fy
+            # Precompute per-footprint average pad velocity so tangential
+            # assist doesn't redo pad_vel[rows].mean() on every contact call.
+            fp_vel = np.zeros((n_fp, 2), dtype=np.float64)
+            for fp_local_idx in range(n_fp):
+                rows = fp_local_to_rows[fp_local_idx]
+                if len(rows) > 0:
+                    fp_vel[fp_local_idx] = pad_vel[rows].mean(axis=0)
 
-            def _spread_tangential(rows, cx, cy, radius, nx, ny, tx, ty, ft_x, ft_y):
-                """Spread tangential force using normal direction for contact weights."""
+            def _fp_tangential_vel(fp_local_idx, tx, ty):
+                """Get average tangential velocity for a footprint.
+                Returns 0.0 if footprint has no pads (e.g., wall ghost)."""
+                v = fp_vel[fp_local_idx]
+                return v[0] * tx + v[1] * ty
+
+            def _spread(target, rows, cx, cy, radius, wx, wy, fx, fy):
+                """Spread a per-contact force to pads.
+
+                ``target`` is the pad-force array to accumulate into
+                (poly_force or tangential_force). ``wx, wy`` is the
+                weight-projection direction (contact normal); ``fx, fy``
+                is the force direction (normal for courtyard force,
+                tangential for tangential assist).
+                """
                 if rows is None or len(rows) == 0:
                     return
                 r = float(radius)
                 if not math.isfinite(r) or r < 1e-9:
                     n = len(rows)
                     if n > 0:
-                        tangential_force[rows, 0] += ft_x / n
-                        tangential_force[rows, 1] += ft_y / n
+                        target[rows, 0] += fx / n
+                        target[rows, 1] += fy / n
                     return
-                proj = ((pos[rows, 0] - cx) * nx + (pos[rows, 1] - cy) * ny) / r
+                proj = ((pos[rows, 0] - cx) * wx + (pos[rows, 1] - cy) * wy) / r
                 w = _contact_weights(proj)
-                tangential_force[rows, 0] += w * ft_x
-                tangential_force[rows, 1] += w * ft_y
+                target[rows, 0] += w * fx
+                target[rows, 1] += w * fy
 
             def _apply_halo_push(li, lj, pi, pj, margin):
                 if margin <= 0:
@@ -443,23 +449,20 @@ def _compute_total_force(
                     fx, fy = strength * ux, strength * uy
                     rows_i = fp_local_to_rows[li]
                     _spread(
-                        rows_i, fp_centroids_arr[li, 0], fp_centroids_arr[li, 1],
+                        poly_force, rows_i, fp_centroids_arr[li, 0], fp_centroids_arr[li, 1],
                         fp_radii_arr[li], ux, uy, fx, fy,
                     )
                     if fp_movable_arr[lj]:
                         rows_j = fp_local_to_rows[lj]
                         _spread(
-                            rows_j, fp_centroids_arr[lj, 0], fp_centroids_arr[lj, 1],
+                            poly_force, rows_j, fp_centroids_arr[lj, 0], fp_centroids_arr[lj, 1],
                             fp_radii_arr[lj], -ux, -uy, -fx, -fy,
                         )
 
             def _fp_tangential_vel(fp_local_idx, tx, ty):
                 """Get average tangential velocity for a footprint.
-                Returns (0, 0) if footprint has no pads (e.g., wall ghost)."""
-                rows = fp_local_to_rows[fp_local_idx]
-                if len(rows) == 0:
-                    return 0.0
-                v = pad_vel[rows].mean(axis=0)
+                Returns 0.0 if footprint has no pads (e.g., wall ghost)."""
+                v = fp_vel[fp_local_idx]
                 return v[0] * tx + v[1] * ty
 
             def _tangent_sign(pair, v_rel_t):
@@ -531,24 +534,24 @@ def _compute_total_force(
                     ft_x, ft_y = f_t * tx, f_t * ty
                 rows_i = fp_local_to_rows[li]
                 _spread(
-                    rows_i, fp_centroids_arr[li, 0], fp_centroids_arr[li, 1],
+                    poly_force, rows_i, fp_centroids_arr[li, 0], fp_centroids_arr[li, 1],
                     fp_radii_arr[li], ux, uy, fx, fy,
                 )
                 if ft_x != 0.0 or ft_y != 0.0:
-                    _spread_tangential(
-                        rows_i, fp_centroids_arr[li, 0], fp_centroids_arr[li, 1],
-                        fp_radii_arr[li], ux, uy, tx, ty, ft_x, ft_y,
+                    _spread(
+                        tangential_force, rows_i, fp_centroids_arr[li, 0], fp_centroids_arr[li, 1],
+                        fp_radii_arr[li], ux, uy, ft_x, ft_y,
                     )
                 if fp_movable_arr[lj]:
                     rows_j = fp_local_to_rows[lj]
                     _spread(
-                        rows_j, fp_centroids_arr[lj, 0], fp_centroids_arr[lj, 1],
+                        poly_force, rows_j, fp_centroids_arr[lj, 0], fp_centroids_arr[lj, 1],
                         fp_radii_arr[lj], -ux, -uy, -fx, -fy,
                     )
                     if ft_x != 0.0 or ft_y != 0.0:
-                        _spread_tangential(
-                            rows_j, fp_centroids_arr[lj, 0], fp_centroids_arr[lj, 1],
-                            fp_radii_arr[lj], -ux, -uy, -tx, -ty, -ft_x, -ft_y,
+                        _spread(
+                            tangential_force, rows_j, fp_centroids_arr[lj, 0], fp_centroids_arr[lj, 1],
+                            fp_radii_arr[lj], -ux, -uy, -ft_x, -ft_y,
                         )
 
             def _apply_contact_push_analytical(
@@ -584,24 +587,24 @@ def _compute_total_force(
                     ft_x, ft_y = f_t * tx, f_t * ty
                 rows_i = fp_local_to_rows[li]
                 _spread(
-                    rows_i, fp_centroids_arr[li, 0], fp_centroids_arr[li, 1],
+                    poly_force, rows_i, fp_centroids_arr[li, 0], fp_centroids_arr[li, 1],
                     fp_radii_arr[li], ux, uy, fx, fy,
                 )
                 if ft_x != 0.0 or ft_y != 0.0:
-                    _spread_tangential(
-                        rows_i, fp_centroids_arr[li, 0], fp_centroids_arr[li, 1],
-                        fp_radii_arr[li], ux, uy, tx, ty, ft_x, ft_y,
+                    _spread(
+                        tangential_force, rows_i, fp_centroids_arr[li, 0], fp_centroids_arr[li, 1],
+                        fp_radii_arr[li], ux, uy, ft_x, ft_y,
                     )
                 if fp_movable_arr[lj]:
                     rows_j = fp_local_to_rows[lj]
                     _spread(
-                        rows_j, fp_centroids_arr[lj, 0], fp_centroids_arr[lj, 1],
+                        poly_force, rows_j, fp_centroids_arr[lj, 0], fp_centroids_arr[lj, 1],
                         fp_radii_arr[lj], -ux, -uy, -fx, -fy,
                     )
                     if ft_x != 0.0 or ft_y != 0.0:
-                        _spread_tangential(
-                            rows_j, fp_centroids_arr[lj, 0], fp_centroids_arr[lj, 1],
-                            fp_radii_arr[lj], -ux, -uy, -tx, -ty, -ft_x, -ft_y,
+                        _spread(
+                            tangential_force, rows_j, fp_centroids_arr[lj, 0], fp_centroids_arr[lj, 1],
+                            fp_radii_arr[lj], -ux, -uy, -ft_x, -ft_y,
                         )
                 return True
 
@@ -835,24 +838,24 @@ def _compute_total_force(
                         _ft_x, _ft_y = _f_t * _tx, _f_t * _ty
                     rows_i = fp_local_to_rows[i]
                     _spread(
-                        rows_i, fp_centroids_arr[i, 0], fp_centroids_arr[i, 1],
+                        poly_force, rows_i, fp_centroids_arr[i, 0], fp_centroids_arr[i, 1],
                         fp_radii_arr[i], _ux, _uy, _fx, _fy,
                     )
                     if _ft_x != 0.0 or _ft_y != 0.0:
-                        _spread_tangential(
-                            rows_i, fp_centroids_arr[i, 0], fp_centroids_arr[i, 1],
-                            fp_radii_arr[i], _ux, _uy, _tx, _ty, _ft_x, _ft_y,
+                        _spread(
+                            tangential_force, rows_i, fp_centroids_arr[i, 0], fp_centroids_arr[i, 1],
+                            fp_radii_arr[i], _ux, _uy, _ft_x, _ft_y,
                         )
                     if fp_movable_arr[j]:
                         rows_j = fp_local_to_rows[j]
                         _spread(
-                            rows_j, fp_centroids_arr[j, 0], fp_centroids_arr[j, 1],
+                            poly_force, rows_j, fp_centroids_arr[j, 0], fp_centroids_arr[j, 1],
                             fp_radii_arr[j], -_ux, -_uy, -_fx, -_fy,
                         )
                         if _ft_x != 0.0 or _ft_y != 0.0:
-                            _spread_tangential(
-                                rows_j, fp_centroids_arr[j, 0], fp_centroids_arr[j, 1],
-                                fp_radii_arr[j], -_ux, -_uy, -_tx, -_ty, -_ft_x, -_ft_y,
+                            _spread(
+                                tangential_force, rows_j, fp_centroids_arr[j, 0], fp_centroids_arr[j, 1],
+                                fp_radii_arr[j], -_ux, -_uy, -_ft_x, -_ft_y,
                             )
 
             # Drop blended normals for pairs no longer in contact range so a
@@ -983,13 +986,13 @@ def _compute_total_force(
                     rows = ctx.fp_local_to_rows[fp_local_idx]
                     if rows is not None and len(rows) > 0:
                         _spread(
-                            rows, fp_centroids_arr[fp_local_idx, 0], fp_centroids_arr[fp_local_idx, 1],
+                            poly_force, rows, fp_centroids_arr[fp_local_idx, 0], fp_centroids_arr[fp_local_idx, 1],
                             fp_radii_arr[fp_local_idx], ux, uy, fx, fy,
                         )
                         if ft_x != 0.0 or ft_y != 0.0:
-                            _spread_tangential(
-                                rows, fp_centroids_arr[fp_local_idx, 0], fp_centroids_arr[fp_local_idx, 1],
-                                fp_radii_arr[fp_local_idx], ux, uy, tx, ty, ft_x, ft_y,
+                            _spread(
+                                tangential_force, rows, fp_centroids_arr[fp_local_idx, 0], fp_centroids_arr[fp_local_idx, 1],
+                                fp_radii_arr[fp_local_idx], ux, uy, ft_x, ft_y,
                             )
 
             force += poly_force

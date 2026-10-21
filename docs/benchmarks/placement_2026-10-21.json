@@ -6,7 +6,7 @@
       "pads": 4,
       "fixed_budget_iters": 0,
       "fixed_s": 0.0,
-      "ms_per_iter": 0.061,
+      "ms_per_iter": 0.066,
       "converged_iters": 0,
       "converged_s": 0.0,
       "moved": 0
@@ -16,10 +16,10 @@
       "footprints": 105,
       "pads": 272,
       "fixed_budget_iters": 50,
-      "fixed_s": 1.843,
-      "ms_per_iter": 36.851,
+      "fixed_s": 2.094,
+      "ms_per_iter": 41.875,
       "converged_iters": 1000,
-      "converged_s": 31.994,
+      "converged_s": 39.62,
       "moved": 95
     },
     {
@@ -27,10 +27,10 @@
       "footprints": 8,
       "pads": 32,
       "fixed_budget_iters": 50,
-      "fixed_s": 0.083,
-      "ms_per_iter": 1.661,
+      "fixed_s": 0.101,
+      "ms_per_iter": 2.03,
       "converged_iters": 1000,
-      "converged_s": 0.865,
+      "converged_s": 1.183,
       "moved": 8
     },
     {
@@ -38,10 +38,10 @@
       "footprints": 16,
       "pads": 64,
       "fixed_budget_iters": 50,
-      "fixed_s": 0.186,
-      "ms_per_iter": 3.723,
+      "fixed_s": 0.222,
+      "ms_per_iter": 4.448,
       "converged_iters": 1000,
-      "converged_s": 1.974,
+      "converged_s": 2.493,
       "moved": 16
     },
     {
@@ -49,10 +49,10 @@
       "footprints": 32,
       "pads": 128,
       "fixed_budget_iters": 50,
-      "fixed_s": 0.402,
-      "ms_per_iter": 8.04,
+      "fixed_s": 0.484,
+      "ms_per_iter": 9.685,
       "converged_iters": 1000,
-      "converged_s": 4.781,
+      "converged_s": 6.094,
       "moved": 32
     },
     {
@@ -60,152 +60,141 @@
       "footprints": 64,
       "pads": 256,
       "fixed_budget_iters": 50,
-      "fixed_s": 0.879,
-      "ms_per_iter": 17.582,
+      "fixed_s": 1.08,
+      "ms_per_iter": 21.601,
       "converged_iters": 1000,
-      "converged_s": 11.46,
+      "converged_s": 14.536,
       "moved": 64
-    },
-    {
-      "board": "DCCF",
-      "footprints": 97,
-      "pads": 272,
-      "fixed_budget_iters": 50,
-      "fixed_s": 1.498,
-      "ms_per_iter": 29.968,
-      "converged_iters": 1000,
-      "converged_s": 23.052,
-      "moved": 54
     }
   ],
   "formula": {
     "ms_per_iter = a*pads^2 + b*fps^2 + c": {
-      "a": 8.546698262496166e-05,
-      "b": 0.0024817422882035256,
-      "c": 1.9352714334231054
+      "a": 0.00013946158229904767,
+      "b": 0.00265890551934897,
+      "c": 2.237447487028503
     },
-    "max_abs_err_ms": 2.1631334201291113
+    "max_abs_err_ms": 2.439894696770555
   },
   "profile_top": [
     {
-      "func": "runner.py:803:run_placement",
+      "func": "runner.py:999:run_placement",
       "calls": 1,
       "tottime": 0.0006,
-      "cumtime": 1.582
+      "cumtime": 1.7611
     },
     {
-      "func": "runner.py:105:_run_region_simulation",
+      "func": "runner.py:271:_run_region_simulation",
       "calls": 3,
-      "tottime": 0.0128,
-      "cumtime": 1.5201
+      "tottime": 0.0136,
+      "cumtime": 1.6993
     },
     {
-      "func": "force.py:102:_compute_total_force",
+      "func": "force.py:109:_compute_total_force",
       "calls": 66,
-      "tottime": 0.3123,
-      "cumtime": 1.2913
+      "tottime": 0.3303,
+      "cumtime": 1.4212
     },
     {
       "func": "decorators.py:73:wrapped",
-      "calls": 111897,
-      "tottime": 0.1287,
-      "cumtime": 0.3686
+      "calls": 115098,
+      "tottime": 0.1321,
+      "cumtime": 0.3928
     },
     {
       "func": "contact.py:109:_classify_shape",
-      "calls": 1881,
-      "tottime": 0.0054,
-      "cumtime": 0.2458
+      "calls": 1883,
+      "tottime": 0.0055,
+      "cumtime": 0.2423
+    },
+    {
+      "func": "force.py:404:_spread",
+      "calls": 22204,
+      "tottime": 0.1643,
+      "cumtime": 0.2288
     },
     {
       "func": "contact.py:37:_classify_rectangle",
-      "calls": 1881,
+      "calls": 1883,
       "tottime": 0.027,
-      "cumtime": 0.1782
+      "cumtime": 0.174
     },
     {
       "func": "decorators.py:171:wrapper",
-      "calls": 21355,
-      "tottime": 0.013,
-      "cumtime": 0.1409
-    },
-    {
-      "func": "force.py:382:_spread",
-      "calls": 11144,
-      "tottime": 0.0832,
-      "cumtime": 0.1167
+      "calls": 21720,
+      "tottime": 0.0132,
+      "cumtime": 0.143
     },
     {
       "func": "numeric.py:2373:isclose",
-      "calls": 5101,
-      "tottime": 0.0394,
-      "cumtime": 0.0946
+      "calls": 5103,
+      "tottime": 0.0387,
+      "cumtime": 0.091
     },
     {
       "func": "rigid.py:223:_rigid_pose_vertices",
-      "calls": 3941,
-      "tottime": 0.0353,
-      "cumtime": 0.0927
+      "calls": 4028,
+      "tottime": 0.0358,
+      "cumtime": 0.0854
     },
     {
       "func": "~:0:<method 'mean' of 'numpy.ndarray' objects>",
-      "calls": 18323,
-      "tottime": 0.0043,
-      "cumtime": 0.0761
-    },
-    {
-      "func": "numeric.py:2279:allclose",
-      "calls": 3491,
-      "tottime": 0.0038,
-      "cumtime": 0.075
+      "calls": 20929,
+      "tottime": 0.0048,
+      "cumtime": 0.0845
     },
     {
       "func": "_methods.py:117:_mean",
-      "calls": 18493,
-      "tottime": 0.0357,
-      "cumtime": 0.0724
+      "calls": 21099,
+      "tottime": 0.0391,
+      "cumtime": 0.0804
+    },
+    {
+      "func": "numeric.py:2279:allclose",
+      "calls": 3493,
+      "tottime": 0.0038,
+      "cumtime": 0.0747
     },
     {
       "func": "rigid.py:55:_clamp_rigid_step",
-      "calls": 60,
-      "tottime": 0.0269,
-      "cumtime": 0.0687
+      "calls": 63,
+      "tottime": 0.0284,
+      "cumtime": 0.0725
+    },
+    {
+      "func": "~:0:<method 'reduce' of 'numpy.ufunc' objects>",
+      "calls": 79501,
+      "tottime": 0.0675,
+      "cumtime": 0.0675
     },
     {
       "func": "rigid.py:21:_project_rigid_poses",
-      "calls": 60,
-      "tottime": 0.0159,
-      "cumtime": 0.0627
+      "calls": 63,
+      "tottime": 0.017,
+      "cumtime": 0.0667
+    },
+    {
+      "func": "contact.py:331:_contact_weights",
+      "calls": 22032,
+      "tottime": 0.0342,
+      "cumtime": 0.0625
+    },
+    {
+      "func": "contact.py:297:_analytical_collision",
+      "calls": 17595,
+      "tottime": 0.0101,
+      "cumtime": 0.0621
     },
     {
       "func": "legality.py:253:check_legality",
       "calls": 1,
       "tottime": 0.0001,
-      "cumtime": 0.0608
-    },
-    {
-      "func": "contact.py:297:_analytical_collision",
-      "calls": 17597,
-      "tottime": 0.0096,
-      "cumtime": 0.0608
-    },
-    {
-      "func": "~:0:<method 'reduce' of 'numpy.ufunc' objects>",
-      "calls": 65054,
-      "tottime": 0.0575,
-      "cumtime": 0.0575
+      "cumtime": 0.0607
     },
     {
       "func": "base.py:721:is_empty",
-      "calls": 20533,
-      "tottime": 0.0058,
-      "cumtime": 0.0562
-    },
-    {
-      "func": "point.py:88:x",
-      "calls": 19986,
-      "tottime": 0.0059,
-      "cumtime": 0.0552
+      "calls": 20607,
+      "tottime": 0.0057,
+      "cumtime": 0.057
     }
   ]
 }
