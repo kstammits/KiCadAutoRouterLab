@@ -76,7 +76,7 @@ def test_chunked_sequential_matches_batched(minimal_tree):
     # full emitted-width corridor. So later nets in chunked mode may take
     # slightly tighter paths than in batched mode. Routed/failed sets must
     # match; route-track totals must be in the same ballpark. Making
-    # rebuilds width-aware is follow-up work (see TODO.md, GND continuity
+    # rebuilds width-aware is follow-up work (see docs/roadmap.md, GND continuity
     # phase). Stitch tracks/vias are excluded here (each chunked call
     # repairs its intermediate state, so they accumulate differently by
     # design); island reduction is asserted on the final boards instead.

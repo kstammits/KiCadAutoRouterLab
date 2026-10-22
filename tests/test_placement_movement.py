@@ -124,10 +124,9 @@ def test_first_step_not_strangled():
 
     NOTE (SI damping-limited regime): the step is bounded by the viscous
     terminal velocity (F_wall/c · dt ≈ 0.04mm here), not by the speed
-    budget — the old 0.25×cap framing belonged to the displacement-capped
-    legacy integrator. What this guards is progress-vs-freeze: the step
-    must beat the convergence scale by orders of magnitude while the
-    companion test above pins the ceiling.
+    budget. What this guards is progress-vs-freeze: the step must beat the
+    convergence scale by orders of magnitude while the companion test above
+    pins the ceiling.
     """
     m = _overlap_pair(x1=2.0)
     prop = run_placement(m, _repulse_params(max_iterations=1,
@@ -207,22 +206,14 @@ def test_overlap_run_terminates_settled():
     flip-flop (overlap flickering across the jump) that ran the full
     budget with statically converged footprints.
 
-    NOTE (2026-10-11, rigid projection): the old Hooke spring's slam
-    injected direction reversals that decayed the adaptive step scale, so
-    friction zeroed the pair early (~a fast stop, but for the wrong
-    reason). Without the slam the pair cruises monotonically down the
-    true 1/d^2 tail until per-pad steps clear the 0.05mm deadband
-    (~309 iterations, +/-43mm — still inside the +/-60mm region). The
-    budget below covers that tail with margin; what this guards is
-    termination + containment, not speed.
-
-    NOTE (2026-10-14, SI dynamics): viscous damping + adaptive dt +
-    speed cap are much more conservative than the legacy step-capped
-    integrator; the pair needs more iterations to settle. Budget
-    increased to give it enough runway.
+    The pair cruises monotonically down the 1/d^2 tail until per-pad steps
+    clear the 0.05mm deadband (~309 iterations, ±43mm — still inside the
+    ±60mm region). Viscous damping + adaptive dt + the speed cap are
+    conservative, so the budget below covers that tail with margin; what
+    this guards is termination + containment, not speed.
     """
     m = _overlap_pair()
-    # SI integrator settles much more conservatively than legacy; give it room.
+    # SI integrator settles conservatively; give it runway.
     # Friction must be strong enough to actually terminate the Coulomb tail:
     # with the default kr/friction ratio the tail cruises below the energy
     # scale but above the deadband past any reasonable budget. friction_N=1e-4

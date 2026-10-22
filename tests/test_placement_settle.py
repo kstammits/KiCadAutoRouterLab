@@ -1,10 +1,10 @@
 """Honest stopping: never report rest while pushes remain unserved.
 
-Regression family for the 2026-10-16 DCCF fake-settle: the displacement-only
-convergence check (`max pad step < eps`) fired while ~0.1N wall/attraction
-forces persisted, because the adaptive-dt guard (halve + velocity bleed) had
-strangled sustained-contact motion into a sub-epsilon crawl. The run
-reported a quiet settle with parts still buried in each other.
+A displacement-only convergence check (`max pad step < eps`) can fire while
+wall/attraction forces persist, because the adaptive-dt guard (halve +
+velocity bleed) can strangle sustained-contact motion into a sub-epsilon
+crawl. The run must not report a quiet settle with parts still buried in
+each other.
 
 Pinned contract (see PlacementProposal.stop_reason):
 - "converged" requires BOTH a quiet step AND residual forces below the
@@ -180,7 +180,7 @@ def test_loaded_contact_settles_despite_per_pad_loads():
     level forever. The residual gate reads net force per footprint (rigid
     bodies settle as wholes — per-pad max can never vanish under contact
     load), so this run must report converged, not budget. Regression for
-    the 2B Q1 legalize, which chattered to budget with the per-pad gate.
+    the Q1 legalize case, which chattered to budget with the per-pad gate.
     """
     fa = make_fp("A", "uuid-a", 2.0, 0.0, ("N1", "NX"),
                  footprint_id="test:R", hw=3.0, hh=2.0,
@@ -214,7 +214,7 @@ def test_quiet_without_progress_stops_stalled():
     With a coarse eps the overlapping pair's mm-scale motion never moves
     the window mean anywhere near the 400mm stall tolerance, so the run
     reports "stalled" with residual attached after exactly one window
-    instead of burning the whole budget. Regression for the 2B Q1 legalize,
+    instead of burning the whole budget. Regression for a Q1 legalize case,
     which sat at the wall for 900 idle iterations reporting budget.
     """
     model = _deep_pair()

@@ -358,8 +358,8 @@ def _wall_mag(
     """Unified wall-law magnitude in newtons: F = k*(1-s/h)^p.
 
     s is the signed separation in mm (gap +, penetration -); zero past the
-    halo reach. p = 1 is the linear default; p > 1 softens the halo approach
-    and stiffens deep penetration. cap_depth_mm > 0 clamps the evaluated
+    halo reach. p = 1 is linear; p > 1 softens the halo approach and
+    stiffens deep penetration. cap_depth_mm > 0 clamps the evaluated
     depth to s >= -cap (force saturates); 0 disables capping.
     halo_mm <= 0 disables the law entirely (returns 0: "no courtyard
     contact") instead of dividing by zero.

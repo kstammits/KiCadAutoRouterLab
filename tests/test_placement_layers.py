@@ -1,7 +1,7 @@
 """Layer-aware courtyard collision: same side collides, opposite sides stack.
 
-Placement used to be 2D-projected (layer-blind): a B.Cu part repelled F.Cu
-parts as if coplanar. The courtyard model is now layer-aware:
+Courtyard collision is layer-aware; a B.Cu part does not repel F.Cu parts as
+if coplanar:
 
 - same placement layer -> collide (overlap + halo), as before;
 - opposite sides, both SMD -> tolerated (no courtyard force);
@@ -102,12 +102,10 @@ def test_same_layer_overlap_resolves():
 def test_cross_layer_no_courtyard_force():
     """Opposite-side SMD pairs feel zero courtyard force (layer gate).
 
-    Replaces test_cross_layer_overlap_tolerated (2026-10-11): its overlap
-    proxy ("pad repulsion alone cannot separate bodies in the budget") went
-    stale — pad Coulomb now separates the pair within 30 iters, so overlap
-    reaches 0.0 despite no courtyard involvement. Assert the intent
-    directly instead: the courtyard components are exactly zero while the
-    pair still moves (via layer-blind pad repulsion).
+    Pad repulsion alone can separate the pair within 30 iters, so overlap
+    reaching 0.0 is not evidence of courtyard involvement. Assert the intent
+    directly: the courtyard components are exactly zero while the pair still
+    moves (via layer-blind pad repulsion).
     """
     model = _two_part_board(layer_b="B.Cu")
     before = _overlap_area(model, {})

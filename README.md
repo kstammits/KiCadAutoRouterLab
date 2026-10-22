@@ -157,8 +157,9 @@ Placement and routing are separate passes but designed to cycle. Move a connecto
 | Doc | What You'll Find |
 |-----|------------------|
 | [`docs/autorouting_glossary.md`](docs/autorouting_glossary.md) | Pipeline stages, terminology, algorithm guidance (Lee/A*, force-directed, pour handling) |
-| [`docs/README.md`](docs/README.md) | Local KiCad 10 manuals (exact version match), Wikipedia research sources |
-| `PLAN.md` / `TODO.md` | Roadmap, completed work, internals |
+| [`docs/si_force_laws.md`](docs/si_force_laws.md) | Normative placement force laws and parameter defaults |
+| [`docs/roadmap.md`](docs/roadmap.md) | Open placement, routing, and pour work |
+| [`docs/README.md`](docs/README.md) | Upstream KiCad and Wikipedia references, with fetch recipes |
 
 ---
 
@@ -170,4 +171,8 @@ Placement and routing are separate passes but designed to cycle. Move a connecto
 
 **No `pcbnew` Python module needed** for routing/placement — only used as an offline test oracle.
 
-and earlier version of thie file said it was MIT licensed, that was a mistake. the human didn't choose anything yet. Probably GPL-alike KiCad. 
+---
+
+## License
+
+GPL-3.0-or-later. See [`LICENSE`](LICENSE).

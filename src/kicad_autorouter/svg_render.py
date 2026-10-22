@@ -48,7 +48,6 @@ FP_LOCKED_COLOR = "#e06c75"    # KiCad locked - red
 FP_PINNED_COLOR = "#e0a458"    # User pinned - orange
 FP_SELECTED_COLOR = "#7ee0a0"  # Selected for move - green
 FP_DEFAULT_COLOR = COURTYARD   # Default unlocked - gray-blue
-FP_GHOST_COLOR = GHOST_FOOTPRINT  # Ghost components - purple
 
 
 def _fmt(v: float) -> str:
@@ -280,13 +279,11 @@ def _footprint_pads_svg(
             )
 
         # Pad angle is the file's effective board orientation (pcbnew rewrites
-        # pad angles when the footprint rotates — verified 2026-10-08 — so it
-        # is used directly without combining with fp_angle (that would
-        # double-count). Board geometry rotates by R(-angle) numerically
-        # (`_to_board` uses -angle: local Y-DOWN to board), while SVG
-        # `rotate(a)` applies R(+a) numerically, so the sign must flip or the
-        # copper counter-rotates against its own pad row (Q1 DCCF: centres
-        # orbit R(-da) while rects tilted R(+da) — 50 deg off for da=25).
+        # pad angles when the footprint rotates), so it is used directly
+        # without combining with fp_angle (that would double-count). Board
+        # geometry rotates by R(-angle) numerically (`_to_board` uses -angle:
+        # local Y-DOWN to board), while SVG `rotate(a)` applies R(+a), so the
+        # sign must flip or copper counter-rotates against its own pad row.
         # Normalized to [0, 360) to match the file convention.
         # `flip`/`fp_angle_deg` are retained in the signature for callers.
         angle = (-pad.angle_deg) % 360.0 if pad.angle_deg else 0.0
@@ -303,11 +300,9 @@ def _footprint_pads_svg(
             if label:
                 out.append(label)
         elif shape in ("oval", "roundrect"):
-            # Capsule (oval) or soft rect (roundrect): KiCad draws these
-            # round, but the old code fell through to sharp <rect>, making
-            # round DIP pins look square. rx=min/2 gives the stadium
-            # silhouette for ovals; roundrect uses a smaller corner radius
-            # (model stores no rratio, ~0.25 is KiCad's default).
+            # Capsule (oval) or soft rect (roundrect). rx=min/2 gives the
+            # stadium silhouette for ovals; roundrect uses a smaller corner
+            # radius (model stores no rratio, ~0.25 is KiCad's default).
             rx = _fmt(min(w, h) / 2.0 if shape == "oval" else min(w, h) / 4.0)
             out.append(
                 f'<rect x="{_fmt(px - w / 2.0)}" y="{_fmt(py - h / 2.0)}" '

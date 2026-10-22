@@ -4,41 +4,49 @@ title: "KiCad AutoRouter — Documentation"
 
 # KiCad AutoRouter Documentation
 
-This book contains two reference documents:
+Reference documents for the placement and routing engine:
 
-1. **[Physics Primer](physics_primer.html)** — Force laws, parameter tradeoffs, and SVG render guide for the SI placement dynamics engine.
-2. **[Pytest Results](pytest_results.html)** — Test suite overview, physics validation results, and regression tracking.
+1. **[Autorouting glossary](autorouting_glossary.md)** — pipeline stages,
+   terminology, and algorithm guidance.
+2. **[SI force laws](si_force_laws.md)** — normative placement formulas and
+   parameter defaults.
+3. **[Physics primer](physics_primer.html)** — force laws, parameter
+   tradeoffs, and SVG render guide.
+4. **[Roadmap](roadmap.md)** — open placement, routing, and pour work.
 
 ---
 
 ## Quick Links
 
-- **Physics Primer**: [HTML](physics_primer.html) · [PDF](physics_primer.pdf)
-- **Pytest Results**: [HTML](pytest_results.html) · [PDF](pytest_results.pdf)
+- [Physics primer HTML](physics_primer.html) · [PDF](physics_primer.pdf)
+- [SI force laws](si_force_laws.md)
+- [Roadmap](roadmap.md)
 
 ---
 
 ## Regeneration
 
-These documents are generated from executable Quarto markdown (`.qmd`). To regenerate:
+The primer is generated from executable Quarto markdown. Regenerate it with:
 
 ```bash
-# Physics Primer (runs embedded matplotlib visualizations)
 ./scripts/regen_physics_primer.sh
-
-# Static expected-behavior figures (committed PNGs, no Quarto needed)
-python scripts/plot_force_laws.py --outdir docs/figures
-
-# Pytest Results (runs test suite and embeds output)
-./scripts/regen_pytest_report.sh
 ```
 
-Both scripts render HTML and PDF to `docs/_output/` (gitignored).
+Static reference figures (committed PNGs, no Quarto needed):
+
+```bash
+python scripts/plot_force_laws.py --outdir docs/figures
+```
+
+Rendered output goes to `docs/_output/` (gitignored).
 
 ---
 
 ## Source
 
-- Physics formulas: `docs/si_force_laws.md` (normative)
-- Implementation: `src/kicad_autorouter/placement.py`, `src/kicad_autorouter/svg_render.py`, `src/kicad_autorouter/mass.py`
-- Tests: `tests/test_placement_forces.py`, `tests/test_analytical_contact.py`, `tests/test_magnet.py`, `tests/test_svg_render.py`
+- Placement formulas: `docs/si_force_laws.md`
+- Implementation: `src/kicad_autorouter/placement/`,
+  `src/kicad_autorouter/svg_render.py`, `src/kicad_autorouter/mass.py`
+- Tests: `tests/test_placement_forces.py`,
+  `tests/test_analytical_contact.py`, `tests/test_magnet.py`,
+  `tests/test_svg_render.py`

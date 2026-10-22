@@ -144,10 +144,11 @@ class TestOverlapLaw:
         assert overlap_just_inside == pytest.approx(kc, rel=0.05)
 
     def test_coincident_parts_separate(self):
-        """Perfectly stacked outlines previously felt zero force (the
-        intersection centroid sat exactly on the polygon centroid and
-        failed the dist guard). The pair must split in opposite
-        directions.
+        """Perfectly stacked outlines must still separate.
+
+        The intersection centroid coincides with the polygon centroid, so a
+        distance-based guard would read zero force. The pair must split in
+        opposite directions.
 
         NOTE (SI MTV contact): separation escapes along the minimum-
         translation axis — the short side (y for these 6x4 rects), not
@@ -357,12 +358,9 @@ class TestRigidProjection:
     """Rigid projection keeps each footprint's shape exact while soft forces
     move it; there is no stiffness parameter anymore.
 
-    Replaces TestRigidRole (2026-10-11): the old Hooke spring (k_eff = 5e4
-    against O(0.1) Coulomb forces, integrated with a fixed 2mm step cap)
-    was ~1e5x past the explicit-Euler stability limit and rang as a
-    sustained period-2 slam — an isolated 2-pad pair froze at iter 2 then
-    flip-flopped. Position-based projection (Kabsch snap per footprint per
-    iteration) is unconditionally stable and exact to float precision."""
+    Position-based projection (Kabsch snap per footprint per iteration) is
+    unconditionally stable and exact to float precision; a stiff spring
+    integrated with a fixed step cap is not."""
 
     def _shear_board(self):
         mover = make_fp("M", "uuid-m", 0.0, 0.0, ("N1", "N2"),
@@ -400,7 +398,7 @@ class TestRigidProjection:
         """Kabsch angle must invert ``_to_board``'s ``R(-angle)``.
 
         Regression: returning ``atan2(R)`` directly made ``apply_deltas``
-        rotate a part opposite to its integrated pads (2B Q1 appeared to
+        rotate a part opposite to its integrated pads (a Q1 legalize case appeared to
         swing into C6). A +20 deg board-space pad rotation must produce
         ``da = -20`` and reproduce the rotated pads exactly.
         """
@@ -500,8 +498,7 @@ class TestRigidProjection:
         assert out_angle(10.0) == pytest.approx(5.0, rel=0.01)
 
     def test_no_stiffness_knob(self):
-        """The spring is gone: no rigid_stiffness field, and legacy files
-        carrying it still load (from_dict ignores unknown keys)."""
+        """No rigid_stiffness field; from_dict ignores unknown keys."""
         assert not hasattr(PlacementParams(), "rigid_stiffness")
         q = PlacementParams.from_dict(
             {"repulsion_k_N_m2": 1e-7, "rigid_stiffness": 5e5,

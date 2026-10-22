@@ -89,9 +89,9 @@ class TestPhysicsRunner:
 
     def test_coarse_eps_does_not_stop_under_load(self, dccf_model):
         """A coarse displacement epsilon must not declare rest while large
-        pushes remain (fake-settle regression, 2026-10-16: displacement-only
-        stopping halted legalize at 234/500 with 9 overlaps and ~0.1N
-        residuals intact). Honest stop: budget + residual attached."""
+        pushes remain (displacement-only stopping can halt legalize with
+        overlaps and ~0.1N residuals intact). Honest stop: budget or stalled
+        with residual attached."""
         p = PlacementParams(max_iterations=1000, convergence_eps_m=0.1)
         prop = run_placement(dccf_model, p)
         assert prop.stop_reason in ("budget", "stalled")
@@ -286,7 +286,7 @@ class TestGhostComponents:
         naturally sits half-outside: centroid outside, courtyard crossing
         into the board. Such a ghost must join the overlapped region (not
         -1, which excludes it from every region's simulation and silences
-        it). Regression for the 2B Q1 case, where a 1.8mm overlap with a
+        it). Regression for a Q1 legalize case, where a 1.8mm overlap with a
         straddling wall measured exactly 0.0N.
         """
         from kicad_autorouter.board_model import _assign_board_regions
@@ -506,26 +506,17 @@ class TestCourtyardHalo:
     def test_c11_close_neighbor_contact_is_bounded(self, dccf_model):
         """C11 feels bounded halo contact from its true close neighbor.
 
-        Regression for the report: old size-scaled halo had RV sockets
-        pushing C11 from 20-30mm away with ~3800 units.
-
-        Re-baselined 2026-10-10 (was test_c11_quarter_inch_clearance_is_quiet):
-        the courtyard-outline fix (polygonize/unary_union) recovered true
-        outlines, and C11/R11 now measure 1.30mm apart (inside the 3mm halo;
-        R14 sits exactly at the 3.00mm halo edge).
-
-        SI re-baseline: forces are newtons, so the halo reads ~0.57×wall
-        at the 1.3mm gap. The upper bound (1.0×wall) still catches the old
-        far-field blow-up (20-30mm-away RV sockets pushing with ~190×wall
-        under the old size-scaled halo); the lower bound (0.1×wall) pins
-        that contact is detected (guards against a regression back to
-        silent pad-bbox shapes, which read exactly 0.0).
+        True courtyards put C11/R11 1.30mm apart (inside the 3mm halo; R14
+        sits exactly at the 3.00mm halo edge), so the halo reads ~0.57×wall.
+        The upper bound (1.0×wall) catches far-field blow-ups; the lower
+        bound (0.1×wall) pins that contact is detected (silent pad-bbox
+        shapes read exactly 0.0).
 
         Measured at the rest layout (max_iterations=0) on purpose: after
         live iterations the pads slosh on mm scale (hot start + stiff
-        contact) and the reported force oscillates 0 -> 18 -> 2.5 -> 17
-        across adjacent iteration counts (2026-10-10), so any threshold
-        on the post-motion value pins a chaotic landing, not physics.
+        contact) and the reported force oscillates across adjacent iteration
+        counts, so a threshold on the post-motion value pins a chaotic
+        landing, not physics.
         """
         wall = 1.9999999999999998e-05
         p = PlacementParams(

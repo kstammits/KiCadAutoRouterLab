@@ -2,10 +2,8 @@
 
 Terminology and design guidance for this project, aligned to the pipeline stages in
 `src/kicad_autorouter/pipeline.py`: `ingest → parse → connectivity → route → drc → writeback`.
-Sources are the upstream references listed under [Source index](#source-index)
-(Wikipedia, fetched 2026-09-28; KiCad 10.0.7 docs, exact version match).
-Local vendored copies were removed to keep the repo small — `docs/README.md`
-has fetch recipes to restore them on demand.
+Sources are the upstream references listed under [Source index](#source-index).
+Local copies are not vendored; `docs/README.md` has fetch recipes.
 
 ## Stage: ingest — load `.kicad_pcb` / `.kicad_sch`
 
@@ -51,16 +49,13 @@ Placement moves unlocked footprints with real physics in SI units
 (newtons, meters, seconds, kilograms — millimeters only at file
 ingest and result reporting). Normative formulas:
 [`si_force_laws.md`](si_force_laws.md); calibration ranges:
-`scripts/calibrate_si.py`. This supersedes the Hooke-spring model in
-"Force-directed placement of unlocked components" below (constant-magnitude
-attraction replaced springs; semi-implicit Euler + projection replaced the
-stiffness-capped stepper).
+`scripts/calibrate_si.py`.
 
 ### SI dynamics quick reference
 
-| Term | Definition | `si_force_laws.md` | `placement.py` symbol |
+| Term | Definition | `si_force_laws.md` | Module symbol |
 |------|------------|--------------------|----------------------|
-| **wall / halo** | One linear law in signed separation `s` (gap +, penetration −): `F = k_wall·(1 − s/halo)` | §1 Courtyard collision | `PlacementParams.wall_k_N`, `PlacementParams.wall_halo_m`, `_wall_mag` |
+| **wall / halo** | One law in signed separation `s` (gap +, penetration −): `F = k_wall·(1 − s/halo)^wall_exponent` | §1 Courtyard collision | `PlacementParams.wall_k_N`, `PlacementParams.wall_halo_m`, `_wall_mag` |
 | **MTV (minimum-translation vector)** | SAT overlap direction — out the nearest edge; correct for containment/small-in-large | §1 Courtyard collision (Contact direction rule) | `_apply_contact_push_analytical`, `_sat_rect_rect`, `_rect_circle_contact` |
 | **Per-pair aggregation** | Deepest contact wins per pair (summed areas, strongest direction); pin circles don't stack | §1 Per-pair aggregation | `_apply_contact_push_analytical`, `_contact_weights` |
 | **Kabsch snap / projection** | SVD rigid fit of proposed pads vs reference shape; bodies stay exact with no stiffness parameter | §2 Integrator (Rigid-step clamp) | `_project_rigid_poses` |
@@ -68,7 +63,7 @@ stiffness-capped stepper).
 | **Deadband (angular)** | `MIN_ROT_STEP_RAD` (currently 0.0 = disabled); parking micro-rotations wedged pairs | §2 Rigid-step clamp | `_clamp_rigid_step`, `MIN_ROT_STEP_RAD` |
 | **Adaptive-dt guard** | Halve dt + bleed velocity on KE jumps (>1.25×), regrow ×1.1; bounded by `dt_min_s`/`dt_max_s` | §2 Adaptive-dt guard | `_run_region_simulation` (adaptive-dt block) |
 | **Tightening ratio** | Final vs start pooled intra-group distance; <1 means the board clusters | §3 Regime map | `tighten_mean`, `tighten_max` (calibration) |
-| **Broadphase** | 15 mm uniform-grid + bounding-circle cull before exact courtyard geometry | §1 Broadphase (TODO Phase 1) | `_run_region_simulation` (courtyard cache) |
+| **Broadphase** | 15 mm uniform-grid + bounding-circle cull before exact courtyard geometry | §1 Broadphase | `_run_region_simulation` (courtyard cache) |
 | **Decap / power / GND rules** | Fanout scaling on power edges; ground excluded except decap-incident; `decap_boost` multiplier | §1 Decap boost, Fanout scaling, Ground exclusion | `_build_net_edges_pad_level`, `PlacementParams.decap_boost`, `PlacementParams.power_attraction_scale` |
 | **Tangential assist** | Sliding assist along contact (MTV-perp): `γ·|F_n|·sign(v_rel_t)`, latched per contact pair so near-zero velocity noise doesn't flip-slide | §1 Tangential assist | `PlacementParams.contact_tangent_gamma`, `_tangent_sign` |
 | **Final depenetration pass** | One relaxed MTV round after dynamics settle: ejects residual courtyard overlap the penalty law couldn't clear; contraction + rigid reproject each pass | `src/kicad_autorouter/placement/runner.py` (`_depenetrate_positions`) | `_DEPEN_RELAX`, `_DEPEN_CLEAN_AREA_MM2`, `_DEPEN_MAX_ROT_RAD` |
@@ -77,7 +72,7 @@ stiffness-capped stepper).
 
 - **m/N/s foundation**: the solver runs entirely in meters, newtons,
   seconds; board geometry (mm) converts at force evaluation and reporting
-  (`src/kicad_autorouter/placement.py` module docstring).
+  (`src/kicad_autorouter/placement/params.py`).
 - **Semi-implicit Euler**: per movable pad per step: kick `v += (F/m)·dt`,
   viscous decay, speed-ceiling clamp, drift `x += v·dt`
   (`_run_region_simulation`).
@@ -113,12 +108,12 @@ stiffness-capped stepper).
   scattered-start clustering wants ~0.04–0.06
   (`PlacementParams.attraction_k_N`).
 - **Wall / courtyard contact** (`wall_k_N`, N): elastic push-out on
-  courtyard overlap, one linear law `F = k_wall·(1 − s/halo)` in signed
+  courtyard overlap, `F = k_wall·(1 − s/halo)^wall_exponent` in signed
   separation `s` (gap +, penetration −); deepest contact wins per pair
-  (`PlacementParams.wall_k_N`, `wall_halo_m`).
+  (`PlacementParams.wall_k_N`, `wall_halo_m`, `wall_exponent`).
 - **Halo** (`wall_halo_m`, m): near-miss reach where the wall ramps in
-  before touch, saturating at `wall_k_N` and falling linearly to zero at
-  the edge (`PlacementParams.wall_halo_m`).
+  before touch; it reaches `wall_k_N` at contact and follows `wall_exponent`
+  to zero at the halo edge (`PlacementParams.wall_halo_m`).
 - **Board wall**: the region polygon is an inverted courtyard with the
   SAME wall law — the edge pushes parts inside exactly like a
   neighbour's courtyard pushes them apart (halo pull-off inside,
@@ -175,8 +170,7 @@ stiffness-capped stepper).
   weights summing to 1 — totals conserved by construction
   (`_contact_weights`, inner `_spread`).
 - **Broadphase**: vectorized bounding-circle + uniform-grid cull of far
-  pairs before exact geometry (`_run_region_simulation` courtyard cache;
-  TODO Phase 1).
+  pairs before exact geometry (`_run_region_simulation` courtyard cache).
 
 ### Bodies & motion
 
@@ -193,9 +187,9 @@ stiffness-capped stepper).
   5°/step (damped snap) — so tunneling is impossible by construction
   (`_clamp_rigid_step`).
 - **Angular deadband** (`MIN_ROT_STEP_RAD`, currently 0.0 = disabled):
-  disabled — measured 2026-10-20 that parking micro-rotations wedges
-  pairs that otherwise work themselves apart; idle burn is bounded by
-  the stall rule instead (`_clamp_rigid_step`).
+  parking micro-rotations wedges pairs that otherwise work themselves
+  apart; idle burn is bounded by the stall rule instead
+  (`_clamp_rigid_step`).
 - **Speed ceiling** (`vmax_m_s`, m/s): caps velocities and, via the clamp,
   body motion (`PlacementParams.vmax_m_s`).
 - **Frames**: stride-sampled `(dx, dy, da)` vs start for the SVG motion
@@ -245,8 +239,8 @@ stiffness-capped stepper).
   starts and polishes placed boards — cluster at ka≈0.05/wall≈0.02–0.03,
   polish at ka≈0.008–0.01/wall≈0.08–0.1
   ([`si_force_laws.md`](si_force_laws.md) §3).
-- **Merge gates**: same-or-better overlap + iterations vs `main`, no
-  sustained oscillation, suite green (`PLAN.md`).
+- **Merge gates**: same-or-better overlap and iterations, no sustained
+  oscillation, suite green.
 
 ### Test & player vocabulary
 
@@ -264,15 +258,6 @@ stiffness-capped stepper).
 - **Markers** (`pyproject.toml`): `physics` (needs nets), `dccf`
   (97-footprint board), `server`, `regression`, `unit`, `params`,
   `minimal`, `cli`.
-- **Retired names** (do not use): `repulsion_kr` → `repulsion_k_N_m2`,
-  `attraction_ka` → `attraction_k_N`, `courtyard_repulsion_kc` →
-  `wall_k_N`, `courtyard_halo_mm` → `wall_halo_m`,
-  `boundary_repulsion_kb` → `boundary_k_N` (retired with the separate
-  boundary law; the board wall now uses `wall_k_N`),
-  `convergence_eps_mm` → `convergence_eps_m`,
-  `friction_threshold_mm` → `friction_N`, `max_step_mm` → `vmax_m_s`.
-  `from_dict` still silently drops these for old files.
-
 ## Stage: route — the autorouter core
 
 The routing task (from [Wikipedia: Autorouter](https://en.wikipedia.org/wiki/Autorouter)): create
@@ -342,7 +327,7 @@ Key facts that shape the algorithm choice:
   top-level `violations[]` and `unconnected_items[]`; `--exit-code-violations` makes the
   exit code reflect violations, not just load failures (see [kicad-cli reference](https://docs.kicad.org/10.0/en/cli/cli.html)
   and `src/kicad_autorouter/validate.py`).
-- Example violation (from the old demo-track pass): `track_dangling | Track has unconnected end`.
+- Example violation: `track_dangling | Track has unconnected end`.
 - **Ignored violation classes**: the UI overlay and `DRCResult.filter_violations()` hide
   non-routing noise by default (`DEFAULT_IGNORED_TYPES` in `src/kicad_autorouter/drc.py`,
   shared by the SVG overlay): silkscreen (`silk_over_copper`, `silk_overlap`,
@@ -359,44 +344,30 @@ Key facts that shape the algorithm choice:
   `io.nudge_footprint_by_uuid` and serialized with `sexpr.to_sexpr`.
 - Always re-run DRC after writeback — it is the acceptance check for a pass.
 
-## Force-directed placement of unlocked components
+## Placement controls
 
-> Superseded by "Stage: place" above on `feature/si-dynamics`: Hooke
-> springs are gone (constant-magnitude attraction) and the stepper is
-> semi-implicit Euler + Kabsch projection in SI units. Kept for the
-> ghost / nudge / complexity notes, which still hold.
-
-Basis: [Wikipedia: Force-directed graph drawing](https://en.wikipedia.org/wiki/Force-directed_graph_drawing).
-Treat footprints as nodes and nets as edges; run a physical simulation until equilibrium:
-
-- **Attraction**: spring-like force (Hooke's law) along each net edge pulls connected
-  footprints toward each other — shortens the wires the router must draw.
-- **Repulsion**: Coulomb-like force between all node pairs pushes unconnected footprints
-  apart — keeps clearances and avoids overlap.
-- **Fixed nodes**: locked footprints are pinned (infinite mass); only unlocked ones move.
-  This is exactly our "nudge around the locked parts" step.
-- **Convergence**: iterate until positions stop changing; damping/step-size schedules
-  control stability (Fruchterman–Reingold temperature schedule). Simulated annealing or
-  stress majorization are alternatives if plain simulation stalls in a bad local minimum.
-- **Ghost (pseudo-part)**: a fixed anchor that participates in placement forces but is
-  never moved or written as copper — a **wall** (courtyard-only obstacle that pushes
-  parts away, e.g. a keepout) or an **attractor** (pulls specific refs via
-  `(property "ghost_attract_N" "TARGET,ka")` springs). Serialized as a regular
-  `(footprint ...)` plus `(property "ghost" "yes")`, courtyard on `F.CrtYd` (or `F.Fab`,
-  which the parser falls back to); created with `ghost.make_ghost_wall /
-  make_ghost_attractor` + `io.add_ghost_to_tree`, fully managed from the UI Ghosts panel
-  (move / rotate ±15°, resize W/H steppers, delete; rotation pivots about the anchor).
-- **Manual nudge**: hand-shift the placement selection by 1 mm (arrow keys / nudge pad,
-  Shift for 10 mm) and rotate it ±15° (Shift for 90°) via `POST /api/placement/nudge` —
-  same dual-write, rip-up (protected kept), and Undo semantics as Accept.
-- **Complexity budget (vectorized)**: naive all-pairs repulsion is O(n²) per iteration,
-  O(n³) total — at n=500 that is ≈125k pairs/iteration, tens of seconds in pure Python.
-  Computing it as numpy broadcasting over the dense (n,n) distance matrix costs ≈1–2 ms
-  per iteration → sub-second total for a full run; net-edge attraction stays sparse O(E),
-  vectorized with edge index arrays, and locked footprints are a boolean mask (zero force).
-  Dense n² is therefore plenty at "a few hundred" nodes; Barnes–Hut
-  ([Wikipedia: Barnes–Hut simulation](https://en.wikipedia.org/wiki/Barnes%E2%80%93Hut_simulation)) only becomes
-  necessary past ~3–5k nodes.
+- **Ghost (pseudo-part)**: a fixed anchor that participates in placement
+  forces but is never moved or written as copper — a **wall**
+  (courtyard-only obstacle that pushes parts away, e.g. a keepout) or an
+  **attractor** (pulls specific refs via
+  `(property "ghost_attract_N" "TARGET,ka")` springs). Serialized as a
+  regular `(footprint ...)` plus `(property "ghost" "yes")`, courtyard on
+  `F.CrtYd` (or `F.Fab`, which the parser falls back to); created with
+  `ghost.make_ghost_wall / make_ghost_attractor` + `io.add_ghost_to_tree`,
+  managed from the UI Ghosts panel (move / rotate ±15°, resize W/H
+  steppers, delete; rotation pivots about the anchor).
+- **Manual nudge**: hand-shift the placement selection by 1 mm (arrow keys
+  / nudge pad, Shift for 10 mm) and rotate it ±15° (Shift for 90°) via
+  `POST /api/placement/nudge` — same dual-write, rip-up (protected kept),
+  and Undo semantics as Accept.
+- **Complexity budget (vectorized)**: naive all-pairs repulsion is O(n²)
+  per iteration, O(n³) total. Computing it as numpy broadcasting over the
+  dense (n,n) distance matrix costs ≈1–2 ms per iteration; net-edge
+  attraction stays sparse O(E), vectorized with edge index arrays, and
+  locked footprints are a boolean mask (zero force). Dense n² is plenty at
+  "a few hundred" nodes; Barnes–Hut
+  ([Wikipedia: Barnes–Hut simulation](https://en.wikipedia.org/wiki/Barnes%E2%80%93Hut_simulation))
+  becomes necessary past ~3–5k nodes.
 
 ## Source index
 

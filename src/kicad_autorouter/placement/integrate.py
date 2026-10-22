@@ -9,24 +9,6 @@ from __future__ import annotations
 import math
 from typing import Dict, List, Tuple
 
-from .params import FRAME_ANGLE_DECIMALS, FRAME_DEFAULT_MAX, FRAME_XY_DECIMALS
-
-
-def _round_frame_deltas(
-    frame: Dict[str, Tuple[float, float, float]],
-    xy_decimals: int = FRAME_XY_DECIMALS,
-    angle_decimals: int = FRAME_ANGLE_DECIMALS,
-) -> Dict[str, Tuple[float, float, float]]:
-    """Round one frame's (dx, dy, da) deltas for compact JSON output."""
-    return {
-        uuid: (
-            round(float(dx), xy_decimals),
-            round(float(dy), xy_decimals),
-            round(float(da), angle_decimals),
-        )
-        for uuid, (dx, dy, da) in frame.items()
-    }
-
 
 def _round_sig3(x: float) -> float:
     """Round to 3 significant figures."""

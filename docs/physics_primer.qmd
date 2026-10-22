@@ -2,7 +2,6 @@
 title: "Physics Primer — SI Placement Dynamics"
 subtitle: "Force Laws, Parameter Tradeoffs, and SVG Render Guide"
 author: "KiCad AutoRouter Team"
-date: "2026-10-16"
 format:
   html:
     toc: true
@@ -86,7 +85,7 @@ $$d_{\text{eq}} = \sqrt{\frac{k_{\text{rep}}}{k_{\text{attr}}}}$$
 import numpy as np
 import matplotlib.pyplot as plt
 
-# Default parameters from PlacementParams (2026-10-15 calibration)
+# Default parameters from PlacementParams
 k_rep_default = 2e-9    # N·m²
 k_attr_default = 8e-3   # N
 
@@ -196,12 +195,12 @@ penetration negative) — the formula never changes at intersection:
 
 $$F_{\text{wall}} = k_{\text{wall}} \left(1 - \frac{s}{\text{halo}}\right)^p$$
 
-with exponent $p = $ `wall_exponent` (default 1.0, linear; $p > 1$ softens the
-halo approach and stiffens deep penetration; $p < 1$ is rejected by validation
-— singular at the halo edge). Contact stays C0/C1-continuous for any $p \ge 1$.
+with exponent $p = $ `wall_exponent` (default 2.0; $p > 1$ softens the halo
+approach and stiffens deep penetration; $p < 1$ is rejected by validation —
+singular at the halo edge). Contact stays C0/C1-continuous for any $p \ge 1$.
 
-- Zero past the halo reach, $k_{\text{wall}}$ at contact, growing linearly
-  with penetration depth — C0 and C1 continuous at first touch
+- Zero past the halo reach, $k_{\text{wall}}$ at contact, growing with
+  penetration depth — C0 and C1 continuous at first touch
 - Depth comes from SAT (rectangles/circles) or vertex-projection interval
   overlap (generic polygons); no intersection areas anywhere
 - Direction = **minimum-translation vector (MTV)** from SAT — pushes parts apart along the *shortest* escape axis, never centroid-to-centroid
@@ -210,8 +209,8 @@ halo approach and stiffens deep penetration; $p < 1$ is rejected by validation
 ### 4.2 Near-Miss Halo
 
 The halo is the same law at `s > 0` (`wall_halo_m` = 6 mm default): force
-falls linearly from $k_{\text{wall}}$ at contact to 0 at the halo edge.
-One scale serves approach and penetration.
+falls from $k_{\text{wall}}$ at contact to 0 at the halo edge following the
+chosen exponent. One scale serves approach and penetration.
 
 ### 4.3 Per-Pair Aggregation (Critical!)
 
@@ -224,7 +223,7 @@ sub-contacts cannot inflate one pair's penalty.
 
 ```{python}
 #| label: fig-courtyard-force-profile
-#| fig-cap: "Courtyard force profile: one linear law F = k*(1-s/h) in signed separation s (gap positive, penetration negative). C0/C1 continuous at contact (s=0). k_wall = 80 mN, halo = 6 mm."
+#| fig-cap: "Courtyard force profile: F = k*(1-s/h)^p in signed separation s (gap positive, penetration negative), p = wall_exponent (default 2). C0/C1 continuous at contact (s=0). k_wall = 80 mN, halo = 6 mm."
 #| fig-width: 8
 #| fig-height: 4
 import numpy as np
@@ -235,16 +234,17 @@ halo = 6.0         # mm (single scale: approach + penetration)
 
 # Signed separation: +halo (far) to -halo (2x halo deep)
 s_mm = np.linspace(halo, -halo, 400)
-F = k_wall * (1 - s_mm / halo)
+p_exp = 2.0
+F = k_wall * np.power(np.maximum(1 - s_mm / halo, 0.0), p_exp)
 
 fig, ax = plt.subplots(figsize=(8, 4))
-ax.plot(s_mm, F*1000, 'b-', linewidth=2, label='F = k*(1-s/h)')
+ax.plot(s_mm, F*1000, 'b-', linewidth=2, label='F = k*(1-s/h)^p, p=2')
 ax.axvline(0, color='k', linestyle=':', alpha=0.5, label='contact (s=0)')
 ax.axhline(k_wall*1000, color='k', linestyle=':', alpha=0.5, label=f'k_wall = {k_wall*1000:.0f} mN')
 
 ax.set_xlabel('Signed separation s (mm) [gap +  ←→  - penetration]')
 ax.set_ylabel('Force magnitude (mN)')
-ax.set_title('Courtyard Force Profile: One Linear Law, Continuous at Contact')
+ax.set_title('Courtyard Force Profile: One Law, Continuous at Contact')
 ax.legend()
 ax.grid(True, alpha=0.3)
 plt.tight_layout()
@@ -257,7 +257,7 @@ plt.show()
 |-----------|--------|---------------|
 | `wall_k_N` | Overall collision stiffness. Higher = harder push-out at contact | 0.02–0.1 N |
 | `wall_halo_m` | Single distance scale: halo reach AND penetration stiffness. Larger = earlier gentle push, softer deep response | 0.003–0.01 m |
-| `wall_exponent` | Shape of the law. 1.0 = linear; higher softens approach, stiffens deep overlap | 1.0–2.0 |
+| `wall_exponent` | Shape of the law. 1.0 = linear; higher softens approach, stiffens deep overlap | 1.0–3.0 |
 
 Static twins of these response graphs (no Quarto needed):
 `python scripts/plot_force_laws.py --outdir docs/figures`

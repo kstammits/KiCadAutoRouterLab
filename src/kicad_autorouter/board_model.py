@@ -10,12 +10,11 @@ Local footprint coordinates are converted to board space by rotating
 by the footprint angle and translating by its position. There is no
 mirroring for ``B.Cu`` footprints: footprint-local ``(at ...)`` positions
 of pads and drawing primitives are stored relative to the footprint origin
-and rotated the same way on both copper layers. This was verified against
-``pcbnew`` on ``tests/fixtures/tube111.kicad_pcb`` (2026-10-08): e.g. ``D6``
-(``B.Cu``, angle 0) has its second pad at ``123.85 + 10.16 = 134.01`` and
-its ``B.Courtyard`` at ``122.5–135.36`` — i.e. *unmirrored*. (An earlier
-revision mirrored ``B.Cu`` local X, which pushed ``D6``/``D7`` outside
-board region 2 in the SVG while ``pcbnew`` showed them inside.)
+and rotated the same way on both copper layers. This matches ``pcbnew``:
+e.g. ``D6`` (``B.Cu``, angle 0) has its second pad at
+``123.85 + 10.16 = 134.01`` and its ``B.Courtyard`` at ``122.5–135.36`` —
+i.e. *unmirrored*. Mirroring ``B.Cu`` local X would push ``D6``/``D7``
+outside board region 2 even though ``pcbnew`` shows them inside.
 """
 
 from __future__ import annotations
@@ -41,8 +40,7 @@ Segment = Tuple[Point, Point]
 
 # Shared net classification (substring keywords, case-insensitive). Single
 # source of truth for placement + routing so e.g. "Net-+12V" / "VCC_IO"
-# classify the same in both stages (2026-10-11: placement used an
-# exact-match frozenset and disagreed with routing on such names).
+# classify the same in both stages.
 _POWER_KEYWORDS = (
     "vcc", "vdd", "vin", "v+", "v-", "pwr", "power",
     "+5v", "-5v", "+12v", "-12v", "3v3",
@@ -1164,19 +1162,6 @@ def netclasses(tree: SExpr) -> Tuple[Tuple[NetClass, ...], Dict[str, str]]:
             nets=tuple(members),
         ))
     return tuple(classes), net_to_class
-
-
-def netclass_trace_width(
-    model: BoardModel, net_name: Optional[str], default_mm: float = 0.25
-) -> float:
-    """Trace width for a net from the board's netclass declarations."""
-    if net_name:
-        class_name = model.net_netclass.get(net_name)
-        if class_name:
-            for cls in model.net_classes:
-                if cls.name == class_name and cls.trace_width_mm > 0:
-                    return cls.trace_width_mm
-    return default_mm
 
 
 def netclass_clearance(

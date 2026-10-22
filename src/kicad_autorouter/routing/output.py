@@ -52,8 +52,8 @@ def routes_to_tracks_vias(
 
     Widths come from ``net_class_widths`` (resolved upstream, including
     user-marked power membership); the fallback below only bites for
-    callers that pass no map (legacy path) and honors effective-power
-    membership (keyword OR ``extra_power``) via the shared helper.
+    callers that pass no map and honors effective-power membership (keyword
+    OR ``extra_power``) via the shared helper.
     """
     
     tracks = []
@@ -239,29 +239,3 @@ def apply_routes_to_tree(
     
     # Create new tree with updated args
     return SExpr(tree.head, tuple(new_args))
-
-
-def tracks_vias_to_sexpr(
-    tracks: List[Track],
-    vias: List[Via],
-) -> str:
-    """Generate S-expression string for tracks and vias."""
-    lines = []
-    
-    for t in tracks:
-        lines.append(
-            f'(segment (start {t.start[0]:.3f} {t.start[1]:.3f}) '
-            f'(end {t.end[0]:.3f} {t.end[1]:.3f}) '
-            f'(width {t.width_mm:.3f}) (layer {t.layer}) '
-            f'(net {t.net_name}))'
-        )
-    
-    for v in vias:
-        layers_expr = " ".join(v.layers)
-        lines.append(
-            f'(via (at {v.position[0]:.3f} {v.position[1]:.3f}) '
-            f'(size {v.size_mm:.3f}) (drill {v.drill_mm:.3f}) '
-            f'(layers {layers_expr}) (net {v.net_name}))'
-        )
-    
-    return "\n".join(lines)

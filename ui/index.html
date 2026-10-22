@@ -935,7 +935,7 @@ async function loadParams(defaultsOnly = false) {
 // Regime presets from docs/si_force_laws.md §3: no single ratio clusters
 // AND legalizes, so offer the two calibrated starting points. dt_s, vmax,
 // friction ride along via the merge-POST even though they have no main-panel sliders.
-// Calibrated values (2026-10-21): wall_halo_m=0.006, wall_exponent=2.0,
+// Calibrated values: wall_halo_m=0.006, wall_exponent=2.0,
 // convergence_eps_m=2e-5 included via merge-POST.
 const REGIME_PRESETS = {
   cluster: { attraction_k_N: 0.05, wall_k_N: 0.025, damping_Ns_m: 0.08, dt_s: 2e-3, vmax_m_s: 1.0, friction_N: 1e-6, wall_halo_m: 0.006, wall_exponent: 1.0, convergence_eps_m: 2e-5 },
@@ -1207,7 +1207,7 @@ async function fetchAndInjectSVG(version) {
   // Motion owns the viewport while frames are loaded: its (dx, dy, da) group
   // transforms are deltas vs the COMMITTED board, so the base SVG must be the
   // committed view. An overlay=1 SVG already sits at the proposal pose
-  // (apply_deltas) — re-applying motion on top doubles every move (2026-10-10:
+  // (apply_deltas) — re-applying motion on top doubles every move:
   // Step-1 looked fine, full Run flipped R8 out).
   // Also: force vectors must be rendered INSIDE footprint groups so they move
   // with the parts. Server renders forces at absolute coords; we need forces=0
@@ -2449,16 +2449,12 @@ document.getElementById("ghost-kind").addEventListener("change", e => {
 // (saved max_iterations); otherwise a small step budget is used.
 //
 // UX STAGE 1 — estimate-first: the POST is synchronous, so we show a
-// benchmark-fitted pre-flight estimate + an elapsed ticker + a client-side
-// timeout backstop. Recalibrated 2026-10-15 after the analytical-contact
-// primary path landed, then again after the is_empty per-footprint cache:
-// full-board ms/iter ≈ 0.0045*N^2 + 1 measured in
-// docs/benchmarks/placement_2026-10-15.json (tube111 105fps: 24ms,
-// DCCF 97fps: 19ms) and handful runs in placement_motion_2026-10-15.json
-// scale sublinearly in moved count
-// (tube111 1/4/16 parts: 3.9/4.6/10.8ms; DCCF: 7.5/8.6/12.0ms).
-// Order-of-magnitude only — real boards deviate with courtyard complexity —
-// and worst-case (runs often converge early), so the line reads "up to".
+// pre-flight estimate + an elapsed ticker + a client-side timeout backstop.
+// Full-board ms/iter ≈ 0.0045*N^2 + 1 (N = movable non-ghost footprints,
+// from docs/benchmarks/placement_2026-10-21.json), scaled by the moved
+// fraction. Order-of-magnitude only — real boards deviate with courtyard
+// complexity — and worst-case (runs often converge early), so the line
+// reads "up to".
 function estimatePlacementMs(movableUuids, iters) {
   const isMovable = (fp) => !fp.locked && !fp.pinned && !fp.ghost &&
     (movableUuids === undefined || movableUuids.includes(fp.uuid));
@@ -3029,11 +3025,6 @@ function netColorByName(net, idx) {
   const hue = (((i >= 0 ? i : idx) * 137.508) % 360);
   return `hsl(${hue}, 75%, 62%)`;
 }
-// Legacy alias (row-index callers migrated to netColorByName).
-function netColor(net, idx) {
-  return netColorByName(net, idx);
-}
-
 // Fetch all nets from server and render net table
 // lastNetsByName caches the most recent /api/nets rows (pad counts) so the
 // routing pre-flight estimate can size the work without an extra fetch.
@@ -3360,11 +3351,10 @@ let routeCurrentJobId = null;
 // Pre-flight cost estimate: pairwise A* searches per net = k*(k-1)/2 over
 // pad counts (upper bound on terminals), plus a wall-time fit. Shown before
 // the run so a 66-pad GND (~2k searches, minutes) never surprises.
-// Time fit from full-scale runs, docs/benchmarks/routing_2026-10-15.json:
-// first net pays ~2-3.5s fixed (occupancy+grids+via_ok), then ~1-1.5s/net
-// (DCCF 1/2/5/10 nets: 3.3/4.1/6.7/10.6s; tube111 1/2: 2.4/2.5s).
-// GND stitching is a separate surcharge measured in
-// stitch_pour_2026-10-15.json: +2.6s tube111 (36 islands), +17s DCCF (104).
+// Time fit from docs/benchmarks/routing_2026-10-21.json: first net pays
+// ~2-3.5s fixed (occupancy+grids+via_ok), then ~1-1.5s/net (DCCF
+// 1/2/5/10 nets: 3.2/3.9/6.5/10.6s; tube111 1/2: 1.4/1.7s). GND stitching
+// is a separate surcharge measured in docs/benchmarks/stitch_pour_2026-10-21.json.
 function estimateRoutingWork(netNames) {
   let pairs = 0;
   let worst = { net: null, pairs: 0 };

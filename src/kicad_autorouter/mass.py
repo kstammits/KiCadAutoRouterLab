@@ -14,9 +14,8 @@ are rough guesses, good enough to give inertia the right order of magnitude.
 from __future__ import annotations
 
 import json
-from functools import lru_cache
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_TABLE_PATH = REPO_ROOT / "data" / "footprint_mass.json"
@@ -29,14 +28,6 @@ def load_mass_table(path: Optional[Path] = None) -> dict:
         return json.loads(table_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
-
-
-def mass_defaults(table: Optional[dict] = None) -> Tuple[float, float]:
-    """Return ``(density_kg_m2, floor_kg)`` from the table ``defaults``."""
-    defaults = (table or {}).get("defaults", {})
-    density = float(defaults.get("areal_density_kg_m2", 3.0))
-    floor_g = float(defaults.get("mass_floor_g", 0.001))
-    return density, floor_g / 1000.0
 
 
 def resolve_table_mass_g(
@@ -91,9 +82,3 @@ def courtyard_bbox_area_m2(footprint) -> float:
     if not xs or not ys:
         return 0.0
     return max(max(xs) - min(xs), 0.0) * max(max(ys) - min(ys), 0.0) * 1e-6
-
-
-@lru_cache(maxsize=1)
-def cached_table(path_str: str = "") -> dict:
-    """Process-wide cached table (path override mostly for tests)."""
-    return load_mass_table(Path(path_str) if path_str else None)

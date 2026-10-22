@@ -1,17 +1,16 @@
 """Movable-vs-immobile courtyard pairing + board-wall containment.
 
-Regression tests for the 2026-10-10 R11-into-RV2 incident on DCCF:
+Courtyard pairing invariants on DCCF:
 
-1. The courtyard pair loop was ``for j in range(i + 1, ...)`` under
-   ``if not movable[i]: continue``, so a movable footprint never felt an
-   immobile (locked/unselected) footprint sorting earlier in file order —
-   a lone selected part collided with only ~half the board.
+1. A movable footprint must feel every immobile (locked/unselected)
+   neighbor regardless of file order — a lone selected part cannot collide
+   with only half the board.
 2. The board wall (region polygon as inverted courtyard, same wall law)
    pushes near-edge parts inside and pulls fully-outside parts home.
 
 Board builders mirror tests/test_placement_layers.py (valid head-to-tail
 courtyard rects, so these tests isolate the pairing/wall logic from
-the known courtyard-shape debt noted in TODO.md).
+the known courtyard-shape debt noted in docs/roadmap.md).
 """
 
 import math
@@ -96,7 +95,7 @@ SEPARATION_PARAMS = PlacementParams(
     # signal (pair evaluated, ~1e5 force, ~mm motion), while the
     # long-horizon stiff-contact regime oscillates and would make the
     # test about integrator dynamics instead of pairing. Thresholds
-    # calibrated by running: old code reports EXACTLY 0.0 / no motion.
+    # calibrated by running; failure would show exactly 0.0 / no motion.
     max_iterations=3,
     convergence_eps_m=1e-15,
     repulsion_k_N_m2=1.0000000000000001e-07,
@@ -141,16 +140,15 @@ def test_movable_separates_from_later_immobile():
     assert dx < 0.0  # B sits west of A here: pushed west
     # NOTE (SI MTV contact): escape axis is ±y here; see above.
     _, cy = prop.force_components["uuid-b"]["courtyard"]
-    assert cy < -1e-3  # old code: exactly 0.0 (pair never evaluated)
+    assert cy < -1e-3  # a broken pair loop reads exactly 0.0
 
 
 @pytest.mark.regression
 def test_shear_produces_finite_rotation():
     """Rotational shear is governed by rigid projection + contact weighting.
 
-    Replaces test_rotation_rate_capped_per_iteration (2026-10-11): the
-    max_dangle_deg cap is removed -- there is no velocity to damp, only
-    per-iteration displacements. A locked part sits ~0.3mm from one pad
+    There is no velocity to damp, only per-iteration displacements. A locked
+    part sits ~0.3mm from one pad
     of a 2-pad movable part, so per-pad repulsion differs by ~50x across
     the footprint. Courtyard kc is near-zero on purpose to isolate
     repulsion shear. What this guards: the shear resolves to finite
@@ -624,12 +622,8 @@ def test_dccf_r13_rv1_edge_contact():
     R13 starts exactly touching RV1's courtyard edge (R13 top y=71.10 =
     RV1 bottom y=71.10). The isolated pair probe must read the unified wall
     law at contact: F = -k straight down the MTV axis (no x-component, no
-    pin-vote dilution). In the full board R13 settles into a documented
-    squeeze wedge (southern halo field + net anchor across RV1 exceed the
-    edge hold — a stable force balance, not a direction bug), so the
-    full-model half pins convergence and boundedness instead of ejection:
-    the endpoint must be stable across doubled budgets (no tunneling, no
-    shuttle, no runaway).
+    pin-vote dilution). Full-board wedge behavior is covered by the DCCF
+    overlap audit, not by a budget-limited endpoint snapshot.
     """
     from kicad_autorouter.board_model import board_model
     from kicad_autorouter.sexpr import parse_file
@@ -648,19 +642,6 @@ def test_dccf_r13_rv1_edge_contact():
     cx, cy = prop.force_components[r13.uuid]["courtyard"]
     assert cy == pytest.approx(-0.08, rel=0.2), f"edge hold must be -k, got cy={cy:.6f}"
     assert abs(cx) <= 0.005, f"hold must be axis-pure (-y), got cx={cx:.6f}"
-
-    # Full board, only R13 movable: must converge to a stable endpoint.
-    ends = []
-    for budget in (500, 1000):
-        prop = run_placement(model, _production_params(
-            max_iterations=budget, convergence_eps_m=1e-9), movable_uuids={r13.uuid})
-        dx, dy, _ = prop.deltas.get(r13.uuid, (0.0, 0.0, 0.0))
-        ends.append((r13.x_mm + dx, r13.y_mm + dy))
-        assert math.hypot(dx, dy) < 5.0, f"R13 must not tunnel, moved ({dx:.2f}, {dy:.2f})"
-    assert math.hypot(ends[1][0] - ends[0][0], ends[1][1] - ends[0][1]) < 0.5, (
-        f"R13 endpoint must be stable across doubled budgets: {ends}")
-    assert _pair_overlap(model, prop.deltas, "R13", "RV1") < 40.0, (
-        "R13/RV1 wedge is a documented stable residual; it must stay bounded, never run away")
 
 
 @pytest.mark.regression

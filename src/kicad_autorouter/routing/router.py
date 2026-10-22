@@ -119,7 +119,7 @@ class SingleNetRouter:
         # pad solder/fanout areas). THT-free transitions win ties.
         self.via_block_mask = via_block_mask if via_block_mask is not None else np.zeros((self.H, self.W), dtype=bool)
         # Via clearance halo radius (cells): a drilled via's annulus plus
-        # clearance to foreign copper. 0 = legacy single-cell check.
+        # clearance to foreign copper. 0 = single-cell check.
         # Set per-net by the pipeline from via OD + clearance + track half.
         self.via_clearance_cells = max(0, int(via_clearance_cells))
         # Search-window policy: initial bbox dilation, growth factor per

@@ -1,8 +1,7 @@
 """SI dynamics calibration sweep on the synthetic magnet board.
 
-Why this exists: the SI rewrite replaced the legacy pseudo-force stepper with
-real m/N/s physics. The committed PlacementParams defaults are starting guesses,
-not tuned values. This script sweeps parameter grids on the cheap synthetic
+The committed PlacementParams defaults are starting guesses, not tuned
+values. This script sweeps parameter grids on the cheap synthetic
 magnet board (7 resistors, shared nets NET_A/B/C) and reports which parameter
 sets make the physics behave: groups tighten vs their own scattered start,
 parts stay inside the board region, runs converge within budget or stall

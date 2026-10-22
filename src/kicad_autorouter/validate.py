@@ -1,9 +1,8 @@
 """Validate KiCad files using kicad-cli (DRC for boards, ERC for schematics).
 
 KiCad 10 board (.kicad_pcb) and schematic (.kicad_sch) files are S-expression
-text files. A file is considered "good" when:
-  1. it has the expected header token ((kicad_pcb / (kicad_sch), and
-  2. kicad-cli can load it and run its checker without a load error.
+text files. A file is valid when kicad-cli can load it and run its checker
+without a load error.
 
 Checker violations (DRC/ERC) are reported separately from load failures —
 a file that loads cleanly but has design-rule violations is still a valid
@@ -27,9 +26,6 @@ KICAD_CLI_CANDIDATES = (
     "/usr/local/bin/kicad-cli",
 )
 
-PCB_HEADER = "(kicad_pcb"
-SCH_HEADER = "(kicad_sch"
-
 
 class KicadCliNotFound(Exception):
     """Raised when no kicad-cli binary can be located."""
@@ -40,9 +36,7 @@ class ValidationReport:
     kind: str  # "pcb" or "sch"
     file: Path
     loaded: bool  # False if kicad-cli could not load the file
-    violations: list = field(
-        default_factory=list
-    )  # raw violation dicts from JSON report
+    violations: list = field(default_factory=list)
     error: str | None = None  # stderr message when loading fails
 
     @property
@@ -59,25 +53,6 @@ def find_kicad_cli() -> str:
         "kicad-cli not found; install KiCad (e.g. `brew install --cask kicad`) "
         f"or add it to PATH. Searched: {', '.join(KICAD_CLI_CANDIDATES)}"
     )
-
-
-def file_header(path: Path) -> str | None:
-    """Return the first token of a KiCad file, e.g. '(kicad_pcb' or '(kicad_sch'.
-
-    Returns None if the file cannot be read or has no recognizable header.
-    """
-    try:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
-            first_line = f.readline(256).strip()
-    except OSError:
-        return None
-    token = first_line.split(" ", 1)[0] if first_line else ""
-    return token or None
-
-
-def looks_like_kicad_file(path: Path) -> bool:
-    """Cheap header check that does not require kicad-cli."""
-    return file_header(path) in (PCB_HEADER, SCH_HEADER)
 
 
 def _run_checker(cli: str, subcommand: tuple[str, ...], path: Path) -> ValidationReport:

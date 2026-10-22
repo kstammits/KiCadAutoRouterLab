@@ -5,6 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "kicad-autorouter"
 version = "0.5.0"
+license = {text = "GPL-3.0-or-later"}
 description = "KiCad autorouter: force-spring placement and grid routing for .kicad_pcb boards"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -18,7 +19,6 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0.0",
-    "pytest-html>=4.0.0",
     "matplotlib>=3.5.0",
 ]
 

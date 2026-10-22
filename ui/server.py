@@ -60,40 +60,28 @@ PARAMS_PATH = REPO_ROOT / "placement.json"
 # freeze the side panel on inject).
 DOCS_ALLOWLIST: Dict[str, Path] = {
     "README.md": REPO_ROOT / "README.md",
-    "PLAN.md": REPO_ROOT / "PLAN.md",
-    "TODO.md": REPO_ROOT / "TODO.md",
     "docs/README.md": REPO_ROOT / "docs" / "README.md",
     "docs/autorouting_glossary.md": REPO_ROOT / "docs" / "autorouting_glossary.md",
     "docs/si_force_laws.md": REPO_ROOT / "docs" / "si_force_laws.md",
     "docs/index.qmd": REPO_ROOT / "docs" / "index.qmd",
     "docs/physics_primer.qmd": REPO_ROOT / "docs" / "physics_primer.qmd",
-    "docs/pytest_results.qmd": REPO_ROOT / "docs" / "pytest_results.qmd",
-    "docs/benchmark_notes_2026-10-15.md": REPO_ROOT / "docs" / "benchmark_notes_2026-10-15.md",
+    "docs/roadmap.md": REPO_ROOT / "docs" / "roadmap.md",
 }
 DOCS_MAX_BYTES = 200 * 1024
 
 # Pre-rendered Quarto HTML (regenerated on demand via scripts/regen_*.sh,
 # gitignored under docs/_output/). Served verbatim so figures + math render;
-# never rendered on HTTP request (pytest_results.qmd re-runs the suite).
+# never rendered on HTTP request.
 # Maps URL basename -> (output file, source file for staleness, or None).
 DOCS_RENDERED: Dict[str, tuple[Path, Path | None]] = {
     "physics_primer.html": (
         REPO_ROOT / "docs" / "_output" / "html" / "physics_primer.html",
         REPO_ROOT / "docs" / "physics_primer.qmd",
     ),
-    "pytest_results.html": (
-        REPO_ROOT / "docs" / "_output" / "html" / "pytest_results.html",
-        REPO_ROOT / "docs" / "pytest_results.qmd",
-    ),
-    "test_report.html": (
-        REPO_ROOT / "docs" / "_output" / "html" / "test_report.html",
-        None,
-    ),
 }
 # Reverse map: allowlist source name -> rendered URL basename.
 DOCS_SOURCE_TO_RENDERED: Dict[str, str] = {
     "docs/physics_primer.qmd": "physics_primer.html",
-    "docs/pytest_results.qmd": "pytest_results.html",
 }
 
 
@@ -2037,10 +2025,7 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
         if parsed.path == "/api/placement/apply":
-            # Writeback (nudge by UUID + save_pair + DRC) lands in PLAN item 3.
-            self._send(
-                501, b"writeback not implemented yet (PLAN item 3)", "text/plain"
-            )
+            self._send(501, b"writeback not implemented yet", "text/plain")
             return
         if parsed.path == "/api/placement/pin":
             model, _, _, _, _, _ = STATE.snapshot
@@ -2104,10 +2089,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps({"ok": True, "selected": list(selected)}).encode(), "application/json")
             return
         if parsed.path == "/api/placement/apply":
-            # Writeback (nudge by UUID + save_pair + DRC) lands in PLAN item 3.
-            self._send(
-                501, b"writeback not implemented yet (PLAN item 3)", "text/plain"
-            )
+            self._send(501, b"writeback not implemented yet", "text/plain")
             return
         
         # ==================== Nets API ====================
@@ -2118,7 +2100,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         
         # POST /api/nets/protected - explicitly mark/unmark a protected net.
-        # (Fixed 2026-10-12: previously `protected: true` toggled instead
+        # (`protected: true` toggles instead
         # of setting — unchecking a stale-checked box could unprotect.)
         if parsed.path == "/api/nets/protected" and self.command == "POST":
             length = int(self.headers.get("Content-Length") or 0)

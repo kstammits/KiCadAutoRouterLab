@@ -1,12 +1,11 @@
 project:
   type: book
-  title: "KiCad AutoRouter — Physics Primer & Test Reference"
+  title: "KiCad AutoRouter — Physics Primer"
 
 book:
   chapters:
     - index.qmd
     - physics_primer.qmd
-    - pytest_results.qmd
   # Served inside our own docs viewer: no sidebar search needed.
   # (Saves ~160KB of autocomplete/fuse JS per page.)
   search: false
@@ -47,6 +46,5 @@ execute:
   echo: false
   eval: true
   # auto: re-execute only cells whose source changed (cached in _freeze/,
-  # gitignored). Without this every render re-runs the full pytest suite
-  # twice (pytest_results.qmd §§4-5) plus the placement sweep (§4 heatmap).
+  # gitignored).
   freeze: auto

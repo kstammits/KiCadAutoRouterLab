@@ -158,9 +158,9 @@ def test_preview_matches_accept_with_rotation():
 def test_tube111_back_footprints_inside_region_in_svg():
     """D6/D7 courtyards must render inside board region 2 (not mirrored out).
 
-    Regression for the B.Cu mirror bug: the model used to mirror B.Cu local
-    X, so D6 stuck out the left edge (112.34 < 115.55) and D7 the right
-    edge (149.56 > 143.55) while pcbnew showed both inside.
+    B.Cu local coordinates are not mirrored: mirroring local X puts D6 out
+    the left edge (112.34 < 115.55) and D7 out the right edge
+    (149.56 > 143.55), which disagrees with pcbnew.
     """
     m = _tube111_model()
     region = m.board_regions[2]
@@ -215,11 +215,10 @@ def test_tube111_back_pad_rect_uses_effective_angle():
 def test_preview_rotates_square_pads_with_part():
     """DCCF Q1 pad 1 (rect 1.7x1.7, file-angle 270) advances by da in preview.
 
-    Regression: apply_deltas used to keep pad angles stale, so Step showed
-    the courtyard/positions rotated while square pads stayed unrotated.
-    Follow-up: the copper must rotate the SAME way as the pad row — board
-    geometry is R(-angle) while SVG rotate() is R(+angle), so the file
-    angle is negated for display (270 -> 90 idle, 295 -> 65 after da=25).
+    apply_deltas must update pad angles with the footprint, and copper must
+    rotate the same way as the pad row — board geometry is R(-angle) while
+    SVG rotate() is R(+angle), so the file angle is negated for display
+    (270 -> 90 idle, 295 -> 65 after da=25).
     """
     m = board_model(parse_file(FIXTURES / "DCCF.sved.kicad_pcb"))
     q1 = m.by_ref["Q1"]
@@ -286,7 +285,7 @@ def test_forces_overlay_per_cause_arrows():
 
 
 def test_forces_overlay_falls_back_to_total():
-    """Proposals without a breakdown keep the legacy single arrow."""
+    """Proposals without a breakdown use one total-force arrow."""
     m = board_model(parse_file(FIXTURES / "DCCF.sved.kicad_pcb"))
     uuid = _c11_uuid(m)
     prop = PlacementProposal(

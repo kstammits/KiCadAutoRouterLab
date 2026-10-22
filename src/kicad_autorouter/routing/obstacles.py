@@ -314,8 +314,8 @@ def pad_halo_radius_cells(
 ) -> int:
     """Halo radius in cells covering pad copper + clearance + track half-width.
 
-    Single spelling of the ``max(1, ceil(...))`` formula previously inlined
-    at every pad-stamping call site.
+    Single spelling of the ``max(1, ceil(...))`` formula used at pad-stamping
+    call sites.
     """
     if res_mm <= 0:
         return 1
@@ -359,9 +359,7 @@ def track_corridor_radius_cells(
     """Corridor radius in cells reserving emitted track + clearance halo.
 
     Covers the track half-width plus the clearance to neighboring copper so
-    later nets' tracks and via landings keep DRC distance. Single spelling
-    for what pipeline previously derived as ``max(half_width-1,
-    clearance_cells)`` with mismatched numerators.
+    later nets' tracks and via landings keep DRC distance.
     """
     if res_mm <= 0:
         return 1

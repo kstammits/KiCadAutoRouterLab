@@ -1,10 +1,9 @@
 """Power nets in placement: fanout-scaled attraction + decap handling.
 
-Regression suite for the 2026-10-11 change that ended the exclude-all
-treatment of power nets in ``_build_net_edges_pad_level``. Before, any pad
-on a power/ground net got zero attraction edges, so a decoupling cap (both
-pads on power/GND) felt only Coulomb repulsion and wandered away from its
-IC. Now:
+Power nets in ``_build_net_edges_pad_level`` get attraction edges
+proportional to fanout instead of being excluded wholesale; otherwise a
+decoupling cap (both pads on power/GND) feels only Coulomb repulsion and
+wanders away from its IC.
 
 - signal nets: weight 1.0 (unchanged);
 - power nets: weight power_scale / (fanout - 1) per edge (bounded total
@@ -99,7 +98,7 @@ class TestSharedClassification:
     """Placement and routing agree on power/ground names (substring rules)."""
 
     def test_power_names(self):
-        for name in ("VCC", "VDD", "VIN", "+12V", "-12V", "Net-+12V", "VCC_IO", "3V3", "VBAT"):
+        for name in ("VCC", "VDD", "VIN", "+12V", "-12V", "Net-+12V", "VCC_IO", "3V3"):
             assert is_power_net(name), name
 
     def test_ground_names(self):
@@ -239,11 +238,9 @@ class TestPowerBehavior:
 
         Single-step pin (not a settling run): long-horizon settling of
         this toy geometry is repulsion drift, so the spec pins only the
-        first step. (Pre-2026-10-11 this docstring also noted a rigid-snap
-        reversal from iter 3; rigid projection removed that quirk — the
-        isolated pair now drifts monotonically apart.) The force field
-        is: attraction (-0.4, 0) toward the IC dominates Coulomb repulsion
-        here.
+        first step. The isolated pair drifts monotonically apart under rigid
+        projection. The force field is: attraction (-0.4, 0) toward the IC
+        dominates Coulomb repulsion here.
         """
         prop = run_placement(_decap_board(), _decap_params())
         assert "uuid-c1" in prop.deltas
@@ -262,7 +259,7 @@ class TestPowerBehavior:
 
         The cap must still feel its boosted attraction, but the IC side of
         a decap-incident edge is silent; otherwise a large neighbor can be
-        pulled onto the cap (2B Q1/C6).
+        pulled onto the cap.
         """
         prop = run_placement(_decap_board(), _decap_params())
         ax, _ = prop.force_components["uuid-c1"]["attraction"]

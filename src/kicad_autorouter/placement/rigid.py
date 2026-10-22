@@ -1,9 +1,8 @@
 """Rigid-body projection for placement dynamics.
 
 Footprints are snapped onto their exact rigid shape after each integrator
-step via Kabsch SVD (position-based dynamics). Replaces the old Hooke-spring
-rigid force, whose stiffness (~1e5x past the fixed step cap's stability
-limit) rang as a sustained period-2 slam.
+step via Kabsch SVD (position-based dynamics). This is unconditionally
+stable, unlike a stiff explicit rigid spring.
 """
 
 from __future__ import annotations

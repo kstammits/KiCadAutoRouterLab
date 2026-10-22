@@ -161,9 +161,9 @@ class TestFixtureCharacterization:
     """Recorded island counts on real fixtures (characterization, not spec).
 
     If a deliberate copper-model change moves these, update the numbers
-    AND justify — same convention as test_placement_parity.py. Recorded
-    2026-10-11: tube111's 487 tracks carve its 6 GND zones into 10 (F.Cu)
-    + 26 (B.Cu) islands; unrouted DCCF fragments on pad cutouts alone.
+    AND justify — same convention as test_placement_parity.py. tube111's
+    487 tracks carve its 6 GND zones into 10 (F.Cu) + 26 (B.Cu) islands;
+    unrouted DCCF fragments on pad cutouts alone.
     """
 
     def test_tube111_island_counts(self):

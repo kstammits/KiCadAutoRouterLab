@@ -183,24 +183,10 @@ def test_corridor_settles_without_overlap():
 # Phase 2b: full-DCCF overlap audit (allowlisted known squeeze residuals)
 # ---------------------------------------------------------------------------
 
-# Baseline 2026-10-16, production defaults, 200 iters, threshold 1.0mm²,
-# re-characterized post-refactor (identical residual set before/after the
-# dt/energy-guard session work — verified same 19 pairs and same areas at
-# HEAD and in the working tree, so this is the refactor-era endpoint, not a
-# regression from the session changes).
-# Re-characterized 2026-10-20 (damped rotation snap, deadband off, contact
-# blending, rigid-aware residual): trajectories re-time through the same
-# wedge family — 3 pairs resolved (C1/U1, C13/RV1, R4/RV1), 3 new
-# (C13/J1, C3/R4, C6/Q1). All three are shared-net attraction wedges
-# against locked/big courtyards (J1 locked; Q1 header; R4 -5V rail),
-# 6–7.4mm² at 200 iters with exponent=1.0 — same count (19), same family, same
-# scale as the set they replace. C3/R4 grows with longer budgets (6.1→9.6mm² at
-# 200→400 iters): the documented wedge-growth phenomenon (si_force_laws,
-# headless-trust follow-up), not a new failure mode.
-#
-# Re-characterized 2026-10-21 with exponent=2.0, wall_halo_m=0.006,
-# convergence_eps_m=2e-5 — 20 pairs >1mm² (was 19 at exponent=1.0).
-# New pairs: C14/RV3, C2/R2, R13/R3 — same squeeze family.
+# Full-DCCF residual squeezes above 1.0mm² at current production defaults
+# (200 iters). All are small-part-vs-large-courtyard attraction wedges; a new
+# pair means a part landed somewhere unexpected, so fail instead of silently
+# growing the family. To accept a residual, add it here with a note.
 KNOWN_DCCF_OVERLAPS_200 = frozenset({
     tuple(sorted(p)) for p in [
         ("C1", "U1"), ("C10", "RV2"), ("C10", "U2"), ("C11", "R11"),
@@ -218,11 +204,10 @@ KNOWN_DCCF_OVERLAPS_200 = frozenset({
 def test_dccf_overlap_audit_allowlisted(dccf_model):
     """Full-DCCF run: residual overlaps must stay within the known squeeze set.
 
-    Characterization 2026-10-16 (defaults, 200 iters), refreshed post-refactor:
-    19 pairs >1mm², all small-part-vs-large-courtyard squeezes. A NEW pair here
-    means a part landed somewhere unexpected — fail loudly instead of growing
-    the wedge family silently. To document a newly accepted residual, add it to
-    KNOWN_DCCF_OVERLAPS_200 with a comment.
+    All allowlisted pairs are small-part-vs-large-courtyard attraction wedges.
+    A new pair means a part landed somewhere unexpected — fail loudly instead
+    of growing the wedge family silently. To accept a residual, add it to
+    KNOWN_DCCF_OVERLAPS_200 with a note.
     """
     from kicad_autorouter.placement import _collect_pad_nodes, _footprint_courtyard_polygon
     import numpy as np

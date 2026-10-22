@@ -1,17 +1,13 @@
 # SI Force Laws for Placement Dynamics
 
-Normative reference for the new physics system (`feature/si-dynamics` branch).
-Units are SI throughout the solver: **meters** for geometry, **newtons** for
-force, **kilograms** for mass, **seconds** for time. Board files, the SVG, and
-motion frames stay in millimeters at the boundaries (converted at
-ingest/report); everything in this document is solver-internal.
+Normative reference for the placement solver. Units are SI: **meters** for
+geometry, **newtons** for force, **kilograms** for mass, **seconds** for
+time. Board files, SVG output, and motion frames stay in millimeters at the
+boundaries; everything here is solver-internal.
 
-We are NOT tied to legacy parameter values or ranges. Magnitudes below are
-starting guesses only — `scripts/calibrate_si.py` learns the real ranges
-empirically. Goals, in order: **safe** (no blowups, no tunneling, collisions
-never sticky), **clean** (one knob per effect, consistent units), **clear**
-(every formula inspectable here). How elastic colliding parts "should" be is
-unknown: start soft and let the sweep decide.
+Goals, in order: **safe** (no blowups, no tunneling, collisions never
+sticky), **clean** (one knob per effect, consistent units), **clear** (every
+formula inspectable here).
 
 Notation: pad position `x` (m), velocity `v` (m/s), footprint mass `m` (kg,
 from `data/footprint_mass.json`), timestep `dt` (s), unit vector `û`.
@@ -22,15 +18,15 @@ from `data/footprint_mass.json`), timestep `dt` (s), unit vector `û`.
 ```
 F_rep(i←j) = k_rep · û(i−j) / d²        d in meters, k_rep in N·m²
 ```
-Same shape as legacy (`kr/d²`), new units. Isolated-pair equilibrium with
-attraction at `d = √(k_rep / k_attr)`.
+Isolated-pair equilibrium with attraction sits at
+`d = √(k_rep / k_attr)`. With the defaults this is sub-millimeter: the
+courtyard wall owns contact response, not repulsion.
 
 ### Net attraction (constant-magnitude springs)
 ```
 F_attr = k_attr · w_edge · û(src→dst)   k_attr in N, w_edge dimensionless
 ```
-Unchanged shape (no Hooke length term). `w_edge` keeps the existing
-fanout/decap/power weighting (dimensionless, already unit-clean).
+No Hooke length term. `w_edge` carries the fanout/decap/power weighting.
 
 Decap-incident edges are **one-sided**: the decap receives the attraction,
 the non-decap endpoint does not (`edge_sides` in `force.py`). This keeps a
@@ -38,42 +34,26 @@ large part from being dragged onto its decoupling cap when a rail pulls the
 cap toward the part; decap–decap edges stay symmetric.
 
 ### Courtyard collision (walls)
-One linear law in signed separation `s` (meters) along the pair normal
+One law in signed separation `s` (meters) along the pair normal
 (`s > 0` gap, `s = 0` touching, `s = −penetration depth`):
 ```
-F_wall = k_wall · (1 − s / halo) · û      k_wall in N, halo in m
+F_wall = k_wall · (1 − s / halo)^p · û      k_wall in N, halo in m
 ```
-Zero past the halo reach, `k_wall` at contact, growing linearly with
-penetration depth — C0 and C1 continuous at first touch, so the formula
-never changes at intersection.
+Zero past the halo reach, `k_wall` at contact, growing with penetration.
+`p = wall_exponent` (default 2). `p ≥ 1` keeps the law C0/C1-continuous at
+first touch; `p < 1` is rejected because its slope is singular at the halo
+edge. `wall_cap_depth_mm > 0` clamps evaluated penetration depth so deep
+force saturates instead of running away.
 
-Experimental exponent (tight-quarters program, 2026-10-16): `wall_exponent`
-`p` (default 1, validated `≥ 1`) generalizes to `F = k·(1−s/h)^p` — softer
-far-halo approach, stiffer deep penetration, all curves meeting at `k_wall`
-at contact; contact stays C0/C1-continuous for any `p ≥ 1` (single formula
-both sides). `p < 1` is rejected (singular slope at the halo edge).
-Sweep result (2026-10-16, `wall_exponent` harness, production defaults
-otherwise): synthetic corpus clears at every `p` (no differentiator on easy
-cases); DCCF C14 single-movable unchanged (`p=1` vs `2` within 0.02 mm²);
-R13/RV1 wedge shrinks monotonically and stably (500→1000 iters endpoint
-stable): 33 → 17 (`p=2`) → 10 mm² (`p=3`), rotation steady ~2.3–2.7°
-(no spin regression), per-step displacement calmer (2.68 → 0.97 mm);
-full-DCCF @200 iters total overlap 67.7 → 46.6 mm² (−31%), pair count 9→10
-(the extra is R3/R6 hovering at the 1.0 mm² threshold, not a new family).
-Promising but NOT landed: exponent is a global law change — needs the
-recalibration sweep (`calibrate_si.py`) + full suite + regime-map check
-before the default moves off linear. Figures: `docs/figures/fig_wall_exponent.png`. Depth comes from SAT (rectangles/circles)
-or vertex-projection interval overlap (generic polygons); no intersection
-areas are computed anywhere in the contact path, which also removes the
-old exact-vs-approximated area mismatch in the per-pair direction vote
-and the magnitude jump at MTV axis ties (depth is continuous across ties).
-Direction is the pair's SAT minimum-translation (MTV) axis — out the
-nearest edge — in all cases.
+Depth comes from SAT (rectangles/circles) or vertex-projection interval
+overlap (generic polygons); no intersection areas are computed in the
+contact path. Direction is the pair's SAT minimum-translation (MTV) axis —
+out the nearest edge — in all cases.
 
-### Boundary repulsion
-Same piecewise shape as legacy, in newtons: `0` beyond threshold,
-linear `2·k_b·(t−d)/t` approaching the edge, saturating at `~k_b` outside.
-`k_b` in N, threshold in meters.
+### Board wall
+The board region polygon is an inverted courtyard using the same
+`_wall_mag` law: it pushes parts inward with `wall_k_N` / `wall_halo_m`.
+There is no separate boundary stiffness parameter.
 
 ### Ghost attraction
 ```
@@ -82,19 +62,28 @@ F_ghost = k_ghost · û(target→anchor)              k_ghost in N
 Split equally over target pads; no reaction on the ghost (infinite mass).
 
 ### Tangential assist (sliding assist)
-Applied at courtyard contact pairs only (same-layer body/pin overlap), never for halo-only approach. The board wall counts as a ghost courtyard with zero velocity on its side:
+Applied at courtyard contact pairs only (same-layer body/pin overlap), never
+for halo-only approach. The board wall counts as a ghost courtyard with zero
+velocity on its side:
 
 ```
-F_t = γ · |F_n| · sign(v_rel_t)   k_wall at contact, applied along MTV-perp
+F_t = γ · |F_n| · sign(v_rel_t)   applied along MTV-perp
 ```
 
-- `γ = contact_tangent_gamma` (default 0.15) — fraction of the contact normal force applied perpendicular to the MTV axis
-- `v_rel_t` = relative tangential velocity between the two footprints (pad-average along the MTV-perp axis)
-- `sign` is latched per contact pair: once decisive motion sets the direction, near-zero noise keeps it so a part pressed at an angle settles to one slide direction instead of rubbing left/right each step
-- Applied at the contact point via contact-weighted pad spread, so differential pad loading becomes torque through Kabsch — parts pressed against long walls slide along them rather than jam
-- Zero default (disabled at 0.0); effective range 0.1–0.3; legalize regime uses 0.15
+- `γ = contact_tangent_gamma` (default 0.15) — fraction of the contact normal
+  force applied perpendicular to the MTV axis; `0` disables.
+- `v_rel_t` = relative tangential velocity between the two footprints
+  (pad-average along the MTV-perp axis).
+- `sign` is latched per contact pair: once decisive motion sets the
+  direction, near-zero noise keeps it so a part pressed at an angle settles
+  to one slide direction instead of rubbing left/right each step.
+- Applied at the contact point via contact-weighted pad spread, so
+  differential pad loading becomes torque through Kabsch — parts pressed
+  against long walls slide along them rather than jam.
 
-Sign latch behavior: `sign(v_rel_t)` updates only when `|v_rel_t| > 1e-9` m/s; below that the last sign is held, defaulting to +1 (the old `>= 0` branch) on first contact. This is internal solver memory (`ctx.last_tangent`), not a user param.
+Sign latch behavior: `sign(v_rel_t)` updates only when `|v_rel_t| > 1e-9`
+m/s; below that the last sign is held, defaulting to +1 on first contact.
+This is internal solver memory (`ctx.last_tangent`), not a user param.
 
 ### Final depenetration pass (legalize eject)
 Applied **once** after dynamics settle, before the final force readback:
@@ -103,28 +92,39 @@ Applied **once** after dynamics settle, before the final force readback:
 x_i ← x_i + 0.5 · depth_i · û_MTV     per overlapping pair
 ```
 
-- Runs after dynamics stop (converged/stalled/budget), on the committed pad positions
-- Only true penetration (`s < 0`), never halo proximity — halo-only near-misses are untouched
-- Locked and ghost sides never move; both-movable pairs split the correction evenly
-- Jacobi (frozen-geometry) accumulation: all pairs' corrections are computed against the same pose, then applied together — sequential in-place pushes would let later pairs steer on stale geometry and walk wedged parts around
-- Rotation is clamped to 2°/pass via the existing rigid-step clamp, re-posed rigidly (Kabsch) so bodies stay exact; velocities re-derived from the projected displacement
-- One round only: iterating re-measures after each shove and ping-pongs closed wedges between neighbors (measured: R13 walked 12–20 mm while worst overlap grew); the remainder is honestly reported via legality (`overlapping_pairs`, `max_pair_overlap_mm2`) for the next legalize run to integrate
-- Skipped entirely for static probes (`max_iterations=0` — report, never move) and walls-off configs (`wall_k_N`/`wall_halo_m == 0`)
-- Velocities zeroed after the pass; residual force is re-read at the ejected pose so the stop reason stays honest
+- Runs after dynamics stop (converged/stalled/budget), on the committed pad
+  positions.
+- Only true penetration (`s < 0`), never halo proximity — halo-only
+  near-misses are untouched.
+- Locked and ghost sides never move; both-movable pairs split the correction
+  evenly.
+- Jacobi (frozen-geometry) accumulation: all pairs' corrections are computed
+  against the same pose, then applied together. Sequential in-place pushes
+  would let later pairs steer on stale geometry and walk wedged parts
+  around.
+- Rotation is clamped to 2°/pass via the existing rigid-step clamp,
+  re-posed rigidly (Kabsch) so bodies stay exact; velocities are re-derived
+  from the projected displacement.
+- One round only: iterating re-measures after each shove and ping-pongs
+  closed wedges between neighbors. The remainder is reported via legality
+  (`overlapping_pairs`, `max_pair_overlap_mm2`) for the next legalize run.
+- Skipped entirely for static probes (`max_iterations=0` — report, never
+  move) and walls-off configs (`wall_k_N`/`wall_halo_m == 0`).
+- Velocities are zeroed after the pass; residual force is re-read at the
+  ejected pose so the stop reason stays honest.
 
 ### Viscous damping (the physics damper)
 ```
 F_damp = −c · v                                   c in N·s/m
 ```
-One clean knob. Per-pad application; rigid projection (below) keeps bodies
-consistent.
+Per-pad application; rigid projection keeps bodies consistent.
 
 ### Dry friction (deadband, whole footprint)
 ```
-if ‖F_pad‖max over footprint < f_fric → footprint frozen this step     f_fric in N
+if max pad force over footprint < friction_N → footprint frozen this step
 ```
-Keeps the legacy all-or-nothing rigid semantics, now in force units so it
-stops micro-motion without a displacement hack.
+Whole-footprint all-or-nothing freeze in force units. Stops micro-motion
+without a displacement hack.
 
 ## 2. Integrator (semi-implicit Euler + guards)
 
@@ -132,67 +132,57 @@ Per movable pad, per iteration:
 ```
 v += (F / m) · dt        # kick (a = F/m in m/s²)
 v *= 1 / (1 + c·dt / m)  # implicit-Euler viscous decay (stable for any dt)
-if ‖v‖·dt > vmax:  v *= vmax / (‖v‖·dt)   # speed ceiling, replaces max_step_mm
+if ‖v‖·dt > vmax:  v *= vmax / (‖v‖·dt)   # speed ceiling
 x += v · dt              # drift
 ```
-then the existing Kabsch rigid projection snaps pads onto exact bodies, and
-velocity is re-derived from the actual projected displacement
-`v := (x_proj − x_old) / dt` so projection can't inject phantom energy.
+then Kabsch rigid projection snaps pads onto exact bodies and velocity is
+re-derived from the actual projected displacement
+`v := (x_proj − x_old) / dt` so projection cannot inject phantom energy.
 
-Rigid-step clamp (tunneling guard): the velocity ceiling alone cannot bound
-rotation — the Kabsch snap can swing pads of a differentially-forced body
-past `vmax·dt` (observed: 7 mm leap against a 3 mm cap; −40° spins). After
-projection, each body's centroid shift is clamped to `vmax·dt` and its
-rotation change to 5°/step, re-posed rigidly from the pre-step pose.
-Velocity re-derivation runs after the clamp, so it reflects clamped motion.
+Rigid-step clamp (tunneling guard): after projection, each body's centroid
+shift is clamped to `vmax·dt` and its rotation change to 5°/step, re-posed
+rigidly from the pre-step pose. Velocity re-derivation runs after the clamp.
 
-Adaptive-dt guard (convergence safety net, 5 lines): track system kinetic
-energy; halve `dt` when it rises iteration-over-iteration, regrow ×1.1 when
-it falls, floored at `dt_min`, capped at `dt_max`. This is FIRE's
-blowup-proofing without FIRE's extra state. Floor `dt_min = 5e-5` (not
-1e-5): the halve/regrow asymmetry ratchets `dt` to the floor under
-oscillation, where tiny steps fake convergence while forces are still
-large. Ceiling `dt_max = 2e-3` keeps dense-board steps accurate.
+Adaptive-dt guard: track system kinetic energy; halve `dt` on a significant
+rise, regrow ×1.1 when it falls, floored at `dt_min_s`, capped at
+`dt_max_s`. The absolute floor for a "significant" rise is a fraction of
+`0.5·m_max·vmax²`, so contact noise does not ratchet the timestep down.
 
-Contact direction rule (overlap): push along the SAT minimum-translation
-(MTV) axis — out the nearest edge — never centroid-to-centroid, which is
-wrong for containment / small-in-large overlaps (shoves the small part
-deeper along the long axis). Generic (non-rect/circle) polygons keep the
-centroid fallback.
+Contact direction rule: push along the SAT minimum-translation (MTV) axis —
+out the nearest edge — never centroid-to-centroid, which is wrong for
+containment / small-in-large overlaps. Generic (non-rect/circle) polygons
+keep the centroid fallback.
 
-Per-pair aggregation: body + THT-pin-circle sub-paths of ONE footprint pair
+Per-pair aggregation: body + THT-pin-circle sub-paths of one footprint pair
 report signed separations and the single deepest contact wins
-(winner-takes-all), so pin circles can't stack the same contact 3–9× and
-every sub-path speaks the same units (mm). Multi-neighbor superposition is
-unaffected (aggregation is per pair, not global) — which is why a part
-squeezed by several neighbors can still settle wedged: equilibrium
-position is set by the squeeze geometry, not by the wall stiffness.
+(winner-takes-all), so pin circles cannot stack the same contact. Multi-
+neighbor superposition is unaffected (aggregation is per pair, not global).
 
-Convergence: max `‖Δx‖ < eps_m` (meters) per step AND residual forces
-below the settle scale (`force_settle_N = max(20·friction, 4·ghost_k,
-1e-3·max(wall, attraction))` — far above the deadband so frozen
-rest still terminates, far below contact scales so any real push keeps the
-run alive). Displacement alone lied: damper-strangled crawls tripped eps
-with ~0.1N pushes unserved (DCCF legalize fake-settled at 234/500 with 9
-overlaps intact). `stop_reason` reports `converged` (quiet AND weak),
-`budget` (max_iterations with residual force — headless must treat as
-needs-attention, never settled), or `empty`. Long Coulomb-tail
-cruises terminate via the friction deadband (whole-footprint freeze when
-all pad forces drop below `friction_N`), which is why `friction_N` must
-be scaled to the tail strength (`kr`): a tail that stays above the
-deadband cruises past any iteration budget.
+Convergence: max `‖Δx‖ < convergence_eps_m` (meters) per step AND residual
+forces below the settle scale
+(`force_settle_N = max(20·friction, 4·ghost_k, 1e-3·max(wall, attraction))`).
+`stop_reason` reports `converged` (quiet AND weak), `stalled` (no
+window-mean progress with residual forces), `budget` (max_iterations with
+residual force), or `empty`. Headless callers must treat `stalled` and
+`budget` as needs-attention, never as settled.
 
-## 3. Parameters (calibrated 2026-10-15 — scripts/calibrate_si.py)
+Stall detection compares the mean pose over each `stall_window` against the
+previous window mean. A limit cycle averages out; real transit moves the
+mean. `stall_window=0` disables.
 
-| Param | Unit | Value | Role |
+## 3. Parameters
+
+| Param | Unit | Default | Role |
 |---|---|---|---|
 | `repulsion_k_N_m2` | N·m² | 2e-9 | pair push (sub-contact only) |
 | `attraction_k_N` | N | 8e-3 | legalize-regime net pull |
 | `wall_k_N` | N | 8e-2 | contact/halo strength |
-| `wall_halo_m` | m | 0.006 | near-miss reach AND depth scale (single law) |
-| `wall_exponent` | — | 1.0 | wall-law exponent (experimental; `≥ 1`) |
-| `ghost_k_N` | N | 5e-5 | ghost spring pull (untuned) |
-| `contact_tangent_gamma` | — | 0.15 | sliding assist: γ fraction of contact normal force along MTV-perp (0 = disabled) |
+| `wall_halo_m` | m | 0.006 | near-miss reach and depth scale |
+| `wall_exponent` | — | 2.0 | wall-law exponent (`≥ 1`) |
+| `wall_cap_depth_mm` | mm | 0.0 | deep-penetration cap (0 = off) |
+| `momentum_alpha` | — | 0.7 | old-velocity blend after rigid projection |
+| `ghost_k_N` | N | 5e-5 | ghost spring scale |
+| `contact_tangent_gamma` | — | 0.15 | tangential fraction (`0` = off) |
 | `damping_Ns_m` | N·s/m | 0.12 | viscous damper |
 | `friction_N` | N | 1e-6 | motion deadband |
 | `dt_s` | s | 1e-3 | timestep |
@@ -200,51 +190,34 @@ deadband cruises past any iteration budget.
 | `dt_max_s` | s | 2e-3 | guard ceiling |
 | `vmax_m_s` | m/s | 1.0 | speed ceiling |
 | `convergence_eps_m` | m | 2e-5 | settled threshold |
-| `max_iterations` | — | 1000 | budget (unchanged) |
+| `stall_window` | iterations | 100 | no-progress stop window (0 = off) |
+| `max_iterations` | — | 1000 | step budget |
 | `mass_density_kg_m2` | kg/m² | 3.0 | fallback mass slope |
 | `mass_floor_kg` | kg | 1e-9 | minimum part mass |
+| `power_attraction_scale` | — | 1.0 | power-rail attraction trim |
+| `decap_boost` | — | 4.0 | decap-edge multiplier |
+| `overlap_tolerance_mm2` | mm² | 0.1 | legality threshold |
+| `wall_tolerance_mm` | mm | 0.1 | board-wall legality threshold |
 
-Regime map (no single ratio clusters AND legalizes — use two stages):
+Regime map (no single ratio both clusters scattered starts and legalizes
+placed boards — use two stages):
 - Cluster (scattered starts, e.g. magnet synthetics): `attraction_k_N`
   ≈ 0.04–0.06 with `wall_k_N` ≈ 0.02–0.03, `damping` 0.08, `dt` 2 ms.
   Tightens groups to ~0.3–0.6 of start spread, zero overlap.
 - Legalize (placed boards: tube111, DCCF): `attraction_k_N` ≈ 0.005–0.01
   with `wall_k_N` ≈ 0.08–0.1, `damping` 0.12–0.15, `dt` 1 ms.
-  Tube111 overlap more than halves; DCCF initial pairs shrink.
-  The engine default above is the legalize side (safe).
+  The engine default is the legalize side (safe).
 
 Sanity anchor: an 0805 (2.5 mm² courtyard, ~8 mg) at `k_attr = 50 µN`
 accelerates at ~6 m/s² — brisk but sub-ballistic at 1 ms steps
-(`v·dt ≈ 6 µm/step`). If calibration lands far from these guesses, the
-guesses were wrong, not the method.
+(`v·dt ≈ 6 µm/step`).
 
-Known residuals (follow-ups, not regressions): DCCF keeps 1–2 wedged
-pairs (e.g. R13 vs RV1's 76 mm-wide courtyard span: net anchor lies
-across a locked obstacle plus a southern halo squeeze field that exceeds
-the edge hold — a stable force-balanced wedge, verified by isolated-pair
-probes showing the contact direction itself is correct); honest stopping
-(`budget` + residual instead of a fake settle) lets trapped parts keep
-crawling along their net gradient, so wedge depth can GROW with longer
-budgets on attraction-dominated traps (legalize@200: RV1/R13 15→27 mm²
-once every region runs the full budget). Depth is not progress there —
-capping it needs a no-progress (stall) stop rule and/or anchor-side
-rebalance, not more iterations. The stall rule exists now
-(`stall_window`, default 100: no net progress of the window-averaged pose
-over the window stops as "stalled" with residual attached — per-step quiet
-never arrives under contact chatter, so the rule compares window means); anchor-side rebalance
-is still the headless-trust follow-up. The
-rigid snap applies half the measured rotation per step (damped snap),
-with the angular deadband (`MIN_ROT_STEP_RAD`) currently 0.0 (disabled:
-parking micro-rotations wedged pairs that otherwise separate) — but
-large slow flips still occur when the torque is genuine
-(observed: 0805 flipping ~160° toward its rail over 400 iters — a
-compass-needle response, kept deliberately since gradual movement must
-keep working).
-
-Future, not planned: orientation-matching neighboring parts. It conflicts
-with the force-driven orientation above (neighbors agreeing on an angle
-vs each part following its own net/wall torque), so it needs its own
-design before anyone builds it.
+Known residual: DCCF keeps a few wedged pairs (e.g. R13 vs RV1's 76 mm-wide
+courtyard span) where the net anchor plus a southern halo squeeze field
+exceed the edge hold. The equilibrium is stiffness-independent; resolving it
+needs anchor-side or placement-level work, not a stiffer wall. Honest
+stopping means wedge depth can grow with longer budgets on
+attraction-dominated traps, so depth is not progress.
 
 ## 4. Mass model
 

@@ -123,9 +123,8 @@ def pick_all_power_nets(model) -> list[str]:
 def micro_case(board_name: str, model, grid, params: RoutingParams) -> dict:
     """Time the one-off per-board / per-net stage costs (the fixed stages).
 
-    Reports what the via-mask fix changed: ``via_ok_mask_s`` used to be
-    tens of seconds of per-obstacle Python stamping; it is now one scipy
-    dilation.
+    ``via_ok_mask_s`` is one scipy dilation rather than per-obstacle Python
+    stamping.
     """
     cost_grid = build_occupancy_grid(
         model, grid, default_clearance_mm=params.clearance_mm

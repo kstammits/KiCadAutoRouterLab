@@ -1,10 +1,7 @@
 """Shared builders for routing/placement tests.
 
-Consolidates the ~10 copy-pasted ``Pad(...)`` spells, 6 rect-courtyard
-builders, 7 two-pad footprint factories, and plan-view geometry one-liners
-previously duplicated across test_routing_crossing, test_routing_tht_free_via,
-test_routing_obstacles, test_placement, test_placement_pairs and
-test_placement_layers.
+Shared ``Pad(...)`` spells, courtyard builders, two-pad footprint factories,
+and plan-view geometry helpers used across the routing and placement tests.
 
 Convention (matches all prior call sites): pads are built at the origin
 and placed with ``dataclasses.replace(pad, position=...)``; footprints

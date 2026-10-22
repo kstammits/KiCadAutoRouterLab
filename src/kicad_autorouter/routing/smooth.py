@@ -46,7 +46,6 @@ except ImportError:  # pragma: no cover - Numba is a hard dependency.
 _EMPTY_BOOL_2D = np.zeros((0, 0), dtype=bool)
 
 # Cost bands (mirrors routing/obstacles.py + router.CostMap).
-BLOCKED_THRESHOLD = 100  # impassable: tracks, vias, drilled holes (pours are passable)
 SOFT_THRESHOLD = 50  # HIGH_COST pad rings / EDGE_KEEPOUT: no shortcut through
                          # COURTYARD (25) is below this — shortcuts allowed
 

@@ -270,20 +270,3 @@ def get_generator_version(tree: SExpr) -> Optional[str]:
     if gen_ver is not None and gen_ver.args:
         return str(gen_ver.args[0])
     return None
-
-
-def get_file_version(tree: SExpr) -> Optional[int]:
-    """Extract the file version (date-based) from a kicad_pcb S-expression tree.
-    
-    Returns the version as an integer (e.g., 20241229) or None if not found.
-    """
-    ver = tree.find("version")
-    if ver is not None and ver.args:
-        val = ver.args[0]
-        if isinstance(val, int):
-            return val
-        try:
-            return int(val)
-        except (ValueError, TypeError):
-            pass
-    return None

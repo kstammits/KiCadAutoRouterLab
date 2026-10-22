@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Wall-hardening sweep: exponent x force scale x deep-cap.
 
-Collects the empirical data for docs/wall_hardening_sweep.md: does a
-nonlinear wall (p > 1, optionally rescaled and depth-capped) hold parts
-out of locked courtyards at shallower depths without breaking clustering,
-rotation, or stability?
+Empirical sweep for wall-law tuning: does a nonlinear wall (p > 1,
+optionally rescaled and depth-capped) hold parts out of locked courtyards at
+shallower depths without breaking clustering, rotation, or stability?
 
 Cells:
   A. head-on press probe (2-3 bodies, analytic equilibrium known):
@@ -15,7 +14,7 @@ Cells:
   C. full DCCF + tube111 spot: overlap pair-set/area, rotation, stop stats.
 
 Usage:
-    .venv/bin/python scripts/sweep_wall_hardening.py [--out docs/benchmarks/wall_hardening.json]
+    .venv/bin/python scripts/sweep_wall_hardening.py [--out docs/benchmarks/wall_hardening_<date>.json]
     Prints a markdown table body to stdout; writes JSON to --out.
 """
 
@@ -197,7 +196,7 @@ def plot_findings(cells: list, outdir: pathlib.Path, dpi: int = 150) -> pathlib.
     axes[1].grid(True, alpha=0.3)
     fig.suptitle("Wall-Hardening Sweep: empirical findings")
     fig.tight_layout()
-    dest = outdir / "fig_wall_sweep_findings.png"
+    dest = outdir / "fig_wall_sweep.png"
     fig.savefig(dest, dpi=dpi)
     plt.close(fig)
     return dest
@@ -205,7 +204,7 @@ def plot_findings(cells: list, outdir: pathlib.Path, dpi: int = 150) -> pathlib.
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--out", default="docs/benchmarks/wall_hardening.json")
+    ap.add_argument("--out", default=f"docs/benchmarks/wall_hardening_{time.strftime('%Y-%m-%d')}.json")
     ap.add_argument("--dccf-iters", type=int, default=200)
     ap.add_argument("--skip-full", action="store_true", help="skip full-board cells")
     ap.add_argument("--plot-only", default=None,

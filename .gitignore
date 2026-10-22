@@ -26,10 +26,6 @@ experiments/out/
 # Scratch / temp artifacts (DRC reports, throwaway test boards)
 tmp/
 
-# Generated pytest HTML reports (immediately outdated; regenerate on demand
-# via scripts/pytest_report.py --out <path>)
-docs/benchmarks/test_report_*.html
-
 # Quarto rendered output (regenerated on demand via scripts/regen_*.sh)
 docs/_output/
 

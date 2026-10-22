@@ -53,18 +53,13 @@ def test_docs_list_contains_physics_set():
             "docs/si_force_laws.md",
             "docs/index.qmd",
             "docs/physics_primer.qmd",
-            "docs/pytest_results.qmd",
-            "docs/benchmark_notes_2026-10-15.md",
+            "docs/roadmap.md",
         ):
             assert name in docs, f"missing {name}"
         # Rendered mapping present for the QMD primers.
         assert docs["docs/physics_primer.qmd"]["rendered_url"] in (
             "/docs-rendered/physics_primer.html",
             None,  # not yet rendered on a fresh checkout
-        )
-        assert docs["docs/pytest_results.qmd"]["rendered_url"] in (
-            "/docs-rendered/pytest_results.html",
-            None,
         )
         # Plain markdown has no rendered twin.
         assert docs["docs/si_force_laws.md"]["rendered_url"] is None

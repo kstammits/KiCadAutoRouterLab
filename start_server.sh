@@ -5,9 +5,7 @@ PORT=${1:-8000}
 
 # Open the browser shortly after startup, in the background, then replace
 # this shell with the server (exec) so Ctrl-C / SIGTERM go straight to
-# Python's clean SIGINT/SIGTERM handler. The previous background+trace/wait
-# version delivered the signal twice (once to Python, once forwarded by the
-# trap) which is what printed the big interrupted-syscall traceback.
+# Python's clean SIGINT/SIGTERM handler.
 (
     sleep 2
     url="http://127.0.0.1:$PORT"

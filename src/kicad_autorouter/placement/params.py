@@ -24,23 +24,17 @@ FRAME_XY_DECIMALS = 3
 FRAME_ANGLE_DECIMALS = 2
 FRAME_DEFAULT_MAX = 100
 
-# Angular deadband (rad/step): DISABLED (0.0). Measured 2026-10-20: the
-# 0.1° deadband parks micro-rotations that wedged pairs need to work
-# themselves apart (magnet R6/R7: exact separation without it, permanent
-# 0.06 growing to 0.075mm² wedge with it). Idle-orientation burn is bounded
-# instead by the stall rule (no window-mean progress stops "stalled").
-# Deliberately NOT a PlacementParams slider. Re-enable only with a case
-# the stall rule mishandles in hand.
+# Angular deadband (rad/step): DISABLED (0.0). A 0.1° deadband parks
+# micro-rotations that wedged pairs need to work themselves apart. Idle-
+# orientation burn is bounded instead by the stall rule (no window-mean
+# progress stops "stalled"). Deliberately NOT a PlacementParams slider.
 MIN_ROT_STEP_RAD = 0.0
 
 # Stall-rule tolerance multiplier (dimensionless): the stall check compares
-# the WINDOW-AVERAGED pose shift against STALL_MEAN_EPS_MULT * eps, not eps
-# itself. Measured 2026-10-21 (DCCF R5 legalize, single-part vs locked
-# neighbor): steady chatter holds window means still to ~1.5um while single
-# steps swing ~80um and the transit tail moves the mean 6.6um — so 4x sits
-# mid-gap between chatter noise and real progress. Deliberately NOT a
-# PlacementParams slider. Re-tune only with a case the stall rule
-# mishandles in hand.
+# the window-averaged pose shift against STALL_MEAN_EPS_MULT * eps, not eps
+# itself. Steady chatter holds window means still to ~1.5 µm while single
+# steps swing ~80 µm and real transit moves the mean ~6.6 µm; 4x sits between
+# chatter noise and real progress. Deliberately NOT a PlacementParams slider.
 STALL_MEAN_EPS_MULT = 4.0
 
 
@@ -130,8 +124,7 @@ class PlacementParams:
     @classmethod
     def from_dict(cls, data: dict) -> "PlacementParams":
         """Build params from a JSON-style dict; missing keys take defaults and
-        unknown keys are ignored (forward compatibility with newer param sets,
-        and silent drop of legacy v1 keys).
+        unknown keys are ignored (so the UI may POST partial param sets).
 
         ``dt_min_s``/``dt_max_s`` are solver-internal timestep guards; they are
         never exposed on the UI and are deliberately not user-controllable, so
