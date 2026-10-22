@@ -303,9 +303,8 @@ def make_test_dccf_c14_rv3_u3(dccf_model):
 
 
 def make_test_dccf_overlap_audit(dccf_model):
-    """Test 10: test_dccf_overlap_audit_allowlisted"""
-    params = PlacementParams(max_iterations=200, convergence_eps_m=1e-12)
-    return dccf_model, params, None
+    """Test 10: test_dccf_overlap_audit"""
+    return dccf_model, PlacementParams(), None
 
 
 # ---------------------------------------------------------------------------
@@ -464,7 +463,7 @@ def main():
         ("test_dccf_multiple_resistors_near_locked", make_test_dccf_multiple_resistors, None),
         ("test_dccf_r13_rv1_edge_contact", make_test_dccf_r13_rv1, None),
         ("test_dccf_resistor_c14_near_rv3_u3", make_test_dccf_c14_rv3_u3, None),
-        ("test_dccf_overlap_audit_allowlisted", make_test_dccf_overlap_audit, None),
+        ("test_dccf_overlap_audit", make_test_dccf_overlap_audit, None),
     ]
 
     for name, maker, _ in tests:

@@ -181,6 +181,10 @@ def test_loaded_contact_settles_despite_per_pad_loads():
     bodies settle as wholes — per-pad max can never vanish under contact
     load), so this run must report converged, not budget. Regression for
     the Q1 legalize case, which chattered to budget with the per-pad gate.
+
+    Tangential assist is disabled here so the symmetric 1D contact isolates
+    the normal-force balance and residual gate; tangential sliding is covered
+    by the pair-motion tests.
     """
     fa = make_fp("A", "uuid-a", 2.0, 0.0, ("N1", "NX"),
                  footprint_id="test:R", hw=3.0, hh=2.0,
@@ -196,7 +200,8 @@ def test_loaded_contact_settles_despite_per_pad_loads():
         model,
         PlacementParams(max_iterations=500,
                         repulsion_k_N_m2=1e-15, attraction_k_N=0.03,
-                        wall_k_N=0.05, wall_halo_m=0.006),
+                        wall_k_N=0.05, wall_halo_m=0.006,
+                        contact_tangent_gamma=0.0),
     )
     assert prop.stop_reason == "converged", (
         f"net-settled contact must converge, got {prop.stop_reason} "

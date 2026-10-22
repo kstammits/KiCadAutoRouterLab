@@ -205,19 +205,20 @@ placed boards — use two stages):
   ≈ 0.04–0.06 with `wall_k_N` ≈ 0.02–0.03, `damping` 0.08, `dt` 2 ms.
   Tightens groups to ~0.3–0.6 of start spread, zero overlap.
 - Legalize (placed boards: tube111, DCCF): `attraction_k_N` ≈ 0.005–0.01
-  with `wall_k_N` ≈ 0.08–0.1, `damping` 0.12–0.15, `dt` 1 ms.
-  The engine default is the legalize side (safe).
+  with `wall_k_N` ≈ 0.08–0.1, `damping` 0.12–0.15, `wall_halo_m` 4 mm,
+  `dt` 1 ms. The shorter halo keeps dense neighbor fields from overriding a
+  part's own wall; the engine default remains 6 mm for clustering.
 
 Sanity anchor: an 0805 (2.5 mm² courtyard, ~8 mg) at `k_attr = 50 µN`
 accelerates at ~6 m/s² — brisk but sub-ballistic at 1 ms steps
 (`v·dt ≈ 6 µm/step`).
 
-Known residual: DCCF keeps a few wedged pairs (e.g. R13 vs RV1's 76 mm-wide
-courtyard span) where the net anchor plus a southern halo squeeze field
-exceed the edge hold. The equilibrium is stiffness-independent; resolving it
-needs anchor-side or placement-level work, not a stiffer wall. Honest
-stopping means wedge depth can grow with longer budgets on
-attraction-dominated traps, so depth is not progress.
+Known residual: DCCF keeps locked source overlaps (e.g. D5/Q2), and longer
+legalize budgets can regrow attraction-dominated squeezes (e.g. C10/U2). The
+equilibrium is stiffness-independent; resolving it needs anchor-side or
+placement-level work, not a stiffer wall. Honest stopping means wedge depth
+can grow with longer budgets on attraction-dominated traps, so depth is not
+progress.
 
 ## 4. Mass model
 

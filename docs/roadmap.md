@@ -7,6 +7,9 @@ Open work only. Completed changes belong in git history, not here.
 - **R13/RV1 squeeze wedge**: the southern halo field plus the net anchor
   across RV1 exceed the edge hold at every exit. Stable equilibrium, not a
   contact-direction bug; needs anchor-side or placement-level work.
+- **DCCF long-budget regrowth**: the Legalize preset's 4 mm halo clears the
+  RV1/U1 wedge at the 200-iteration audit, but 1000-iteration runs regrow
+  C10/U2 (~1.8 → 6.1 mm²). Needs anchor-side or budget-aware work.
 - **Halo reach recalibration**: `wall_halo_m` is the remaining global
   distance lever. Requires the full calibration sweep before changing.
 - **Default-parameter tests**: migrate the placement physics and courtyard

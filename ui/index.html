@@ -535,7 +535,7 @@
           <div class="bar" id="regime-bar">
             <span class="num">Regime</span>
             <button id="regime-cluster-btn" title="Scattered-start clustering: stronger attraction, softer walls (attraction ~0.05, wall ~0.025, damping 0.08, dt 2ms)">Cluster preset</button>
-            <button id="regime-legalize-btn" title="Placed-board polish: gentle attraction, firm walls (attraction ~0.008, wall ~0.09, damping 0.13, dt 1ms)">Legalize preset</button>
+            <button id="regime-legalize-btn" title="Placed-board polish: gentle attraction, firm walls, 4mm halo (attraction ~0.008, wall ~0.08, damping 0.12, dt 1ms)">Legalize preset</button>
             <button id="copy-link-btn" title="Copy a bookmarkable link carrying the full current parameter set as URL query params (SI units, same keys as the params API)">Copy link</button>
           </div>
           <details id="advanced-params-details">
@@ -762,7 +762,7 @@ const ALL_PARAM_DEFS = [...PARAM_DEFS, ...ADVANCED_PARAM_DEFS];
 const PARAM_DESC = {
   attraction_k_N: "Constant-magnitude attraction between net-connected pads (newtons). Legalize: 0.005-0.01; Cluster: 0.04-0.06. Log scale.",
   wall_k_N: "Elastic collision stiffness when courtyards overlap or enter the halo (newtons). One linear law F = k*(1-s/h) in signed distance s (gap +, penetration -): zero past the halo, k at contact, growing with depth. Deepest contact wins per pair. Legalize: 0.08; Cluster: 0.02-0.03. Log scale.",
-  wall_halo_m: "Near-miss reach past part outlines. Shown in mm; stored in meters. Default 6mm (calibrated).",
+  wall_halo_m: "Near-miss reach past part outlines. Shown in mm; stored in meters. Legalize: 4mm; Cluster and engine default: 6mm.",
   damping_Ns_m: "Viscous damping F = −c·v (N·s/m). The physics damper: higher settles faster with less overshoot. Legalize: 0.12; Cluster: 0.08. Log scale.",
   max_iterations: "Hard limit on simulation steps (dimensionless).",
   power_attraction_scale: "Power-rail attraction trim (fanout-scaled k/(fanout-1) per edge). 1 = full participation; 0 restores the old exclude-power behavior.",
@@ -935,11 +935,12 @@ async function loadParams(defaultsOnly = false) {
 // Regime presets from docs/si_force_laws.md §3: no single ratio clusters
 // AND legalizes, so offer the two calibrated starting points. dt_s, vmax,
 // friction ride along via the merge-POST even though they have no main-panel sliders.
-// Calibrated values: wall_halo_m=0.006, wall_exponent=2.0,
-// convergence_eps_m=2e-5 included via merge-POST.
+// Calibrated values: Cluster uses a 6mm halo; Legalize uses 4mm so dense
+// neighbor fields do not overpower a part's own wall. wall_exponent=2.0 and
+// convergence_eps_m=2e-5 ride along via merge-POST.
 const REGIME_PRESETS = {
   cluster: { attraction_k_N: 0.05, wall_k_N: 0.025, damping_Ns_m: 0.08, dt_s: 2e-3, vmax_m_s: 1.0, friction_N: 1e-6, wall_halo_m: 0.006, wall_exponent: 1.0, convergence_eps_m: 2e-5 },
-  legalize: { attraction_k_N: 0.008, wall_k_N: 0.08, damping_Ns_m: 0.12, dt_s: 1e-3, vmax_m_s: 1.0, friction_N: 1e-6, wall_halo_m: 0.006, wall_exponent: 2.0, convergence_eps_m: 2e-5 },
+  legalize: { attraction_k_N: 0.008, wall_k_N: 0.08, damping_Ns_m: 0.12, dt_s: 1e-3, vmax_m_s: 1.0, friction_N: 1e-6, wall_halo_m: 0.004, wall_exponent: 2.0, convergence_eps_m: 2e-5 },
 };
 
 async function applyRegimePreset(name) {

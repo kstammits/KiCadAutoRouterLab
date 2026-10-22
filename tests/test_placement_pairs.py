@@ -596,24 +596,6 @@ def _pair_board(fa, fb):
     )
 
 
-def _pair_overlap(model, deltas, ref_a, ref_b):
-    from kicad_autorouter.placement import _collect_pad_nodes, _footprint_courtyard_polygon
-    import numpy as np
-
-    moved = apply_deltas(model, deltas)
-    pads, _, uuid_to_idx, _, _ = _collect_pad_nodes(moved)
-    pos = np.array([(p.position.x_mm, p.position.y_mm) for p in pads])
-    pa = _footprint_courtyard_polygon(
-        moved.by_ref[ref_a], pad_positions=pos,
-        pad_indices=uuid_to_idx.get(moved.by_ref[ref_a].uuid, []))
-    pb = _footprint_courtyard_polygon(
-        moved.by_ref[ref_b], pad_positions=pos,
-        pad_indices=uuid_to_idx.get(moved.by_ref[ref_b].uuid, []))
-    if pa.is_empty or pb.is_empty:
-        return 0.0
-    return pa.intersection(pb).area
-
-
 @pytest.mark.regression
 @pytest.mark.dccf
 def test_dccf_r13_rv1_edge_contact():
@@ -642,52 +624,3 @@ def test_dccf_r13_rv1_edge_contact():
     cx, cy = prop.force_components[r13.uuid]["courtyard"]
     assert cy == pytest.approx(-0.08, rel=0.2), f"edge hold must be -k, got cy={cy:.6f}"
     assert abs(cx) <= 0.005, f"hold must be axis-pure (-y), got cx={cx:.6f}"
-
-
-@pytest.mark.regression
-@pytest.mark.dccf
-@pytest.mark.regression
-@pytest.mark.dccf
-def test_dccf_resistor_c14_near_rv3_u3():
-    """C14 wedged between RV3 (locked) and U3: the RV3 escape axis pushes OUT.
-
-    The motivating incident (old law: C14/RV3 2.84 -> 7.14mm² in 50 iters —
-    the pair vote picked a centroid-diagonal axis and dove deeper). Under the
-    unified law the isolated C14+RV3 probe reads +y (off RV3's top edge) and
-    a single-movable production run clears the RV3 side 2.84 -> <0.5mm².
-    """
-    from kicad_autorouter.board_model import board_model
-    from kicad_autorouter.sexpr import parse_file
-    from pathlib import Path
-
-    model = board_model(parse_file(Path("tests/fixtures/DCCF.sved.kicad_pcb")))
-
-    c14 = model.by_ref.get("C14")
-    rv3 = model.by_ref.get("RV3")
-    u3 = model.by_ref.get("U3")
-
-    assert c14 is not None and not c14.locked, "C14 should be mobile"
-    assert rv3 is not None and rv3.locked, "RV3 should be locked"
-    assert u3 is not None, "U3 should exist"
-
-    # Isolated pair: escape is +y (off RV3's top edge), axis-pure.
-    pair = _pair_board(c14, rv3)
-    prop = run_placement(pair, _production_params(max_iterations=0, convergence_eps_m=1e-15),
-                         movable_uuids={c14.uuid})
-    cx, cy = prop.force_components[c14.uuid]["courtyard"]
-    assert cy > 0.05, f"C14/RV3 escape must point +y (out), got cy={cy:.6f}"
-    assert abs(cx) <= 0.01, f"escape must be axis-pure (+y), got cx={cx:.6f}"
-
-    # Full board, only C14 movable: RV3 side clears; endpoint converges.
-    ends = []
-    for budget in (500, 2000):
-        prop = run_placement(model, _production_params(
-            max_iterations=budget, convergence_eps_m=1e-12), movable_uuids={c14.uuid})
-        assert c14.uuid in prop.deltas, "C14 should experience forces"
-        dx, dy, _ = prop.deltas[c14.uuid]
-        ends.append((c14.x_mm + dx, c14.y_mm + dy))
-        assert math.hypot(dx, dy) < 5.0, f"C14 must not tunnel, moved ({dx:.2f}, {dy:.2f})"
-    assert math.hypot(ends[1][0] - ends[0][0], ends[1][1] - ends[0][1]) < 0.5, (
-        f"C14 endpoint must be stable across 4x budgets: {ends}")
-    assert _pair_overlap(model, prop.deltas, "C14", "RV3") < 0.5, (
-        "C14/RV3 must clear (was 7.14mm² under the old vote)")

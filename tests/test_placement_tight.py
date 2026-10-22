@@ -1,7 +1,7 @@
 """Tight-quarters placement corpus + rotation-in-squeeze regressions.
 This file pins both families with fast synthetic boards plus one
-allowlisted full-DCCF audit so NEW overlaps fail loudly while the known
-squeeze-wedge residuals stay documented, not silently growing.
+full-DCCF audit that compares final overlaps against the input board so
+new or worsened squeezes fail loudly without an allowlist.
 """
 
 import math
@@ -180,60 +180,73 @@ def test_corridor_settles_without_overlap():
 
 
 # ---------------------------------------------------------------------------
-# Phase 2b: full-DCCF overlap audit (allowlisted known squeeze residuals)
+# Phase 2b: full-DCCF overlap audit (input-board baseline)
 # ---------------------------------------------------------------------------
 
-# Full-DCCF residual squeezes above 1.0mm² at current production defaults
-# (200 iters). All are small-part-vs-large-courtyard attraction wedges; a new
-# pair means a part landed somewhere unexpected, so fail instead of silently
-# growing the family. To accept a residual, add it here with a note.
-KNOWN_DCCF_OVERLAPS_200 = frozenset({
-    tuple(sorted(p)) for p in [
-        ("C1", "U1"), ("C10", "RV2"), ("C10", "U2"), ("C11", "R11"),
-        ("C14", "RV3"), ("C14", "U3"), ("C15", "U3"), ("C16", "R15"),
-        ("C19", "RV5"), ("C19", "U4"), ("C2", "R2"), ("C4", "RV1"),
-        ("D5", "Q2"), ("R13", "R3"), ("R13", "RV1"),
-        ("R17", "RV6"), ("R18", "RV6"), ("R2", "U1"), ("R3", "R6"),
-        ("R4", "RV1"), ("R7", "RV4"), ("R9", "RV3"),
-    ]
-})
+OVERLAP_MIN_MM2 = 1.0
+OVERLAP_GROWTH_MM2 = 0.5
+LEGALIZE_HALO_M = 0.004
+LEGALIZE_AUDIT_ITERS = 200
 
 
-@pytest.mark.regression
-@pytest.mark.dccf
-def test_dccf_overlap_audit_allowlisted(dccf_model):
-    """Full-DCCF run: residual overlaps must stay within the known squeeze set.
-
-    All allowlisted pairs are small-part-vs-large-courtyard attraction wedges.
-    A new pair means a part landed somewhere unexpected — fail loudly instead
-    of growing the wedge family silently. To accept a residual, add it to
-    KNOWN_DCCF_OVERLAPS_200 with a note.
-    """
+def _courtyard_overlaps(model):
+    """Return ref-pair -> area for courtyard overlaps above OVERLAP_MIN_MM2."""
     from kicad_autorouter.placement import _collect_pad_nodes, _footprint_courtyard_polygon
     import numpy as np
 
-    model = dccf_model
-    prop = run_placement(model, PlacementParams(max_iterations=250))
-    moved = apply_deltas(model, prop.deltas)
-    pads, _, uuid_to_idx, _, _ = _collect_pad_nodes(moved)
+    pads, _, uuid_to_idx, _, _ = _collect_pad_nodes(model)
     pos = np.array([(p.position.x_mm, p.position.y_mm) for p in pads])
     polys = {}
-    for fp in moved.footprints:
+    for fp in model.footprints:
         if fp.ghost or not fp.pads or not fp.ref or fp.ref.startswith("G"):
             continue
         poly = _footprint_courtyard_polygon(fp, pad_positions=pos,
                                             pad_indices=uuid_to_idx.get(fp.uuid, []))
         if not poly.is_empty:
             polys[fp.ref] = poly
-    found = set()
-    for i, a in enumerate(list(polys)):
-        for b in list(polys)[i + 1:]:
-            if polys[a].intersection(polys[b]).area > 1.0:
-                found.add(tuple(sorted((a, b))))
-    new = found - KNOWN_DCCF_OVERLAPS_200
-    assert not new, f"NEW DCCF overlaps (not in allowlist): {sorted(new)}; full set: {sorted(found)}"
-    assert len(found) <= len(KNOWN_DCCF_OVERLAPS_200), (
-        f"overlap count grew: {len(found)} > {len(KNOWN_DCCF_OVERLAPS_200)}: {sorted(found)}")
+    found = {}
+    refs = list(polys)
+    for i, a in enumerate(refs):
+        for b in refs[i + 1:]:
+            area = polys[a].intersection(polys[b]).area
+            if area > OVERLAP_MIN_MM2:
+                found[tuple(sorted((a, b)))] = area
+    return found
+
+
+@pytest.mark.regression
+@pytest.mark.dccf
+def test_dccf_overlap_audit(dccf_model):
+    """Full-DCCF Legalize run: placement must not create or worsen squeezes.
+
+    The input board already contains some >1mm² courtyard overlaps that are
+    fixture properties, not placement results. After the Legalize preset run,
+    fail only on pairs that were not already above threshold or that grew by
+    more than OVERLAP_GROWTH_MM2. This keeps the audit state-derived instead of
+    maintaining an allowlist.
+    """
+    initial = _courtyard_overlaps(dccf_model)
+    prop = run_placement(
+        dccf_model,
+        PlacementParams(max_iterations=LEGALIZE_AUDIT_ITERS,
+                        wall_halo_m=LEGALIZE_HALO_M),
+    )
+    final = _courtyard_overlaps(apply_deltas(dccf_model, prop.deltas))
+
+    regressions = {
+        pair: (initial.get(pair, 0.0), area)
+        for pair, area in final.items()
+        if area > initial.get(pair, 0.0) + OVERLAP_GROWTH_MM2
+    }
+    detail = {
+        pair: (round(before, 3), round(after, 3))
+        for pair, (before, after) in sorted(regressions.items())
+    }
+    assert not regressions, (
+        "placement created or materially worsened >1mm² courtyard overlaps: "
+        f"{detail}"
+    )
+
 
 def test_wall_mag_linear_matches_legacy():
     """_wall_mag at p=1 reproduces F=k*(1-s/h): k at contact, 0 past halo."""
@@ -245,7 +258,6 @@ def test_wall_mag_linear_matches_legacy():
     assert _wall_mag(k, h, h) == 0.0
     assert _wall_mag(k, h + 1.0, h) == 0.0
     assert _wall_mag(k, -h, h) == pytest.approx(2 * k)
-
 
 
 @pytest.mark.regression

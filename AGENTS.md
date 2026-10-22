@@ -73,8 +73,9 @@ browser workflow UI. Works on real boards, DRC-validated.
   ghost / tangential.
 - Post-hoc legality (`placement/legality.py`) checks the final merged
   pose. A `converged` run that is illegal is reported as `stalled`.
-- DCCF overlap allowlist (`KNOWN_DCCF_OVERLAPS_200`) covers the known
-  squeeze-pair families. Magnet boards scatter inside the outline.
+- The DCCF overlap audit compares final courtyards against the input
+  board: pre-existing squeezes are baselined, while new or materially
+  worsened >1 mm² overlaps fail. Magnet boards scatter inside the outline.
 
 Detailed physics constants (blend ratios, cache thresholds, Kabsch caps,
 stall multiplier) live in `si_force_laws.md` / code comments.
