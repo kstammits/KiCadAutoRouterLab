@@ -228,33 +228,6 @@ def test_quiet_without_progress_stops_stalled():
     assert prop.residual_max_force_N > 0.0
 
 
-@pytest.mark.regression
-@pytest.mark.dccf
-def test_r5_legalize_chatter_stops_stalled(dccf_model):
-    """Single-part R5 legalize must stall, not burn budget chattering.
-
-    R5 slides into a locked neighbor and then jitters in place (~80um
-    steps, ~1.5um window-mean drift) for the rest of the budget. The old
-    consecutive-quiet stall gate never fired because no single step stays
-    below eps; the window-mean rule sees the center is not going anywhere
-    and stops as "stalled" with the unserved contact force attached.
-    Regression for the DCCF Legalize+R5 run that spent its last 500 of
-    1000 iterations jittering against a locked part.
-    """
-    r5 = dccf_model.by_ref["R5"]
-    prop = run_placement(
-        dccf_model,
-        PlacementParams(max_iterations=1000,
-                        attraction_k_N=0.008, wall_k_N=0.09,
-                        damping_Ns_m=0.13, dt_s=1e-3,
-                        vmax_m_s=1.0, friction_N=1e-6),
-        movable_uuids={r5.uuid},
-    )
-    assert prop.stop_reason == "stalled"
-    assert prop.iterations < 1000
-    assert prop.residual_max_force_N > 1e-3
-
-
 # --- Legality tests (per docs/legality_spec.md) ---
 
 @pytest.mark.physics

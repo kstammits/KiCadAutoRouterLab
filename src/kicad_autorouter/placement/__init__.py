@@ -1,6 +1,6 @@
 """Placement dynamics package (SI: newtons, meters, seconds).
 
-Public API (unchanged from the old placement.py module):
+Public API:
 PlacementParams, PlacementProposal, run_placement.
 
 Submodules: params, model, rigid, contact, force, integrate, runner.

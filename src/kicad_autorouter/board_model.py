@@ -45,7 +45,7 @@ Segment = Tuple[Point, Point]
 # exact-match frozenset and disagreed with routing on such names).
 _POWER_KEYWORDS = (
     "vcc", "vdd", "vin", "v+", "v-", "pwr", "power",
-    "+5v", "-5v", "+12v", "-12v", "3v3", "1v8", "1v2", "vbat",
+    "+5v", "-5v", "+12v", "-12v", "3v3",
 )
 _GROUND_KEYWORDS = ("gnd", "ground", "vgnd")
 

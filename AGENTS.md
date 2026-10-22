@@ -51,16 +51,14 @@ browser workflow UI. Works on real boards, DRC-validated.
   `kicad-cli` lives at
   `/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli` (not on PATH).
 
-## Placement dynamics (concise)
+## Placement dynamics
 
 - One wall law (`_wall_mag` in `contact.py`): part courtyards push apart;
   the board region polygon is an inverted courtyard pushing inside with
-  the same `wall_k_N` / `wall_halo_m`. `boundary_k_N` removed everywhere.
+  the same `wall_k_N` / `wall_halo_m`. 
 - Region-based placement; ghost footprints are fixed anchors, never movable.
 - Stop reasons: `converged` (quiet + settled forces), `stalled` (no window
   progress, forces remain), `budget` (max iters reached), `empty`.
-- `dt_min_s`/`dt_max_s` are solver internals — never user-controllable;
-  `from_dict` purges stale values so lowering `dt_s` never fails validation.
 - Force causes: repulsion / attraction / courtyard (includes board wall) / ghost.
 - `tests/fixtures/2B.kicad_pcb` is UNTRACKED — do NOT `git add`/`git commit`;
   write synthetic regression tests instead (see `test_straddling_ghost_wall_...`,
