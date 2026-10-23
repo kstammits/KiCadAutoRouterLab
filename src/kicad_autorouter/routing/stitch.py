@@ -356,7 +356,7 @@ def plan_stitches(
     size_mm: float = 0.8,
     drill_mm: float = 0.4,
     clearance_mm: float = 0.2,
-    bridge_width_mm: float = 0.5,
+    bridge_width_mm: float = 0.3,
     max_vias: int = 32,
     max_bridges: int = 16,
     max_bridge_mm: float = 30.0,

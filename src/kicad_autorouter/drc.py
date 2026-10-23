@@ -146,6 +146,11 @@ def run_drc_on_tree(
     Returns:
         DRCResult with violations, unconnected items, and paths
     """
+    # Ghosts are placement-only pseudo-parts: strip them from the scratch
+    # copy so ghost walls can't raise courtyards_overlap against real
+    # footprints. The caller's tree keeps its ghosts.
+    from .io import remove_all_ghosts_from_tree
+    tree = remove_all_ghosts_from_tree(tree)
     # Write PCB to temp file
     pcb_path = write_pcb_tree(tree, out_path, prefix)
 

@@ -16,6 +16,7 @@ from kicad_autorouter.board_model import (
     footprints,
     keepout_zones,
     netlist,
+    sample_circular_arc,
     transform_local,
     zones,
 )
@@ -199,6 +200,56 @@ class TestZoneFillRules:
             assert z.thermal_bridge_width_mm == pytest.approx(0.508)
             assert z.clearance_mm == pytest.approx(0.0)
             assert z.min_thickness_mm == pytest.approx(0.254)
+
+    def test_tube111_filled_polygons_parsed_stale(self, tube111_model):
+        # KiCad's cached fills load for visualization (stale after edits).
+        fills = [fp for z in tube111_model.zones for fp in z.filled_polygons]
+        assert len(fills) > 0
+        assert all(fp.layer in ("F.Cu", "B.Cu") for fp in fills)
+        assert all(len(fp.polygon) >= 3 for fp in fills)
+
+
+class TestCircularArcSampling:
+    """KiCad arcs store three points ON the arc (mid is not a control)."""
+
+    def test_quarter_circle_passes_through_mid(self):
+        import math
+        r = 5.0
+        a = math.pi / 4
+        pts = list(sample_circular_arc((r, 0.0), (r * math.cos(a), r * math.sin(a)), (0.0, r), 16))
+        assert len(pts) == 17
+        assert pts[0] == pytest.approx((r, 0.0))
+        assert pts[-1] == pytest.approx((0.0, r))
+        for x, y in pts:
+            assert math.hypot(x, y) == pytest.approx(r, abs=1e-9)
+
+    def test_dccf_corner_arc_is_round_not_shallow(self):
+        import math
+        # Real DCCF Edge.Cuts corner: the sampler must pass through mid
+        # (a Bezier-control reading would peak halfway between chord and
+        # mid, ~0.7mm shallow here).
+        s = (44.7, 46.3)
+        m = (46.164466, 42.764466)
+        e = (49.7, 41.3)
+        pts = list(sample_circular_arc(s, m, e, 16))
+        assert pts[0] == pytest.approx(s)
+        assert pts[-1] == pytest.approx(e)
+        assert min(math.hypot(x - m[0], y - m[1]) for x, y in pts) < 1e-9
+        # Constant radius around the true circumcenter.
+        (x0, y0), (x1, y1), (x2, y2) = s, m, e
+        d = 2.0 * (x0 * (y1 - y2) + x1 * (y2 - y0) + x2 * (y0 - y1))
+        assert abs(d) > 1e-9
+        s0, s1, s2 = x0 * x0 + y0 * y0, x1 * x1 + y1 * y1, x2 * x2 + y2 * y2
+        cx = (s0 * (y1 - y2) + s1 * (y2 - y0) + s2 * (y0 - y1)) / d
+        cy = (s0 * (x2 - x1) + s1 * (x0 - x2) + s2 * (x1 - x0)) / d
+        r = math.hypot(s[0] - cx, s[1] - cy)
+        assert r > 1.0  # a real corner radius, not a near-flat chord
+        for x, y in pts:
+            assert math.hypot(x - cx, y - cy) == pytest.approx(r, abs=1e-6)
+
+    def test_collinear_falls_back_to_chord(self):
+        pts = list(sample_circular_arc((0.0, 0.0), (5.0, 0.0), (10.0, 0.0), 4))
+        assert pts == [(0.0, 0.0), (2.5, 0.0), (5.0, 0.0), (7.5, 0.0), (10.0, 0.0)]
 
 
 class TestNetlist:

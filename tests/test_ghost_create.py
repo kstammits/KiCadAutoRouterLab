@@ -10,7 +10,7 @@ import pytest
 from kicad_autorouter import board_model as bm
 from kicad_autorouter.board_model import board_model
 from kicad_autorouter.ghost import make_ghost, make_ghost_attractor, make_ghost_wall
-from kicad_autorouter.io import add_ghost_to_tree, footprint_to_sexpr, remove_ghost_from_tree
+from kicad_autorouter.io import add_ghost_to_tree, footprint_to_sexpr, remove_all_ghosts_from_tree, remove_ghost_from_tree
 from kicad_autorouter.placement import PlacementParams, run_placement
 from kicad_autorouter.sexpr import parse_file
 
@@ -122,6 +122,39 @@ class TestGhostSerialization:
             remove_ghost_from_tree(tree, "aaaaaaaa-1111-2222-3333-444444444444")
         with pytest.raises(KeyError):
             remove_ghost_from_tree(tree, "no-such-uuid")
+
+
+@pytest.mark.unit
+class TestRemoveAllGhosts:
+    def test_removes_all_ghosts_keeps_real(self):
+        tree = parse_file(GHOST_TEST_PCB)
+        g = make_ghost_wall("GHOST_W1", 10, 10, 20, 5, uuid="ghost-w1")
+        tree2 = add_ghost_to_tree(tree, g)
+        n_real_before = len(board_model(tree2).footprints)
+        assert len(board_model(tree2).ghost_footprints) >= 2
+        stripped = remove_all_ghosts_from_tree(tree2)
+        after = board_model(stripped)
+        assert after.ghost_footprints == ()
+        assert len(after.footprints) == n_real_before
+        # Caller tree untouched (SExpr is immutable).
+        assert len(board_model(tree2).ghost_footprints) >= 2
+
+    def test_no_ghosts_returns_same_object(self):
+        tree = parse_file(FIXTURES / "minimal.kicad_pcb")
+        assert board_model(tree).ghost_footprints == ()
+        assert remove_all_ghosts_from_tree(tree) is tree
+
+    def test_drc_scratch_copy_has_no_ghosts(self, tmp_path):
+        # run_drc_on_tree writes the tmp PCB before kicad-cli is even
+        # consulted, so this holds with or without kicad-cli installed.
+        from kicad_autorouter.drc import run_drc_on_tree
+
+        tree = parse_file(GHOST_TEST_PCB)
+        g = make_ghost_wall("GHOST_W1", 10, 10, 20, 5, uuid="ghost-w1")
+        tree2 = add_ghost_to_tree(tree, g)
+        out = tmp_path / "drc_ghost_strip.kicad_pcb"
+        run_drc_on_tree(tree2, out_path=out)
+        assert board_model(parse_file(out)).ghost_footprints == ()
 
 
 @pytest.mark.unit

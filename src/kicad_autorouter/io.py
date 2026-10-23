@@ -471,6 +471,29 @@ def add_ghost_to_tree(tree: SExpr, fp, footprint_library_id: str = "Ghost:GHOST"
     return add_footprint_to_tree(tree, fp, footprint_library_id, courtyard_layer)
 
 
+def remove_all_ghosts_from_tree(tree: SExpr) -> SExpr:
+    """Return the board tree with every ghost footprint removed.
+
+    Ghosts are placement-only pseudo-parts (``(property "ghost" "yes")``);
+    KiCad must never see them — e.g. DRC runs on a stripped copy so ghost
+    walls can't raise ``courtyards_overlap`` against real footprints.
+    Real footprints are never removed. Returns the same tree object when
+    it holds no ghosts.
+    """
+    from .board_model import _is_ghost as _is_ghost_node
+    kept = tuple(
+        a for a in tree.args
+        if not (
+            isinstance(a, SExpr)
+            and a.head == "footprint"
+            and _is_ghost_node(a)
+        )
+    )
+    if len(kept) == len(tree.args):
+        return tree
+    return SExpr(tree.head, kept)
+
+
 def remove_ghost_from_tree(tree: SExpr, uuid: str) -> SExpr:
     """Return the board tree with the ghost footprint carrying ``uuid`` removed.
 

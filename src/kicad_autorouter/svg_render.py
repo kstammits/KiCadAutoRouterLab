@@ -13,7 +13,7 @@ import html
 import math
 from typing import Collection, Dict, List, Optional, Set, Tuple
 
-from .board_model import BoardModel, Point, apply_deltas, is_ground_net, is_power_net_effective
+from .board_model import BoardModel, Point, apply_deltas, is_ground_net, is_power_net_effective, sample_circular_arc
 from .drc import DEFAULT_IGNORED_TYPES
 from .placement import PlacementProposal, _footprint_courtyard_polygon
 
@@ -38,6 +38,11 @@ PAD_STROKE = "#0e1216"
 GHOST_COURTYARD = "#3d4a56"  # original position of moved parts (ghost overlay)
 GHOST_FOOTPRINT = "#a85cf5"  # ghost/pseudo component color (purple)
 MOVE_ARROW = "#e0a458"  # old -> new displacement arrows
+
+# Zone-fill layer colors (fill view only): front copper reads red, back
+# copper green, so overlapping pours stay distinguishable.
+FILL_FCU_COLOR = "#e74c3c"  # red
+FILL_BCU_COLOR = "#2ecc71"  # green
 
 # DRC violation colors
 DRC_ERROR_COLOR = "#e74c3c"     # red for errors
@@ -123,6 +128,9 @@ def _bounds(model: BoardModel) -> Tuple[float, float, float, float]:
     for zone in model.zones:
         for p in zone.polygon:
             add(p)
+        for fp in zone.filled_polygons:
+            for p in fp.polygon:
+                add(p)
     for fp in model.footprints:
         # Padless graphical parts are hidden from the SVG (see
         # _footprints_svg); their imputed Fab/Silk art must not inflate the
@@ -155,18 +163,25 @@ def _edge_cuts_svg(model: BoardModel) -> List[str]:
             f'x2="{_fmt(b.x_mm)}" y2="{_fmt(b.y_mm)}"/>'
         )
     for arc in model.edge_arcs:
-        # A quadratic Bezier through the mid point approximates the KiCad arc.
-        out.append(
-            f'<path d="M {_fmt(arc.start.x_mm)} {_fmt(arc.start.y_mm)} '
-            f'Q {_fmt(arc.mid.x_mm)} {_fmt(arc.mid.y_mm)} '
-            f'{_fmt(arc.end.x_mm)} {_fmt(arc.end.y_mm)}"/>'
+        # KiCad stores three points ON the arc; sample the true circle so
+        # quarter-circle corners render round instead of shallow.
+        pts = " ".join(
+            f"{_fmt(x)} {_fmt(y)}"
+            for x, y in sample_circular_arc(
+                (arc.start.x_mm, arc.start.y_mm),
+                (arc.mid.x_mm, arc.mid.y_mm),
+                (arc.end.x_mm, arc.end.y_mm),
+                16,
+            )
         )
+        out.append(f'<polyline points="{pts}"/>')
     out.append("</g>")
     return out
 
 
 def _zones_svg(
-    model: BoardModel, extra_power: Collection[str] = ()
+    model: BoardModel, extra_power: Collection[str] = (),
+    show_fills: bool = False,
 ) -> List[str]:
     keepout_uuids = {z.uuid for z in model.keepout_zones}
     out: List[str] = []
@@ -189,8 +204,28 @@ def _zones_svg(
             else:
                 fill = ZONE_FILL
             dash = ' stroke-dasharray="1.5 1"' if is_keepout else ""
-            pts = " ".join(f"{_fmt(p.x_mm)} {_fmt(p.y_mm)}" for p in zone.polygon)
             net_attr = f' data-net="{html.escape(zone.net_name or "")}"' if zone.net_name else ""
+            layer_fills = [
+                fp for fp in zone.filled_polygons
+                if fp.layer == layer and len(fp.polygon) >= 3
+            ]
+            if show_fills and not is_keepout and layer_fills:
+                # Fill view: hide the zone outline (redundant with the
+                # detailed fill) and color fills by layer — F.Cu red,
+                # B.Cu green — so overlapping pours stay distinguishable.
+                layer_fill = FILL_FCU_COLOR if layer == "F.Cu" else FILL_BCU_COLOR
+                fill_opacity = "0.28" if layer == "F.Cu" else "0.22"
+                for fp in layer_fills:
+                    fpts = " ".join(f"{_fmt(p.x_mm)} {_fmt(p.y_mm)}" for p in fp.polygon)
+                    out.append(
+                        f'<polygon class="zone-fill" points="{fpts}" fill="{layer_fill}" '
+                        f'fill-opacity="{fill_opacity}" stroke="{layer_fill}" '
+                        f'stroke-width="0.12"{net_attr}/>'
+                    )
+                continue
+            pts = " ".join(f"{_fmt(p.x_mm)} {_fmt(p.y_mm)}" for p in zone.polygon)
+            # Outline wash (also the fallback when a zone has no cached
+            # fills on this layer, so the pour never vanishes from view).
             out.append(
                 f'<polygon points="{pts}" fill="{fill}" fill-opacity="{opacity}" '
                 f'stroke="{fill}" stroke-width="0.2"{dash}{net_attr}/>'
@@ -784,6 +819,7 @@ def render_board_svg(
     drc_stale: bool = False,
     include_force_markers: bool = False,
     extra_power_nets: Collection[str] = (),
+    show_fills: bool = False,
 ) -> str:
     """Build the full SVG document for ``model`` (millimeter user units).
 
@@ -809,6 +845,8 @@ def render_board_svg(
             client can draw force vectors client-side with proper markers.
         extra_power_nets: user-marked power membership (rail colors, rail
             pad labels, decap halos follow it).
+        show_fills: draw KiCad's cached ``filled_polygon`` islands inside
+            each zone (stale after edits; visualization only).
     """
     colors = net_colors(model, extra_power_nets)
     moved = bool(proposal is not None and proposal.deltas)
@@ -854,7 +892,7 @@ def render_board_svg(
     selected = selected_uuids or set()
 
     parts.extend(_edge_cuts_svg(model))
-    parts.extend(_zones_svg(model, extra_power_nets))
+    parts.extend(_zones_svg(model, extra_power_nets, show_fills=show_fills))
     parts.extend(_footprints_svg(view, colors, locked_uuids, pinned, selected, extra_power_nets))
     parts.extend(_ghost_footprints_svg(view, colors))
     parts.extend(_tracks_svg(model, colors))

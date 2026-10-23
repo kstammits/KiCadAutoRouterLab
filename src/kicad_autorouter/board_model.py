@@ -186,6 +186,20 @@ class Via:
 
 
 @dataclass(frozen=True)
+class FilledPolygon:
+    """One cached KiCad zone fill island in board millimeters.
+
+    Mirrors a ``(filled_polygon (layer ...) (pts ...))`` block inside a
+    ``(zone ...)``. This is KiCad's own fill output (thermal spokes, pullback,
+    island removal applied) and is used for visualization only: it goes stale
+    the moment copper moves, and KiCad regenerates it on ``--refill-zones``.
+    """
+
+    layer: str
+    polygon: Tuple[Point, ...]
+
+
+@dataclass(frozen=True)
 class Zone:
     """A copper zone with its outline polygon in board millimeters.
 
@@ -197,8 +211,10 @@ class Zone:
     spokes matter only for current capacity), ``island_removal_mode``
     mirrors KiCad's remove-islands setting (reported, not enforced —
     KiCad owns removal on refill), ``priority`` orders overlapping zones.
-    ``(filled_polygon …)`` caches are deliberately NOT parsed: they go
-    stale the moment we move copper; KiCad regenerates them on refill.
+    ``(filled_polygon …)`` caches are also parsed (``filled_polygons``) for
+    visualization of KiCad's own fill (thermal spokes included). They are
+    stale the moment copper moves — KiCad regenerates them on refill —
+    so routing/DRC must not treat them as ground truth.
     Missing blocks (e.g. keepout zones) yield documented defaults.
     """
 
@@ -212,6 +228,7 @@ class Zone:
     thermal_bridge_width_mm: Optional[float] = None
     island_removal_mode: int = 0
     priority: int = 0
+    filled_polygons: Tuple[FilledPolygon, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -460,9 +477,9 @@ def _pad(
 def _graphic_segments(node: SExpr, to_board) -> list:
     """Outline segments of one ``fp_line``/``fp_rect``/``fp_poly``/``fp_circle``/``fp_arc`` node.
 
-    Local coordinates → board via ``to_board``. Circles become 16 chords;
-    arcs are sampled as quadratic Beziers (same helper the edge-cut code
-    uses). Unknown/malformed nodes yield no segments.
+    Local coordinates → board via ``to_board``.     Circles become 16 chords;
+    arcs are sampled as circular arcs through start/mid/end (KiCad stores
+    three points ON the arc). Unknown/malformed nodes yield no segments.
     """
     import math
 
@@ -511,7 +528,7 @@ def _graphic_segments(node: SExpr, to_board) -> list:
             e = (float(end.args[0]), float(end.args[1]))
             pts = [
                 to_board(px, py)
-                for px, py in sample_quadratic_bezier(s, m, e, 16)
+                for px, py in sample_circular_arc(s, m, e, 16)
             ]
             segs.extend(zip(pts, pts[1:]))
     except (TypeError, ValueError, IndexError, AttributeError):
@@ -709,6 +726,26 @@ def _zone_layers(zone_node: SExpr) -> Tuple[str, ...]:
     return ()
 
 
+def _filled_polygons(zone_node: SExpr) -> Tuple[FilledPolygon, ...]:
+    """Cached KiCad fills of a zone (stale-after-edit, visualization only)."""
+    out = []
+    for fp in zone_node.children("filled_polygon"):
+        layer_node = fp.find("layer")
+        layer = str(layer_node.args[0]) if layer_node is not None and layer_node.args else ""
+        pts_node = fp.find("pts")
+        if pts_node is None:
+            continue
+        pts = tuple(
+            Point(float(a.args[0]), float(a.args[1]))
+            for a in pts_node.args
+            if isinstance(a, SExpr) and a.head == "xy" and len(a.args) >= 2
+        )
+        if len(pts) < 3:
+            continue
+        out.append(FilledPolygon(layer=layer, polygon=pts))
+    return tuple(out)
+
+
 def zones(tree: SExpr) -> list[Zone]:
     """Extract every copper zone with its outline polygon and fill rules."""
     result = []
@@ -733,6 +770,7 @@ def zones(tree: SExpr) -> list[Zone]:
                     _zone_fill(zone, "island_removal_mode") or 0
                 ),
                 priority=int(_first_number(zone.find("priority")) or 0),
+                filled_polygons=_filled_polygons(zone),
             )
         )
     return result
@@ -881,6 +919,53 @@ def _point_key(p: Point) -> Tuple[float, float]:
     return (round(p.x_mm / tolerance) * tolerance, round(p.y_mm / tolerance) * tolerance)
 
 
+def sample_circular_arc(
+    p0: Tuple[float, float],
+    p1: Tuple[float, float],
+    p2: Tuple[float, float],
+    n: int,
+):
+    """Yield ``n+1`` ``(x, y)`` points along the circular arc through 3 points.
+
+    KiCad ``gr_arc``/``fp_arc`` ``(start mid end)`` are three points ON the
+    arc (``mid`` is not a Bezier control point). Treating them as Bezier
+    controls flattens the curve (shallow corners). Falls back to the
+    straight chord when collinear/degenerate.
+    """
+    n = max(1, int(n))
+    (x0, y0), (x1, y1), (x2, y2) = p0, p1, p2
+    d = 2.0 * (x0 * (y1 - y2) + x1 * (y2 - y0) + x2 * (y0 - y1))
+    if abs(d) < 1e-12:
+        for i in range(n + 1):
+            t = i / n
+            yield (x0 + (x2 - x0) * t, y0 + (y2 - y0) * t)
+        return
+    s0 = x0 * x0 + y0 * y0
+    s1 = x1 * x1 + y1 * y1
+    s2 = x2 * x2 + y2 * y2
+    cx = (s0 * (y1 - y2) + s1 * (y2 - y0) + s2 * (y0 - y1)) / d
+    cy = (s0 * (x2 - x1) + s1 * (x0 - x2) + s2 * (x1 - x0)) / d
+    r = math.hypot(x0 - cx, y0 - cy)
+    if r <= 0:
+        for i in range(n + 1):
+            t = i / n
+            yield (x0 + (x2 - x0) * t, y0 + (y2 - y0) * t)
+        return
+    two_pi = 2.0 * math.pi
+    a0 = math.atan2(y0 - cy, x0 - cx)
+    a1 = math.atan2(y1 - cy, x1 - cx)
+    a2 = math.atan2(y2 - cy, x2 - cx)
+    ccw_01 = (a1 - a0) % two_pi
+    ccw_02 = (a2 - a0) % two_pi
+    if ccw_01 <= ccw_02:
+        sweep = ccw_02  # counter-clockwise from start to end through mid
+    else:
+        sweep = ccw_02 - two_pi  # clockwise
+    for i in range(n + 1):
+        a = a0 + sweep * (i / n)
+        yield (cx + r * math.cos(a), cy + r * math.sin(a))
+
+
 def sample_quadratic_bezier(
     p0: Tuple[float, float],
     p1: Tuple[float, float],
@@ -889,9 +974,8 @@ def sample_quadratic_bezier(
 ):
     """Yield ``n+1`` ``(x, y)`` points along the quadratic Bezier ``B(t)``.
 
-    Shared sampler for ``_approximate_arc_as_segments`` (board outline
-    extraction) and ``obstacles._draw_arc_keepout`` (edge-arc stamping):
-    both treat an arc's start/mid/end as Bezier control points.
+    Legacy helper (kept for compatibility); arc code now uses
+    :func:`sample_circular_arc` since KiCad stores three points ON the arc.
     """
     for i in range(n + 1):
         t = i / n
@@ -903,9 +987,9 @@ def sample_quadratic_bezier(
 
 
 def _approximate_arc_as_segments(arc: EdgeCutArc, num_segments: int = 8) -> List[Segment]:
-    """Approximate an EdgeCutArc as line segments using quadratic Bezier.
+    """Approximate an EdgeCutArc as line segments along its circular arc.
 
-    Uses the arc's start, mid, end as control points for a quadratic Bezier curve.
+    The arc's start, mid, end are three points ON the arc (KiCad semantics).
     """
     start = arc.start
     mid = arc.mid
@@ -913,7 +997,7 @@ def _approximate_arc_as_segments(arc: EdgeCutArc, num_segments: int = 8) -> List
 
     segments = []
     prev = start
-    for x, y in sample_quadratic_bezier(
+    for x, y in sample_circular_arc(
         (start.x_mm, start.y_mm), (mid.x_mm, mid.y_mm), (end.x_mm, end.y_mm),
         num_segments,
     ):

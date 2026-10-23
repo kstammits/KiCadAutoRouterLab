@@ -7,7 +7,7 @@ from typing import List, Tuple
 
 import numpy as np
 
-from ..board_model import BoardModel, Footprint, Pad, sample_quadratic_bezier
+from ..board_model import BoardModel, Footprint, Pad, sample_circular_arc
 from .grid import RoutingGrid, board_to_grid
 
 try:
@@ -635,11 +635,11 @@ def _draw_thick_line_keepout(grid: np.ndarray, grid_obj, x1_mm, y1_mm, x2_mm, y2
 
 
 def _draw_arc_keepout(grid: np.ndarray, grid_obj, sx_mm, sy_mm, mx_mm, my_mm, ex_mm, ey_mm, thickness_cells: int):
-    """Draw keepout zone along a quadratic Bezier arc."""
-    # Sample points along the Bezier curve
+    """Draw keepout zone along a circular arc (start/mid/end ON the arc)."""
+    # Sample points along the circular arc
     num_samples = max(10, int(np.hypot(ex_mm - sx_mm, ey_mm - sy_mm) / grid_obj.resolution_mm / 2))
 
-    for x, y in sample_quadratic_bezier(
+    for x, y in sample_circular_arc(
         (sx_mm, sy_mm), (mx_mm, my_mm), (ex_mm, ey_mm), num_samples
     ):
         c, r = board_to_grid(grid_obj, x, y)

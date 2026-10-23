@@ -1186,6 +1186,7 @@ class Handler(BaseHTTPRequestHandler):
             drc_on = qs.get("drc", ["0"])[0] != "0"
             fcu_on = qs.get("fcu", ["1"])[0] != "0"
             bcu_on = qs.get("bcu", ["1"])[0] != "0"
+            fills_on = qs.get("fills", ["0"])[0] != "0"
             proposal = STATE.current_proposal if overlay_on else None
             pinned = STATE.get_pinned_uuids()
             selected = STATE.get_selected_uuids()
@@ -1244,7 +1245,8 @@ class Handler(BaseHTTPRequestHandler):
                                     drc_violations=drc_violations,
                                     drc_stale=drc_stale,
                                     include_force_markers=include_force_markers,
-                                    extra_power_nets=STATE.get_power_override_nets()).encode()
+                                    extra_power_nets=STATE.get_power_override_nets(),
+                                    show_fills=fills_on).encode()
             self._send(200, svg, "image/svg+xml")
             return
         if parsed.path == "/api/placement/params":

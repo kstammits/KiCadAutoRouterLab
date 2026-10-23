@@ -451,6 +451,7 @@
       <span class="zoom-info" id="drc-info"></span>
       <label class="chk"><input type="checkbox" id="layer-fcu" checked> F.Cu</label>
       <label class="chk"><input type="checkbox" id="layer-bcu" checked> B.Cu</label>
+      <label class="chk" title="Show KiCad's cached zone fills (stale after edits; use --refill-zones to refresh)"><input type="checkbox" id="zones-fill-toggle"> fills</label>
       <span class="zoom-info" id="zoom-info">100%</span>
       <button id="fit-btn" title="Fit board to view">Fit</button>
       <button id="download-btn" title="Download modified PCB" hidden>Download</button>
@@ -1055,6 +1056,7 @@ const forcesToggle = document.getElementById("forces-toggle");
 const drcToggle = document.getElementById("drc-toggle");
 const layerFcuToggle = document.getElementById("layer-fcu");
 const layerBcuToggle = document.getElementById("layer-bcu");
+const zonesFillToggle = document.getElementById("zones-fill-toggle");
 const fitBtn = document.getElementById("fit-btn");
 const diagEl = document.getElementById("diag");
 
@@ -1067,7 +1069,8 @@ function boardSrc(version) {
   const overlayOn = overlayToggle?.checked ?? false;
   const forcesOn = forcesToggle?.checked ?? false;
   const drcOn = drcToggle?.checked ?? false;
-  return `/api/board.svg?v=${version}&overlay=${overlayOn ? 1 : 0}&forces=${forcesOn ? 1 : 0}&drc=${drcOn ? 1 : 0}`;
+  const fillsOn = zonesFillToggle?.checked ?? false;
+  return `/api/board.svg?v=${version}&overlay=${overlayOn ? 1 : 0}&forces=${forcesOn ? 1 : 0}&drc=${drcOn ? 1 : 0}&fills=${fillsOn ? 1 : 0}`;
 }
 
 function updateZoomInfo() {
@@ -1245,6 +1248,7 @@ async function fetchAndInjectSVG(version) {
   applyViewBox();
   applyLayerVisibility();
   highlightSelectedNets();
+  renderGndIslandsOverlay();
   if (typeof motion !== "undefined" && motion.frames.length) applyMotionFrame(motion.idx);
 }
 
@@ -1281,6 +1285,12 @@ async function poll() {
       lastVersion = st.version;
       if (motion.playing) pauseMotion();
       resetMotionState();
+      // Island analysis is board-version specific: drop the overlay and
+      // force a fresh analyze on next click instead of showing stale boxes.
+      gndIslandsData = null;
+      gndIslandsVisible = false;
+      const gndBtn = document.getElementById("gnd-islands-btn");
+      if (gndBtn) { gndBtn.textContent = "GND Islands"; gndBtn.disabled = false; }
       await fetchAndInjectSVG(st.version);
       await loadSelectionState();
       await loadMotionFrames(true);
@@ -1420,6 +1430,10 @@ function applyLayerVisibility() {
 layerFcuToggle.addEventListener("change", applyLayerVisibility);
 
 layerBcuToggle.addEventListener("change", applyLayerVisibility);
+
+zonesFillToggle.addEventListener("change", async () => {
+  await fetchAndInjectSVG(lastVersion);
+});
 
 // Zoom / Pan handlers
 viewport.addEventListener("wheel", e => {
@@ -3690,6 +3704,7 @@ document.getElementById("gnd-islands-btn").addEventListener("click", fetchGndIsl
 // GND pour continuity overlay (Phase 1 diagnostics): bbox per island,
 // red dashed = dead (no pad/via connection, cf. KiCad isolated-fill DRC).
 let gndIslandsData = null;
+let gndIslandsVisible = false;
 function boardMmToViewport(xMm, yMm) {
   const svg = viewport.querySelector("svg");
   if (!svg) return null;
@@ -3706,41 +3721,39 @@ function boardMmToViewport(xMm, yMm) {
 
 function renderGndIslandsOverlay() {
   viewport.querySelectorAll(".gnd-island-overlay").forEach(el => el.remove());
-  if (!gndIslandsData) return;
+  if (!gndIslandsVisible || !gndIslandsData) return;
   const svg = viewport.querySelector("svg");
   if (!svg) return;
+  // NOTE: coordinates are board-mm SVG user units (same as every other
+  // server-rendered element via the viewBox). Do NOT run them through
+  // boardMmToViewport() here: that helper converts to viewport *pixels*
+  // for HTML overlays, which would misplace in-SVG rects.
   const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
   g.classList.add("gnd-island-overlay");
   g.style.pointerEvents = "none";
   for (const [layer, items] of Object.entries(gndIslandsData.layers)) {
     for (const isl of items) {
       const [x0, y0, x1, y1] = isl.bbox_mm;
-      const tl = boardMmToViewport(x0, y1);
-      const br = boardMmToViewport(x1, y0);
-      if (!tl || !br) continue;
       const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-      rect.setAttribute("x", Math.min(tl.x, br.x));
-      rect.setAttribute("y", Math.min(tl.y, br.y));
-      rect.setAttribute("width", Math.abs(br.x - tl.x));
-      rect.setAttribute("height", Math.abs(br.y - tl.y));
+      rect.setAttribute("x", Math.min(x0, x1));
+      rect.setAttribute("y", Math.min(y0, y1));
+      rect.setAttribute("width", Math.abs(x1 - x0));
+      rect.setAttribute("height", Math.abs(y1 - y0));
       rect.setAttribute("fill", isl.connected ? "#2ea87a" : "#e06c75");
       rect.setAttribute("fill-opacity", "0.12");
       rect.setAttribute("stroke", isl.connected ? "#2ea87a" : "#e06c75");
-      rect.setAttribute("stroke-width", isl.connected ? "1" : "2");
-      if (!isl.connected) rect.setAttribute("stroke-dasharray", "4 2");
+      rect.setAttribute("stroke-width", isl.connected ? "0.15" : "0.3");
+      if (!isl.connected) rect.setAttribute("stroke-dasharray", "1 0.6");
       const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
       title.textContent = `${isl.net} ${layer}: ${isl.area_mm2}mm² ${isl.connected ? "fed" : "DEAD"}`;
       rect.appendChild(title);
       g.appendChild(rect);
-      const c = boardMmToViewport(isl.cx_mm, isl.cy_mm);
-      if (c) {
-        const dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-        dot.setAttribute("cx", c.x);
-        dot.setAttribute("cy", c.y);
-        dot.setAttribute("r", "3");
-        dot.setAttribute("fill", isl.connected ? "#2ea87a" : "#e06c75");
-        g.appendChild(dot);
-      }
+      const dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+      dot.setAttribute("cx", isl.cx_mm);
+      dot.setAttribute("cy", isl.cy_mm);
+      dot.setAttribute("r", "0.5");
+      dot.setAttribute("fill", isl.connected ? "#2ea87a" : "#e06c75");
+      g.appendChild(dot);
     }
   }
   svg.appendChild(g);
@@ -3749,6 +3762,13 @@ function renderGndIslandsOverlay() {
 async function fetchGndIslands() {
   const btn = document.getElementById("gnd-islands-btn");
   const box = document.getElementById("gnd-islands-results");
+  // Toggle off: clear the overlay without refetching.
+  if (gndIslandsVisible) {
+    gndIslandsVisible = false;
+    renderGndIslandsOverlay();
+    btn.textContent = "GND Islands";
+    return;
+  }
   btn.disabled = true;
   btn.textContent = "Analyzing…";
   try {
@@ -3762,13 +3782,15 @@ async function fetchGndIslands() {
     }
     box.hidden = false;
     box.textContent = parts.join(" · ") || "no zoned ground pours";
+    gndIslandsVisible = true;
+    btn.textContent = "Hide Islands";
     renderGndIslandsOverlay();
   } catch (err) {
     box.hidden = false;
     box.textContent = `island analysis failed: ${err}`;
   } finally {
     btn.disabled = false;
-    btn.textContent = "GND Islands";
+    if (!gndIslandsVisible) btn.textContent = "GND Islands";
   }
 }
 

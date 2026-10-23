@@ -126,7 +126,7 @@ class TestBridgeTracks:
         for track in plan.tracks:
             assert track.net_name == "GND"
             assert track.layer == "F.Cu"
-            assert track.width_mm == pytest.approx(0.5)
+            assert track.width_mm == pytest.approx(0.3)
 
     def test_bridge_clears_foreign_copper(self):
         from kicad_autorouter.routing.grid import grid_to_board
