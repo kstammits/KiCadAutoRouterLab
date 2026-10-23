@@ -285,6 +285,16 @@ def _smooth_result(result, cost_grid, routing_grid, corridor: int, blocked_thres
     """
     corridor_radius = max(max(0, corridor - 1), max(0, clearance_radius))
     hard_radius = max(0, corridor - 1)
+
+    # Collect all branch endpoints as pinned points (Steiner connections).
+    # New branches attach to interior points of existing branches via goal_mask;
+    # smoothing must not shortcut past those attachment points.
+    all_pinned = set(pinned or set())
+    for branch in _branch_paths(result):
+        if branch:
+            all_pinned.add((branch[0][0], branch[0][1]))   # branch start
+            all_pinned.add((branch[-1][0], branch[-1][1])) # branch end
+
     new_branches = []
     changed = False
     for branch in _branch_paths(result):
@@ -293,7 +303,7 @@ def _smooth_result(result, cost_grid, routing_grid, corridor: int, blocked_thres
             cost_grid,
             blocked_threshold=blocked_threshold,
             corridor_radius=corridor_radius,
-            pinned=pinned,
+            pinned=all_pinned,
             soft_mask=soft_mask,
             blocked_mask=blocked_mask,
             hard_radius=hard_radius,
