@@ -171,3 +171,42 @@ def test_courtyard_blocks_shortcut_when_high_cost():
     path = [(5, 15, 0), (10, 15, 0), (15, 15, 0), (20, 15, 0), (25, 15, 0)]
     smoothed = smooth_grid_path(path, grid)
     assert len(smoothed) > 2  # no direct shortcut through HIGH_COST
+
+
+def test_steiner_branch_endpoints_preserved():
+    """Branch endpoints (Steiner connections) must survive smoothing.
+
+    In multi-terminal nets, MST routing creates branches where later branches
+    attach to interior points of earlier branches (via goal_mask). Each branch
+    endpoint is a connection point that must be pinned during smoothing, or
+    the branch would shortcut past it and disconnect the later branch.
+    """
+    grid = _open()
+
+    # Branch 1: A(5,5) -> B(15,5) horizontal line
+    # Branch 2: C(10,10) connects to (10,5) on Branch 1 (Steiner point)
+    branch1 = [(5, 5, 0), (6, 5, 0), (7, 5, 0), (8, 5, 0), (9, 5, 0),
+               (10, 5, 0), (11, 5, 0), (12, 5, 0), (13, 5, 0), (14, 5, 0), (15, 5, 0)]
+    branch2 = [(10, 10, 0), (10, 9, 0), (10, 8, 0), (10, 7, 0), (10, 6, 0), (10, 5, 0)]
+
+    # Old behavior: only original terminals pinned
+    pinned_terminals = {(5, 5), (15, 5), (10, 10)}
+    smoothed1_old = smooth_grid_path(branch1, grid, pinned=pinned_terminals)
+    # Branch1 would shortcut (5,5)->(15,5), losing the Steiner point (10,5)
+    assert (10, 5, 0) not in smoothed1_old, "old behavior loses connection"
+
+    # New behavior: all branch endpoints pinned (terminals + Steiner points)
+    all_pinned = set(pinned_terminals)
+    for b in (branch1, branch2):
+        all_pinned.add((b[0][0], b[0][1]))
+        all_pinned.add((b[-1][0], b[-1][1]))
+
+    smoothed1 = smooth_grid_path(branch1, grid, pinned=all_pinned)
+    smoothed2 = smooth_grid_path(branch2, grid, pinned=all_pinned)
+
+    # Both branches must preserve the shared connection point
+    assert (10, 5, 0) in smoothed1, "Steiner point lost on branch1"
+    assert (10, 5, 0) in smoothed2, "Steiner point lost on branch2"
+    # Endpoints still preserved
+    assert smoothed1[0] == branch1[0] and smoothed1[-1] == branch1[-1]
+    assert smoothed2[0] == branch2[0] and smoothed2[-1] == branch2[-1]
