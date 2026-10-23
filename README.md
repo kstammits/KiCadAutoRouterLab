@@ -156,10 +156,14 @@ Placement and routing are separate passes but designed to cycle. Move a connecto
 
 | Doc | What You'll Find |
 |-----|------------------|
+| [`ui/manual.html`](ui/manual.html) | Generated placement manual with live before/after examples |
 | [`docs/autorouting_glossary.md`](docs/autorouting_glossary.md) | Pipeline stages, terminology, algorithm guidance (Lee/A*, force-directed, pour handling) |
 | [`docs/si_force_laws.md`](docs/si_force_laws.md) | Normative placement force laws and parameter defaults |
+| [`docs/physics_primer.qmd`](docs/physics_primer.qmd) | Force-law primer with generated figures and math |
 | [`docs/roadmap.md`](docs/roadmap.md) | Open placement, routing, and pour work |
 | [`docs/README.md`](docs/README.md) | Upstream KiCad and Wikipedia references, with fetch recipes |
+
+Regenerate the manual, figures, and rendered primer with `./scripts/regen_docs.sh`.
 
 ---
 

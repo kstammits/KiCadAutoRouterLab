@@ -1,27 +1,27 @@
 #!/usr/bin/env python3
-"""Parameter-response graphs for the SI placement dynamics.
+"""Parameter-response and live placement figures for the physics primer.
 
-Generates the "expected behavior" figures embedded in the physics primer
-(`docs/physics_primer.qmd`). All curves are analytic evaluations of the
-normative formulas in `docs/si_force_laws.md`, using live
-`PlacementParams` defaults so the plots cannot drift from the engine.
+Generates the figures embedded in `docs/physics_primer.qmd`. Analytic curves
+use the normative formulas in `docs/si_force_laws.md` and live
+`PlacementParams` defaults so the plots cannot drift from the engine. The
+ghost pull-in and overlap heatmap run the real placement solver on synthetic
+boards.
 
 Usage:
     python scripts/plot_force_laws.py [--outdir docs/figures] [--dpi 150]
     python scripts/plot_force_laws.py --list
+    python scripts/plot_force_laws.py --only wall ghost
 
 Figures (all PNG, committed under `docs/figures/`):
     fig_repulsion_vs_distance.png  Coulomb k/d^2 vs constant attraction + equilibrium
     fig_attraction_fanout.png       signal / power /(fanout-1) / decap-boost weighting
-    fig_wall_profile.png            unified wall law F=k*(1-s/h), halo variants
+    fig_wall_profile.png            unified wall law F=k*(1-s/h)^p, halo variants
     fig_wall_exponent.png           wall-law exponent F=k*(1-s/h)^p comparison
+    fig_ghost_pullin.png            ghost pull-in vs per-spring weight ka
+    fig_overlap_heatmap.png         overlap resolution vs wall_k_N and damping
     fig_damping_decay.png           implicit-Euler velocity decay for several damping values
     fig_mass_acceleration.png       a=F/m sanity anchor vs courtyard area
     fig_integrator_stability.png    per-step drift vs dt for typical forces + vmax ceiling
-
-The heavy overlap-resolution heatmap (64 live `run_placement` runs) stays
-inline in the .qmd -- it is too slow for a figures script and is already
-cached by Quarto's freeze output.
 """
 
 from __future__ import annotations
@@ -39,7 +39,21 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from kicad_autorouter.placement import PlacementParams
+from kicad_autorouter.board_model import (
+    BoardModel,
+    Footprint,
+    Pad,
+    Point,
+    apply_deltas,
+)
+from kicad_autorouter.ghost import make_ghost_attractor
+from kicad_autorouter.placement import (
+    PlacementParams,
+    _collect_pad_nodes,
+    _footprint_courtyard_polygon,
+    _wall_mag,
+    run_placement,
+)
 
 
 def _defaults() -> PlacementParams:
@@ -116,14 +130,14 @@ def fig_attraction_fanout(p: PlacementParams, out: pathlib.Path, dpi: int) -> pa
 
 def fig_wall_profile(p: PlacementParams, out: pathlib.Path, dpi: int) -> pathlib.Path:
     k_wall = p.wall_k_N
+    exponent = p.wall_exponent
     halo_default_mm = p.wall_halo_m * 1000.0
     s_mm = np.linspace(halo_default_mm, -halo_default_mm, 400)
     fig, ax = plt.subplots(figsize=(10, 5))
     for halo_mm in (3.0, halo_default_mm, 10.0):
         # Evaluate each halo on its own reach, resampled onto the default axis
-        # via the shared formula F = k*(1 - s/h); clip at zero past reach.
-        f = k_wall * (1 - s_mm / halo_mm)
-        f = np.where(s_mm > halo_mm, 0.0, f)
+        # via the shared law F = k*(1-s/h)^p; clip at zero past reach.
+        f = np.array([_wall_mag(k_wall, s, halo_mm, exponent) for s in s_mm])
         lw = 2.5 if halo_mm == halo_default_mm else 1.2
         alpha = 1.0 if halo_mm == halo_default_mm else 0.55
         ax.plot(s_mm, f * 1000, linewidth=lw, alpha=alpha,
@@ -133,7 +147,7 @@ def fig_wall_profile(p: PlacementParams, out: pathlib.Path, dpi: int) -> pathlib
                label=f"k_wall = {k_wall * 1000:.0f} mN")
     ax.set_xlabel("Signed separation s (mm) [gap +  ←→  - penetration]")
     ax.set_ylabel("Force magnitude (mN)")
-    ax.set_title("Courtyard Force Profile: One Linear Law, Continuous at Contact")
+    ax.set_title(f"Courtyard Force Profile: F = k·(1−s/h)^p (p={exponent:g})")
     ax.legend()
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
@@ -203,10 +217,6 @@ def fig_wall_exponent(p: PlacementParams, out: pathlib.Path, dpi: int) -> pathli
     p > 1 softens the far-halo approach (gentler near-miss) and stiffens
     deep penetration; all curves meet at k_wall at contact (s=0).
     """
-    import sys as _sys
-    _sys.path.insert(0, str(REPO_ROOT / "src"))
-    from kicad_autorouter.placement import _wall_mag
-
     k_wall = p.wall_k_N
     halo_mm = p.wall_halo_m * 1000.0
     s_mm = np.linspace(halo_mm, -halo_mm, 400)
@@ -224,6 +234,174 @@ def fig_wall_exponent(p: PlacementParams, out: pathlib.Path, dpi: int) -> pathli
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
     dest = out / "fig_wall_exponent.png"
+    _save_optimized(fig, dest, dpi)
+    plt.close(fig)
+    return dest
+
+
+def _overlap_pair(dx: float = 1.0) -> BoardModel:
+    """Two 6x4 mm parts with ``dx`` mm centre spacing, board-space courtyards."""
+    def fp(ref: str, uuid: str, x: float) -> Footprint:
+        return Footprint(
+            ref=ref, footprint_id="test:R", layer="F.Cu",
+            x_mm=x, y_mm=0.0, angle_deg=0.0,
+            pads=(
+                Pad("1", f"N-{ref}-1", Point(x - 1.0, 0.0), (1.0, 1.0),
+                    "circle", 0.0, "smd", 0.0, ("F.Cu",)),
+                Pad("2", f"N-{ref}-2", Point(x + 1.0, 0.0), (1.0, 1.0),
+                    "circle", 0.0, "smd", 0.0, ("F.Cu",)),
+            ),
+            courtyard=(
+                (Point(x - 3, -2), Point(x + 3, -2)),
+                (Point(x + 3, -2), Point(x + 3, 2)),
+                (Point(x + 3, 2), Point(x - 3, 2)),
+                (Point(x - 3, 2), Point(x - 3, -2)),
+            ),
+            locked=False, uuid=uuid, ghost=False, ghost_attractions=(),
+        )
+
+    a, b = fp("A", "uuid-a", 0.0), fp("B", "uuid-b", dx)
+    edge = 30.0
+    return BoardModel(
+        footprints=(a, b), keepout_zones=(), nets={},
+        by_ref={"A": a, "B": b},
+        edge_cuts=(
+            (Point(-edge, -edge), Point(edge, -edge)),
+            (Point(edge, -edge), Point(edge, edge)),
+            (Point(edge, edge), Point(-edge, edge)),
+            (Point(-edge, edge), Point(-edge, -edge)),
+        ),
+        footprint_region={"uuid-a": 0, "uuid-b": 0},
+    )
+
+
+def _pair_overlap(model: BoardModel, deltas: dict) -> float:
+    moved = apply_deltas(model, deltas)
+    pads, _, uuid_to_idx, _, _ = _collect_pad_nodes(moved)
+    pos = np.array([(pad.position.x_mm, pad.position.y_mm) for pad in pads])
+    polys = []
+    for uuid in ("uuid-a", "uuid-b"):
+        fp = next(f for f in moved.footprints if f.uuid == uuid)
+        polys.append(_footprint_courtyard_polygon(
+            fp, pad_positions=pos, pad_indices=uuid_to_idx.get(uuid, [])))
+    if polys[0].is_empty or polys[1].is_empty:
+        return 0.0
+    return polys[0].intersection(polys[1]).area
+
+
+def fig_ghost_pullin(p: PlacementParams, out: pathlib.Path, dpi: int) -> pathlib.Path:
+    """Pull-in after 500 iterations vs. the per-spring ghost weight ``ka``."""
+    def model_for(ka: float, dist: float = 20.0) -> BoardModel:
+        fp = Footprint(
+            ref="A", footprint_id="test:R", layer="F.Cu",
+            x_mm=0.0, y_mm=0.0, angle_deg=0.0,
+            pads=(
+                Pad("1", "N1", Point(-1.0, 0.0), (1.0, 1.0),
+                    "circle", 0.0, "smd", 0.0, ("F.Cu",)),
+                Pad("2", "N2", Point(1.0, 0.0), (1.0, 1.0),
+                    "circle", 0.0, "smd", 0.0, ("F.Cu",)),
+            ),
+            courtyard=(
+                (Point(-3, -2), Point(3, -2)),
+                (Point(3, -2), Point(3, 2)),
+                (Point(3, 2), Point(-3, 2)),
+                (Point(-3, 2), Point(-3, -2)),
+            ),
+            locked=False, uuid="uuid-a", ghost=False, ghost_attractions=(),
+        )
+        ghost = make_ghost_attractor(
+            "GHOST", dist, 0.0, target_ref="A", ka=ka, uuid="uuid-ghost")
+        edge = 60.0
+        return BoardModel(
+            footprints=(fp,), ghost_footprints=(ghost,),
+            keepout_zones=(), nets={}, by_ref={"A": fp},
+            edge_cuts=(
+                (Point(-edge, -edge), Point(edge, -edge)),
+                (Point(edge, -edge), Point(edge, edge)),
+                (Point(edge, edge), Point(-edge, edge)),
+                (Point(-edge, edge), Point(-edge, -edge)),
+            ),
+            footprint_region={"uuid-a": 0, "uuid-ghost": 0},
+        )
+
+    ka_vals = np.array([0.1, 0.3, 1.0, 3.0, 10.0, 30.0, 100.0, 300.0])
+    pull_in = np.zeros_like(ka_vals)
+    for i, ka in enumerate(ka_vals):
+        params = PlacementParams(
+            max_iterations=500,
+            convergence_eps_m=1e-15,
+            repulsion_k_N_m2=1e-15,
+            attraction_k_N=1e-15,
+        )
+        prop = run_placement(model_for(float(ka)), params)
+        pull_in[i] = prop.deltas.get("uuid-a", (0.0, 0.0, 0.0))[0]
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.semilogx(ka_vals, pull_in, "o-", color="#c4b5fd", linewidth=2, markersize=7)
+    ax.axvline(0.1, color="gray", linestyle=":", alpha=0.7, label="UI default ka = 0.1")
+    ax.axvline(160, color="gray", linestyle="--", alpha=0.7,
+               label="attraction-scale ka ≈ 160")
+    ax.set_xlabel("Ghost spring weight ka (dimensionless)")
+    ax.set_ylabel("Pull-in after 500 iterations (mm)")
+    ax.set_title(f"Ghost Pull-In vs. ka (k_ghost = {p.ghost_k_N * 1e6:.0f} µN, anchor 20 mm away)")
+    ax.legend()
+    ax.grid(True, which="both", alpha=0.3)
+    fig.tight_layout()
+    dest = out / "fig_ghost_pullin.png"
+    _save_optimized(fig, dest, dpi)
+    plt.close(fig)
+    return dest
+
+
+def fig_overlap_heatmap(p: PlacementParams, out: pathlib.Path, dpi: int) -> pathlib.Path:
+    """Overlap resolution vs. wall stiffness and damping after 50 iterations."""
+    wall_k_vals = np.logspace(-2, -1, 8)
+    damping_vals = np.logspace(-1, 0, 8)
+    results = np.zeros((len(wall_k_vals), len(damping_vals)))
+
+    for i, wall_k in enumerate(wall_k_vals):
+        for j, damping in enumerate(damping_vals):
+            model = _overlap_pair(dx=1.0)
+            params = PlacementParams(
+                max_iterations=50,
+                convergence_eps_m=1e-15,
+                wall_k_N=float(wall_k),
+                damping_Ns_m=float(damping),
+                repulsion_k_N_m2=1e-15,
+                attraction_k_N=1e-15,
+                ghost_k_N=1e-15,
+            )
+            prop = run_placement(model, params)
+            final_overlap = _pair_overlap(model, prop.deltas)
+            initial_overlap = _pair_overlap(model, {})
+            results[i, j] = (
+                1.0 - final_overlap / initial_overlap
+                if initial_overlap > 0.0 else 1.0
+            )
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    im = ax.imshow(
+        results, origin="lower", aspect="auto", cmap="RdYlGn",
+        extent=[
+            np.log10(damping_vals[0]), np.log10(damping_vals[-1]),
+            np.log10(wall_k_vals[0]), np.log10(wall_k_vals[-1]),
+        ],
+        vmin=0, vmax=1,
+    )
+    ax.plot(np.log10(p.damping_Ns_m), np.log10(p.wall_k_N), "w*",
+            markersize=20,
+            label=f"Default ({p.wall_k_N:g}, {p.damping_Ns_m:g})")
+    ax.set_xticks(np.log10(damping_vals))
+    ax.set_xticklabels([f"{d:.2f}" for d in damping_vals])
+    ax.set_yticks(np.log10(wall_k_vals))
+    ax.set_yticklabels([f"{w:.2f}" for w in wall_k_vals])
+    ax.set_xlabel("damping_Ns_m")
+    ax.set_ylabel("wall_k_N")
+    ax.set_title("Overlap Resolution Rate (50 iterations, 1 mm initial overlap)")
+    fig.colorbar(im, ax=ax, label="Resolution (1 = fully separated)")
+    ax.legend()
+    fig.tight_layout()
+    dest = out / "fig_overlap_heatmap.png"
     _save_optimized(fig, dest, dpi)
     plt.close(fig)
     return dest
@@ -276,6 +454,8 @@ FIGURES = (
     ("fanout", fig_attraction_fanout),
     ("wall", fig_wall_profile),
     ("wall_exponent", fig_wall_exponent),
+    ("ghost", fig_ghost_pullin),
+    ("heatmap", fig_overlap_heatmap),
     ("damping", fig_damping_decay),
     ("mass", fig_mass_acceleration),
     ("integrator", fig_integrator_stability),

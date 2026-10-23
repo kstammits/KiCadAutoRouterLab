@@ -21,12 +21,12 @@ browser workflow UI. Works on real boards, DRC-validated.
   Don't add fixtures without a test that needs them.
 - `scripts/` — `benchmark_*.py` (perf; newest JSON per family in
   `docs/benchmarks/`), `run_autoroute.py` (headless), `calibrate_si.py`,
-  `sweep_wall_hardening.py`, `plot_force_laws.py`, `regen_*.sh`,
-  `clean.sh`.
+  `sweep_wall_hardening.py`, `plot_force_laws.py` (all primer figures),
+  `gen_manual.py` (generated `ui/manual.html`), `regen_docs.sh`, `clean.sh`.
 - `docs/` — `autorouting_glossary.md` (domain guidance),
   `si_force_laws.md` + `physics_primer.qmd` (placement physics),
   `roadmap.md` (open work), `benchmarks/*.json` (latest per family),
-  `figures/` (generated PNGs).
+  `figures/` (generated PNGs). The manual is generated at `ui/manual.html`.
 
 ## Commands
 
@@ -35,6 +35,9 @@ browser workflow UI. Works on real boards, DRC-validated.
 - Tests: `.venv/bin/python -m pytest tests/ -q` (pyproject sets
   `testpaths` + `pythonpath=["src"]`, so plain `pytest` works inside the
   venv).
+- Docs: `./scripts/regen_docs.sh` (figures + `ui/manual.html` + rendered
+  primer); add `--pdf` for the PDF. `.venv/bin/python scripts/gen_manual.py`
+  alone rebuilds just the manual.
 - Markers: `unit params physics cli server regression minimal dccf`
   (see `[tool.pytest.ini_options]`). Always use `.venv/bin/python` —
   system `python` lacks project deps (`scipy`, `shapely`, …) and fails at

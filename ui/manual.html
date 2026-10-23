@@ -1,0 +1,395 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KiCad AutoRouter — Placement Manual</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #0b1117; color: #d7e1ea;
+         font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  main { max-width: 980px; margin: 0 auto; padding: 2.5rem 1.25rem 4rem; }
+  h1, h2, h3 { color: #f3f7fa; line-height: 1.2; }
+  h1 { font-size: 2rem; margin: 0 0 .4rem; }
+  h2 { margin-top: 2.6rem; border-top: 1px solid #24313c; padding-top: 1.4rem; }
+  h3 { margin-top: 1.7rem; }
+  p, li { max-width: 78ch; }
+  a { color: #7ee0a0; }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  code { background: #141d25; border: 1px solid #24313c; border-radius: 4px;
+         padding: .08em .35em; color: #d7e1ea; }
+  pre { background: #141d25; border: 1px solid #24313c; border-radius: 7px;
+        padding: .85rem 1rem; overflow: auto; }
+  .lede { color: #9fb0bf; font-size: 1.02rem; }
+  .example { margin-top: 2.2rem; }
+  .boards { display: grid; grid-template-columns: 1fr 1fr; gap: .8rem; margin: 1rem 0; }
+  .board { height: 260px; background: #0f171e; border: 1px solid #24313c;
+           border-radius: 7px; overflow: hidden; }
+  .board svg { display: block; width: 100%; height: 100%; }
+  .board-label { color: #8ea0af; font-size: .72rem; letter-spacing: .08em;
+                 text-transform: uppercase; margin: .35rem 0 .2rem; }
+  table { border-collapse: collapse; width: 100%; margin: .8rem 0 1rem; }
+  th, td { border: 1px solid #24313c; padding: .35rem .55rem; text-align: left; }
+  th { background: #141d25; color: #b8c7d3; font-weight: 600; }
+  .note { border-left: 3px solid #7ee0a0; background: #101920;
+          padding: .65rem .9rem; margin: .8rem 0 0; color: #c8d5df; }
+  .muted { color: #8ea0af; }
+  @media (max-width: 720px) { .boards { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<main>
+<h1>Placement Manual</h1>
+<p class="lede">A short, code-generated guide to the force-spring placement workflow.
+Every board below is rendered by the current engine; there are no screenshots.</p>
+
+<h2>Start here</h2>
+<pre><code>./start_server.sh
+# open http://127.0.0.1:8000</code></pre>
+<p>Load a <code>.kicad_pcb</code> board, open the Placement panel, and choose a
+preset. <strong>Step</strong> advances the solver and previews the result;
+<strong>Accept</strong> writes the previewed pose into the working board.
+<strong>Run</strong> repeats the step/accept loop until it settles or hits a limit.</p>
+
+<h2>Reading a placement run</h2>
+<table>
+<tr><th>Signal</th><th>Meaning</th></tr>
+<tr><td><code>converged</code></td><td>Motion is below the settle threshold and net force is quiet. Safe to accept.</td></tr>
+<tr><td><code>stalled</code></td><td>No net progress for the stall window, but forces remain. A part is wedged or chattering; move a neighbor or add room.</td></tr>
+<tr><td><code>budget</code></td><td>The iteration cap was reached while work remained. Treat it like stalled, not settled.</td></tr>
+<tr><td><code>empty</code></td><td>Nothing movable or nothing to integrate.</td></tr>
+<tr><td>legal / overlap</td><td>Post-hoc courtyard and board-boundary check on the final merged pose.</td></tr>
+</table>
+<p>Pinned parts and locked footprints are anchors: they apply forces but never
+move. Ghosts are non-copper anchors — walls that push parts out of keepouts,
+or attractors that pull a named target.</p>
+
+<h2>Generated examples</h2>
+<p class="muted">All three use the Legalize preset: <code>attraction_k_N=0.008</code>,
+<code>wall_k_N=0.08</code>, <code>damping_Ns_m=0.12</code>,
+<code>wall_halo_m=0.004</code>, <code>wall_exponent=2</code>, 1 ms steps.
+Regenerate with <code>.venv/bin/python scripts/gen_manual.py</code>.
+Each example asserts its own invariant; generation fails if the engine drifts.</p>
+
+<section class="example">
+<h3>1. Attraction: a net pulls two parts together</h3>
+<p>Two parts share one signal net. The right part is free; the left part is locked.</p>
+<div class="boards">
+  <div><div class="board-label">before</div><div class="board"><svg xmlns="http://www.w3.org/2000/svg" viewBox="-27.000 -27.000 54.000 54.000" width="100%" height="100%">
+<title>attraction — before</title>
+<g stroke="#e8edf2" stroke-width="0.3" fill="none">
+<line x1="-24.000" y1="-24.000" x2="24.000" y2="-24.000"/>
+<line x1="24.000" y1="-24.000" x2="24.000" y2="24.000"/>
+<line x1="24.000" y1="24.000" x2="-24.000" y2="24.000"/>
+<line x1="-24.000" y1="24.000" x2="-24.000" y2="-24.000"/>
+</g>
+<g class="footprint fp-locked" data-fp-uuid="uuid-a">
+<line x1="-5.000" y1="-2.000" x2="-11.000" y2="-2.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
+<line x1="-11.000" y1="-2.000" x2="-11.000" y2="2.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
+<line x1="-11.000" y1="2.000" x2="-5.000" y2="2.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
+<line x1="-5.000" y1="2.000" x2="-5.000" y2="-2.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
+<circle cx="-9.000" cy="0.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="SIG"><title>SIG</title></circle>
+<circle cx="-7.000" cy="0.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-A2"><title>N-A2</title></circle>
+<text x="-8.000" y="-0.500" fill="#9fb0c0" font-family="monospace" font-size="1">A</text>
+</g>
+<g class="footprint fp-movable" data-fp-uuid="uuid-b">
+<line x1="11.000" y1="-2.000" x2="5.000" y2="-2.000" stroke="#7ee0a0" stroke-width="0.15" opacity="0.6"/>
+<line x1="5.000" y1="-2.000" x2="5.000" y2="2.000" stroke="#7ee0a0" stroke-width="0.15" opacity="0.6"/>
+<line x1="5.000" y1="2.000" x2="11.000" y2="2.000" stroke="#7ee0a0" stroke-width="0.15" opacity="0.6"/>
+<line x1="11.000" y1="2.000" x2="11.000" y2="-2.000" stroke="#7ee0a0" stroke-width="0.15" opacity="0.6"/>
+<circle cx="7.000" cy="0.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="SIG"><title>SIG</title></circle>
+<circle cx="9.000" cy="0.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-B2"><title>N-B2</title></circle>
+<text x="8.000" y="-0.500" fill="#9fb0c0" font-family="monospace" font-size="1">B</text>
+</g>
+<g id="layer-vias">
+</g>
+</svg></div></div>
+  <div><div class="board-label">after</div><div class="board"><svg xmlns="http://www.w3.org/2000/svg" viewBox="-36.683 -36.683 73.366 73.366" width="100%" height="100%">
+<title>attraction — after</title>
+<defs><marker id="move-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="4" markerHeight="4" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#e0a458"/></marker></defs>
+<g stroke="#e8edf2" stroke-width="0.3" fill="none">
+<line x1="-24.000" y1="-24.000" x2="24.000" y2="-24.000"/>
+<line x1="24.000" y1="-24.000" x2="24.000" y2="24.000"/>
+<line x1="24.000" y1="24.000" x2="-24.000" y2="24.000"/>
+<line x1="-24.000" y1="24.000" x2="-24.000" y2="-24.000"/>
+</g>
+<g class="footprint fp-locked" data-fp-uuid="uuid-a">
+<line x1="-5.000" y1="-2.000" x2="-11.000" y2="-2.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
+<line x1="-11.000" y1="-2.000" x2="-11.000" y2="2.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
+<line x1="-11.000" y1="2.000" x2="-5.000" y2="2.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
+<line x1="-5.000" y1="2.000" x2="-5.000" y2="-2.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
+<circle cx="-9.000" cy="0.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="SIG"><title>SIG</title></circle>
+<circle cx="-7.000" cy="0.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-A2"><title>N-A2</title></circle>
+<text x="-8.000" y="-0.500" fill="#9fb0c0" font-family="monospace" font-size="1">A</text>
+</g>
+<g class="footprint fp-movable" data-fp-uuid="uuid-b">
+<line x1="3.406" y1="4.787" x2="-1.924" y2="2.032" stroke="#7ee0a0" stroke-width="0.15" opacity="0.6"/>
+<line x1="-1.924" y1="2.032" x2="-3.761" y2="5.585" stroke="#7ee0a0" stroke-width="0.15" opacity="0.6"/>
+<line x1="-3.761" y1="5.585" x2="1.569" y2="8.340" stroke="#7ee0a0" stroke-width="0.15" opacity="0.6"/>
+<line x1="1.569" y1="8.340" x2="3.406" y2="4.787" stroke="#7ee0a0" stroke-width="0.15" opacity="0.6"/>
+<circle cx="-1.066" cy="4.727" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="SIG"><title>SIG</title></circle>
+<circle cx="0.711" cy="5.645" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-B2"><title>N-B2</title></circle>
+<text x="-0.177" y="4.686" fill="#9fb0c0" font-family="monospace" font-size="1">B</text>
+</g>
+<g id="layer-vias">
+</g>
+<g stroke="#3d4a56" stroke-width="0.1" stroke-dasharray="0.3 0.2" opacity="0.9">
+<line x1="11.000" y1="-2.000" x2="5.000" y2="-2.000"/>
+<line x1="5.000" y1="-2.000" x2="5.000" y2="2.000"/>
+<line x1="5.000" y1="2.000" x2="11.000" y2="2.000"/>
+<line x1="11.000" y1="2.000" x2="11.000" y2="-2.000"/>
+</g>
+<g stroke="#e0a458" stroke-width="0.2">
+<line x1="8.000" y1="0.000" x2="-0.177" y2="5.186" marker-end="url(#move-arrow)"/>
+</g>
+</svg></div></div>
+</div>
+<table>
+<tr><th>Stop reason</th><th>Iterations</th><th>Max move</th><th>Residual force</th><th>Legality</th></tr>
+<tr><td>budget</td><td>1000</td>
+<td>9.68 mm</td><td>7.05e-04 N</td>
+<td>legal</td></tr>
+<tr><th>Overlaps</th><td colspan="4">none</td></tr>
+</table>
+<p class="note">B moved 8.18 mm toward A; final courtyard overlap 0.00 mm².</p>
+<p class="muted">Attraction is constant-magnitude. The spring keeps pulling after contact, so the courtyard wall is what finally stops the part; the run ends at the iteration budget with the part held at the wall.</p>
+</section>
+
+<section class="example">
+<h3>2. Collision: overlapping courtyards push apart</h3>
+<p>Two 6×4 mm parts start 1 mm apart, a 5 mm-deep courtyard overlap.</p>
+<div class="boards">
+  <div><div class="board-label">before</div><div class="board"><svg xmlns="http://www.w3.org/2000/svg" viewBox="-27.000 -27.000 54.000 54.000" width="100%" height="100%">
+<title>collision — before</title>
+<g stroke="#e8edf2" stroke-width="0.3" fill="none">
+<line x1="-24.000" y1="-24.000" x2="24.000" y2="-24.000"/>
+<line x1="24.000" y1="-24.000" x2="24.000" y2="24.000"/>
+<line x1="24.000" y1="24.000" x2="-24.000" y2="24.000"/>
+<line x1="-24.000" y1="24.000" x2="-24.000" y2="-24.000"/>
+</g>
+<g class="footprint fp-movable" data-fp-uuid="uuid-a">
+<line x1="3.000" y1="-2.000" x2="-3.000" y2="-2.000" stroke="#7ee0a0" stroke-width="0.15" opacity="0.6"/>
+<line x1="-3.000" y1="-2.000" x2="-3.000" y2="2.000" stroke="#7ee0a0" stroke-width="0.15" opacity="0.6"/>
+<line x1="-3.000" y1="2.000" x2="3.000" y2="2.000" stroke="#7ee0a0" stroke-width="0.15" opacity="0.6"/>
+<line x1="3.000" y1="2.000" x2="3.000" y2="-2.000" stroke="#7ee0a0" stroke-width="0.15" opacity="0.6"/>
+<circle cx="-1.000" cy="0.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-A1"><title>N-A1</title></circle>
+<circle cx="1.000" cy="0.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-A2"><title>N-A2</title></circle>
+<text x="0.000" y="-0.500" fill="#9fb0c0" font-family="monospace" font-size="1">A</text>
+</g>
+<g class="footprint fp-movable" data-fp-uuid="uuid-b">
+<line x1="4.000" y1="-2.000" x2="-2.000" y2="-2.000" stroke="#7ee0a0" stroke-width="0.15" opacity="0.6"/>
+<line x1="-2.000" y1="-2.000" x2="-2.000" y2="2.000" stroke="#7ee0a0" stroke-width="0.15" opacity="0.6"/>
+<line x1="-2.000" y1="2.000" x2="4.000" y2="2.000" stroke="#7ee0a0" stroke-width="0.15" opacity="0.6"/>
+<line x1="4.000" y1="2.000" x2="4.000" y2="-2.000" stroke="#7ee0a0" stroke-width="0.15" opacity="0.6"/>
+<circle cx="0.000" cy="0.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-B1"><title>N-B1</title></circle>
+<circle cx="2.000" cy="0.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-B2"><title>N-B2</title></circle>
+<text x="1.000" y="-0.500" fill="#9fb0c0" font-family="monospace" font-size="1">B</text>
+</g>
+<g id="layer-vias">
+</g>
+</svg></div></div>
+  <div><div class="board-label">after</div><div class="board"><svg xmlns="http://www.w3.org/2000/svg" viewBox="-30.984 -30.984 61.968 61.968" width="100%" height="100%">
+<title>collision — after</title>
+<defs><marker id="move-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="4" markerHeight="4" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#e0a458"/></marker></defs>
+<g stroke="#e8edf2" stroke-width="0.3" fill="none">
+<line x1="-24.000" y1="-24.000" x2="24.000" y2="-24.000"/>
+<line x1="24.000" y1="-24.000" x2="24.000" y2="24.000"/>
+<line x1="24.000" y1="24.000" x2="-24.000" y2="24.000"/>
+<line x1="-24.000" y1="24.000" x2="-24.000" y2="-24.000"/>
+</g>
+<g class="footprint fp-movable" data-fp-uuid="uuid-a">
+<line x1="3.568" y1="-5.945" x2="-2.432" y2="-5.942" stroke="#7ee0a0" stroke-width="0.15" opacity="0.6"/>
+<line x1="-2.432" y1="-5.942" x2="-2.430" y2="-1.942" stroke="#7ee0a0" stroke-width="0.15" opacity="0.6"/>
+<line x1="-2.430" y1="-1.942" x2="3.570" y2="-1.945" stroke="#7ee0a0" stroke-width="0.15" opacity="0.6"/>
+<line x1="3.570" y1="-1.945" x2="3.568" y2="-5.945" stroke="#7ee0a0" stroke-width="0.15" opacity="0.6"/>
+<circle cx="-0.431" cy="-3.943" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-A1"><title>N-A1</title></circle>
+<circle cx="1.569" cy="-3.944" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-A2"><title>N-A2</title></circle>
+<text x="0.569" y="-4.443" fill="#9fb0c0" font-family="monospace" font-size="1">A</text>
+</g>
+<g class="footprint fp-movable" data-fp-uuid="uuid-b">
+<line x1="3.430" y1="1.942" x2="-2.570" y2="1.945" stroke="#7ee0a0" stroke-width="0.15" opacity="0.6"/>
+<line x1="-2.570" y1="1.945" x2="-2.568" y2="5.945" stroke="#7ee0a0" stroke-width="0.15" opacity="0.6"/>
+<line x1="-2.568" y1="5.945" x2="3.432" y2="5.942" stroke="#7ee0a0" stroke-width="0.15" opacity="0.6"/>
+<line x1="3.432" y1="5.942" x2="3.430" y2="1.942" stroke="#7ee0a0" stroke-width="0.15" opacity="0.6"/>
+<circle cx="-0.569" cy="3.944" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-B1"><title>N-B1</title></circle>
+<circle cx="1.431" cy="3.943" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-B2"><title>N-B2</title></circle>
+<text x="0.431" y="3.443" fill="#9fb0c0" font-family="monospace" font-size="1">B</text>
+</g>
+<g id="layer-vias">
+</g>
+<g stroke="#3d4a56" stroke-width="0.1" stroke-dasharray="0.3 0.2" opacity="0.9">
+<line x1="3.000" y1="-2.000" x2="-3.000" y2="-2.000"/>
+<line x1="-3.000" y1="-2.000" x2="-3.000" y2="2.000"/>
+<line x1="-3.000" y1="2.000" x2="3.000" y2="2.000"/>
+<line x1="3.000" y1="2.000" x2="3.000" y2="-2.000"/>
+<line x1="4.000" y1="-2.000" x2="-2.000" y2="-2.000"/>
+<line x1="-2.000" y1="-2.000" x2="-2.000" y2="2.000"/>
+<line x1="-2.000" y1="2.000" x2="4.000" y2="2.000"/>
+<line x1="4.000" y1="2.000" x2="4.000" y2="-2.000"/>
+</g>
+<g stroke="#e0a458" stroke-width="0.2">
+<line x1="0.000" y1="0.000" x2="0.569" y2="-3.943" marker-end="url(#move-arrow)"/>
+<line x1="1.000" y1="0.000" x2="0.431" y2="3.943" marker-end="url(#move-arrow)"/>
+</g>
+</svg></div></div>
+</div>
+<table>
+<tr><th>Stop reason</th><th>Iterations</th><th>Max move</th><th>Residual force</th><th>Legality</th></tr>
+<tr><td>converged</td><td>61</td>
+<td>3.98 mm</td><td>1.92e-04 N</td>
+<td>legal</td></tr>
+<tr><th>Overlaps</th><td colspan="4">none</td></tr>
+</table>
+<p class="note">Overlap fell from 20.0 mm² to 0.00 mm²; the courtyard wall found the shortest escape.</p>
+<p class="muted">Every contact reports a signed separation. The deepest sub-contact wins, so stacked pad/pin paths cannot multiply the force.</p>
+</section>
+
+<section class="example">
+<h3>3. Legalize: a part held by locked neighbors</h3>
+<p>A movable part sits in a four-wall cage of locked parts.</p>
+<div class="boards">
+  <div><div class="board-label">before</div><div class="board"><svg xmlns="http://www.w3.org/2000/svg" viewBox="-23.000 -23.000 46.000 46.000" width="100%" height="100%">
+<title>cage — before</title>
+<g stroke="#e8edf2" stroke-width="0.3" fill="none">
+<line x1="-20.000" y1="-20.000" x2="20.000" y2="-20.000"/>
+<line x1="20.000" y1="-20.000" x2="20.000" y2="20.000"/>
+<line x1="20.000" y1="20.000" x2="-20.000" y2="20.000"/>
+<line x1="-20.000" y1="20.000" x2="-20.000" y2="-20.000"/>
+</g>
+<g class="footprint fp-locked" data-fp-uuid="uuid-l">
+<line x1="-4.000" y1="-2.000" x2="-10.000" y2="-2.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
+<line x1="-10.000" y1="-2.000" x2="-10.000" y2="2.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
+<line x1="-10.000" y1="2.000" x2="-4.000" y2="2.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
+<line x1="-4.000" y1="2.000" x2="-4.000" y2="-2.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
+<circle cx="-8.000" cy="0.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-L1"><title>N-L1</title></circle>
+<circle cx="-6.000" cy="0.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-L2"><title>N-L2</title></circle>
+<text x="-7.000" y="-0.500" fill="#9fb0c0" font-family="monospace" font-size="1">L</text>
+</g>
+<g class="footprint fp-locked" data-fp-uuid="uuid-r">
+<line x1="10.000" y1="-2.000" x2="4.000" y2="-2.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
+<line x1="4.000" y1="-2.000" x2="4.000" y2="2.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
+<line x1="4.000" y1="2.000" x2="10.000" y2="2.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
+<line x1="10.000" y1="2.000" x2="10.000" y2="-2.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
+<circle cx="6.000" cy="0.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-R1"><title>N-R1</title></circle>
+<circle cx="8.000" cy="0.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-R2"><title>N-R2</title></circle>
+<text x="7.000" y="-0.500" fill="#9fb0c0" font-family="monospace" font-size="1">R</text>
+</g>
+<g class="footprint fp-locked" data-fp-uuid="uuid-t">
+<line x1="3.000" y1="4.000" x2="-3.000" y2="4.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
+<line x1="-3.000" y1="4.000" x2="-3.000" y2="8.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
+<line x1="-3.000" y1="8.000" x2="3.000" y2="8.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
+<line x1="3.000" y1="8.000" x2="3.000" y2="4.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
+<circle cx="-1.000" cy="6.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-T1"><title>N-T1</title></circle>
+<circle cx="1.000" cy="6.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-T2"><title>N-T2</title></circle>
+<text x="0.000" y="5.500" fill="#9fb0c0" font-family="monospace" font-size="1">T</text>
+</g>
+<g class="footprint fp-locked" data-fp-uuid="uuid-b">
+<line x1="3.000" y1="-8.000" x2="-3.000" y2="-8.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
+<line x1="-3.000" y1="-8.000" x2="-3.000" y2="-4.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
+<line x1="-3.000" y1="-4.000" x2="3.000" y2="-4.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
+<line x1="3.000" y1="-4.000" x2="3.000" y2="-8.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
+<circle cx="-1.000" cy="-6.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-B1"><title>N-B1</title></circle>
+<circle cx="1.000" cy="-6.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-B2"><title>N-B2</title></circle>
+<text x="0.000" y="-6.500" fill="#9fb0c0" font-family="monospace" font-size="1">B</text>
+</g>
+<g class="footprint fp-movable" data-fp-uuid="uuid-m">
+<line x1="3.000" y1="-2.000" x2="-3.000" y2="-2.000" stroke="#7ee0a0" stroke-width="0.15" opacity="0.6"/>
+<line x1="-3.000" y1="-2.000" x2="-3.000" y2="2.000" stroke="#7ee0a0" stroke-width="0.15" opacity="0.6"/>
+<line x1="-3.000" y1="2.000" x2="3.000" y2="2.000" stroke="#7ee0a0" stroke-width="0.15" opacity="0.6"/>
+<line x1="3.000" y1="2.000" x2="3.000" y2="-2.000" stroke="#7ee0a0" stroke-width="0.15" opacity="0.6"/>
+<circle cx="-1.000" cy="0.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-M1"><title>N-M1</title></circle>
+<circle cx="1.000" cy="0.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-M2"><title>N-M2</title></circle>
+<text x="0.000" y="-0.500" fill="#9fb0c0" font-family="monospace" font-size="1">M</text>
+</g>
+<g id="layer-vias">
+</g>
+</svg></div></div>
+  <div><div class="board-label">after</div><div class="board"><svg xmlns="http://www.w3.org/2000/svg" viewBox="-23.000 -23.000 46.000 46.000" width="100%" height="100%">
+<title>cage — after</title>
+<defs><marker id="move-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="4" markerHeight="4" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#e0a458"/></marker></defs>
+<g stroke="#e8edf2" stroke-width="0.3" fill="none">
+<line x1="-20.000" y1="-20.000" x2="20.000" y2="-20.000"/>
+<line x1="20.000" y1="-20.000" x2="20.000" y2="20.000"/>
+<line x1="20.000" y1="20.000" x2="-20.000" y2="20.000"/>
+<line x1="-20.000" y1="20.000" x2="-20.000" y2="-20.000"/>
+</g>
+<g class="footprint fp-locked" data-fp-uuid="uuid-l">
+<line x1="-4.000" y1="-2.000" x2="-10.000" y2="-2.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
+<line x1="-10.000" y1="-2.000" x2="-10.000" y2="2.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
+<line x1="-10.000" y1="2.000" x2="-4.000" y2="2.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
+<line x1="-4.000" y1="2.000" x2="-4.000" y2="-2.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
+<circle cx="-8.000" cy="0.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-L1"><title>N-L1</title></circle>
+<circle cx="-6.000" cy="0.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-L2"><title>N-L2</title></circle>
+<text x="-7.000" y="-0.500" fill="#9fb0c0" font-family="monospace" font-size="1">L</text>
+</g>
+<g class="footprint fp-locked" data-fp-uuid="uuid-r">
+<line x1="10.000" y1="-2.000" x2="4.000" y2="-2.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
+<line x1="4.000" y1="-2.000" x2="4.000" y2="2.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
+<line x1="4.000" y1="2.000" x2="10.000" y2="2.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
+<line x1="10.000" y1="2.000" x2="10.000" y2="-2.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
+<circle cx="6.000" cy="0.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-R1"><title>N-R1</title></circle>
+<circle cx="8.000" cy="0.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-R2"><title>N-R2</title></circle>
+<text x="7.000" y="-0.500" fill="#9fb0c0" font-family="monospace" font-size="1">R</text>
+</g>
+<g class="footprint fp-locked" data-fp-uuid="uuid-t">
+<line x1="3.000" y1="4.000" x2="-3.000" y2="4.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
+<line x1="-3.000" y1="4.000" x2="-3.000" y2="8.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
+<line x1="-3.000" y1="8.000" x2="3.000" y2="8.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
+<line x1="3.000" y1="8.000" x2="3.000" y2="4.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
+<circle cx="-1.000" cy="6.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-T1"><title>N-T1</title></circle>
+<circle cx="1.000" cy="6.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-T2"><title>N-T2</title></circle>
+<text x="0.000" y="5.500" fill="#9fb0c0" font-family="monospace" font-size="1">T</text>
+</g>
+<g class="footprint fp-locked" data-fp-uuid="uuid-b">
+<line x1="3.000" y1="-8.000" x2="-3.000" y2="-8.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
+<line x1="-3.000" y1="-8.000" x2="-3.000" y2="-4.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
+<line x1="-3.000" y1="-4.000" x2="3.000" y2="-4.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
+<line x1="3.000" y1="-4.000" x2="3.000" y2="-8.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
+<circle cx="-1.000" cy="-6.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-B1"><title>N-B1</title></circle>
+<circle cx="1.000" cy="-6.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-B2"><title>N-B2</title></circle>
+<text x="0.000" y="-6.500" fill="#9fb0c0" font-family="monospace" font-size="1">B</text>
+</g>
+<g class="footprint fp-movable" data-fp-uuid="uuid-m">
+<line x1="2.990" y1="-2.016" x2="-3.010" y2="-1.984" stroke="#7ee0a0" stroke-width="0.15" opacity="0.6"/>
+<line x1="-3.010" y1="-1.984" x2="-2.990" y2="2.016" stroke="#7ee0a0" stroke-width="0.15" opacity="0.6"/>
+<line x1="-2.990" y1="2.016" x2="3.010" y2="1.984" stroke="#7ee0a0" stroke-width="0.15" opacity="0.6"/>
+<line x1="3.010" y1="1.984" x2="2.990" y2="-2.016" stroke="#7ee0a0" stroke-width="0.15" opacity="0.6"/>
+<circle cx="-1.000" cy="0.005" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-M1"><title>N-M1</title></circle>
+<circle cx="1.000" cy="-0.005" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-M2"><title>N-M2</title></circle>
+<text x="-0.000" y="-0.500" fill="#9fb0c0" font-family="monospace" font-size="1">M</text>
+</g>
+<g id="layer-vias">
+</g>
+<g stroke="#3d4a56" stroke-width="0.1" stroke-dasharray="0.3 0.2" opacity="0.9">
+<line x1="3.000" y1="-2.000" x2="-3.000" y2="-2.000"/>
+<line x1="-3.000" y1="-2.000" x2="-3.000" y2="2.000"/>
+<line x1="-3.000" y1="2.000" x2="3.000" y2="2.000"/>
+<line x1="3.000" y1="2.000" x2="3.000" y2="-2.000"/>
+</g>
+<g stroke="#e0a458" stroke-width="0.2">
+<line x1="0.000" y1="0.000" x2="0.000" y2="0.000" marker-end="url(#move-arrow)"/>
+</g>
+</svg></div></div>
+</div>
+<table>
+<tr><th>Stop reason</th><th>Iterations</th><th>Max move</th><th>Residual force</th><th>Legality</th></tr>
+<tr><td>converged</td><td>1</td>
+<td>0.00 mm</td><td>0.00e+00 N</td>
+<td>legal</td></tr>
+<tr><th>Overlaps</th><td colspan="4">none</td></tr>
+</table>
+<p class="note">The caged part moved 0.00 mm and rotated 0.3°; the locked walls held it in place.</p>
+<p class="muted">Locked parts are anchors: they feel and apply forces but never move. A legalized part settles with only a small nudge.</p>
+</section>
+
+
+<h2>Go deeper</h2>
+<ul>
+<li><a href="/docs.html?doc=docs/si_force_laws.md">SI force laws</a> — normative formulas and defaults.</li>
+<li><a href="/docs.html?doc=docs/physics_primer.qmd">Physics primer</a> — force-law intuition and parameter tradeoffs.</li>
+<li><a href="/docs.html?doc=docs/autorouting_glossary.md">Autorouting glossary</a> — pipeline stages and terminology.</li>
+</ul>
+</main>
+</body>
+</html>

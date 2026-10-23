@@ -63,7 +63,6 @@ DOCS_ALLOWLIST: Dict[str, Path] = {
     "docs/README.md": REPO_ROOT / "docs" / "README.md",
     "docs/autorouting_glossary.md": REPO_ROOT / "docs" / "autorouting_glossary.md",
     "docs/si_force_laws.md": REPO_ROOT / "docs" / "si_force_laws.md",
-    "docs/index.qmd": REPO_ROOT / "docs" / "index.qmd",
     "docs/physics_primer.qmd": REPO_ROOT / "docs" / "physics_primer.qmd",
     "docs/roadmap.md": REPO_ROOT / "docs" / "roadmap.md",
 }

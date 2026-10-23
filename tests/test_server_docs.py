@@ -51,7 +51,6 @@ def test_docs_list_contains_physics_set():
         for name in (
             "README.md",
             "docs/si_force_laws.md",
-            "docs/index.qmd",
             "docs/physics_primer.qmd",
             "docs/roadmap.md",
         ):
@@ -105,7 +104,7 @@ def test_docs_rendered_route():
     try:
         rendered = server.REPO_ROOT / "docs" / "_output" / "html" / "physics_primer.html"
         if not rendered.is_file():
-            pytest.skip("rendered primer not built (run scripts/regen_physics_primer.sh)")
+            pytest.skip("rendered primer not built (run scripts/regen_docs.sh)")
         status, ctype, body = _get(base, "/docs-rendered/physics_primer.html")
         assert status == 200
         assert ctype == "text/html"
@@ -117,5 +116,19 @@ def test_docs_rendered_route():
         with pytest.raises(urllib.error.HTTPError) as exc2:
             urllib.request.urlopen(f"{base}/docs-rendered/../index.html")
         assert exc2.value.code == 404
+    finally:
+        httpd.shutdown()
+
+
+@pytest.mark.server
+@pytest.mark.unit
+def test_generated_manual_is_served():
+    httpd, base = _client()
+    try:
+        status, ctype, body = _get(base, "/manual.html")
+        assert status == 200
+        assert ctype == "text/html"
+        assert b"Placement Manual" in body
+        assert b"attraction" in body and b"collision" in body and b"cage" in body
     finally:
         httpd.shutdown()

@@ -89,9 +89,11 @@ This is internal solver memory (`ctx.last_tangent`), not a user param.
 Applied **once** after dynamics settle, before the final force readback:
 
 ```
-x_i ← x_i + 0.5 · depth_i · û_MTV     per overlapping pair
+x_i ← x_i + 0.5 · depth_i · û_near     per overlapping pair
 ```
 
+- Direction comes from the pair's nearest points, not a SAT MTV; depth is
+  measured along that axis with the vertex-projection interval overlap.
 - Runs after dynamics stop (converged/stalled/budget), on the committed pad
   positions.
 - Only true penetration (`s < 0`), never halo proximity — halo-only
@@ -177,7 +179,7 @@ mean. `stall_window=0` disables.
 | `repulsion_k_N_m2` | N·m² | 2e-9 | pair push (sub-contact only) |
 | `attraction_k_N` | N | 8e-3 | legalize-regime net pull |
 | `wall_k_N` | N | 8e-2 | contact/halo strength |
-| `wall_halo_m` | m | 0.006 | near-miss reach and depth scale |
+| `wall_halo_m` | m | 0.006 | near-miss reach and depth scale (Legalize preset: 0.004) |
 | `wall_exponent` | — | 2.0 | wall-law exponent (`≥ 1`) |
 | `wall_cap_depth_mm` | mm | 0.0 | deep-penetration cap (0 = off) |
 | `momentum_alpha` | — | 0.7 | old-velocity blend after rigid projection |
@@ -207,7 +209,7 @@ placed boards — use two stages):
 - Legalize (placed boards: tube111, DCCF): `attraction_k_N` ≈ 0.005–0.01
   with `wall_k_N` ≈ 0.08–0.1, `damping` 0.12–0.15, `wall_halo_m` 4 mm,
   `dt` 1 ms. The shorter halo keeps dense neighbor fields from overriding a
-  part's own wall; the engine default remains 6 mm for clustering.
+  part's own wall; the engine default remains 6 mm, and Cluster uses it too.
 
 Sanity anchor: an 0805 (2.5 mm² courtyard, ~8 mg) at `k_attr = 50 µN`
 accelerates at ~6 m/s² — brisk but sub-ballistic at 1 ms steps

@@ -66,7 +66,7 @@ ingest and result reporting). Normative formulas:
 | **Broadphase** | 15 mm uniform-grid + bounding-circle cull before exact courtyard geometry | §1 Broadphase | `_run_region_simulation` (courtyard cache) |
 | **Decap / power / GND rules** | Fanout scaling on power edges; ground excluded except decap-incident; `decap_boost` multiplier | §1 Decap boost, Fanout scaling, Ground exclusion | `_build_net_edges_pad_level`, `PlacementParams.decap_boost`, `PlacementParams.power_attraction_scale` |
 | **Tangential assist** | Sliding assist along contact (MTV-perp): `γ·|F_n|·sign(v_rel_t)`, latched per contact pair so near-zero velocity noise doesn't flip-slide | §1 Tangential assist | `PlacementParams.contact_tangent_gamma`, `_tangent_sign` |
-| **Final depenetration pass** | One relaxed MTV round after dynamics settle: ejects residual courtyard overlap the penalty law couldn't clear; contraction + rigid reproject each pass | `src/kicad_autorouter/placement/runner.py` (`_depenetrate_positions`) | `_DEPEN_RELAX`, `_DEPEN_CLEAN_AREA_MM2`, `_DEPEN_MAX_ROT_RAD` |
+| **Final depenetration pass** | One relaxed nearest-point separation round after dynamics settle: ejects residual courtyard overlap the penalty law couldn't clear; contraction + rigid reproject each pass | `src/kicad_autorouter/placement/runner.py` (`_depenetrate_positions`) | `_DEPEN_RELAX`, `_DEPEN_CLEAN_AREA_MM2`, `_DEPEN_MAX_ROT_RAD` |
 
 ### Units & integrator
 
@@ -133,9 +133,10 @@ ingest and result reporting). Normative formulas:
 - **Ground exclusion**: ground nets get zero attraction edges (except
   decap-incident ones) — pours connect GND anywhere, so general GND
   pull would only clump parts (`_build_net_edges_pad_level`).
-- **Final depenetration pass**: one relaxed MTV round after dynamics
-  settle; ejects residual courtyard overlap the penalty wall law couldn't
-  clear (force balance ≠ zero overlap). Jacobi accumulation from frozen
+- **Final depenetration pass**: one relaxed nearest-point separation round
+  after dynamics settle; ejects residual courtyard overlap the penalty wall
+  law couldn't clear (force balance ≠ zero overlap). Direction comes from the
+  pair's nearest points, not a SAT MTV. Jacobi accumulation from frozen
   geometry, contact-weighted spread so Kabsch derives rotation (full
   motion), rotation clamped to 2° per round. Single round — iterating
   ping-pongs closed wedges between neighbors. Remainder reported via
