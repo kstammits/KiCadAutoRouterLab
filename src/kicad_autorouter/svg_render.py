@@ -213,14 +213,17 @@ def _zones_svg(
                 # Fill view: hide the zone outline (redundant with the
                 # detailed fill) and color fills by layer — F.Cu red,
                 # B.Cu green — so overlapping pours stay distinguishable.
+                # Fill-only (no stroke): KiCad keeps each island a single
+                # ring by joining clearance cutouts to the outline with
+                # zero-width out-and-back slits; stroking the ring draws
+                # every slit twice as a spurious internal line.
                 layer_fill = FILL_FCU_COLOR if layer == "F.Cu" else FILL_BCU_COLOR
                 fill_opacity = "0.28" if layer == "F.Cu" else "0.22"
                 for fp in layer_fills:
                     fpts = " ".join(f"{_fmt(p.x_mm)} {_fmt(p.y_mm)}" for p in fp.polygon)
                     out.append(
                         f'<polygon class="zone-fill" points="{fpts}" fill="{layer_fill}" '
-                        f'fill-opacity="{fill_opacity}" stroke="{layer_fill}" '
-                        f'stroke-width="0.12"{net_attr}/>'
+                        f'fill-opacity="{fill_opacity}" stroke="none"{net_attr}/>'
                     )
                 continue
             pts = " ".join(f"{_fmt(p.x_mm)} {_fmt(p.y_mm)}" for p in zone.polygon)

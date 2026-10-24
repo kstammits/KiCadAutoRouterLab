@@ -296,3 +296,33 @@ def test_forces_overlay_falls_back_to_total():
     s = render_board_svg(m, proposal=prop, show_forces=True)
     assert "url(#move-arrow)" in s
     assert "url(#force-" not in s
+
+
+def test_zone_fills_render_without_stroke():
+    """Cached fills draw fill-only: KiCad's single-ring islands join
+    clearance cutouts with zero-width out-and-back slits, which a stroke
+    would draw twice as spurious internal lines."""
+    from kicad_autorouter.board_model import FilledPolygon, Zone
+
+    outline = (Point(0, 0), Point(10, 0), Point(10, 6), Point(0, 6))
+    # Island ring with a horizontal slit out to a cutout and back.
+    island = (
+        Point(1, 1), Point(9, 1), Point(9, 5), Point(6, 5),
+        Point(6, 3), Point(4, 3), Point(6, 3), Point(6, 5),
+        Point(1, 5),
+    )
+    zone = Zone(
+        uuid="zone-1", layers=("F.Cu",), polygon=outline, net_name="GND",
+        filled_polygons=(FilledPolygon(layer="F.Cu", polygon=island),),
+    )
+    model = BoardModel(
+        footprints=(), keepout_zones=(), nets={}, by_ref={}, zones=(zone,),
+    )
+    fills = render_board_svg(model, show_fills=True)
+    m = re.search(r'<polygon class="zone-fill"[^>]*>', fills)
+    assert m, "no zone-fill polygon rendered"
+    assert 'stroke="none"' in m.group(0)
+    assert "stroke-width" not in m.group(0)
+    # Outline wash (no cached fills / fills off) keeps its stroke.
+    wash = render_board_svg(model, show_fills=False)
+    assert 'stroke="none"' not in wash

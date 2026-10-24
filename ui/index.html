@@ -437,6 +437,7 @@
       <span class="zoom-info" id="drc-info"></span>
       <label class="chk"><input type="checkbox" id="layer-fcu" checked> F.Cu</label>
       <label class="chk"><input type="checkbox" id="layer-bcu" checked> B.Cu</label>
+      <label class="chk" title="Show poured-zone outlines and fills"><input type="checkbox" id="zones-toggle" checked> Zones</label>
       <label class="chk" title="Show KiCad's cached zone fills (stale after edits; use --refill-zones to refresh)"><input type="checkbox" id="zones-fill-toggle"> Zone fills (cached)</label>
       <span class="zoom-info" id="zoom-info">100%</span>
       <button id="fit-btn" title="Fit board to view">Fit</button>
@@ -991,6 +992,7 @@ const forcesToggle = document.getElementById("forces-toggle");
 const drcToggle = document.getElementById("drc-toggle");
 const layerFcuToggle = document.getElementById("layer-fcu");
 const layerBcuToggle = document.getElementById("layer-bcu");
+const zonesToggle = document.getElementById("zones-toggle");
 const zonesFillToggle = document.getElementById("zones-fill-toggle");
 const fitBtn = document.getElementById("fit-btn");
 const diagEl = document.getElementById("diag");
@@ -1375,18 +1377,21 @@ function layerGroup(svg, layer, kind) {
 function applyLayerVisibility() {
   const svg = viewport.querySelector("svg");
   if (!svg) return;
+  const zonesOn = zonesToggle?.checked ?? true;
   for (const [layer, toggle] of [["F.Cu", layerFcuToggle], ["B.Cu", layerBcuToggle]]) {
-    const show = toggle.checked ? "" : "none";
-    for (const kind of ["tracks", "zones"]) {
-      const g = layerGroup(svg, layer, kind);
-      if (g) g.style.display = show;
-    }
+    const layerOn = toggle.checked;
+    const tracks = layerGroup(svg, layer, "tracks");
+    if (tracks) tracks.style.display = layerOn ? "" : "none";
+    const zones = layerGroup(svg, layer, "zones");
+    if (zones) zones.style.display = (layerOn && zonesOn) ? "" : "none";
   }
 }
 
 layerFcuToggle.addEventListener("change", applyLayerVisibility);
 
 layerBcuToggle.addEventListener("change", applyLayerVisibility);
+
+zonesToggle.addEventListener("change", applyLayerVisibility);
 
 zonesFillToggle.addEventListener("change", async () => {
   await fetchAndInjectSVG(lastVersion);

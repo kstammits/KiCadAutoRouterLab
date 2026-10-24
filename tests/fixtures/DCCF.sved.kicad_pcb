@@ -20444,6 +20444,7 @@
 		(embedded_fonts no)
 	)
 	(footprint "Potentiometer_THT:Potentiometer_Bourns_3296W_Laid"
+		(locked yes)
 		(layer "F.Cu")
 		(uuid "d50938de-efe4-40e6-a88d-07f18969e908")
 		(at 254.99 59.3)
