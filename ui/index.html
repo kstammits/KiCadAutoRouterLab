@@ -98,11 +98,6 @@
   .top-bar { background:#161c22; border-bottom:1px solid #2a3540; padding:.5rem .75rem; display:flex; gap:.6rem; align-items:center; flex-wrap:wrap; font-size:.8rem; color:#7d8b99; }
   .top-bar h1 { background:none; border:none; padding:0; font-size:.95rem; color:#d7e0e9; margin:0; }
   
-  .pipeline { display:flex; flex-direction:column; gap:.5rem; padding:.5rem; max-height:120px; overflow:auto; }
-  .pipeline.collapsed { max-height: 0; padding: 0; overflow: hidden; }
-  .pipeline-toggle { font-size:.6rem; padding:.1rem .4rem; margin-bottom:.25rem; }
-  .stage { border:1px solid #2a3540; border-radius:6px; padding:.6rem .8rem; background:#161c22; }
-  .stage h2 { font-size:.8rem; margin:0 0 .2rem; display:flex; gap:.4rem; align-items:center; }
   .num { color:#5b6b7a; font-size:.7rem; }
   p { margin:0; color:#9fb0c0; font-size:.75rem; }
   .chip { margin-left:auto; font-size:.6rem; padding:.1rem .4rem; border-radius:999px; border:1px solid #3a4a5a; color:#8fa2b5; text-transform:uppercase; letter-spacing:.05em; }
@@ -140,6 +135,8 @@
   button:disabled { opacity:.45; cursor:default; }
   button.primary { background:#1a3a1a; border-color:#2e6b45; color:#7ee0a0; }
   button.primary:hover:not(:disabled) { background:#225522; }
+  #toast { position:fixed; bottom:1rem; left:50%; transform:translateX(-50%); background:#3d1a1a; border:1px solid #5a2a2a; color:#f0b0b0; border-radius:6px; padding:.4rem .8rem; font-size:.72rem; z-index:50; max-width:80vw; }
+  #toast.ok { background:#1a3a1a; border-color:#2e6b45; color:#7ee0a0; }
   
   /* Loading spinner on button */
   button.loading {
@@ -204,17 +201,7 @@
   .sel-toolbar button { padding:.15rem .45rem; font-size:.6rem; }
   .sel-count { margin-left:auto; font-variant-numeric:tabular-nums; }
   
-  /* Net legend */
-  .net-legend { display:flex; gap:.4rem; flex-wrap:wrap; align-content:flex-start; max-height:120px; overflow-y:auto; padding:.35rem .7rem; border-top:1px solid #2a3540; font-size:.6rem; color:#9fb0c0; background:#161c22; align-items:center; }
-  .net-legend.collapsed { max-height: 0; padding: 0; border-top: none; overflow: hidden; }
-  .net-legend-header { display:flex; gap:.4rem; align-items:center; padding:.35rem .7rem; border-top:1px solid #2a3540; font-size:.6rem; color:#9fb0c0; background:#161c22; }
-  .net-legend-toggle { background:#1a222a; border:1px solid #3a4a5a; color:#9fb0c0; padding:.1rem .4rem; font-size:.6rem; border-radius:3px; cursor:pointer; }
-  .net-legend-toggle:hover { border-color:#7ee0a0; color:#d7e0e9; }
-  .net-legend-item { display:flex; align-items:center; gap:.2rem; padding:.1rem .4rem; border-radius:3px; cursor:pointer; border:1px solid transparent; white-space:nowrap; }
-  .net-legend-item:hover { background:#1a222a; border-color:#3a4a5a; }
-  .net-legend-swatch { width:10px; height:10px; border-radius:2px; flex-shrink:0; }
-  .net-legend-name { max-width:100px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .net-legend-count { color:#5b6b7a; font-variant-numeric:tabular-nums; }
+  /* Net legend (removed): nets table + SVG copper click own selection. */
   
   /* Parameter description table */
   .param-desc-table { width:100%; border-collapse:collapse; font-size:.65rem; color:#9fb0c0; margin-top:.4rem; }
@@ -265,9 +252,7 @@
   .power-badge.is-power { background: rgba(245,158,11,.15); color: #f59e0b; border: 1px solid rgba(245,158,11,.5); }
   .power-badge.is-ground { background: rgba(56,189,248,.12); color: #38bdf8; border: 1px solid rgba(56,189,248,.5); }
   .decap-badge { display: inline-block; font-size: .58rem; color: #2dd4bf; border: 1px solid rgba(45,212,191,.5); background: rgba(45,212,191,.1); border-radius: 3px; padding: 0 .3rem; white-space: nowrap; }
-  .net-legend-power { font-size: .55rem; font-weight: 700; margin-left: .2rem; }
-  .net-legend-power.is-power { color: #f59e0b; }
-  .net-legend-power.is-ground { color: #38bdf8; }
+
 
   /* Pwr toggle cell: always-visible hit target (signal nets render a dim
      ghost bolt; power/ground render their badge inside the button). */
@@ -437,9 +422,10 @@
       <span id="conn-badge" class="chip" hidden style="color:#f87171; border-color:#f87171;">● disconnected — server unreachable</span>
       <span id="board-sch" class="chip" hidden>pcb only</span>
       <span id="app-version" class="chip" style="margin-left:0.5rem; font-size:0.6rem;">v?</span>
-      <label class="chk"><input type="checkbox" id="overlay-toggle" checked> proposal</label>
+      <label class="chk"><input type="checkbox" id="overlay-toggle" checked> Show proposal</label>
       <label class="chk"><input type="checkbox" id="forces-toggle" checked> forces</label>
-      <span id="forces-legend" class="chip" style="font-size:0.6rem; display:none; gap:0.5rem; align-items:center;">
+      <label class="chk" id="cost-grid-label" hidden><input type="checkbox" id="cost-grid-toggle"> Cost grid</label>
+      <span id="forces-legend" class="chip" style="font-size:0.6rem; display:inline-flex; gap:0.5rem; align-items:center;">
         <span><i style="display:inline-block; width:1.2rem; border-top:2px solid #22d3ee;"></i> repulsion</span>
         <span><i style="display:inline-block; width:1.2rem; border-top:2px solid #a3e635;"></i> attraction</span>
         <span><i style="display:inline-block; width:1.2rem; border-top:2px solid #f472b6;"></i> courtyard+wall</span>
@@ -451,17 +437,14 @@
       <span class="zoom-info" id="drc-info"></span>
       <label class="chk"><input type="checkbox" id="layer-fcu" checked> F.Cu</label>
       <label class="chk"><input type="checkbox" id="layer-bcu" checked> B.Cu</label>
-      <label class="chk" title="Show KiCad's cached zone fills (stale after edits; use --refill-zones to refresh)"><input type="checkbox" id="zones-fill-toggle"> fills</label>
+      <label class="chk" title="Show KiCad's cached zone fills (stale after edits; use --refill-zones to refresh)"><input type="checkbox" id="zones-fill-toggle"> Zone fills (cached)</label>
       <span class="zoom-info" id="zoom-info">100%</span>
       <button id="fit-btn" title="Fit board to view">Fit</button>
       <button id="download-btn" title="Download modified PCB" hidden>Download</button>
       <button id="undo-btn" title="Undo last accept" disabled>Undo</button>
       <button id="reset-btn" title="Reset to original board" hidden>Reset</button>
-      <button id="pipeline-toggle-btn" class="pipeline-toggle" title="Toggle pipeline">Pipeline ▶</button>
     </div>
-    
-    <div class="pipeline collapsed" id="pipeline"></div>
-    
+
     <!-- Board viewport - takes remaining space -->
     <div class="board" id="board">
       <div class="board-viewport" id="board-viewport">
@@ -478,13 +461,6 @@
         <button id="pin-btn" title="Pin selected (prevent movement)">Pin</button>
         <button id="unpin-btn" title="Unpin selected">Unpin</button>
         <span class="sel-count" id="sel-count">0 selected, 0 pinned</span>
-      </div>
-      <div class="net-legend-header" id="net-legend-header">
-        <span style="margin-right:.5rem; opacity:.6;">Nets:</span>
-        <button id="net-legend-toggle" class="net-legend-toggle" title="Toggle net legend">▼</button>
-      </div>
-      <div class="net-legend" id="net-legend" hidden>
-        <div id="net-legend-items"></div>
       </div>
 </div>
     
@@ -507,8 +483,6 @@
             <label class="chk" style="margin-left:.5rem;"><input type="number" id="step-iters" value="5" min="1" max="5000" step="1" style="width:5rem;"> iters</label>
             <button id="step-selected-btn" class="primary" title="Run a few placement iterations on the selection (empty selection targets all movable)">Step</button>
             <button id="run-selected-btn" class="primary" title="Run placement to convergence (max iterations) on the selection (empty selection targets all movable)">Run</button>
-            <button id="select-all-place-btn" title="Select all unlocked footprints">Select All</button>
-            <button id="clear-selection-place-btn" title="Clear footprint selection (Run/Step then target all movable)">Clear Selection</button>
             <button id="refresh-forces-btn" title="Recompute forces with current parameters">↻ Forces</button>
             <button id="accept-btn" disabled>Accept</button>
             <button id="clear-btn" title="Discard the current placement proposal">Clear Proposal</button>
@@ -530,20 +504,19 @@
               <option value="4">4 fps</option>
             </select>
             <label class="chk" title="Draw per-part trails up to the current frame"><input type="checkbox" id="motion-trails" checked> trails</label>
-            <button id="motion-reset-btn" title="Back to the proposal preview (final pose)">Reset</button>
+            <button id="motion-reset-btn" title="Back to the proposal preview (final pose)">Preview end</button>
           </div>
           <div class="params" id="params-grid"></div>
           <div class="bar" id="regime-bar">
             <span class="num">Regime</span>
-            <button id="regime-cluster-btn" title="Scattered-start clustering: stronger attraction, softer walls (attraction ~0.05, wall ~0.025, damping 0.08, dt 2ms)">Cluster preset</button>
-            <button id="regime-legalize-btn" title="Placed-board polish: gentle attraction, firm walls, 4mm halo (attraction ~0.008, wall ~0.08, damping 0.12, dt 1ms)">Legalize preset</button>
-            <button id="copy-link-btn" title="Copy a bookmarkable link carrying the full current parameter set as URL query params (SI units, same keys as the params API)">Copy link</button>
+            <button id="regime-cluster-btn" title="Scattered-start clustering: stronger attraction, softer walls (attraction ~0.05, wall ~0.025, damping 0.08, dt 2ms)">Scatter start</button>
+            <button id="regime-legalize-btn" title="Placed-board polish: gentle attraction, firm walls, 4mm halo (attraction ~0.008, wall ~0.08, damping 0.12, dt 1ms)">Placed-board polish</button>
           </div>
           <details id="advanced-params-details">
             <summary title="Power, decap, ghost, and convergence knobs hidden from the main panel">Advanced</summary>
             <div class="params" id="advanced-params-grid"></div>
           </details>
-          <div class="bar"><button id="reset-params-btn">Reset params</button></div>
+          <div class="bar"><button id="reset-params-btn">Reset params</button><button id="copy-link-btn" title="Copy a bookmarkable link carrying the full current parameter set as URL query params (SI units, same keys as the params API)">Copy link</button></div>
         </div>
 
         <!-- Routing panel -->
@@ -600,29 +573,6 @@
 </div>
 
 <script>
-const pipeline = document.getElementById("pipeline");
-
-async function loadStages() {
-  const res = await fetch("/api/stages");
-  const stages = await res.json();
-  pipeline.innerHTML = "";
-  for (const [i, s] of stages.entries()) {
-    const el = document.createElement("div");
-    el.className = "stage";
-    el.innerHTML = `<h2><span class="num">${String(i + 1).padStart(2, "0")}</span>${s.name}<span class="chip ${s.status}">${s.status}</span></h2><p>${s.description}</p>`;
-    pipeline.appendChild(el);
-  }
-}
-
-// Pipeline collapse/expand
-const pipelineToggleBtn = document.getElementById("pipeline-toggle-btn");
-let pipelineCollapsed = true;
-pipelineToggleBtn.addEventListener("click", () => {
-  pipelineCollapsed = !pipelineCollapsed;
-  pipeline.classList.toggle("collapsed", pipelineCollapsed);
-  pipelineToggleBtn.textContent = pipelineCollapsed ? "Pipeline ▶" : "Pipeline ▼";
-});
-
 // Side panel collapse/expand
 const sidePanel = document.getElementById("side-panel");
 const sidePanelToggle = document.getElementById("side-panel-toggle");
@@ -655,16 +605,6 @@ partsSidebarToggle.addEventListener("click", () => {
   }
   partsSidebar.classList.toggle("collapsed", partsSidebarCollapsed);
   partsSidebarToggle.textContent = partsSidebarCollapsed ? "◀" : "▶";
-});
-
-// Net legend collapse/expand
-const netLegend = document.getElementById("net-legend");
-const netLegendToggle = document.getElementById("net-legend-toggle");
-let netLegendCollapsed = false;
-netLegendToggle.addEventListener("click", () => {
-  netLegendCollapsed = !netLegendCollapsed;
-  netLegend.classList.toggle("collapsed", netLegendCollapsed);
-  netLegendToggle.textContent = netLegendCollapsed ? "▶" : "▼";
 });
 
 async function uploadFile(f) {
@@ -838,13 +778,8 @@ for (const def of ADVANCED_PARAM_DEFS) {
   advancedGrid.appendChild(buildParamRow(def, PARAM_DESC[def.key] || ""));
 }
 
-// Parameter description table (main + advanced)
-const descTable = document.createElement("table");
-descTable.className = "param-desc-table";
-descTable.innerHTML = "<thead><tr><th>Parameter</th><th>Description</th></tr></thead><tbody>" +
-  ALL_PARAM_DEFS.map(d => `<tr><td><code>${d.key}</code></td><td>${PARAM_DESC[d.key]}</td></tr>`).join("") +
-  "</tbody>";
-document.getElementById("advanced-params-details").insertAdjacentElement("afterend", descTable);
+// Full descriptions stay in tooltips (PARAM_DESC) + Docs panel; no static table.
+void ALL_PARAM_DEFS;
 
 function logToValue(logVal, def) {
   return Math.pow(10, logVal);
@@ -1070,7 +1005,9 @@ function boardSrc(version) {
   const forcesOn = forcesToggle?.checked ?? false;
   const drcOn = drcToggle?.checked ?? false;
   const fillsOn = zonesFillToggle?.checked ?? false;
-  return `/api/board.svg?v=${version}&overlay=${overlayOn ? 1 : 0}&forces=${forcesOn ? 1 : 0}&drc=${drcOn ? 1 : 0}&fills=${fillsOn ? 1 : 0}`;
+  const fcuOn = layerFcuToggle?.checked ?? true;
+  const bcuOn = layerBcuToggle?.checked ?? true;
+  return `/api/board.svg?v=${version}&overlay=${overlayOn ? 1 : 0}&forces=${forcesOn ? 1 : 0}&drc=${drcOn ? 1 : 0}&fills=${fillsOn ? 1 : 0}&fcu=${fcuOn ? 1 : 0}&bcu=${bcuOn ? 1 : 0}`;
 }
 
 function updateZoomInfo() {
@@ -1108,18 +1045,9 @@ let costGridOverlay = false;
 
 function showCostGridDebug(debug) {
   costGridDebug = debug;
-  // Add overlay toggle to toolbar if not present
-  if (!document.getElementById("cost-grid-toggle")) {
-    const toggle = document.createElement("label");
-    toggle.className = "chk";
-    toggle.style.marginLeft = "0.5rem";
-    toggle.innerHTML = '<input type="checkbox" id="cost-grid-toggle"> Cost Grid';
-    document.getElementById("board-viewport").parentElement.insertBefore(toggle, document.getElementById("board-viewport"));
-    document.getElementById("cost-grid-toggle").addEventListener("change", e => {
-      costGridOverlay = e.target.checked;
-      renderCostGridOverlay();
-    });
-  }
+  // Static checkbox in the top bar (hidden until debug data arrives).
+  const label = document.getElementById("cost-grid-label");
+  if (label) label.hidden = false;
   renderCostGridOverlay();
 }
 
@@ -1221,9 +1149,14 @@ async function fetchAndInjectSVG(version) {
     src = src.replace("overlay=1", "overlay=0");
     src = src.replace("forces=1", "forces=0");
   }
-  const res = await fetch(src);
-  if (!res.ok) return;
-  const svgText = await res.text();
+  let svgText;
+  try {
+    const res = await apiFetch(src);
+    svgText = await res.text();
+  } catch (err) {
+    toast(`board refresh failed: ${err.message}`);
+    return;
+  }
   viewport.querySelectorAll("svg").forEach(el => el.remove());
   const tpl = document.createElement("template");
   tpl.innerHTML = svgText;
@@ -1258,6 +1191,30 @@ function setConnected(ok) {
   if (!ok && typeof diagEl !== "undefined" && diagEl) {
     diagEl.textContent = "disconnected — server unreachable (retrying)";
   }
+}
+
+// Single fetch helper: throws with server text on !ok. New code uses this;
+// older call sites migrate as touched.
+async function apiFetch(path, opts) {
+  const res = await fetch(path, opts);
+  if (!res.ok) throw new Error(await res.text());
+  return res;
+}
+
+let toastTimer = 0;
+function toast(msg, ok = false) {
+  let el = document.getElementById("toast");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "toast";
+    document.body.appendChild(el);
+  }
+  el.textContent = msg;
+  el.classList.toggle("ok", ok);
+  el.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.hidden = true; }, 4000);
+  if (typeof diagEl !== "undefined" && diagEl) diagEl.textContent = msg;
 }
 
 async function poll() {
@@ -1342,8 +1299,8 @@ async function refreshForces() {
 }
 
 forcesToggle.addEventListener("change", async () => {
-  if (!lastVersion) return;
   document.getElementById("forces-legend").style.display = forcesToggle.checked ? "inline-flex" : "none";
+  if (!lastVersion) return;
   if (forcesToggle.checked) {
     await refreshForces();
   } else {
@@ -1433,6 +1390,11 @@ layerBcuToggle.addEventListener("change", applyLayerVisibility);
 
 zonesFillToggle.addEventListener("change", async () => {
   await fetchAndInjectSVG(lastVersion);
+});
+
+document.getElementById("cost-grid-toggle")?.addEventListener("change", e => {
+  costGridOverlay = e.target.checked;
+  renderCostGridOverlay();
 });
 
 // Zoom / Pan handlers
@@ -2019,102 +1981,14 @@ function renderFootprintTable() {
     selectAllCb.indeterminate = filtered.some(fp => fp.selected) && !filtered.every(fp => fp.selected);
   }
   
-  // Update net legend
-  renderNetLegend();
   // Keep ghost target options + selected-ghost panel in sync with the cache.
   refreshGhostTargets();
   updateGhostSelUI();
 }
 
-function renderNetLegend() {
-  const legendItems = document.getElementById("net-legend-items");
-  const legendBar = document.getElementById("net-legend");
-  const legendHeader = document.getElementById("net-legend-header");
-  if (!legendItems || !legendBar || !legendHeader) return;
-  
-  // Aggregate nets from all footprints
-  const netCounts = {};
-  allFootprints.forEach(fp => {
-    fp.nets.forEach(net => {
-      if (net) netCounts[net] = (netCounts[net] || 0) + 1;
-    });
-  });
-  
-  // Sort by count descending, then alphabetically
-  const sortedNets = Object.entries(netCounts)
-    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-    .slice(0, 20); // Limit to top 20 nets
-
-  if (sortedNets.length > 0) {
-    legendBar.hidden = false;
-    legendHeader.hidden = false;
-    legendItems.innerHTML = sortedNets.map(([net, count], idx) => {
-      const color = netColorByName(net, idx);
-      const row = (typeof lastNetsByName !== "undefined") ? lastNetsByName.get(net) : null;
-      const flag = row && row.is_power
-        ? `<span class="net-legend-power is-power" title="Power net">⚡</span>`
-        : (row && row.is_ground
-          ? `<span class="net-legend-power is-ground" title="Ground net">⏚</span>`
-          : "");
-      const decaps = row && Array.isArray(row.decap_refs) ? row.decap_refs : [];
-      const decap = decaps.length ? `<span class="decap-badge" title="Decoupling caps: ${decaps.join(", ")}">◉${decaps.length}</span>` : "";
-      return `
-        <div class="net-legend-item" data-net="${net}" title="${net}: ${count} parts" style="--net-color: ${color};">
-          <span class="net-legend-swatch" style="background: ${color};"></span>
-          <span class="net-legend-name">${net}</span>${flag}
-          <span class="net-legend-count">${count}</span>${decap}
-        </div>
-      `;
-    }).join("");
-    
-    // Add click handlers for net selection
-    legendItems.querySelectorAll(".net-legend-item").forEach(item => {
-      item.addEventListener("click", () => {
-        const net = item.dataset.net;
-        selectByNet(net);
-      });
-    });
-  } else {
-    legendBar.hidden = true;
-    legendHeader.hidden = true;
-  }
-}
-
-async function selectByNet(net) {
-  // Find all footprints that have this net
-  const uuidsToSelect = allFootprints
-    .filter(fp => fp.nets.includes(net) && !fp.locked && !fp.pinned && !fp.ghost)
-    .map(fp => fp.uuid);
-  
-  if (uuidsToSelect.length === 0) return;
-  
-  // Clear current selection and select these
-  selectedUuids.clear();
-  uuidsToSelect.forEach(uuid => selectedUuids.add(uuid));
-  
-  // Also select this net for routing
-  selectedNets.clear();
-  selectedNets.add(net);
-  
-  // Update server for each footprint
-  for (const uuid of uuidsToSelect) {
-    await fetch("/api/placement/select", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ uuid })
-    });
-  }
-  
-  updateFootprintVisuals();
-  updateSelectionUI();
-  updateNetSelectionUI();
-  renderFootprintTable();
-  
-  // If routing panel is visible, update its table too
-  if (!document.getElementById("routing-panel").hidden) {
-    await fetchNets();
-  }
-}
+// Net selection lives in the nets table + SVG copper click (selectNetFromCopper).
+// The top-20 net legend was removed: it duplicated the table and coupled
+// placement + routing selection in one click.
 
 // Load pinned on board load
 async function loadSelectionState() {
@@ -2827,6 +2701,12 @@ document.getElementById("motion-trails").addEventListener("change", drawMotionTr
 motionSetEnabled(false);
 
 async function runPlacement(movableUuids, iterations) {
+  const stepBtn = document.getElementById("step-selected-btn");
+  const runBtn = document.getElementById("run-selected-btn");
+  stepBtn.classList.add("loading");
+  runBtn.classList.add("loading");
+  stepBtn.disabled = true;
+  runBtn.disabled = true;
   const params = readParams();
   const budget = iterations ?? params.max_iterations ?? 1000;
   const est = estimatePlacementMs(movableUuids, budget);
@@ -2895,12 +2775,17 @@ async function runPlacement(movableUuids, iterations) {
     document.getElementById("step-selected-btn").textContent = "Step Again";
     renderFootprintTable(); // Re-render to show illegal state
   } catch (err) {
-    diagEl.textContent = err?.name === "AbortError"
+    const msg = err?.name === "AbortError"
       ? `run timed out after ${fmtDuration(timeoutMs)} — try fewer footprints or a smaller iteration budget`
       : `run failed: ${err.message}`;
+    toast(msg);
   } finally {
     clearInterval(ticker);
     clearTimeout(timer);
+    stepBtn.classList.remove("loading");
+    runBtn.classList.remove("loading");
+    stepBtn.disabled = false;
+    runBtn.disabled = false;
   }
 }
 
@@ -2916,10 +2801,6 @@ document.getElementById("run-selected-btn").addEventListener("click", async () =
   const movableUuids = selectedUuids.size > 0 ? Array.from(selectedUuids) : undefined;
   await runPlacement(movableUuids, null);
 });
-
-// Selection scope controls live next to Step/Run (reuse the shared helpers).
-document.getElementById("select-all-place-btn").addEventListener("click", selectAllUnlocked);
-document.getElementById("clear-selection-place-btn").addEventListener("click", clearSelection);
 
 document.getElementById("accept-btn").addEventListener("click", async () => {
   try {
@@ -3275,6 +3156,7 @@ function renderRoutingParams(params) {
   const debugChecked = params.debug ? "checked" : "";
   const stitchChecked = params.stitch_gnd_vias ?? true ? "checked" : "";
   const stripChecked = params.strip_gnd_blockers ?? true ? "checked" : "";
+  const refillChecked = params.refill_zones ? "checked" : "";
   const debugHtml = `
     <div class="param param-flags" style="grid-column:1/-1;">
       <span>Options</span>
@@ -3284,6 +3166,9 @@ function renderRoutingParams(params) {
         </label>
         <label class="chk" style="margin:0;" title="Evict GND vias/tracks upfront before routing (rebuildable via stitching); signal/power copper is never evicted">
           <input type="checkbox" data-key="strip_gnd_blockers" ${stripChecked}> Strip GND blockers
+        </label>
+        <label class="chk" style="margin:0;" title="Refill copper pours after routing using kicad-cli (requires KiCad installed)">
+          <input type="checkbox" data-key="refill_zones" ${refillChecked}> Refill zones
         </label>
         <label class="chk" style="margin:0;" title="Enable debug output (cost grid, search frontier)">
           <input type="checkbox" data-key="debug" ${debugChecked}> Debug
@@ -4172,8 +4057,9 @@ async function loadAppVersion() {
 }
 
 loadAppVersion();
-loadStages();
 loadParams().then(applyUrlPreset).catch(() => {});
+document.getElementById("forces-legend").style.display =
+  document.getElementById("forces-toggle").checked ? "inline-flex" : "none";
 poll();
 setInterval(poll, 2000);
 </script>

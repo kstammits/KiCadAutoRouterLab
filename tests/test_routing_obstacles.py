@@ -4,13 +4,14 @@ import pytest
 import numpy as np
 from shapely.geometry import Polygon
 
+from kicad_autorouter.board_model import BoardModel, Footprint, Pad, Point
 from kicad_autorouter.routing.grid import create_grid_from_model, board_to_grid, grid_to_board
 from kicad_autorouter.routing.obstacles import (
     build_occupancy_grid,
     build_fanout_cost,
     build_via_block_mask,
     FREE, COURTYARD, BLOCKED, HIGH_COST, EDGE_KEEPOUT,
-    FANOUT_HALO_INNER, FANOUT_HALO_OUTER,
+    FANOUT_HALO_INNER, FANOUT_HALO_OUTER, THT_EXCLUSION,
     _block_courtyard,
     _mark_pad,
     _mark_zone,
@@ -67,8 +68,7 @@ class TestFanoutCost:
         ), x0, y0
 
     def test_own_net_excluded_others_penalized(self, grid):
-        """Current net's pads stay 0; other nets get inner+outer halo."""
-        from kicad_autorouter.routing.grid import board_to_grid
+        """Current net's pads stay 0; other nets get hard exclusion + outer halo."""
         model, x0, y0 = self._two_pad_model(grid)
         secondary = build_fanout_cost(model, grid, "A",
                                       clearance_mm=0.2, track_half_mm=0.125)
@@ -77,14 +77,140 @@ class TestFanoutCost:
         # Own pad (R1, net A): no halo
         c1, r1 = board_to_grid(grid, x0, y0)
         assert secondary[0, r1, c1] == 0
-        # Other pad (R2, net B): inner halo at center
+        # Other pad (R2, net B): hard exclusion at center (SMD pads now get THT_EXCLUSION)
         c2, r2 = board_to_grid(grid, x0 + 10, y0)
-        assert secondary[0, r2, c2] == FANOUT_HALO_INNER
+        assert secondary[0, r2, c2] == THT_EXCLUSION
         # SMD pad on F.Cu only: B.Cu untouched
         assert secondary[1, r2, c2] == 0
         # Outer ring present beyond inner (soft shoulder, strictly weaker)
-        assert secondary[0].max() == FANOUT_HALO_INNER
+        assert secondary[0].max() == THT_EXCLUSION
         assert FANOUT_HALO_OUTER in secondary[0]
+
+
+class TestNoNetPadHalos:
+    """Tests for no-net pad handling in fanout cost."""
+
+    def _no_net_pad_model(self, grid, pad_type="np_thru_hole", pad_layers=("F.Cu", "B.Cu")):
+        """Create model with a no-net mounting hole pad."""
+
+        x0, y0 = grid.origin_mm[0] + 50, grid.origin_mm[1] + 50
+
+        # Create a pad with net_name=None (mounting hole style)
+        pad = Pad(
+            number="MP",
+            net_name=None,
+            position=Point(x_mm=x0, y_mm=y0),
+            size_mm=(2.0, 2.0),
+            shape="circle",
+            angle_deg=0.0,
+            pad_type=pad_type,
+            drill_mm=1.6 if pad_type in ("thru_hole", "np_thru_hole") else 0.0,
+            layers=pad_layers,
+        )
+
+        fp = Footprint(
+            ref="MH1",
+            footprint_id="MountingHole",
+            layer="F.Cu",
+            x_mm=x0,
+            y_mm=y0,
+            angle_deg=0.0,
+            pads=(pad,),
+            courtyard=(),
+            locked=False,
+            uuid="uuid-mh1",
+            ghost=False,
+            ghost_attractions=(),
+        )
+
+        return BoardModel(
+            footprints=(fp,),
+            keepout_zones=(),
+            nets={},
+            by_ref={"MH1": fp},
+        ), x0, y0
+
+    def test_no_net_tht_pad_gets_halo_both_layers(self, grid):
+        """No-net THT pad gets outer halo + THT_EXCLUSION on both layers."""
+        model, x0, y0 = self._no_net_pad_model(grid, "np_thru_hole", ("F.Cu", "B.Cu"))
+        secondary = build_fanout_cost(model, grid, "SOME_NET",
+                                      clearance_mm=0.2, track_half_mm=0.125)
+
+        c, r = board_to_grid(grid, x0, y0)
+
+        # Both layers should have outer halo
+        assert secondary[0, r, c] >= FANOUT_HALO_OUTER
+        assert secondary[1, r, c] >= FANOUT_HALO_OUTER
+
+        # Both layers should have THT_EXCLUSION (hard ring)
+        assert secondary[0, r, c] == THT_EXCLUSION
+        assert secondary[1, r, c] == THT_EXCLUSION
+
+    def test_no_net_smd_pad_gets_halo_single_layer(self, grid):
+        """No-net SMD pad gets hard exclusion + outer halo on its layer only."""
+        model, x0, y0 = self._no_net_pad_model(grid, "smd", ("F.Cu",))
+        secondary = build_fanout_cost(model, grid, "SOME_NET",
+                                      clearance_mm=0.2, track_half_mm=0.125)
+
+        c, r = board_to_grid(grid, x0, y0)
+
+        # F.Cu should have hard exclusion (THT_EXCLUSION) at center
+        assert secondary[0, r, c] == THT_EXCLUSION
+        # Outer ring should exist nearby
+        assert np.any(secondary[0] == FANOUT_HALO_OUTER)
+
+        # B.Cu should be untouched (SMD on F.Cu only)
+        assert secondary[1, r, c] == 0
+
+    def test_unconnected_net_pad_gets_normal_halo(self, grid):
+        """Pads with 'unconnected-' net name get normal halos (not skipped)."""
+        x0, y0 = grid.origin_mm[0] + 50, grid.origin_mm[1] + 50
+
+        pad = Pad(
+            number="2",
+            net_name="unconnected-(Q2-Pad2)",
+            position=Point(x_mm=x0, y_mm=y0),
+            size_mm=(1.0, 1.0),
+            shape="rect",
+            angle_deg=0.0,
+            pad_type="smd",
+            drill_mm=0.0,
+            layers=("F.Cu", "F.Paste", "F.Mask"),
+        )
+
+        fp = Footprint(
+            ref="Q2",
+            footprint_id="TestConn",
+            layer="F.Cu",
+            x_mm=x0,
+            y_mm=y0,
+            angle_deg=0.0,
+            pads=(pad,),
+            courtyard=(),
+            locked=False,
+            uuid="uuid-q2",
+            ghost=False,
+            ghost_attractions=(),
+        )
+
+        model = BoardModel(
+            footprints=(fp,),
+            keepout_zones=(),
+            nets={},
+            by_ref={"Q2": fp},
+        )
+
+        secondary = build_fanout_cost(model, grid, "OTHER_NET",
+                                      clearance_mm=0.2, track_half_mm=0.125)
+
+        c, r = board_to_grid(grid, x0, y0)
+
+        # Should get hard exclusion (not skipped, not own net)
+        assert secondary[0, r, c] == THT_EXCLUSION
+        # Outer ring should exist nearby
+        assert np.any(secondary[0] == FANOUT_HALO_OUTER)
+        # B.Cu untouched (SMD)
+        assert secondary[1, r, c] == 0
 
 
 class TestPadMarking:

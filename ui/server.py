@@ -35,7 +35,6 @@ from kicad_autorouter.io import (
     resize_ghost_in_tree,
     rip_up_nets,
 )
-from kicad_autorouter.pipeline import stages
 from kicad_autorouter.placement import (
     PlacementParams,
     PlacementProposal,
@@ -1119,9 +1118,6 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):  # noqa: N802
-        if self.path == "/api/stages":
-            self._send(200, json.dumps(stages()).encode(), "application/json")
-            return
         if self.path == "/api/version":
             self._send(200, json.dumps({"version": APP_VERSION}).encode(), "application/json")
             return
@@ -1184,8 +1180,8 @@ class Handler(BaseHTTPRequestHandler):
             overlay_on = qs.get("overlay", ["1"])[0] != "0"
             forces_on = qs.get("forces", ["0"])[0] != "0"
             drc_on = qs.get("drc", ["0"])[0] != "0"
-            fcu_on = qs.get("fcu", ["1"])[0] != "0"
-            bcu_on = qs.get("bcu", ["1"])[0] != "0"
+            # fcu/bcu arrive for future server filtering; visibility today is
+            # client-side CSS (applyLayerVisibility) so all layers stay in the SVG.
             fills_on = qs.get("fills", ["0"])[0] != "0"
             proposal = STATE.current_proposal if overlay_on else None
             pinned = STATE.get_pinned_uuids()

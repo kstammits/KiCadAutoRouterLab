@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import math
+import tempfile
 import time
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import Collection, Optional, Tuple, List, Set, Dict
 
 import numpy as np
@@ -12,6 +14,8 @@ import numpy as np
 from ..board_model import BoardModel, Point, Track, Via, is_ground_net, netclass_clearance, resolve_track_width_mm
 from ..io import rip_up_nets
 from ..drc import run_drc_on_tree, DRCResult
+from ..sexpr import parse_file, to_sexpr
+from ..validate import refill_zones
 from . import (
     build_occupancy_grid,
     create_grid_from_model,
@@ -50,6 +54,7 @@ class RoutingResult:
     cancelled: bool = False  # True when should_cancel fired mid-run
     expansions: int = 0  # Total A* node expansions across all pair-searches
     timings: Dict[str, float] = field(default_factory=dict)  # Stage seconds + grid cells
+    refill_zones_done: bool = False  # True if copper pour refill was executed
 
 
 @dataclass
@@ -85,6 +90,7 @@ class RoutingParams:
     window_growth: float = 2.0  # Search-window expansion factor per retry
     window_retries: int = 3  # Window attempts per pair (last = full board)
     corridor: bool = True  # Attempt coarse corridor guidance when initial window fails
+    refill_zones: bool = False  # Refill copper pours after routing (kicad-cli --refill-zones --save-board)
 
     def to_dict(self) -> dict:
         return {
@@ -114,6 +120,7 @@ class RoutingParams:
             "window_growth": self.window_growth,
             "window_retries": self.window_retries,
             "corridor": self.corridor,
+            "refill_zones": self.refill_zones,
         }
 
     @classmethod
@@ -127,7 +134,7 @@ class RoutingParams:
             "stitch_gnd_vias", "strip_gnd_blockers", "stitch_vias_max", "stitch_bridges_max",
             "stitch_bridge_max_mm", "stitch_bridge_width_mm", "pour_severance_weight", "fanout_margin_mm",
             "window_margin_cells", "window_growth", "window_retries",
-            "corridor",
+            "corridor", "refill_zones",
         }
         filtered = {k: v for k, v in d.items() if k in valid_keys}
         return cls(**filtered)
@@ -746,6 +753,21 @@ def route_nets(
     if original_pcb_tree is not None:
         pcb_tree = apply_routes_to_tree(original_pcb_tree, tracks, vias)
 
+    # 11b. Refill zones if requested (requires kicad-cli).
+    # Runs on a temp copy so the in-memory tree is only replaced when
+    # kicad-cli loads, refills, and saves cleanly.
+    refill_done = False
+    if params.refill_zones and pcb_tree is not None:
+        with tempfile.TemporaryDirectory(prefix="refill_") as tmpdir:
+            tmp_path = Path(tmpdir) / "route_refill.kicad_pcb"
+            to_sexpr(pcb_tree).write(tmp_path)
+            refill_result = refill_zones(tmp_path)
+            # loaded=True means kicad-cli wrote a DRC report (file parsed);
+            # a load error leaves error set and the tree untouched.
+            refill_done = refill_result.loaded and not refill_result.error
+            if refill_done:
+                pcb_tree = parse_file(tmp_path)
+
     # 12. Run DRC if requested
     drc_result = None
     if params.run_drc and pcb_tree is not None:
@@ -770,6 +792,7 @@ def route_nets(
         cancelled=cancelled,
         expansions=expansions_total,
         timings=timings,
+        refill_zones_done=refill_done,
     ), cost_grid, routing_grid
 
 

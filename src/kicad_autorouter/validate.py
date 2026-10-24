@@ -116,3 +116,17 @@ def validate_pcb(path: Path, cli: str | None = None) -> ValidationReport:
 def validate_sch(path: Path, cli: str | None = None) -> ValidationReport:
     """Run `kicad-cli sch erc` on a schematic file and parse the JSON report."""
     return _run_checker(cli or find_kicad_cli(), ("sch", "erc"), path)
+
+
+def refill_zones(path: Path, cli: str | None = None) -> ValidationReport:
+    """Refill zones via `kicad-cli pcb drc --refill-zones --save-board`.
+
+    Modifies the board file in place. Returns the DRC report from the same
+    run; success is ``loaded and not error`` (a load failure still yields a
+    report path miss or an error string).
+    """
+    return _run_checker(
+        cli or find_kicad_cli(),
+        ("pcb", "drc", "--refill-zones", "--save-board"),
+        path,
+    )

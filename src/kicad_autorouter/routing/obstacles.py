@@ -82,9 +82,11 @@ def build_occupancy_grid(
 
     # 2. Pad centers -> high cost with clearance margin
     # Also mark through-hole pads as blocked on both layers
+    # Use conservative track half-width (0.125mm = 0.25mm/2) for pad halos
+    conservative_track_half_mm = 0.125
     for fp in model.footprints:
         for pad in fp.pads:
-            _mark_pad(cost_grid, grid, fp, pad, clearance_cells, default_clearance_cells)
+            _mark_pad(cost_grid, grid, fp, pad, clearance_cells, default_clearance_cells, conservative_track_half_mm)
 
     # 3. Existing tracks -> blocked on their layer with width + clearance
     for track in model.tracks:
@@ -160,7 +162,7 @@ def build_fanout_cost(
         outer_extra += max(0, int(math.ceil(extra_margin_mm / res_mm)))
     for fp in model.footprints:
         for pad in fp.pads:
-            if not pad.net_name or pad.net_name == current_net:
+            if pad.net_name == current_net:
                 continue
             col, row = board_to_grid(grid, pad.position.x_mm, pad.position.y_mm)
             layers = (0, 1) if pad.is_through_hole else (0 if fp.layer == "F.Cu" else 1,)
@@ -182,8 +184,11 @@ def build_fanout_cost(
                         secondary[layer_idx], row, col, inner, THT_EXCLUSION
                     )
                 else:
+                    # SMD pads: hard exclusion ring (pad copper + clearance + track half-width)
+                    # so foreign tracks keep DRC distance. The inner radius already
+                    # covers the full keepout zone.
                     _mark_circular_zone(
-                        secondary[layer_idx], row, col, inner, FANOUT_HALO_INNER
+                        secondary[layer_idx], row, col, inner, THT_EXCLUSION
                     )
 
     # Foreign vias: hard exclusion ring (like foreign THT pads)
@@ -651,11 +656,7 @@ def _draw_arc_keepout(grid: np.ndarray, grid_obj, sx_mm, sy_mm, mx_mm, my_mm, ex
 # --- Drawing primitives ---
 
 def bresenham_cells(c1: int, r1: int, c2: int, r2: int):
-    """Yield ``(c, r)`` along the Bresenham line (single shared stepping core).
-
-    Previously triplicated across ``_draw_line_blocked``,
-    ``_draw_thick_line_keepout`` and ``pipeline._mark_line_blocked``.
-    """
+    """Yield ``(c, r)`` along the Bresenham line (single shared stepping core)."""
     dx = abs(c2 - c1)
     dy = abs(r2 - r1)
     sx = 1 if c1 < c2 else -1

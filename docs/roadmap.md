@@ -27,8 +27,9 @@ Open work only. Completed changes belong in git history, not here.
   push-and-shove or adversarial routing.
 - **Layer assignment**: prefer F.Cu for signals and B.Cu for return paths.
 - **VIN on DCCF**: VIN crosses same-footprint pads of other nets around Q1
-  and the tight Q2 neighborhood. Suspects: foreign-THT marking, `unconnected-*`
-  handling, the own-cell secondary toll, and narrow inter-pad gaps.
+  and the tight Q2 neighborhood. Landed: no-net halos, `unconnected-*`
+  handling, foreign-SMD hard exclusion, conservative track half. Remaining
+  suspects: the own-cell secondary toll and narrow inter-pad gaps.
 - **Heuristic-weight experiment**: sweep `heuristic_weight` 3.0 vs 1.0 on
   tube111 signal nets and a DCCF sample; gate on routing regressions and
   path-cost parity before changing the default.
@@ -49,5 +50,4 @@ Open work only. Completed changes belong in git history, not here.
 
 ## Documentation
 
-- **`docs/tests.md`**: per-file intent table, markers, and pytest
-  instructions. Keep generated HTML reports untracked.
+(none open — see `docs/tests.md` for the test map.)

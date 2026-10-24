@@ -1,7 +1,7 @@
 # Autorouting Glossary & Guidance
 
-Terminology and design guidance for this project, aligned to the pipeline stages in
-`src/kicad_autorouter/pipeline.py`: `ingest → parse → connectivity → route → drc → writeback`.
+Terminology and design guidance for this project, aligned to the workflow
+stages `ingest → parse → connectivity → place → route → drc → writeback`.
 Sources are the upstream references listed under [Source index](#source-index).
 Local copies are not vendored; `docs/README.md` has fetch recipes.
 
@@ -319,6 +319,34 @@ Key facts that shape the algorithm choice:
   KiCad's isolated-fill DRC.
 - **Region-aware stitching**: stitcher respects board panel boundaries (never joins
   separate panels in the same file).
+
+### Zone refill round-trip
+
+- **kicad-cli refill**: after routing, the pipeline can invoke
+  `kicad-cli pcb drc --refill-zones --save-board <board>` to regenerate all zone
+  fills using KiCad's native algorithm (corner rounding, thermal reliefs, min-thickness
+  pruning, nearby-poly connection). This ensures the output board has correct pour
+  geometry and passes KiCad's own DRC for isolated fills.
+- **Refill zones parameter**: `RoutingParams.refill_zones` (default `False`) enables the
+  refill step in `route_nets()`. The UI exposes a "Refill zones" checkbox in the
+  routing options.
+- **Workflow**: route → apply tracks/vias → refill zones → final DRC. The refill step
+  runs on the written board file, so it sees the exact copper the router placed.
+
+### Secondary grid / fanout cost improvements
+
+- **No-net pad steering**: pads with `net_name=None` (unconnected mounting holes,
+  mechanical pins) now cast halos in the secondary cost grid (`build_fanout_cost`).
+  Previously they were skipped, allowing tracks to route through them.
+- **Unconnected-net handling**: nets named `unconnected-*` (KiCad's placeholder for
+  explicitly unconnected pins) are also treated as no-net for steering purposes.
+- **Foreign SMD exclusion**: SMD pads of other nets now mark `THT_EXCLUSION` (10000)
+  in the secondary grid — a hard block that prevents via landings and track centers
+  on their solder/fanout area. Primary grid still uses `HIGH_COST` (50) for soft
+  steering; secondary grid uses hard exclusion for precise fanout control.
+- **Conservative track half**: primary grid pad marking (`_mark_pad`) now uses
+  `conservative_track_half_mm=0.125` (1/8 mm) to ensure tracks stay clear of pad
+  edges even at coarser grid resolutions.
 
 ## Stage: drc — design rule check
 

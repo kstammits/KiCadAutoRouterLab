@@ -13,6 +13,7 @@ cd "$REPO_ROOT"
 
 rm -f tmp/test_*.kicad_pcb tmp/test_*.kicad_prl \
       tmp/plan_*.kicad_pcb tmp/plan_*.kicad_prl \
+      tmp/route_*.kicad_pcb tmp/route_*.kicad_prl \
       tmp/drc_report_*.json \
       tmp/drc_sch_*.kicad_sch \
       tmp/magnet_* tmp/tube111_testrender.svg \
