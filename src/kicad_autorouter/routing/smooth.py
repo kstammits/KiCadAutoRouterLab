@@ -79,7 +79,11 @@ def own_net_soft_mask(model, grid, net_name: str, clearance_mm: float, track_hal
                 pad_half = max(w, h) / 2.0
             radius = max(1, int(math.ceil((pad_half + clearance_mm + track_half_mm) / res_mm)))
             col, row = board_to_grid(grid, pad.position.x_mm, pad.position.y_mm)
-            layers = (0, 1) if pad.is_through_hole else (0 if fp.layer == "F.Cu" else 1,)
+            if pad.is_through_hole:
+                layers = tuple(range(n_layers))
+            else:
+                idx = grid.layer_to_idx.get(fp.layer)
+                layers = (idx,) if idx is not None else ()
             for li in layers:
                 if li >= n_layers:
                     continue

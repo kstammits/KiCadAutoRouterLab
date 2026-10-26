@@ -14,10 +14,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Dict, Optional, Set, Union
+from typing import Dict, List, Optional, Set, Tuple, Union
 
 from .sexpr import SExpr, parse_file, to_sexpr, Symbol
-from .board_model import _net_name, _to_local
+from .board_model import _net_name, _to_local, _zone_layers, copper_layers
 
 
 @dataclass(frozen=True)
@@ -142,6 +142,247 @@ def rip_up_nets(
 
     new_children = [c for c in tree.args if should_keep(c)]
     return replace(tree, args=tuple(new_children))
+
+
+COLLAPSE_OUTERS = ("F.Cu", "B.Cu")
+
+COLLAPSE_IMPEDANCE_NOTE = (
+    "collapse keeps the first dielectric/core (thickness untouched) and "
+    "restacks every via as a through via (F.Cu-B.Cu): controlled-impedance "
+    "geometry changed — re-verify impedance before fabrication."
+)
+
+
+def _is_inner_copper(name: object) -> bool:
+    """True for inner copper layer names (``InN.Cu``)."""
+    return (
+        isinstance(name, str)
+        and name.startswith("In")
+        and name.endswith(".Cu")
+    )
+
+
+def _collapse_zone(zone: SExpr) -> Tuple[Optional[SExpr], bool, bool, int]:
+    """Restrict one ``(zone …)`` (pour or keepout) to the outer layers.
+
+    Returns ``(new_zone_or_None, removed, restricted, fills_dropped)``:
+    zones with no outer layer are deleted wholesale (cached fills go with
+    them); otherwise the ``(layers …)`` / ``(layer …)`` node is rewritten
+    to the outer intersection (singular form for one layer, matching
+    KiCad's own convention) and inner-layer ``(filled_polygon …)`` caches
+    are dropped.
+    """
+    names = _zone_layers(zone)
+    if names and not any(layer in COLLAPSE_OUTERS for layer in names):
+        return None, True, False, 0
+    keep = tuple(layer for layer in names if layer in COLLAPSE_OUTERS)
+    restricted = bool(names) and (len(keep) != len(names))
+    layer_node = zone.find("layers") or zone.find("layer")
+    new_args: List[object] = []
+    changed = restricted
+    for child in zone.args:
+        if restricted and child is layer_node:
+            if len(keep) == 1:
+                new_args.append(SExpr("layer", (keep[0],)))
+            else:
+                new_args.append(SExpr("layers", keep))
+        elif (
+            isinstance(child, SExpr)
+            and child.head == "filled_polygon"
+        ):
+            fill_layer = child.find("layer")
+            fill_name = (
+                str(fill_layer.args[0])
+                if fill_layer is not None and fill_layer.args
+                else ""
+            )
+            if fill_name and fill_name not in COLLAPSE_OUTERS:
+                changed = True
+                continue
+            new_args.append(child)
+        else:
+            new_args.append(child)
+    if not changed:
+        return zone, False, False, 0
+    fills_dropped = sum(
+        1 for c in zone.args
+        if isinstance(c, SExpr) and c.head == "filled_polygon"
+    ) - sum(
+        1 for c in new_args
+        if isinstance(c, SExpr) and c.head == "filled_polygon"
+    )
+    return replace(zone, args=tuple(new_args)), False, restricted, fills_dropped
+
+
+def _collapse_stackup(stackup: SExpr) -> SExpr:
+    """Return ``(stackup …)`` without inner coppers or extra dielectrics.
+
+    Keeps every other child verbatim (outer finish layers, the first
+    dielectric/core with its thickness untouched, ``copper_finish``,
+    constraints). Always keeps the first dielectric-class layer (``core``
+    / ``prepreg`` type, or ``dielectric*`` name fallback) and drops the
+    rest.
+    """
+    kept_dielectric = False
+    new_children: List[object] = []
+    for child in stackup.args:
+        if (
+            isinstance(child, SExpr)
+            and child.head == "layer"
+            and child.args
+            and isinstance(child.args[0], str)
+        ):
+            name = child.args[0]
+            if _is_inner_copper(name):
+                continue
+            type_node = child.find("type")
+            type_name = (
+                str(type_node.args[0]).lower()
+                if type_node is not None and type_node.args
+                else ""
+            )
+            if type_name in ("core", "prepreg") or name.lower().startswith("dielectric"):
+                if kept_dielectric:
+                    continue
+                kept_dielectric = True
+        new_children.append(child)
+    return replace(stackup, args=tuple(new_children))
+
+
+def collapse_to_two_layer(tree: SExpr) -> Tuple[SExpr, dict]:
+    """Return ``(tree, report)`` with 4-layer content collapsed to 2-layer.
+
+    Pure, same style as :func:`rip_up_nets`: drops inner-layer
+    ``(segment)`` nodes, restricts or deletes ``(zone)`` nodes,
+    restacks every via to ``(layers "F.Cu" "B.Cu")`` (never drops —
+    orphaned through-vias are harmless and DRC-clean), drops inner-layer
+    ``(filled_polygon)`` caches, and prunes the stackup + ``(layers …)``
+    header to the two outer coppers. Footprints, pads, netclasses and
+    ``pcbplotparams`` pass through untouched. A 2-layer input returns the
+    same tree object with a zeroed report (byte-identical output).
+    """
+    stackup_before = list(copper_layers(tree))
+    tracks_removed = 0
+    zones_removed = 0
+    zones_restricted = 0
+    vias_converted = 0
+    affected: Set[str] = set()
+    changed = False
+    new_children: List[object] = []
+
+    def _note_net(net_node: Optional[SExpr]) -> None:
+        name = _net_name(net_node)
+        if name:
+            affected.add(name)
+
+    for child in tree.args:
+        if not isinstance(child, SExpr):
+            new_children.append(child)
+            continue
+        if child.head == "segment":
+            layer_node = child.find("layer")
+            layer = str(layer_node.args[0]) if layer_node is not None and layer_node.args else ""
+            if layer not in COLLAPSE_OUTERS:
+                tracks_removed += 1
+                changed = True
+                _note_net(child.find("net"))
+                continue
+            new_children.append(child)
+        elif child.head == "via":
+            layers_node = child.find("layers")
+            if layers_node is None:
+                new_children.append(child)
+                continue
+            current = tuple(a for a in layers_node.args if not isinstance(a, SExpr))
+            if tuple(str(a) for a in current) == COLLAPSE_OUTERS:
+                new_children.append(child)
+                continue
+            restacked = replace(
+                child,
+                args=tuple(
+                    SExpr("layers", COLLAPSE_OUTERS) if c is layers_node else c
+                    for c in child.args
+                ),
+            )
+            vias_converted += 1
+            changed = True
+            _note_net(child.find("net"))
+            new_children.append(restacked)
+        elif child.head == "zone":
+            new_zone, removed, restricted, _fills = _collapse_zone(child)
+            if removed:
+                zones_removed += 1
+                changed = True
+                _note_net(child.find("net"))
+                continue
+            if restricted:
+                zones_restricted += 1
+                changed = True
+                _note_net(child.find("net"))
+            elif new_zone is not child:
+                changed = True
+                _note_net(child.find("net"))
+            new_children.append(new_zone)
+        elif child.head == "setup":
+            stackup = child.find("stackup")
+            if stackup is None:
+                new_children.append(child)
+                continue
+            collapsed = _collapse_stackup(stackup)
+            if to_sexpr(collapsed) != to_sexpr(stackup):
+                changed = True
+                new_children.append(
+                    replace(
+                        child,
+                        args=tuple(
+                            collapsed if c is stackup else c for c in child.args
+                        ),
+                    )
+                )
+            else:
+                new_children.append(child)
+        elif child.head == "layers":
+            kept = tuple(
+                entry for entry in child.args
+                if not (
+                    isinstance(entry, SExpr)
+                    and any(_is_inner_copper(a) for a in entry.args)
+                )
+            )
+            if len(kept) != len(child.args):
+                changed = True
+                new_children.append(replace(child, args=kept))
+            else:
+                new_children.append(child)
+        else:
+            new_children.append(child)
+
+    if not changed:
+        report = {
+            "tracks_removed": 0,
+            "zones_removed": 0,
+            "zones_restricted": 0,
+            "vias_converted": 0,
+            "vias_dropped": 0,
+            "affected_nets": [],
+            "stackup_before": stackup_before,
+            "stackup_after": stackup_before,
+            "impedance_note": None,
+        }
+        return tree, report
+    new_tree = replace(tree, args=tuple(new_children))
+    report = {
+        "tracks_removed": tracks_removed,
+        "zones_removed": zones_removed,
+        "zones_restricted": zones_restricted,
+        "vias_converted": vias_converted,
+        "vias_dropped": 0,
+        "affected_nets": sorted(affected),
+        "stackup_before": stackup_before,
+        "stackup_after": list(copper_layers(new_tree)),
+        "impedance_note": COLLAPSE_IMPEDANCE_NOTE,
+    }
+    return new_tree, report
 
 
 def _shift_at(tree: SExpr, fp: SExpr, dx_mm: float = 0.0, dy_mm: float = 0.0, da_deg: float = 0.0) -> SExpr:

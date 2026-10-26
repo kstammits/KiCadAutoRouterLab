@@ -55,11 +55,21 @@ def _cells(radius_mm: float, res_mm: float) -> int:
     return max(0, int(math.ceil(radius_mm / res_mm))) if res_mm > 0 else 0
 
 
-def _pad_layers(fp: Footprint, pad: Pad) -> List[int]:
-    """Copper layer indices of a pad (mirrors obstacles._mark_pad)."""
+def _pad_layers(fp: Footprint, pad: Pad, grid=None) -> List[int]:
+    """Copper layer indices of a pad (mirrors obstacles._mark_pad).
+
+    Through-hole spans every grid layer; SMD lives on its footprint layer.
+    Without a grid (legacy callers) falls back to the 2-layer ``F.Cu``/``B.Cu``
+    indices so existing unit tests keep working.
+    """
     if pad.is_through_hole:
-        return [0, 1]
-    return [0 if fp.layer == "F.Cu" else 1]
+        if grid is None:
+            return [0, 1]
+        return list(range(len(grid.layers)))
+    if grid is None:
+        return [0 if fp.layer == "F.Cu" else 1]
+    idx = grid.layer_to_idx.get(fp.layer)
+    return [idx] if idx is not None else []
 
 
 def _paint_pad(mask: np.ndarray, grid: RoutingGrid, pad: Pad, inflate_mm: float) -> None:
@@ -169,7 +179,7 @@ def pour_copper_mask(
             for pad in fp.pads:
                 if pad.net_name is None or pad.net_name == net_name:
                     continue
-                if layer_idx not in _pad_layers(fp, pad):
+                if layer_idx not in _pad_layers(fp, pad, grid):
                     continue
                 cut = np.zeros((H, W), dtype=bool)
                 _paint_pad(cut, grid, pad, zone.clearance_mm + max(pad.size_mm) * 0.0)
@@ -220,7 +230,7 @@ def pour_copper_mask(
         for pad in fp.pads:
             if pad.net_name != net_name:
                 continue
-            if layer_idx not in _pad_layers(fp, pad):
+            if layer_idx not in _pad_layers(fp, pad, grid):
                 continue
             _paint_pad(copper, grid, pad, 0.0)
     for track in model.tracks:
@@ -278,7 +288,7 @@ def pour_islands(
             for pad in fp.pads:
                 if pad.net_name != net_name:
                     continue
-                if layer_idx not in _pad_layers(fp, pad):
+                if layer_idx not in _pad_layers(fp, pad, grid):
                     continue
                 _paint_pad(seed, grid, pad, res)
         for via in model.vias:

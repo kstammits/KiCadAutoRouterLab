@@ -21,6 +21,7 @@ from kicad_autorouter.board_model import (
     apply_deltas,
     board_model,
     commit_placement,
+    copper_layers as tree_copper_layers,
     is_ground_net,
     is_power_net_effective,
     resolve_track_width_mm,
@@ -30,6 +31,7 @@ from kicad_autorouter.drc import TMP_DIR, run_drc_on_tree
 from kicad_autorouter.ghost import make_ghost_attractor, make_ghost_wall
 from kicad_autorouter.io import (
     add_ghost_to_tree,
+    collapse_to_two_layer,
     nudge_footprint_by_uuid,
     remove_ghost_from_tree,
     resize_ghost_in_tree,
@@ -42,9 +44,24 @@ from kicad_autorouter.placement import (
 )
 from kicad_autorouter.routing.pipeline import RoutingParams, route_nets
 from kicad_autorouter.routing.grid import create_grid_from_model
+from kicad_autorouter.routing.impedance import (
+    BRIDGE_DEFAULT_MOHM,
+    DEFAULT_GND_MAX_MOHM,
+    DEFAULT_POWER_MAX_MOHM,
+    InletSpec,
+    analyze_power_gnd,
+    suggest_header_mates,
+)
 from kicad_autorouter.routing.pour import gnd_islands
 from kicad_autorouter.routing.power import identify_power_nets
 from kicad_autorouter.sexpr import parse
+from kicad_autorouter.strategy import (
+    MODES,
+    MODE_PRESETS,
+    apply_mode,
+    infer_mode,
+    mode_warning,
+)
 from kicad_autorouter.svg_render import decap_fp_uuids, net_colors, render_board_svg
 
 # App version from pyproject.toml
@@ -168,6 +185,17 @@ class BoardState:
         self.routing_grid: Optional[Any] = None  # Persistent RoutingGrid for reuse
         self.routing_model: Optional[Any] = None  # Updated BoardModel after routing
         self.last_accept_report: dict = {}  # Report from most recent accept (for UI diag)
+        # Inlet anchors for impedance screening (user-picked, in-memory only):
+        # gnd_inlets is a list of {"ref","pad"} (parallel feeds welcome);
+        # power_inlets maps net -> list of anchors; bridges join mated
+        # inter-panel pairs: {"a": {"ref","pad"}, "b": {...}, "r_mohm": 20.0}.
+        self.gnd_inlets: list = []
+        self.power_inlets: Dict[str, list] = {}
+        self.bridges: list = []
+        # Board mode switch (two-layer | four-layer): per-board server
+        # memory, inferred from the stackup on load, user-overridable.
+        # Presets apply as an in-memory overlay (never written to disk).
+        self.mode: Optional[str] = None
 
     def load(self, data: bytes, name: str, kind: str) -> int:
         tree = parse(data.decode("utf-8"))
@@ -202,6 +230,10 @@ class BoardState:
                 self.cost_grid = None
                 self.routing_grid = None
                 self.routing_model = None
+                # Inlet anchors reference pads on this board; a new board clears them.
+                self.gnd_inlets = []
+                self.power_inlets = {}
+                self.bridges = []
                 # Auto-detect protected nets (power/ground, incl. user-marked power)
                 self.protected_nets.clear()
                 self.power_override_nets.clear()
@@ -215,6 +247,8 @@ class BoardState:
                 # Capture board version and warning
                 self.board_version = self.model.version if self.model else ""
                 self.version_warning = self.model.version_warning if self.model else None
+                # Infer the board mode from the stackup (user-overridable).
+                self.mode = infer_mode(self.model.copper_layers) if self.model else None
             self.version += 1
             return self.version
 
@@ -406,6 +440,49 @@ class BoardState:
             self.version += 1
             return self.version
 
+    def get_inlets(self) -> dict:
+        """Return copies of the inlet anchors (no version bump; derived state)."""
+        with self._lock:
+            return {
+                "gnd": list(self.gnd_inlets),
+                "gnd_list": list(self.gnd_inlets),
+                "power": {n: list(a) for n, a in self.power_inlets.items()},
+                "bridges": list(self.bridges),
+            }
+
+    def set_gnd_inlets(self, anchors: list) -> int:
+        """Replace the GND inlet list (one anchor per panel region)."""
+        with self._lock:
+            self.gnd_inlets = [dict(a) for a in anchors]
+            self.version += 1
+            return self.version
+
+    def add_gnd_inlet(self, ref: str, pad: str) -> int:
+        """Append a GND inlet anchor (deduped)."""
+        with self._lock:
+            anchor = {"ref": ref, "pad": pad}
+            if anchor not in self.gnd_inlets:
+                self.gnd_inlets.append(anchor)
+            self.version += 1
+            return self.version
+
+    def set_power_inlets(self, net_name: str, anchors: list) -> int:
+        """Replace one power rail's inlet list (empty clears it)."""
+        with self._lock:
+            if anchors:
+                self.power_inlets[net_name] = [dict(a) for a in anchors]
+            else:
+                self.power_inlets.pop(net_name, None)
+            self.version += 1
+            return self.version
+
+    def set_bridges(self, bridges: list) -> int:
+        """Replace the mated-pair bridge list."""
+        with self._lock:
+            self.bridges = [dict(b) for b in bridges]
+            self.version += 1
+            return self.version
+
     def auto_detect_protected_nets(self) -> int:
         """Auto-detect power/ground nets and add them to protected set."""
         if self.model is None:
@@ -429,6 +506,24 @@ class BoardState:
                 "protected_nets": sorted(self.protected_nets),
                 "power_override_nets": sorted(self.power_override_nets),
             }
+
+    # ==================== Board mode ====================
+
+    def set_mode(self, mode: str) -> None:
+        """Store a validated board mode (no version bump: derived UI state)."""
+        with self._lock:
+            self.mode = mode
+
+    def mode_status(self) -> dict:
+        """{mode, inferred, warning} — warn-never-block stackup mismatch info."""
+        with self._lock:
+            mode = self.mode
+            layers = tuple(self.model.copper_layers) if self.model is not None else ()
+        return {
+            "mode": mode,
+            "inferred": infer_mode(layers),
+            "warning": mode_warning(mode, layers),
+        }
 
     def reset_routing_state(self) -> int:
         """Clear routing state (cost_grid, routing_grid, routing_model)."""
@@ -907,8 +1002,11 @@ def _run_routing_job(job_id: str) -> None:
         "cancelled": result.cancelled,
         "expansions": result.expansions,
         "timings": result.timings,
+        "failed_reasons": result.failed_reasons,
         "version": version,
     }
+    if job.get("mode_warning"):
+        payload["mode_warning"] = job["mode_warning"]
     if route_params.debug:
         payload["debug"] = _cost_grid_to_debug(cost_grid, routing_grid)
     with _JOBS_LOCK:
@@ -1157,6 +1255,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/state":
             model, has_sch, name, version, board_version, version_warning = STATE.snapshot
+            mode_info = STATE.mode_status()
             body = json.dumps(
                 {
                     "loaded": model is not None,
@@ -1165,12 +1264,36 @@ class Handler(BaseHTTPRequestHandler):
                     "has_sch": has_sch,
                     "board_version": board_version,
                     "warning": version_warning,
+                    "copper_layers": list(model.copper_layers) if model is not None else [],
+                    "mode": mode_info["mode"],
+                    "mode_warning": mode_info["warning"],
                 }
             )
             self._send(200, body.encode(), "application/json")
             return
         if parsed.path == "/api/drc/status":
             self._send(200, json.dumps(STATE.get_drc_status()).encode(), "application/json")
+            return
+        if parsed.path == "/api/mode":
+            model, _, _, _, _, _ = STATE.snapshot
+            if model is None:
+                self._send(404, b"no board loaded", "text/plain")
+                return
+            mode_info = STATE.mode_status()
+            payload = {"ok": True, **mode_info}
+            if mode_info["mode"] is not None:
+                payload["preset"] = MODE_PRESETS[mode_info["mode"]]
+            self._send(200, json.dumps(payload).encode(), "application/json")
+            return
+        if parsed.path == "/api/board/collapse-preview":
+            tree = STATE.get_pcb_tree()
+            if tree is None:
+                self._send(404, b"no board loaded", "text/plain")
+                return
+            _, report = collapse_to_two_layer(tree)
+            self._send(200, json.dumps({"ok": True, **STATE.mode_status(),
+                                        "report": report}).encode(),
+                       "application/json")
             return
         if parsed.path == "/api/board.svg":
             model, _, name, _, _, _ = STATE.snapshot
@@ -1180,8 +1303,9 @@ class Handler(BaseHTTPRequestHandler):
             overlay_on = qs.get("overlay", ["1"])[0] != "0"
             forces_on = qs.get("forces", ["0"])[0] != "0"
             drc_on = qs.get("drc", ["0"])[0] != "0"
-            # fcu/bcu arrive for future server filtering; visibility today is
-            # client-side CSS (applyLayerVisibility) so all layers stay in the SVG.
+            # Layer visibility is client-side (applyLayerVisibility) so all
+            # copper layers stay in the SVG; fcu/bcu/l_* params are accepted
+            # and ignored for backward compatibility with old clients.
             fills_on = qs.get("fills", ["0"])[0] != "0"
             proposal = STATE.current_proposal if overlay_on else None
             pinned = STATE.get_pinned_uuids()
@@ -1292,7 +1416,19 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(404, b"no board loaded", "text/plain")
                 return
             from kicad_autorouter.sexpr import to_sexpr
-            filename = STATE.name.replace(".kicad_pcb", "-modified.kicad_pcb")
+            mode_info = STATE.mode_status()
+            layers = tree_copper_layers(tree)
+            # Two-layer mode with inner copper present: serve a collapsed
+            # copy (never mutates the in-memory board). Anything else —
+            # including four-layer mode on a 2Cu board — serves as-is with
+            # at most a warning, never a block.
+            if mode_info["mode"] == "two-layer" and any(
+                l not in ("F.Cu", "B.Cu") for l in layers
+            ):
+                tree, _ = collapse_to_two_layer(tree)
+                filename = STATE.name.replace(".kicad_pcb", "-2layer.kicad_pcb")
+            else:
+                filename = STATE.name.replace(".kicad_pcb", "-modified.kicad_pcb")
             content = to_sexpr(tree) + "\n"
             self.send_response(200)
             self.send_header("Content-Type", "application/octet-stream")
@@ -1458,6 +1594,28 @@ class Handler(BaseHTTPRequestHandler):
             nets_data.sort(key=lambda n: (not n["protected"], -n["pad_count"]))
             self._send(200, json.dumps({"ok": True, "nets": nets_data}).encode(), "application/json")
             return
+
+        # GET /api/nets/inlets - inlet anchors for impedance screening.
+        if parsed.path == "/api/nets/inlets":
+            inlets = STATE.get_inlets()
+            self._send(200, json.dumps({"ok": True, **inlets}).encode(), "application/json")
+            return
+
+        # GET /api/nets/bridge-suggestions - candidate inter-panel header
+        # mates (same position, same pin count). Same-net pairs are ready
+        # bridge inputs; different-net pairs need user adjudication.
+        if parsed.path == "/api/nets/bridge-suggestions":
+            model, _, _, _, _, _ = STATE.snapshot
+            if model is None:
+                self._send(404, b"no board loaded", "text/plain")
+                return
+            try:
+                mates = suggest_header_mates(model)
+            except Exception as exc:
+                self._send(500, f"suggestion failed: {exc}".encode(), "text/plain")
+                return
+            self._send(200, json.dumps({"ok": True, "mates": mates}).encode(), "application/json")
+            return
         
         # GET /api/routing/params
         if parsed.path == "/api/routing/params":
@@ -1511,6 +1669,60 @@ class Handler(BaseHTTPRequestHandler):
                 "layers": layers,
             }
             self._send(200, json.dumps(payload).encode(), "application/json")
+            return
+
+        # GET /api/routing/debug/impedance - inlet-anchored DC-resistance
+        # screening for GND + power nets (report only, no routing change).
+        # Query: gnd_max_mohm, power_max_mohm, nets (comma list filter),
+        # include_all_power=1 (also evaluate keyword power rails lacking an inlet).
+        if parsed.path == "/api/routing/debug/impedance":
+            model, _, _, _, _, _ = STATE.snapshot
+            if model is None:
+                self._send(404, b"no board loaded", "text/plain")
+                return
+            try:
+                q = parse_qs(parsed.query)
+                def _qfloat(name: str, default: float) -> float:
+                    try:
+                        return float((q.get(name) or [default])[0])
+                    except (TypeError, ValueError):
+                        return default
+                gnd_max = _qfloat("gnd_max_mohm", DEFAULT_GND_MAX_MOHM)
+                power_max = _qfloat("power_max_mohm", DEFAULT_POWER_MAX_MOHM)
+                nets_filter = None
+                if q.get("nets"):
+                    nets_filter = [n for n in (q.get("nets") or [""])[0].split(",") if n]
+                inlets = STATE.get_inlets()
+                gnd_inlets = [InletSpec(**a) for a in (inlets.get("gnd_list") or [])]
+                power_inlets = {n: [InletSpec(**a) for a in (lst or [])]
+                                for n, lst in (inlets.get("power") or {}).items()}
+                extra_power = STATE.get_power_override_nets()
+                _power, _ground, _signal = identify_power_nets(model, extra_power)
+                gnd_nets = [n for n in model.nets if is_ground_net(n)]
+                if nets_filter is not None:
+                    gnd_nets = [n for n in gnd_nets if n in nets_filter]
+                if str((q.get("include_all_power") or [""])[0]).lower() in ("1", "true", "yes"):
+                    for n in _power:
+                        power_inlets.setdefault(n, [])
+                power_nets = [n for n, lst in power_inlets.items() if lst]
+                if nets_filter is not None:
+                    power_nets = [n for n in power_nets if n in nets_filter]
+                auto = str((q.get("auto_bridges") or ["1"])[0]).lower() not in ("0", "false", "no")
+                grid = create_grid_from_model(model, resolution_mm=0.2)
+                report = analyze_power_gnd(
+                    model, grid,
+                    gnd_inlets=gnd_inlets,
+                    power_inlets={n: lst for n, lst in power_inlets.items() if lst},
+                    gnd_nets=gnd_nets,
+                    power_nets=power_nets,
+                    gnd_max_mohm=gnd_max,
+                    power_max_mohm=power_max,
+                    bridges=STATE.get_inlets().get("bridges") or [],
+                    auto_bridges=auto,
+                )
+                self._send(200, json.dumps(report.to_dict()).encode(), "application/json")
+            except Exception as exc:
+                self._send(500, f"impedance analysis failed: {exc}".encode(), "text/plain")
             return
 
         # GET /api/routing/jobs/<job_id> - poll an async routing job.
@@ -2149,8 +2361,142 @@ class Handler(BaseHTTPRequestHandler):
             extra = STATE.get_power_override_nets()
             self._send(200, json.dumps({"ok": True, "power_override": sorted(extra), "version": version}).encode(), "application/json")
             return
+
+        # POST /api/nets/inlets - set/clear inlet anchors for impedance screening.
+        # Body: {"gnd": {"ref","pad"}|[{...}]|null, "gnd_add": {...},
+        #        "gnd_clear": true, "power": {net: {"ref","pad"}|[{...}]|null}}.
+        # Single objects replace that net's list (null clears); lists replace
+        # wholesale. One GND anchor per panel region; pads are measured from
+        # the anchor in their own region. Refs/pads are validated against
+        # the loaded board (unknown ref/pad/net -> 400).
+        if parsed.path == "/api/nets/inlets":
+            model, _, _, _, _, _ = STATE.snapshot
+            if model is None:
+                self._send(404, b"no board loaded", "text/plain")
+                return
+            length = int(self.headers.get("Content-Length") or 0)
+            body_data = self.rfile.read(length) if length > 0 else b"{}"
+            try:
+                req = json.loads(body_data.decode("utf-8"))
+            except json.JSONDecodeError:
+                self._send(400, b"invalid JSON", "text/plain")
+                return
+
+            def _check_anchor(anchor):
+                # Pad numbers may be empty strings (mounting holes), so test
+                # presence, not truthiness, for "pad".
+                if not (isinstance(anchor, dict) and anchor.get("ref")
+                        and isinstance(anchor.get("pad"), str)):
+                    return None
+                fp = model.by_ref.get(anchor["ref"])
+                pad = next((p for p in fp.pads if p.number == anchor["pad"]), None) if fp else None
+                return {"ref": anchor["ref"], "pad": anchor["pad"]} if (fp and pad) else None
+
+            def _check_list(value):
+                items = value if isinstance(value, list) else [value]
+                checked = []
+                for anchor in items:
+                    ok = _check_anchor(anchor)
+                    if ok is None:
+                        return None
+                    if ok not in checked:
+                        checked.append(ok)
+                return checked
+
+            if req.get("gnd_clear"):
+                STATE.set_gnd_inlets([])
+            if "bridges_clear" in req and req.get("bridges_clear"):
+                STATE.set_bridges([])
+            if "gnd" in req:
+                g = req.get("gnd")
+                if g is None:
+                    STATE.set_gnd_inlets([])
+                else:
+                    checked = _check_list(g)
+                    if checked is None:
+                        self._send(400, b"gnd must be {ref, pad}, a list, or null", "text/plain")
+                        return
+                    STATE.set_gnd_inlets(checked)
+            if "gnd_add" in req:
+                ok = _check_anchor(req.get("gnd_add"))
+                if ok is None:
+                    self._send(400, b"gnd_add must be {ref, pad}", "text/plain")
+                    return
+                STATE.add_gnd_inlet(ok["ref"], ok["pad"])
+            if "power" in req:
+                p = req.get("power")
+                if not isinstance(p, dict):
+                    self._send(400, b"power must be an object", "text/plain")
+                    return
+                for net_name, anchor in p.items():
+                    if net_name not in model.nets:
+                        self._send(400, f"unknown net {net_name}".encode(), "text/plain")
+                        return
+                    if anchor is None:
+                        STATE.set_power_inlets(net_name, [])
+                    else:
+                        checked = _check_list(anchor)
+                        if checked is None:
+                            self._send(400, f"bad inlet anchor for {net_name}".encode(), "text/plain")
+                            return
+                        STATE.set_power_inlets(net_name, checked)
+            if "bridges" in req:
+                b = req.get("bridges")
+                if b is None:
+                    STATE.set_bridges([])
+                elif not isinstance(b, list):
+                    self._send(400, b"bridges must be a list or null", "text/plain")
+                    return
+                else:
+                    checked_bridges = []
+                    for item in b:
+                        if not (isinstance(item, dict) and isinstance(item.get("a"), dict)
+                                and isinstance(item.get("b"), dict)):
+                            self._send(400, b"bridge must be {a: {ref,pad}, b: {ref,pad}}", "text/plain")
+                            return
+                        a_ok = _check_anchor(item["a"])
+                        b_ok = _check_anchor(item["b"])
+                        if a_ok is None or b_ok is None:
+                            self._send(400, b"unknown bridge ref/pad", "text/plain")
+                            return
+                        try:
+                            r = float(item.get("r_mohm", BRIDGE_DEFAULT_MOHM))
+                        except (TypeError, ValueError):
+                            r = BRIDGE_DEFAULT_MOHM
+                        checked_bridges.append({"a": a_ok, "b": b_ok, "r_mohm": max(r, 0.0)})
+                    STATE.set_bridges(checked_bridges)
+            inlets = STATE.get_inlets()
+            self._send(200, json.dumps({"ok": True, **inlets, "version": STATE.version}).encode(), "application/json")
+            return
         
         # ==================== Routing API ====================
+
+        # POST /api/mode {mode} - switch the per-board routing mode.
+        # Validates + stores; the preset applies as an in-memory overlay at
+        # job-submit time (never written to placement.json, which is global
+        # while mode is per-board). Returns the applied preset for the toast.
+        if parsed.path == "/api/mode":
+            model, _, _, _, _, _ = STATE.snapshot
+            if model is None:
+                self._send(404, b"no board loaded", "text/plain")
+                return
+            length = int(self.headers.get("Content-Length") or 0)
+            body_data = self.rfile.read(length) if length > 0 else b"{}"
+            try:
+                req = json.loads(body_data.decode("utf-8"))
+            except json.JSONDecodeError:
+                self._send(400, b"invalid JSON", "text/plain")
+                return
+            mode = req.get("mode")
+            if mode not in MODES:
+                self._send(400, f"mode must be one of {list(MODES)}".encode(),
+                           "text/plain")
+                return
+            STATE.set_mode(mode)
+            self._send(200, json.dumps({"ok": True, **STATE.mode_status(),
+                                        "preset": MODE_PRESETS[mode]}).encode(),
+                       "application/json")
+            return
 
         # POST /api/routing/params - save routing params
         # (Note: inside do_POST, self.command is always "POST", so no method check needed.
@@ -2192,13 +2538,19 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(409, b"another routing job is running", "text/plain")
                 return
             job_id = uuidlib.uuid4().hex[:12]
+            mode_info = STATE.mode_status()
+            params_dict = req.get("params", {})
+            if isinstance(params_dict, dict) and mode_info["mode"] is not None:
+                params_dict = apply_mode(params_dict, mode_info["mode"])
             with _JOBS_LOCK:
                 _prune_jobs_locked()
                 _JOBS[job_id] = {
                     "job_id": job_id,
                     "state": "queued",
                     "net_names": [n for n in net_names if isinstance(n, str) and n],
-                    "params_dict": req.get("params", {}),
+                    "params_dict": params_dict,
+                    "mode": mode_info["mode"],
+                    "mode_warning": mode_info["warning"],
                     "cancel_requested": False,
                     "created": time.time(),
                     "started": None,
@@ -2251,8 +2603,12 @@ class Handler(BaseHTTPRequestHandler):
             if not net_names:
                 self._send(400, b"net_names required (non-empty list)", "text/plain")
                 return
-            # Load routing params from request or file
+            # Load routing params from request or file, overlaid with the
+            # current board-mode preset (in-memory only — never written back).
             route_params_dict = req.get("params", {})
+            mode_info = STATE.mode_status()
+            if isinstance(route_params_dict, dict) and mode_info["mode"] is not None:
+                route_params_dict = apply_mode(route_params_dict, mode_info["mode"])
             route_params = RoutingParams.from_dict(route_params_dict)
             protected_nets = STATE.get_protected_nets()
             
@@ -2318,6 +2674,8 @@ class Handler(BaseHTTPRequestHandler):
                 "cancelled": result.cancelled,
                 "expansions": result.expansions,
                 "timings": result.timings,
+                "failed_reasons": result.failed_reasons,
+                "mode_warning": mode_info["warning"],
                 "version": version,
             }
             # Include debug info if requested (sync /api/routing/run)

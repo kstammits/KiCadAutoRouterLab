@@ -40,9 +40,100 @@ GHOST_FOOTPRINT = "#a85cf5"  # ghost/pseudo component color (purple)
 MOVE_ARROW = "#e0a458"  # old -> new displacement arrows
 
 # Zone-fill layer colors (fill view only): front copper reads red, back
-# copper green, so overlapping pours stay distinguishable.
+# copper green, so overlapping pours stay distinguishable. Inner layers
+# cycle the extra hues in stackup order.
 FILL_FCU_COLOR = "#e74c3c"  # red
 FILL_BCU_COLOR = "#2ecc71"  # green
+FILL_INNER_COLORS = ("#2dd4bf", "#a78bfa", "#f5a623", "#59a7f5")  # teal, violet, amber, blue
+
+# Inner-layer track dashes, cycled in stackup order (outer layers keep
+# their historic styles: F.Cu solid, B.Cu "3 2").
+_INNER_DASHES = ("5 2", "2 2", "7 2 2 2", "4 1")
+
+
+def _copper_layers_of(model: BoardModel) -> Tuple[str, ...]:
+    """Stackup-ordered copper layers to render (F/B fallback for old models).
+
+    Unions the declared stackup with layers actually carrying tracks/zones
+    so copper is never silently dropped (e.g. a hand-built model whose
+    ``copper_layers`` predates an ``In1.Cu`` pour).
+    """
+    from .board_model import _sort_copper_layers
+
+    declared = tuple(getattr(model, "copper_layers", ()) or ())
+    used = [t.layer for t in model.tracks if t.layer]
+    for zone in model.zones:
+        used.extend(zone.layers)
+    if not declared and not used:
+        return ("F.Cu", "B.Cu")
+    return _sort_copper_layers(list(declared) + [u for u in used if u not in declared])
+
+
+def _layer_position(layer: str, layers: Tuple[str, ...]) -> int:
+    """Stackup index of a layer (0 = top); unknown layers sort last."""
+    try:
+        return list(layers).index(layer)
+    except ValueError:
+        return len(layers)
+
+
+def _layer_track_style(layer: str, layers: Tuple[str, ...]) -> Tuple[str, str]:
+    """(opacity, dash-attr) for a copper layer's track group.
+
+    Outer layers keep their historic look (F.Cu solid/1.0, B.Cu dashed/0.7)
+    so 2-layer boards render pixel-identical; inner layers get full-width
+    strokes dimmed slightly with a cycling dash so stackup order reads.
+    """
+    if layer == "F.Cu":
+        return "1.0", ""
+    if layer == "B.Cu":
+        return "0.7", ' stroke-dasharray="3 2"'
+    inners = [name for name in layers if name not in ("F.Cu", "B.Cu")]
+    pos = inners.index(layer) if layer in inners else 0
+    opacity = f"{max(0.55, 0.9 - 0.05 * pos):.2f}"
+    return opacity, f' stroke-dasharray="{_INNER_DASHES[pos % len(_INNER_DASHES)]}"'
+
+
+def _layer_fill_color(layer: str, layers: Tuple[str, ...]) -> str:
+    """Cached-fill color for a copper layer (F red, B green, inners cycle)."""
+    if layer == "F.Cu":
+        return FILL_FCU_COLOR
+    if layer == "B.Cu":
+        return FILL_BCU_COLOR
+    inners = [name for name in layers if name not in ("F.Cu", "B.Cu")]
+    pos = inners.index(layer) if layer in inners else 0
+    return FILL_INNER_COLORS[pos % len(FILL_INNER_COLORS)]
+
+
+def _tint_track_color(color: str, layer: str, layers: Tuple[str, ...]) -> str:
+    """Shift a per-net track color by the layer tint.
+
+    Outer layers pass through unchanged (2-layer output identical). Inner
+    layers pull ``hsl()`` lightness down 10 points or blend ``#hex`` 25%
+    toward the layer's fill tint, so each net still reads as itself while
+    the layer reads as deeper in the stackup.
+    """
+    if layer in ("F.Cu", "B.Cu") or not color:
+        return color
+    tint = _layer_fill_color(layer, layers)
+    if color.startswith("hsl("):
+        try:
+            inner = color[4:].rstrip(")")
+            h, s, light = inner.split(",")
+            l_val = float(light.strip().rstrip("%")) if "%" in light else float(light.strip())
+            l_val = max(15.0, min(85.0, l_val - 10.0))
+            return f"hsl({h.strip()}, {s.strip()}, {l_val:.0f}%)"
+        except (ValueError, IndexError):
+            return color
+    if color.startswith("#") and len(color) == 7:
+        try:
+            r, g, b = (int(color[i:i + 2], 16) for i in (1, 3, 5))
+            tr, tg, tb = (int(tint[i:i + 2], 16) for i in (1, 3, 5))
+            mix = lambda c, t: int(round(c * 0.75 + t * 0.25))
+            return f"#{mix(r, tr):02x}{mix(g, tg):02x}{mix(b, tb):02x}"
+        except ValueError:
+            return color
+    return color
 
 # DRC violation colors
 DRC_ERROR_COLOR = "#e74c3c"     # red for errors
@@ -185,11 +276,17 @@ def _zones_svg(
 ) -> List[str]:
     keepout_uuids = {z.uuid for z in model.keepout_zones}
     out: List[str] = []
-    for layer in ("F.Cu", "B.Cu"):
+    layers = _copper_layers_of(model)
+    for layer in layers:
         layer_zones = [z for z in model.zones if layer in z.layers]
         if not layer_zones:
             continue
-        opacity = "0.08" if layer == "F.Cu" else "0.06"
+        if layer == "F.Cu":
+            opacity = "0.08"
+        elif layer == "B.Cu":
+            opacity = "0.06"
+        else:
+            opacity = "0.07"
         out.append(f'<g id="layer-{layer}-zones">')
         for zone in layer_zones:
             if len(zone.polygon) < 3:
@@ -211,13 +308,13 @@ def _zones_svg(
             ]
             if show_fills and not is_keepout and layer_fills:
                 # Fill view: hide the zone outline (redundant with the
-                # detailed fill) and color fills by layer — F.Cu red,
-                # B.Cu green — so overlapping pours stay distinguishable.
-                # Fill-only (no stroke): KiCad keeps each island a single
-                # ring by joining clearance cutouts to the outline with
-                # zero-width out-and-back slits; stroking the ring draws
-                # every slit twice as a spurious internal line.
-                layer_fill = FILL_FCU_COLOR if layer == "F.Cu" else FILL_BCU_COLOR
+                # detailed fill) and color fills by layer so overlapping
+                # pours stay distinguishable. Fill-only (no stroke): KiCad
+                # keeps each island a single ring by joining clearance
+                # cutouts to the outline with zero-width out-and-back slits;
+                # stroking the ring draws every slit twice as a spurious
+                # internal line.
+                layer_fill = _layer_fill_color(layer, layers)
                 fill_opacity = "0.28" if layer == "F.Cu" else "0.22"
                 for fp in layer_fills:
                     fpts = " ".join(f"{_fmt(p.x_mm)} {_fmt(p.y_mm)}" for p in fp.polygon)
@@ -301,6 +398,9 @@ def _footprint_pads_svg(
         color = colors.get(pad.net_name or "", NO_NET)
         net = pad.net_name or ""
         net_attr = f' data-net="{html.escape(net)}"' if net else ""
+        ident = (f' data-ref="{html.escape(fp.ref or "")}"'
+                 f' data-pad="{html.escape(pad.number)}"'
+                 f' data-uuid="{html.escape(fp.uuid or "")}"')
         title = f"<title>{html.escape(net)}</title>" if net else ""
         px, py = pad.position.x_mm, pad.position.y_mm
         x, y = _fmt(px), _fmt(py)
@@ -332,7 +432,7 @@ def _footprint_pads_svg(
             # pcbnew. Oval with equal w/h is circular too.
             out.append(
                 f'<circle cx="{x}" cy="{y}" r="{_fmt(w / 2.0)}" '
-                f'fill="{color}" stroke="{PAD_STROKE}" stroke-width="0.1"{net_attr}>'
+                f'fill="{color}" stroke="{PAD_STROKE}" stroke-width="0.1"{net_attr}{ident}>'
                 f"{title}</circle>"
             )
             if label:
@@ -345,7 +445,7 @@ def _footprint_pads_svg(
             out.append(
                 f'<rect x="{_fmt(px - w / 2.0)}" y="{_fmt(py - h / 2.0)}" '
                 f'width="{_fmt(w)}" height="{_fmt(h)}" rx="{rx}" fill="{color}" '
-                f'stroke="{PAD_STROKE}" stroke-width="0.1"{rot}{net_attr}>'
+                f'stroke="{PAD_STROKE}" stroke-width="0.1"{rot}{net_attr}{ident}>'
                 f"{title}</rect>"
             )
             if label:
@@ -354,7 +454,7 @@ def _footprint_pads_svg(
             out.append(
                 f'<rect x="{_fmt(px - w / 2.0)}" y="{_fmt(py - h / 2.0)}" '
                 f'width="{_fmt(w)}" height="{_fmt(h)}" fill="{color}" '
-                f'stroke="{PAD_STROKE}" stroke-width="0.1"{rot}{net_attr}>'
+                f'stroke="{PAD_STROKE}" stroke-width="0.1"{rot}{net_attr}{ident}>'
                 f"{title}</rect>"
             )
             if label:
@@ -532,16 +632,15 @@ def _ghost_footprints_svg(
 
 def _tracks_svg(model: BoardModel, colors: Dict[str, str]) -> List[str]:
     out = []
-    for layer in ("F.Cu", "B.Cu"):
+    layers = _copper_layers_of(model)
+    for layer in layers:
         layer_tracks = [t for t in model.tracks if t.layer == layer]
         if not layer_tracks:
             continue
-        is_fcu = layer == "F.Cu"
-        dash = "" if is_fcu else ' stroke-dasharray="3 2"'
-        opacity = "1.0" if is_fcu else "0.7"
+        opacity, dash = _layer_track_style(layer, layers)
         out.append(f'<g id="layer-{layer}-tracks" fill="none" stroke-linecap="round" opacity="{opacity}">')
         for t in layer_tracks:
-            color = colors.get(t.net_name or "", NO_NET)
+            color = _tint_track_color(colors.get(t.net_name or "", NO_NET), layer, layers)
             net_attr = html.escape(t.net_name or "", quote=True)
             title = html.escape(
                 f"{t.net_name or '(no net)'} · {t.layer} · {t.width_mm:.2f}mm",
@@ -564,8 +663,10 @@ def _vias_svg(model: BoardModel, colors: Dict[str, str]) -> List[str]:
         r = v.size_mm / 2.0
         x, y = _fmt(v.position.x_mm), _fmt(v.position.y_mm)
         net_attr = html.escape(v.net_name or "", quote=True)
+        span = " ".join(v.layers) if getattr(v, "layers", ()) else "F.Cu B.Cu"
+        layers_attr = f' data-layers="{html.escape(span, quote=True)}"'
         title = html.escape(f"{v.net_name or '(no net)'} · via · {v.size_mm:.2f}mm")
-        out.append(f'<g class="via" data-net="{net_attr}"><title>{title}</title>')
+        out.append(f'<g class="via" data-net="{net_attr}"{layers_attr}><title>{title}</title>')
         out.append(
             f'<circle cx="{x}" cy="{y}" r="{_fmt(r)}" fill="none" '
             f'stroke="{color}" stroke-width="0.2" pointer-events="none"/>'

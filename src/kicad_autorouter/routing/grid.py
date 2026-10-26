@@ -44,11 +44,17 @@ def create_grid_from_model(
     model,
     resolution_mm: float = 0.1,
     margin_mm: float = 2.0,
+    layers: Tuple[str, ...] = ("F.Cu", "B.Cu"),
 ) -> RoutingGrid:
     """Create a routing grid that covers the board outline + margin.
 
-    Uses the board's edge cuts to determine the bounding box.
+    Uses the board's edge cuts to determine the bounding box. ``layers``
+    is the ordered subset of copper layers to route on (default
+    outer-only); pass a narrower tuple to restrict routing, e.g.
+    ``("F.Cu",)`` for single-layer. Must be non-empty.
     """
+    if not layers:
+        raise ValueError("routing grid requires at least one layer")
     if not model.edge_cuts and not model.edge_arcs:
         # Fallback: use footprint extents
         xs, ys = [], []
@@ -85,7 +91,7 @@ def create_grid_from_model(
 
     return RoutingGrid(
         resolution_mm=resolution_mm,
-        layers=("F.Cu", "B.Cu"),
+        layers=tuple(layers),
         origin_mm=(min_x, min_y),
         width_cells=width_cells,
         height_cells=height_cells,

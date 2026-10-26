@@ -421,6 +421,10 @@
       <span id="board-name" style="flex:1; text-align:center;">no board loaded</span>
       <span id="conn-badge" class="chip" hidden style="color:#f87171; border-color:#f87171;">● disconnected — server unreachable</span>
       <span id="board-sch" class="chip" hidden>pcb only</span>
+      <span id="mode-switch" title="Board mode: routing defaults + 2-layer export collapse">
+        <button id="mode-2l" class="tab-btn" title="Two-layer mode (outer copper only; export collapses)">2-layer</button><button id="mode-4l" class="tab-btn" title="Four-layer mode">4-layer</button>
+      </span>
+      <span id="mode-warn" class="chip" hidden style="color:#fbbf24; border-color:#fbbf24;">⚠ mode</span>
       <span id="app-version" class="chip" style="margin-left:0.5rem; font-size:0.6rem;">v?</span>
       <label class="chk"><input type="checkbox" id="overlay-toggle" checked> Show proposal</label>
       <label class="chk"><input type="checkbox" id="forces-toggle" checked> forces</label>
@@ -435,8 +439,10 @@
       <label class="chk"><input type="checkbox" id="drc-toggle"> DRC</label>
       <button id="drc-run-btn" title="Run kicad-cli DRC on the current board">Run DRC</button>
       <span class="zoom-info" id="drc-info"></span>
-      <label class="chk"><input type="checkbox" id="layer-fcu" checked> F.Cu</label>
-      <label class="chk"><input type="checkbox" id="layer-bcu" checked> B.Cu</label>
+      <span id="layer-toggles" title="Copper layer visibility (from the board stackup)">
+        <label class="chk"><input type="checkbox" data-layer="F.Cu" checked> F.Cu</label>
+        <label class="chk"><input type="checkbox" data-layer="B.Cu" checked> B.Cu</label>
+      </span>
       <label class="chk" title="Show poured-zone outlines and fills"><input type="checkbox" id="zones-toggle" checked> Zones</label>
       <label class="chk" title="Show KiCad's cached zone fills (stale after edits; use --refill-zones to refresh)"><input type="checkbox" id="zones-fill-toggle"> Zone fills (cached)</label>
       <span class="zoom-info" id="zoom-info">100%</span>
@@ -530,9 +536,39 @@
             <button id="route-cancel-btn" hidden title="Stop after the current net (already-routed nets are kept)">Cancel</button>
             <progress id="route-progress" hidden max="1" value="0" style="width:8rem;" title="Per-net routing progress"></progress>
             <button id="gnd-islands-btn" title="Analyze GND pour continuity (islands per layer)">GND Islands</button>
+            <button id="impedance-btn" title="Inlet-anchored DC-resistance screening for GND + power nets (report only)">Impedance</button>
             <span id="route-diag"></span>
           </div>
           <div id="gnd-islands-results" style="font-size:.72rem;padding:.2rem .7rem;" hidden></div>
+          <div id="inlets-bar" style="font-size:.72rem;padding:.2rem .7rem;display:flex;gap:.4rem;flex-wrap:wrap;align-items:center;">
+            <span title="User-picked power-entry anchors for the impedance report">Inlets:</span>
+            <label>GND <input id="inlet-gnd-ref" size="5" placeholder="J1" title="GND inlet footprint ref"></label>
+            <label><input id="inlet-gnd-pad" size="3" placeholder="1" title="GND inlet pad number"></label>
+            <label>PWR net <input id="inlet-pwr-net" size="6" placeholder="VIN" title="Power net name"></label>
+            <label><input id="inlet-pwr-ref" size="5" placeholder="J1" title="Power inlet footprint ref"></label>
+            <label><input id="inlet-pwr-pad" size="3" placeholder="2" title="Power inlet pad number"></label>
+            <button id="inlets-save-btn" title="Save inlet anchors">Set</button>
+            <button id="inlets-clear-btn" title="Clear the GND inlet">Clear GND</button>
+            <label title="Fail threshold for GND pads">GND≤<input id="imp-gnd-max" size="4" value="50" title="GND max mΩ">mΩ</label>
+            <label title="Fail threshold for power pads">PWR≤<input id="imp-pwr-max" size="4" value="250" title="Power max mΩ">mΩ</label>
+            <span id="inlets-diag" style="color:#7d8b99;"></span>
+          </div>
+          <div id="bridges-bar" style="font-size:.72rem;padding:.2rem .7rem;display:flex;gap:.4rem;flex-wrap:wrap;align-items:center;">
+            <span title="Mated inter-panel pairs (pin headers, board-to-board connectors). Analysis shorts each pair with contact resistance.">Bridges:</span>
+            <label>A <input id="bridge-a-ref" size="5" placeholder="J7" title="Bridge endpoint A footprint ref"></label>
+            <label><input id="bridge-a-pad" size="3" placeholder="4" title="Bridge endpoint A pad number"></label>
+            <label>B <input id="bridge-b-ref" size="5" placeholder="J9" title="Bridge endpoint B footprint ref"></label>
+            <label><input id="bridge-b-pad" size="3" placeholder="4" title="Bridge endpoint B pad number"></label>
+            <label title="Contact resistance per mated pair (header contacts run ~10-20 mΩ, well above a via)">R<input id="bridge-r" size="4" value="20.0" title="mΩ">mΩ</label>
+            <button id="bridge-pick-a" title="Click a pad on the board to fill A">Pick A</button>
+            <button id="bridge-pick-b" title="Click a pad on the board to fill B">Pick B</button>
+            <button id="bridge-link-btn" title="Short A↔B as a mated pair">Link</button>
+            <button id="bridge-suggest-btn" title="Propose header mates by panel position + pin count">Suggest</button>
+            <span id="bridges-diag" style="color:#7d8b99;"></span>
+          </div>
+          <div id="bridges-list" style="font-size:.72rem;padding:.1rem .7rem;" hidden></div>
+          <div id="bridge-suggest-list" style="font-size:.72rem;padding:.1rem .7rem;" hidden></div>
+          <div id="impedance-results" style="font-size:.72rem;padding:.2rem .7rem;overflow:auto;" hidden></div>
           <div class="params" id="routing-params-grid"></div>
           <div class="nets-table-container">
             <table id="nets-table">
@@ -990,8 +1026,42 @@ const schChip = document.getElementById("board-sch");
 const overlayToggle = document.getElementById("overlay-toggle");
 const forcesToggle = document.getElementById("forces-toggle");
 const drcToggle = document.getElementById("drc-toggle");
-const layerFcuToggle = document.getElementById("layer-fcu");
-const layerBcuToggle = document.getElementById("layer-bcu");
+const layerTogglesEl = document.getElementById("layer-toggles");
+
+function layerToggleInputs() {
+  return [...(layerTogglesEl?.querySelectorAll('input[data-layer]') ?? [])];
+}
+
+function layerToggleState() {
+  // Map of copper layer -> visible, from the dynamic checkboxes.
+  const state = new Map();
+  for (const input of layerToggleInputs()) state.set(input.dataset.layer, input.checked);
+  if (!state.size) { state.set("F.Cu", true); state.set("B.Cu", true); }
+  return state;
+}
+
+function renderLayerToggles(copperLayers) {
+  // Rebuild one checkbox per stackup layer, preserving user choices for
+  // layers that persist across board versions.
+  const layers = (Array.isArray(copperLayers) && copperLayers.length) ? copperLayers : ["F.Cu", "B.Cu"];
+  const prev = layerToggleState();
+  const current = layerToggleInputs().map(i => i.dataset.layer);
+  if (current.length === layers.length && current.every((l, i) => l === layers[i])) return;
+  layerTogglesEl.innerHTML = "";
+  for (const layer of layers) {
+    const label = document.createElement("label");
+    label.className = "chk";
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.dataset.layer = layer;
+    input.checked = prev.has(layer) ? prev.get(layer) : true;
+    input.addEventListener("change", applyLayerVisibility);
+    label.appendChild(input);
+    label.appendChild(document.createTextNode(` ${layer}`));
+    layerTogglesEl.appendChild(label);
+    layerTogglesEl.appendChild(document.createTextNode(" "));
+  }
+}
 const zonesToggle = document.getElementById("zones-toggle");
 const zonesFillToggle = document.getElementById("zones-fill-toggle");
 const fitBtn = document.getElementById("fit-btn");
@@ -1007,9 +1077,11 @@ function boardSrc(version) {
   const forcesOn = forcesToggle?.checked ?? false;
   const drcOn = drcToggle?.checked ?? false;
   const fillsOn = zonesFillToggle?.checked ?? false;
-  const fcuOn = layerFcuToggle?.checked ?? true;
-  const bcuOn = layerBcuToggle?.checked ?? true;
-  return `/api/board.svg?v=${version}&overlay=${overlayOn ? 1 : 0}&forces=${forcesOn ? 1 : 0}&drc=${drcOn ? 1 : 0}&fills=${fillsOn ? 1 : 0}&fcu=${fcuOn ? 1 : 0}&bcu=${bcuOn ? 1 : 0}`;
+  const layers = layerToggleState();
+  const fcuOn = layers.get("F.Cu") ?? true;
+  const bcuOn = layers.get("B.Cu") ?? true;
+  const visible = [...layers.entries()].filter(([, on]) => on).map(([l]) => l).join(",");
+  return `/api/board.svg?v=${version}&overlay=${overlayOn ? 1 : 0}&forces=${forcesOn ? 1 : 0}&drc=${drcOn ? 1 : 0}&fills=${fillsOn ? 1 : 0}&fcu=${fcuOn ? 1 : 0}&bcu=${bcuOn ? 1 : 0}&layers=${encodeURIComponent(visible)}`;
 }
 
 function updateZoomInfo() {
@@ -1240,6 +1312,8 @@ async function poll() {
     schChip.hidden = st.has_sch;
     document.getElementById("download-btn").hidden = false;
     document.getElementById("reset-btn").hidden = false;
+    renderLayerToggles(st.copper_layers);
+    updateModeUI(st);
     if (st.version !== lastVersion) {
       lastVersion = st.version;
       if (motion.playing) pauseMotion();
@@ -1378,18 +1452,22 @@ function applyLayerVisibility() {
   const svg = viewport.querySelector("svg");
   if (!svg) return;
   const zonesOn = zonesToggle?.checked ?? true;
-  for (const [layer, toggle] of [["F.Cu", layerFcuToggle], ["B.Cu", layerBcuToggle]]) {
-    const layerOn = toggle.checked;
+  const layers = layerToggleState();
+  for (const [layer, layerOn] of layers) {
     const tracks = layerGroup(svg, layer, "tracks");
     if (tracks) tracks.style.display = layerOn ? "" : "none";
     const zones = layerGroup(svg, layer, "zones");
     if (zones) zones.style.display = (layerOn && zonesOn) ? "" : "none";
   }
+  // Vias span layers (data-layers): visible when any spanned layer is on.
+  svg.querySelectorAll("#layer-vias .via").forEach(el => {
+    const span = (el.getAttribute("data-layers") || "F.Cu B.Cu").split(/\s+/).filter(Boolean);
+    const visible = span.length ? span.some(l => layers.get(l) ?? false) : true;
+    el.style.display = visible ? "" : "none";
+  });
 }
 
-layerFcuToggle.addEventListener("change", applyLayerVisibility);
-
-layerBcuToggle.addEventListener("change", applyLayerVisibility);
+layerTogglesEl?.addEventListener("change", applyLayerVisibility);
 
 zonesToggle.addEventListener("change", applyLayerVisibility);
 
@@ -2860,8 +2938,68 @@ document.getElementById("undo-btn").addEventListener("click", async () => {
   }
 });
 
+// ==================== Board Mode Switch ====================
+
+let boardMode = null;  // "two-layer" | "four-layer", from /api/state
+
+function updateModeUI(st) {
+  boardMode = st.mode || null;
+  const b2 = document.getElementById("mode-2l");
+  const b4 = document.getElementById("mode-4l");
+  if (b2) b2.classList.toggle("active", boardMode === "two-layer");
+  if (b4) b4.classList.toggle("active", boardMode === "four-layer");
+  const warn = document.getElementById("mode-warn");
+  if (warn) {
+    warn.hidden = !st.mode_warning;
+    warn.textContent = "⚠ mode";
+    warn.title = st.mode_warning || "";
+  }
+}
+
+async function setBoardMode(mode) {
+  try {
+    const res = await fetch("/api/mode", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const r = await res.json();
+    boardMode = r.mode;
+    updateModeUI({ mode: r.mode, mode_warning: r.warning });
+    await loadRoutingParams();  // refresh mode-owned checkbox gating
+    toast(`mode → ${r.mode} (routing defaults applied)`, true);
+  } catch (err) {
+    toast(`mode switch failed: ${err.message}`, false);
+  }
+}
+
+document.getElementById("mode-2l").addEventListener("click", () => setBoardMode("two-layer"));
+document.getElementById("mode-4l").addEventListener("click", () => setBoardMode("four-layer"));
+
 document.getElementById("download-btn").addEventListener("click", async () => {
   try {
+    // Two-layer mode with 4-layer content collapses on export: confirm
+    // first (report counts + impedance note + "original untouched").
+    if (boardMode === "two-layer") {
+      const prev = await fetch("/api/board/collapse-preview");
+      if (prev.ok) {
+        const r = await prev.json();
+        const rep = r.report || {};
+        const changed = (rep.tracks_removed || 0) + (rep.vias_converted || 0)
+          + (rep.zones_removed || 0) + (rep.zones_restricted || 0);
+        if (changed > 0) {
+          const ok = confirm(
+            `Two-layer export collapses inner copper (original untouched):\n` +
+            `− ${rep.tracks_removed} inner tracks removed\n` +
+            `− ${rep.vias_converted} vias restacked to through (F.Cu–B.Cu)\n` +
+            `− ${rep.zones_removed} zones deleted, ${rep.zones_restricted} restricted\n` +
+            `${rep.impedance_note || ""}\n\nDownload the collapsed 2-layer file?`
+          );
+          if (!ok) return;
+        }
+      }
+    }
     const res = await fetch("/api/board/download");
     if (!res.ok) throw new Error(await res.text());
     const blob = await res.blob();
@@ -3134,7 +3272,16 @@ async function loadRoutingParams() {
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
     routingParams = data.params || {};
-    renderRoutingParams(routingParams);
+    // Mode-owned keys render disabled ("Managed by mode"); refill_zones
+    // always stays editable per spec. The server forces the preset at
+    // job time regardless of checkbox state.
+    let owned = [];
+    try {
+      const mres = await fetch("/api/mode");
+      if (mres.ok) owned = Object.keys((await mres.json()).preset || {})
+        .filter(k => k !== "refill_zones");
+    } catch (err) { /* no board loaded — nothing is mode-owned */ }
+    renderRoutingParams(routingParams, owned);
   } catch (err) {
     console.error("Failed to load routing params:", err);
     renderRoutingParams({});
@@ -3142,7 +3289,7 @@ async function loadRoutingParams() {
 }
 
 // Render routing params sliders
-function renderRoutingParams(params) {
+function renderRoutingParams(params, modeOwned = []) {
   const grid = document.getElementById("routing-params-grid");
   if (!grid) return;
   
@@ -3162,15 +3309,17 @@ function renderRoutingParams(params) {
   const stitchChecked = params.stitch_gnd_vias ?? true ? "checked" : "";
   const stripChecked = params.strip_gnd_blockers ?? true ? "checked" : "";
   const refillChecked = params.refill_zones ? "checked" : "";
+  const stitchManaged = modeOwned.includes("stitch_gnd_vias");
+  const stripManaged = modeOwned.includes("strip_gnd_blockers");
   const debugHtml = `
     <div class="param param-flags" style="grid-column:1/-1;">
       <span>Options</span>
       <div class="row" style="gap:.9rem; flex-wrap:wrap;">
-        <label class="chk" style="margin:0;" title="Auto-repair GND pour continuity after routing (stitching vias + bridge tracks)">
-          <input type="checkbox" data-key="stitch_gnd_vias" ${stitchChecked}> GND stitching
+        <label class="chk" style="margin:0;" title="${stitchManaged ? "Managed by mode" : "Auto-repair GND pour continuity after routing (stitching vias + bridge tracks)"}">
+          <input type="checkbox" data-key="stitch_gnd_vias" ${stitchChecked} ${stitchManaged ? "disabled" : ""}> GND stitching
         </label>
-        <label class="chk" style="margin:0;" title="Evict GND vias/tracks upfront before routing (rebuildable via stitching); signal/power copper is never evicted">
-          <input type="checkbox" data-key="strip_gnd_blockers" ${stripChecked}> Strip GND blockers
+        <label class="chk" style="margin:0;" title="${stripManaged ? "Managed by mode" : "Evict GND vias/tracks upfront before routing (rebuildable via stitching); signal/power copper is never evicted"}">
+          <input type="checkbox" data-key="strip_gnd_blockers" ${stripChecked} ${stripManaged ? "disabled" : ""}> Strip GND blockers
         </label>
         <label class="chk" style="margin:0;" title="Refill copper pours after routing using kicad-cli (requires KiCad installed)">
           <input type="checkbox" data-key="refill_zones" ${refillChecked}> Refill zones
@@ -3683,6 +3832,315 @@ async function fetchGndIslands() {
     if (!gndIslandsVisible) btn.textContent = "GND Islands";
   }
 }
+
+async function refreshInletsDiag() {
+  const diag = document.getElementById("inlets-diag");
+  try {
+    const res = await fetch("/api/nets/inlets");
+    if (!res.ok) return;
+    const data = await res.json();
+    const gl = data.gnd_list || data.gnd;
+    const g = (Array.isArray(gl) ? gl : (gl ? [gl] : [])).map(a => `${a.ref}.${a.pad}`).join(", ") || "unset";
+    const p = Object.entries(data.power || {}).map(([n, a]) => {
+      const lst = Array.isArray(a) ? a : [a];
+      return `${n}@${lst.map(x => `${x.ref}.${x.pad}`).join("+")}`;
+    }).join(", ") || "unset";
+    const b = (data.bridges || []).map(x => `${x.a.ref}.${x.a.pad}↔${x.b.ref}.${x.b.pad}`).join(", ");
+    if (diag) diag.textContent = `GND inlet ${g} · PWR ${p}${b ? ` · bridges ${b}` : ""}`;
+  } catch (err) {
+    if (diag) diag.textContent = `inlets unreadable: ${err}`;
+  }
+}
+
+async function saveInlets() {
+  const diag = document.getElementById("inlets-diag");
+  const gRef = document.getElementById("inlet-gnd-ref").value.trim();
+  const gPad = document.getElementById("inlet-gnd-pad").value.trim();
+  const pNet = document.getElementById("inlet-pwr-net").value.trim();
+  const pRef = document.getElementById("inlet-pwr-ref").value.trim();
+  const pPad = document.getElementById("inlet-pwr-pad").value.trim();
+  const body = { power: {} };
+  if (gRef && gPad) body.gnd = { ref: gRef, pad: gPad };
+  if (pNet && pRef && pPad) body.power[pNet] = { ref: pRef, pad: pPad };
+  try {
+    const res = await fetch("/api/nets/inlets", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    await refreshInletsDiag();
+  } catch (err) {
+    if (diag) diag.textContent = `inlet save failed: ${err}`;
+  }
+}
+
+async function clearGndInlet() {
+  const diag = document.getElementById("inlets-diag");
+  try {
+    const res = await fetch("/api/nets/inlets", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ gnd: null }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    await refreshInletsDiag();
+  } catch (err) {
+    if (diag) diag.textContent = `inlet clear failed: ${err}`;
+  }
+}
+
+async function fetchImpedance() {
+  const btn = document.getElementById("impedance-btn");
+  const box = document.getElementById("impedance-results");
+  // Toggle off: clear the overlay without refetching.
+  if (impedanceVisible) {
+    impedanceVisible = false;
+    renderImpedanceOverlay();
+    btn.textContent = "Impedance";
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = "Analyzing…";
+  try {
+    // Fall back to each input's own default so empty fields can't silently
+    // tighten the test to a stale hardcoded value.
+    const gEl = document.getElementById("imp-gnd-max");
+    const pEl = document.getElementById("imp-pwr-max");
+    const gMax = gEl.value || gEl.defaultValue || "50";
+    const pMax = pEl.value || pEl.defaultValue || "250";
+    const res = await fetch(`/api/routing/debug/impedance?gnd_max_mohm=${encodeURIComponent(gMax)}&power_max_mohm=${encodeURIComponent(pMax)}`);
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    impedanceData = data;
+    renderImpedanceResults();
+    impedanceVisible = true;
+    btn.textContent = "Hide Z";
+    renderImpedanceOverlay();
+  } catch (err) {
+    box.hidden = false;
+    box.textContent = `impedance analysis failed: ${err}`;
+  } finally {
+    btn.disabled = false;
+    if (!impedanceVisible) btn.textContent = "Impedance";
+  }
+}
+
+// Pad lists render worst-first, capped per net with a show-all toggle.
+// The full data is already client-side, so toggling never refetches.
+const impedanceExpanded = new Set();
+function renderImpedanceResults() {
+  const box = document.getElementById("impedance-results");
+  const data = impedanceData;
+  if (!data) return;
+  const verdictColor = v => v === "pass" ? "#2ea87a" : (v === "attention" ? "#d9a13b" : "#e06c75");
+  const s = data.summary || {};
+  const br = data.bridges || {};
+  let html = `<div>nets ${s.nets_evaluated ?? 0} · pads ${s.pads_evaluated ?? 0} · ` +
+    `<b style="color:#e06c75;">fail ${s.failures ?? 0}</b> · ` +
+    `<span style="color:#d9a13b;">attention ${s.attention ?? 0}</span>` +
+    `<span style="color:#7d8b99;"> · bridges explicit ${(br.explicit || []).length} · auto ${br.auto ?? 0} · cross-net ${br.cross_net ?? 0}</span></div>`;
+  for (const net of (data.nets || [])) {
+    const inl = (net.inlets || []).map(i => `${i.ref}.${i.pad}`).join(", ") || "no-inlet";
+    html += `<div style="margin-top:.35rem;"><b>${net.net}</b> <span style="color:#7d8b99;">inlet ${inl} · worst ${net.worst_mohm ?? "—"} mΩ · fail ${net.failures} · attn ${net.attention}</span>`;
+    const expanded = impedanceExpanded.has(net.net);
+    const pads = expanded ? (net.pads || []) : (net.pads || []).slice(0, 12);
+    const rows = pads.map(p =>
+      `<tr><td>${p.ref}.${p.pad}</td><td>${p.connected ? (p.r_mohm ?? "—") : "—"}</td>` +
+      `<td>vias ${p.vias_used} · paths ${p.disjoint_paths}${p.bridges_used ? ` · br ${p.bridges_used}` : ""}</td>` +
+      `<td style="color:${verdictColor(p.verdict)};">${p.verdict}${p.reason ? ` (${p.reason})` : ""}</td></tr>`
+    ).join("");
+    if (rows) html += `<table style="margin-top:.2rem;border-collapse:collapse;"><tbody>${rows}</tbody></table>`;
+    const hidden = (net.pads || []).length - Math.min(12, (net.pads || []).length);
+    if (hidden > 0) {
+      html += `<div><button class="imp-expand-btn" data-net="${net.net}" style="font-size:.72rem;color:#7d8b99;background:none;border:none;cursor:pointer;padding:0;">` +
+        (expanded ? "show less ▲" : `… ${hidden} more pads (worst first) ▼`) + `</button></div>`;
+    }
+    html += `</div>`;
+  }
+  box.hidden = false;
+  box.innerHTML = html;
+  box.querySelectorAll(".imp-expand-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const net = btn.dataset.net;
+      if (impedanceExpanded.has(net)) impedanceExpanded.delete(net);
+      else impedanceExpanded.add(net);
+      renderImpedanceResults();
+    });
+  });
+}
+
+// Impedance pad overlay: one dot per evaluated pad, board-mm SVG user
+// units like the islands overlay. Green = pass (redundant low-R path),
+// amber = attention (single path), red = fail. Inlet pads get a ring.
+let impedanceData = null;
+let impedanceVisible = false;
+function renderImpedanceOverlay() {
+  viewport.querySelectorAll(".impedance-overlay").forEach(el => el.remove());
+  if (!impedanceVisible || !impedanceData) return;
+  const svg = viewport.querySelector("svg");
+  if (!svg) return;
+  const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+  g.classList.add("impedance-overlay");
+  g.style.pointerEvents = "none";
+  const color = v => v === "pass" ? "#2ea87a" : (v === "attention" ? "#d9a13b" : "#e06c75");
+  for (const net of (impedanceData.nets || [])) {
+    for (const p of (net.pads || [])) {
+      if (p.x_mm === undefined) continue;
+      const dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+      dot.setAttribute("cx", p.x_mm);
+      dot.setAttribute("cy", p.y_mm);
+      dot.setAttribute("r", p.reason === "inlet" ? "1.0" : "0.6");
+      dot.setAttribute("fill", color(p.verdict));
+      dot.setAttribute("fill-opacity", p.reason === "inlet" ? "0.9" : "0.75");
+      if (p.reason === "inlet") {
+        dot.setAttribute("stroke", "#ffffff");
+        dot.setAttribute("stroke-width", "0.25");
+      }
+      const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
+      title.textContent = `${p.ref}.${p.pad} ${p.net}: ${p.connected ? p.r_mohm + " mΩ" : p.reason} via ${p.inlet || "—"}`;
+      dot.appendChild(title);
+      g.appendChild(dot);
+    }
+  }
+  svg.appendChild(g);
+}
+document.getElementById("impedance-btn").addEventListener("click", fetchImpedance);
+document.getElementById("inlets-save-btn").addEventListener("click", saveInlets);
+document.getElementById("inlets-clear-btn").addEventListener("click", clearGndInlet);
+
+// ---- Bridges: mated inter-panel pairs (pick two pins + link) ----
+let bridgePick = null; // 'a' | 'b' | null
+function setBridgePick(which) {
+  bridgePick = (bridgePick === which) ? null : which;
+  const pa = document.getElementById("bridge-pick-a");
+  const pb = document.getElementById("bridge-pick-b");
+  if (pa) pa.textContent = bridgePick === "a" ? "Picking…" : "Pick A";
+  if (pb) pb.textContent = bridgePick === "b" ? "Picking…" : "Pick B";
+}
+// Capture-phase: claim pad clicks while picking, before footprint selection.
+viewport.addEventListener("click", e => {
+  if (!bridgePick) return;
+  const padEl = e.target.closest("[data-pad]");
+  if (!padEl) return;
+  const ref = padEl.getAttribute("data-ref") || "";
+  const pad = padEl.getAttribute("data-pad") || "";
+  if (!ref || !pad) return;
+  document.getElementById(`bridge-${bridgePick}-ref`).value = ref;
+  document.getElementById(`bridge-${bridgePick}-pad`).value = pad;
+  setBridgePick(bridgePick); // disarm (toggles off)
+  e.stopPropagation();
+  e.preventDefault();
+}, true);
+
+async function postBridges(bridges) {
+  const diag = document.getElementById("bridges-diag");
+  try {
+    const res = await fetch("/api/nets/inlets", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bridges }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    await refreshBridges();
+    await refreshInletsDiag();
+  } catch (err) {
+    if (diag) diag.textContent = `bridge update failed: ${err}`;
+  }
+}
+
+async function refreshBridges() {
+  const box = document.getElementById("bridges-list");
+  const diag = document.getElementById("bridges-diag");
+  try {
+    const res = await fetch("/api/nets/inlets");
+    if (!res.ok) return;
+    const data = await res.json();
+    const bridges = data.bridges || [];
+    if (!bridges.length) {
+      box.hidden = true;
+      box.innerHTML = "";
+      if (diag) diag.textContent = "no bridges";
+      return;
+    }
+    box.hidden = false;
+    box.innerHTML = bridges.map((b, i) =>
+      `<span style="margin-right:.6rem;">${b.a.ref}.${b.a.pad}↔${b.b.ref}.${b.b.pad} (${b.r_mohm} mΩ)` +
+      `<button data-bridge-del="${i}" title="Remove this bridge" style="margin-left:.2rem;">✕</button></span>`
+    ).join("");
+    box.querySelectorAll("[data-bridge-del]").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const cur = (await (await fetch("/api/nets/inlets")).json()).bridges || [];
+        cur.splice(Number(btn.dataset.bridgeDel), 1);
+        await postBridges(cur);
+      });
+    });
+    if (diag) diag.textContent = `${bridges.length} bridge${bridges.length === 1 ? "" : "s"}`;
+  } catch (err) {
+    if (diag) diag.textContent = `bridges unreadable: ${err}`;
+  }
+}
+
+async function linkBridge() {
+  const diag = document.getElementById("bridges-diag");
+  const aRef = document.getElementById("bridge-a-ref").value.trim();
+  const aPad = document.getElementById("bridge-a-pad").value.trim();
+  const bRef = document.getElementById("bridge-b-ref").value.trim();
+  const bPad = document.getElementById("bridge-b-pad").value.trim();
+  const r = parseFloat(document.getElementById("bridge-r").value) || 20.0; // BRIDGE_DEFAULT_MOHM
+  if (!aRef || !aPad || !bRef || !bPad) {
+    if (diag) diag.textContent = "fill A ref/pad and B ref/pad (or Pick from the board)";
+    return;
+  }
+  const cur = (await (await fetch("/api/nets/inlets")).json()).bridges || [];
+  cur.push({ a: { ref: aRef, pad: aPad }, b: { ref: bRef, pad: bPad }, r_mohm: r });
+  await postBridges(cur);
+}
+
+async function suggestBridges() {
+  const box = document.getElementById("bridge-suggest-list");
+  const diag = document.getElementById("bridges-diag");
+  try {
+    const res = await fetch("/api/nets/bridge-suggestions");
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    const mates = data.mates || [];
+    if (!mates.length) {
+      box.hidden = false;
+      box.textContent = "no header mates found (need J-headers at matching panel positions)";
+      return;
+    }
+    const same = mates.filter(m => m.match);
+    const diff = mates.filter(m => !m.match);
+    const all = [...same.map(m => ({ m, pre: true })), ...diff.map(m => ({ m, pre: false }))];
+    box.hidden = false;
+    box.innerHTML =
+      `<div>${same.length} same-net pairs · ` +
+      `<span style="color:#d9a13b;">${diff.length} different-net pairs (names differ by design to fool KiCad DRC — tick to link as intended)</span> ` +
+      `<button id="bridge-apply-btn">Apply checked</button></div>` +
+      all.map(({ m, pre }, i) =>
+        `<label style="margin-right:.6rem;" title="${m.net_a || "—"} ↔ ${m.net_b || "—"}">` +
+        `<input type="checkbox" class="bridge-sug" data-i="${i}"${pre ? " checked" : ""}> ` +
+        `${m.a.ref}.${m.a.pad}↔${m.b.ref}.${m.b.pad} ` +
+        `<span style="color:#7d8b99;">${m.match ? m.net_a : `${m.net_a || "—"}↔${m.net_b || "—"}`}</span></label>`
+      ).join("");
+    document.getElementById("bridge-apply-btn").addEventListener("click", async () => {
+      const checked = [...box.querySelectorAll(".bridge-sug:checked")].map(cb => all[Number(cb.dataset.i)].m);
+      if (!checked.length) return;
+      const cur = (await (await fetch("/api/nets/inlets")).json()).bridges || [];
+      for (const m of checked) {
+        const b = { a: m.a, b: m.b, r_mohm: 20.0 }; // BRIDGE_DEFAULT_MOHM
+        if (!cur.some(c => JSON.stringify(c) === JSON.stringify(b))) cur.push(b);
+      }
+      await postBridges(cur);
+      box.hidden = true;
+    });
+  } catch (err) {
+    box.hidden = false;
+    box.textContent = `suggestions failed: ${err}`;
+  }
+}
+document.getElementById("bridge-pick-a").addEventListener("click", () => setBridgePick("a"));
+document.getElementById("bridge-pick-b").addEventListener("click", () => setBridgePick("b"));
+document.getElementById("bridge-link-btn").addEventListener("click", linkBridge);
+document.getElementById("bridge-suggest-btn").addEventListener("click", suggestBridges);
+refreshBridges();
+refreshInletsDiag();
 
 // Select all checkbox in nets table (in-place: full list stays rendered)
 document.getElementById("nets-select-all").addEventListener("change", e => {

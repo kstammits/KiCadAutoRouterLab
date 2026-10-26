@@ -55,6 +55,7 @@ class RoutingResult:
     expansions: int = 0  # Total A* node expansions across all pair-searches
     timings: Dict[str, float] = field(default_factory=dict)  # Stage seconds + grid cells
     refill_zones_done: bool = False  # True if copper pour refill was executed
+    failed_reasons: Dict[str, str] = field(default_factory=dict)  # net -> explicit failure reason
 
 
 @dataclass
@@ -91,6 +92,12 @@ class RoutingParams:
     window_retries: int = 3  # Window attempts per pair (last = full board)
     corridor: bool = True  # Attempt coarse corridor guidance when initial window fails
     refill_zones: bool = False  # Refill copper pours after routing (kicad-cli --refill-zones --save-board)
+    allowed_layers: Optional[List[str]] = None  # Copper subset to route on (None = all stackup layers).
+    # Enforced in route_nets: terminals on disallowed layers fail the net
+    # with an explicit reason, and A* moves / via landings are confined to
+    # the allowed subset via the grid shape. The grid itself is outer-only
+    # (F.Cu/B.Cu); inner-layer entries validate but do not add routable
+    # layers — inner-layer routing is not supported (see board_mode_spec).
 
     def to_dict(self) -> dict:
         return {
@@ -121,6 +128,7 @@ class RoutingParams:
             "window_retries": self.window_retries,
             "corridor": self.corridor,
             "refill_zones": self.refill_zones,
+            "allowed_layers": list(self.allowed_layers) if self.allowed_layers is not None else None,
         }
 
     @classmethod
@@ -134,9 +142,11 @@ class RoutingParams:
             "stitch_gnd_vias", "strip_gnd_blockers", "stitch_vias_max", "stitch_bridges_max",
             "stitch_bridge_max_mm", "stitch_bridge_width_mm", "pour_severance_weight", "fanout_margin_mm",
             "window_margin_cells", "window_growth", "window_retries",
-            "corridor", "refill_zones",
+            "corridor", "refill_zones", "allowed_layers",
         }
         filtered = {k: v for k, v in d.items() if k in valid_keys}
+        if filtered.get("allowed_layers") is not None:
+            filtered["allowed_layers"] = list(filtered["allowed_layers"])
         return cls(**filtered)
 
 
@@ -170,8 +180,62 @@ def resolve_clearance(model: BoardModel, params: RoutingParams, net_name: Option
     return params.clearance_mm
 
 
-def _terminals_for_net(model: BoardModel, grid: RoutingGrid, net_name: str) -> List[Tuple[int, int, int]]:
-    """Grid terminals ``[(col, row, layer_idx)]`` for a net's pads."""
+def _resolve_grid_layers(model: BoardModel, params: RoutingParams) -> Tuple[str, ...]:
+    """Ordered grid layers for this route: the outer-only grid intersected
+    with ``params.allowed_layers`` (``None`` = all stackup layers, i.e.
+    the full outer grid).
+
+    Entries in ``allowed_layers`` must name copper layers on this board;
+    anything else (and an empty intersection) raises ``ValueError``.
+    Inner-layer entries validate but add no routable layers: the grid is
+    outer-only by design.
+    """
+    outers = ("F.Cu", "B.Cu")
+    if params.allowed_layers is None:
+        return outers
+    known = set(model.copper_layers) | set(outers)
+    unknown = [l for l in params.allowed_layers if l not in known]
+    if unknown:
+        raise ValueError(
+            f"allowed_layers has unknown copper layers for this board: {unknown}"
+        )
+    resolved = tuple(l for l in outers if l in params.allowed_layers)
+    if not resolved:
+        raise ValueError(
+            f"allowed_layers {list(params.allowed_layers)} leaves no routable outer layer"
+        )
+    return resolved
+
+
+def _disallowed_terminal_layers(
+    model: BoardModel, net_name: str, allowed_layers: Collection[str]
+) -> List[str]:
+    """Sorted footprint layers of a net's pads that fall outside ``allowed_layers``."""
+    bad: List[str] = []
+    for conn in model.nets.get(net_name, []):
+        fp = model.by_ref.get(conn.ref)
+        if not fp:
+            continue
+        if not any(p.number == conn.pad_number for p in fp.pads):
+            continue
+        if fp.layer not in allowed_layers and fp.layer not in bad:
+            bad.append(fp.layer)
+    return sorted(bad)
+
+
+def _terminals_for_net(
+    model: BoardModel,
+    grid: RoutingGrid,
+    net_name: str,
+    allowed_layers: Optional[Collection[str]] = None,
+) -> List[Tuple[int, int, int]]:
+    """Grid terminals ``[(col, row, layer_idx)]`` for a net's pads.
+
+    When ``allowed_layers`` is set, pads on other layers are skipped
+    (never silently remapped): callers check
+    :func:`_disallowed_terminal_layers` first and fail the net with an
+    explicit reason.
+    """
     terminals = []
     for conn in model.nets.get(net_name, []):
         fp = model.by_ref.get(conn.ref)
@@ -180,8 +244,10 @@ def _terminals_for_net(model: BoardModel, grid: RoutingGrid, net_name: str) -> L
         pad = next((p for p in fp.pads if p.number == conn.pad_number), None)
         if not pad:
             continue
+        if allowed_layers is not None and fp.layer not in allowed_layers:
+            continue
         col, row = board_to_grid(grid, pad.position.x_mm, pad.position.y_mm)
-        layer_idx = 0 if fp.layer == "F.Cu" else 1
+        layer_idx = grid.layer_to_idx.get(fp.layer, 0)
         terminals.append((col, row, layer_idx))
     return terminals
 
@@ -432,19 +498,26 @@ def route_nets(
                 original_pcb_tree = rip_up_nets(original_pcb_tree, gnd_nets, set())
     
     # 1. Create or reuse grid. A reused grid is only valid when it matches
-    # the requested resolution AND covers the same board area: a resolution
-    # or margin change must rebuild, otherwise the new params are silently
-    # ignored (and stale BLOCKED cells from the previous route persist).
+    # the requested resolution AND covers the same board area AND routes
+    # the same layer set: a resolution, margin, or allowed_layers change
+    # must rebuild, otherwise the new params are silently ignored (and
+    # stale BLOCKED cells from the previous route persist).
+    grid_layers = _resolve_grid_layers(model, params)
     t_grid = time.perf_counter()
     if routing_grid is None:
-        routing_grid = create_grid_from_model(model, params.grid_resolution_mm, params.margin_mm)
+        routing_grid = create_grid_from_model(
+            model, params.grid_resolution_mm, params.margin_mm, layers=grid_layers
+        )
     else:
-        expected = create_grid_from_model(model, params.grid_resolution_mm, params.margin_mm)
+        expected = create_grid_from_model(
+            model, params.grid_resolution_mm, params.margin_mm, layers=grid_layers
+        )
         if (
             routing_grid.resolution_mm != params.grid_resolution_mm
             or routing_grid.width_cells != expected.width_cells
             or routing_grid.height_cells != expected.height_cells
             or routing_grid.origin_mm != expected.origin_mm
+            or tuple(routing_grid.layers) != tuple(expected.layers)
         ):
             routing_grid = expected
 
@@ -557,7 +630,19 @@ def route_nets(
         conns = model.nets.get(net_name, [])
         if len(conns) < 2:
             return False
-        terminals = _terminals_for_net(model, routing_grid, net_name)
+        if params.allowed_layers is not None:
+            bad = _disallowed_terminal_layers(model, net_name, params.allowed_layers)
+            if bad:
+                ripup.record_failure(
+                    net_name,
+                    f"terminal on disallowed layer {bad} "
+                    f"(allowed_layers={sorted(params.allowed_layers)})",
+                )
+                nets_failed += 1
+                return False
+        terminals = _terminals_for_net(
+            model, routing_grid, net_name, params.allowed_layers
+        )
         if len(terminals) < 2:
             return False
         pairs_total = len(terminals) * (len(terminals) - 1) // 2
@@ -760,7 +845,7 @@ def route_nets(
     if params.refill_zones and pcb_tree is not None:
         with tempfile.TemporaryDirectory(prefix="refill_") as tmpdir:
             tmp_path = Path(tmpdir) / "route_refill.kicad_pcb"
-            to_sexpr(pcb_tree).write(tmp_path)
+            tmp_path.write_text(to_sexpr(pcb_tree) + "\n", encoding="utf-8")
             refill_result = refill_zones(tmp_path)
             # loaded=True means kicad-cli wrote a DRC report (file parsed);
             # a load error leaves error set and the tree untouched.
@@ -793,6 +878,7 @@ def route_nets(
         expansions=expansions_total,
         timings=timings,
         refill_zones_done=refill_done,
+        failed_reasons=dict(ripup.net_failures),
     ), cost_grid, routing_grid
 
 
@@ -850,22 +936,8 @@ def _rip_up_nets_from_model(model: BoardModel, net_names: List[str]) -> BoardMod
     net_set = set(net_names)
     kept_tracks = tuple(t for t in model.tracks if t.net_name not in net_set)
     kept_vias = tuple(v for v in model.vias if v.net_name not in net_set)
-    
-    return BoardModel(
-        footprints=model.footprints,
-        keepout_zones=model.keepout_zones,
-        nets=model.nets,
-        by_ref=model.by_ref,
-        tracks=kept_tracks,
-        vias=kept_vias,
-        zones=model.zones,
-        edge_cuts=model.edge_cuts,
-        edge_arcs=model.edge_arcs,
-        board_regions=model.board_regions,
-        footprint_region=model.footprint_region,
-        version=model.version,
-        version_warning=model.version_warning,
-    )
+
+    return replace(model, tracks=kept_tracks, vias=kept_vias)
 
 
 def _strip_gnd_blockers_from_model(model: BoardModel) -> Tuple[BoardModel, int]:

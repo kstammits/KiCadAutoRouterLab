@@ -339,6 +339,7 @@ class BoardModel:
     version_warning: Optional[str] = None  # Warning for v11+ boards
     net_classes: Tuple[NetClass, ...] = ()  # (net_class ...) declarations
     net_netclass: Dict[str, str] = field(default_factory=dict)  # net name -> netclass name
+    copper_layers: Tuple[str, ...] = ("F.Cu", "B.Cu")  # stackup-ordered copper layers
 
 
 def _to_board(
@@ -1462,6 +1463,73 @@ def _parse_version(version_str: Optional[str]) -> tuple[str, Optional[str]]:
     return version_str, None
 
 
+def _is_copper_layer_name(name: str) -> bool:
+    """True for copper layer names (``F.Cu`` / ``B.Cu`` / ``InN.Cu``)."""
+    return isinstance(name, str) and name.endswith(".Cu")
+
+
+def _sort_copper_layers(names: Collection[str]) -> Tuple[str, ...]:
+    """Order copper names in stackup order: F.Cu, InN.Cu (numeric), B.Cu."""
+    def _key(name: str) -> Tuple[int, int, str]:
+        if name == "F.Cu":
+            return (0, 0, name)
+        if name == "B.Cu":
+            return (2, 0, name)
+        if name.startswith("In") and name.endswith(".Cu"):
+            try:
+                return (1, int(name[2:-3]), name)
+            except ValueError:
+                return (1, 1 << 30, name)
+        return (1, 1 << 30, name)
+
+    seen: List[str] = []
+    for name in names:
+        if name not in seen:
+            seen.append(name)
+    return tuple(sorted(seen, key=_key))
+
+
+def copper_layers(tree: SExpr) -> Tuple[str, ...]:
+    """Stackup-ordered copper layer names declared by the board file.
+
+    Prefers ``(setup (stackup (layer "NAME" (type "copper")) …))`` order
+    (the physical stackup); falls back to the ``(layers …)`` header. Only
+    names ending in ``.Cu`` are kept. Boards without either block (or
+    without copper entries) default to ``("F.Cu", "B.Cu")`` so old callers
+    and tests keep working.
+    """
+    stacked: List[str] = []
+    setup = tree.find("setup")
+    stackup = setup.find("stackup") if setup is not None else None
+    if stackup is not None:
+        for layer in stackup.children("layer"):
+            if not layer.args or not isinstance(layer.args[0], str):
+                continue
+            name = layer.args[0]
+            if not _is_copper_layer_name(name):
+                continue
+            type_node = layer.find("type")
+            if type_node is not None and type_node.args:
+                if str(type_node.args[0]).lower() != "copper":
+                    continue
+            stacked.append(name)
+    if stacked:
+        return _sort_copper_layers(stacked)
+    header: List[str] = []
+    layers_node = tree.find("layers")
+    if layers_node is not None:
+        for child in layers_node.args:
+            if not isinstance(child, SExpr):
+                continue
+            for arg in child.args:
+                if _is_copper_layer_name(arg):
+                    header.append(arg)
+                    break
+    if header:
+        return _sort_copper_layers(header)
+    return ("F.Cu", "B.Cu")
+
+
 def board_model(tree: SExpr) -> BoardModel:
     """Build the aggregate :class:`BoardModel` from a parsed board tree."""
     all_fps = footprints(tree)
@@ -1516,4 +1584,5 @@ def board_model(tree: SExpr) -> BoardModel:
         version_warning=version_warning,
         net_classes=parsed_net_classes,
         net_netclass=parsed_net_netclass,
+        copper_layers=copper_layers(tree),
     )

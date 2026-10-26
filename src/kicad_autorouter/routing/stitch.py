@@ -86,7 +86,7 @@ def _foreign_mask(
         for pad in fp.pads:
             if pad.net_name is None or pad.net_name == net_name:
                 continue
-            if layer_idx not in _pad_layers(fp, pad):
+            if layer_idx not in _pad_layers(fp, pad, grid):
                 continue
             _paint_pad(mask, grid, pad, clearance_mm)
     for track in model.tracks:
@@ -429,7 +429,7 @@ def plan_stitches(
                 for pad in fp.pads:
                     if pad.net_name != net_name:
                         continue
-                    if layer_idx not in _pad_layers(fp, pad):
+                    if layer_idx not in _pad_layers(fp, pad, grid):
                         continue
                     _paint_pad(seed[layer], grid, pad, res)
             for via in model.vias:

@@ -165,7 +165,11 @@ def build_fanout_cost(
             if pad.net_name == current_net:
                 continue
             col, row = board_to_grid(grid, pad.position.x_mm, pad.position.y_mm)
-            layers = (0, 1) if pad.is_through_hole else (0 if fp.layer == "F.Cu" else 1,)
+            if pad.is_through_hole:
+                layers = tuple(range(n_layers))
+            else:
+                idx = grid.layer_to_idx.get(fp.layer)
+                layers = (idx,) if idx is not None else ()
             inner = pad_halo_radius_cells(
                 _pad_half_extent_mm(pad), clearance_mm, track_half_mm, res_mm
             )
@@ -196,8 +200,17 @@ def build_fanout_cost(
         if not via.net_name or via.net_name == current_net:
             continue
         col, row = board_to_grid(grid, via.position.x_mm, via.position.y_mm)
-        # Via spans both layers
-        layers = (0, 1)
+        # A via only excludes the grid layers it pierces; inner-only blind
+        # vias never halo the outer-only grid. Unspanned vias (legacy)
+        # exclude every grid layer.
+        if getattr(via, "layers", ()):
+            layers = tuple(
+                grid.layer_to_idx[name]
+                for name in via.layers
+                if name in grid.layer_to_idx
+            )
+        else:
+            layers = tuple(range(n_layers))
         inner = via_halo_radius_cells(
             via.size_mm, clearance_mm, track_half_mm, res_mm
         )
@@ -474,9 +487,16 @@ def _mark_pad(
     x_mm, y_mm = pad.position.x_mm, pad.position.y_mm
     col, row = board_to_grid(grid, x_mm, y_mm)
 
-    # Determine which layers this pad occupies
+    # Determine which layers this pad occupies: through-hole spans every
+    # grid layer; SMD lives on its footprint layer (skipped when that layer
+    # is not routed, e.g. an inner-layer footprint on the outer-only grid).
     is_through_hole = pad.is_through_hole
-    pad_layers = [0, 1] if is_through_hole else [0 if fp.layer == "F.Cu" else 1]
+    n_layers = cost_grid.shape[0]
+    if is_through_hole:
+        pad_layers = list(range(n_layers))
+    else:
+        idx = grid.layer_to_idx.get(fp.layer)
+        pad_layers = [idx] if idx is not None else []
 
     # Get clearance for this pad's net
     net_name = pad.net_name
@@ -503,9 +523,14 @@ def _mark_pad(
 
 
 def _mark_track(cost_grid: np.ndarray, grid, track, clearance_mm: float = 0.2):
-    """Mark track segment as blocked on its layer with width + clearance halo."""
-    layer_idx = 0 if track.layer == "F.Cu" else 1
-    if layer_idx >= cost_grid.shape[0]:
+    """Mark track segment as blocked on its layer with width + clearance halo.
+
+    Tracks on layers outside the routing grid (e.g. inner-plane copper on
+    the outer-only ``F.Cu``/``B.Cu`` grid) are skipped: they live on another
+    plane and must never become phantom blockers on the back layer.
+    """
+    layer_idx = grid.layer_to_idx.get(track.layer)
+    if layer_idx is None or layer_idx >= cost_grid.shape[0]:
         return
     radius = track_corridor_radius_cells(track.width_mm, clearance_mm, grid.resolution_mm)
     c1, r1 = board_to_grid(grid, track.start.x_mm, track.start.y_mm)
@@ -526,14 +551,27 @@ def _mark_via(
     clearance_mm: float = 0.2,
     track_half_mm: float = 0.125,
 ):
-    """Mark via with full copper+clearance halo on both layers.
+    """Mark via with full copper+clearance halo on the layers it pierces.
 
     The halo covers the via annulus (size/2) plus clearance and half the
     track width, so subsequent nets keep DRC distance to the via copper.
+    Vias with an explicit ``layers`` span only stamp intersecting grid
+    layers (an inner-only blind via never blocks the outer-only grid);
+    vias without a span (legacy/unknown) stamp every grid layer.
     """
     col, row = board_to_grid(grid, via.position.x_mm, via.position.y_mm)
     radius = via_halo_radius_cells(via.size_mm, clearance_mm, track_half_mm, grid.resolution_mm)
-    for layer_idx in range(cost_grid.shape[0]):
+    if getattr(via, "layers", ()):
+        targets = [
+            grid.layer_to_idx[name]
+            for name in via.layers
+            if name in grid.layer_to_idx
+        ]
+        if not targets:
+            return
+    else:
+        targets = list(range(cost_grid.shape[0]))
+    for layer_idx in targets:
         stamp_square(cost_grid[layer_idx], row, col, radius, BLOCKED)
 
 
@@ -547,7 +585,7 @@ def _mark_polygon_on_layers(cost_grid: np.ndarray, grid, polygon, layers, value:
     if not polygon or len(polygon) < 3:
         return
     for layer_name in layers:
-        layer_idx = 0 if layer_name == "F.Cu" else (1 if layer_name == "B.Cu" else None)
+        layer_idx = grid.layer_to_idx.get(layer_name)
         if layer_idx is None or layer_idx >= cost_grid.shape[0]:
             continue
         points = [

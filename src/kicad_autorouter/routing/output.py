@@ -122,7 +122,7 @@ def routes_to_tracks_vias(
                         position=(via_x, via_y),
                         size_mm=via_size_mm,
                         drill_mm=via_drill_mm,
-                        layers=("F.Cu", "B.Cu"),
+                        layers=(grid.layers[0], grid.layers[-1]),
                         net_name=net_name,
                     ))
 
