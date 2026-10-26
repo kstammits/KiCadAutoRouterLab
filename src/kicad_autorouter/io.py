@@ -302,7 +302,7 @@ def collapse_to_two_layer(tree: SExpr) -> Tuple[SExpr, dict]:
         if child.head in ("segment", "arc"):
             layer_node = child.find("layer")
             layer = str(layer_node.args[0]) if layer_node is not None and layer_node.args else ""
-            if layer not in COLLAPSE_OUTERS:
+            if layer and layer not in COLLAPSE_OUTERS:
                 tracks_removed += 1
                 changed = True
                 _note_net(child.find("net"))

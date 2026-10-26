@@ -12,6 +12,8 @@
 import numpy as np
 import pytest
 
+from pathlib import Path
+
 from kicad_autorouter.board_model import BoardRegion, Point
 from kicad_autorouter.routing.grid import board_to_grid, create_grid_from_model
 from kicad_autorouter.routing.pour import pour_islands
@@ -19,6 +21,18 @@ from kicad_autorouter.routing.stitch import _foreign_mask, plan_stitches
 
 from .test_pour import _board, _rect_zone, _track
 from .helpers import make_fp
+
+
+@pytest.fixture(scope="module")
+def cli() -> str:
+    try:
+        from kicad_autorouter.validate import find_kicad_cli, KicadCliNotFound
+    except ImportError:
+        pytest.skip("kicad-cli not installed")
+    try:
+        return find_kicad_cli()
+    except KicadCliNotFound:
+        pytest.skip("kicad-cli not installed")
 
 
 def _two_layer_severed():
@@ -200,7 +214,6 @@ class TestRegionIsolation:
 @pytest.mark.unit
 class TestWriteback:
     """Stitch vias survive writeback and re-parse with their GND net."""
-
     def test_stitch_vias_in_tree_and_reparsed(self):
         from dataclasses import replace
         from pathlib import Path
@@ -251,3 +264,30 @@ class TestWriteback:
         assert any(v.net_name == "GND" for v in reparsed.vias) or any(
             t.net_name == "GND" for t in reparsed.tracks
         )
+
+    @pytest.mark.dccf
+    def test_routed_tree_loads_in_kicad(self, cli, tmp_path):
+        """Routed output loads in KiCad (single-arg net nodes, fresh copper).
+
+        The emitter writes canonical-tolerant `(net "NAME")` nodes without
+        uuids; kicad-cli must load the file (violations are fine — only
+        load acceptance is pinned here).
+        """
+        from kicad_autorouter.board_model import board_model
+        from kicad_autorouter.routing.pipeline import RoutingParams, route_nets
+        from kicad_autorouter.sexpr import parse_file, to_sexpr
+        from kicad_autorouter.validate import validate_pcb
+
+        tree = parse_file(Path(__file__).parent / "fixtures" / "DCCF.sved.kicad_pcb")
+        model = board_model(tree)
+        small = [n for n, conns in model.nets.items() if 2 <= len(conns) <= 6]
+        net = sorted(small)[0]
+        res, _, _ = route_nets(
+            model, [net], set(),
+            params=RoutingParams(run_drc=False),
+            original_pcb_tree=tree,
+        )
+        assert res.nets_routed == 1
+        out = tmp_path / "routed.kicad_pcb"
+        out.write_text(to_sexpr(res.pcb_tree) + "\n", encoding="utf-8")
+        assert validate_pcb(out, cli=cli).loaded

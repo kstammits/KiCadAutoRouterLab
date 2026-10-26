@@ -388,3 +388,59 @@ def test_wall_penetration_blocks_converged():
     uuid, depth = prop.wall_violations[0]
     assert uuid == "uuid-a"
     assert depth > 0.1
+
+
+@pytest.mark.physics
+def test_depenetrated_flag_marks_post_loop_eject():
+    """stop_reason must distinguish pure settle from settled-then-pushed.
+
+    A budget-truncated run ends with overlap the penalty wall equilibrated
+    against; the post-loop eject then moves parts geometrically. The
+    proposal must say so (depenetrated=True) instead of letting "budget"
+    imply the pose is where dynamics left it. A clean run reports False.
+    """
+    model = _deep_pair()
+    prop = run_placement(model, PlacementParams(max_iterations=2, debug=True))
+    assert prop.stop_reason == "budget"
+    assert prop.depenetrated is True
+    assert len(prop.debug_trace.get("depen", [])) > 0
+
+    clean = _deep_pair(x1=60.0)
+    frozen = run_placement(
+        clean,
+        PlacementParams(max_iterations=10, convergence_eps_m=1e-15,
+                        friction_N=1e3),
+    )
+    assert frozen.stop_reason == "converged"
+    assert frozen.depenetrated is False
+
+
+@pytest.mark.physics
+def test_uuidless_footprint_is_counted_not_silent():
+    """Parts without a uuid are exempt from physics — surfaced, not silent.
+
+    Warn-and-count policy: the run proceeds (strict rejection could refuse
+    real boards with uuid-less graphical parts) but the proposal reports
+    exactly how many footprints the solver never saw.
+    """
+    from .helpers import make_fp
+    fa = make_fp("A", "uuid-a", 0.0, 0.0, ("N1", "N2"),
+                 footprint_id="test:R", hw=3.0, hh=2.0,
+                 pad_layers=("F.Cu",), pad_shape="circle")
+    ghost = make_fp("X", "", 50.0, 0.0, ("N9", "N10"),
+                    footprint_id="test:R", hw=3.0, hh=2.0,
+                    pad_layers=("F.Cu",), pad_shape="circle")
+    model = _board([fa, ghost])
+    prop = run_placement(model, PlacementParams(max_iterations=10))
+    assert prop.skipped_uuidless == 1
+    # The uuid-less part never moved and never entered deltas:
+    assert all(u for u in prop.deltas)
+    assert "uuid-a" in prop.deltas or prop.deltas == {}
+
+    clean = _deep_pair(x1=60.0)
+    frozen = run_placement(
+        clean,
+        PlacementParams(max_iterations=10, convergence_eps_m=1e-15,
+                        friction_N=1e3),
+    )
+    assert frozen.skipped_uuidless == 0

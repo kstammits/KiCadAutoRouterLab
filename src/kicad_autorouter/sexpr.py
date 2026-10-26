@@ -65,7 +65,9 @@ _DELIMS = set(' \t\r\n()"')
 
 
 def _unescape(ch: str) -> str:
-    return {"n": "\n", "t": "\t", "r": "\r"}.get(ch, ch)
+    # Known escapes decode to one char; anything else keeps its backslash
+    # so the serializer (which escapes backslashes) re-emits it identically.
+    return {"n": "\n", "t": "\t", "r": "\r", '"': '"', "\\": "\\"}.get(ch, "\\" + ch)
 
 
 def _coerce(word: str) -> Tuple[str, Scalar]:
@@ -76,12 +78,20 @@ def _coerce(word: str) -> Tuple[str, Scalar]:
     first = body[0]
     if first == "0" and len(body) > 1 and body[1] in "xX":
         hex_digits = body[2:].replace("_", "")
-        value = int(hex_digits, 16)
+        try:
+            value = int(hex_digits, 16)
+        except ValueError:
+            return "symbol", word
         return "number", -value if word[0] == "-" else value
     if first.isdigit():
-        if "." in body or "e" in body.lower():
-            return "number", float(word)
-        return "number", int(word)
+        try:
+            if "." in body or "e" in body.lower():
+                return "number", float(word)
+            return "number", int(word)
+        except ValueError:
+            # Digit-led but not a number (e.g. 3v3): keep as a bare
+            # symbol rather than crashing the whole parse.
+            return "symbol", word
     return "symbol", word
 
 
@@ -146,8 +156,8 @@ def tokenize(text: str) -> list[Token]:
             j += 1
         kind, value = _coerce(text[i:j])
         tokens.append(Token(kind, value, start_line, start_col))
-        i = j
         col += j - i
+        i = j
     return tokens
 
 

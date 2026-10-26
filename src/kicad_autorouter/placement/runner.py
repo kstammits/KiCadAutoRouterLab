@@ -84,6 +84,12 @@ class PlacementProposal:
     on the final iteration: near zero at true rest, large when the run stopped
     with pushes still unserved (e.g. a wedged overlap). Net — not per-pad:
     rigid bodies in contact carry canceling per-pad loads that never vanish.
+    depenetrated flags a post-loop geometric eject: the final pose moved
+    after the dynamics stopped, so "converged" means settled-then-pushed.
+    skipped_uuidless counts footprints (real + ghost) with no uuid: pad
+    collection, region assignment, deltas, and legality all key off uuid,
+    so these parts are exempt from physics. Normally zero; nonzero means
+    the board (or a writeback path) dropped uuids — surfaced, not silent.
     """
 
     deltas: Dict[str, Tuple[float, float, float]]
@@ -100,6 +106,14 @@ class PlacementProposal:
     frame_stride: int = 1
     stop_reason: str = "budget"
     residual_max_force_N: float = 0.0
+    # True when the post-loop de-penetration eject moved parts: the final
+    # pose is geometric ejection, not pure force settle, and
+    # residual_max_force_N was re-read at the ejected pose. A "converged"
+    # run with this set settled its dynamics, then got pushed — headless
+    # callers deciding "run again" should weigh it like attention, not rest.
+    depenetrated: bool = False
+    # Footprints (real + ghost) skipped for lack of a uuid. See class doc.
+    skipped_uuidless: int = 0
     # Legality fields (post-hoc geometric check on final positions)
     legality_is_legal: bool = True
     overlapping_pairs: Tuple[Tuple[str, str, float], ...] = ()
@@ -309,6 +323,8 @@ def _run_region_simulation(
     List[Dict[str, Dict[str, Tuple[float, float]]]],
     str,
     float,
+    dict,
+    bool,
 ]:
     """Run force-spring simulation for a single board region."""
     # Extract region bounds
@@ -317,7 +333,7 @@ def _run_region_simulation(
     # Filter pads for this region
     n_pads = len(region_pads)
     if n_pads == 0:
-        return {}, {}, 0, {}, [], [], "empty", 0.0, {}
+        return {}, {}, 0, {}, [], [], "empty", 0.0, {}, False
 
     # Build pad positions array
     pad_positions = np.zeros((n_pads, 2), dtype=np.float64)
@@ -380,7 +396,7 @@ def _run_region_simulation(
     pad_mass_kg = np.maximum(pad_mass_kg, _fallback_mass_kg)
 
     if not pad_movable.any():
-        return {}, {}, 0, {}, [], [], "empty", 0.0, {}
+        return {}, {}, 0, {}, [], [], "empty", 0.0, {}, False
 
     # Net attraction edges for this region.
     _ref_by_idx: Dict[int, str] = {}
@@ -1016,6 +1032,7 @@ def _run_region_simulation(
         deltas, footprint_forces, iteration + 1, footprint_components,
         _region_frames, _region_force_frames, stop_reason, residual_max_force_N,
         {"per_iteration": _dbg_iters or [], "depen": _dbg_depen or []},
+        _depen_moved,
     )
 
 
@@ -1081,6 +1098,13 @@ def run_placement(
     """
     _validate(params)
     start = time.perf_counter()
+    # Uuid-less footprints are exempt from physics everywhere downstream
+    # (pad collection, regions, deltas, legality all key off uuid): count
+    # them once so the proposal surfaces what the solver never saw.
+    skipped_uuidless = sum(
+        1 for fp in (*model.footprints, *model.ghost_footprints)
+        if not fp.uuid
+    )
     _eff_stride = max(1, int(frame_stride or 1))
     if record_frames and max_frames >= 1 and params.max_iterations > max_frames:
         _eff_stride = max(
@@ -1103,6 +1127,7 @@ def run_placement(
             forces={},
             stop_reason="empty",
             residual_max_force_N=0.0,
+            skipped_uuidless=skipped_uuidless,
             debug_trace={},
         )
 
@@ -1119,6 +1144,7 @@ def run_placement(
         all_residual = 0.0
         all_dbg = {"per_iteration": [], "depen": []}
         any_region = False
+        any_depen = False
 
         for region_idx, region in enumerate(model.board_regions):
             region_pad_indices = []
@@ -1151,7 +1177,7 @@ def run_placement(
             if region_pads:
                 (region_deltas, region_forces, region_iters, region_comps,
                  region_frames, region_force_frames, region_stop,
-                 region_residual, region_dbg) = _run_region_simulation(
+                 region_residual, region_dbg, region_depen) = _run_region_simulation(
                     region_idx, model.board_regions[region_idx],
                     region_pad_indices, region_pads, region_pad_to_fp_idx,
                     region_fp_uuid_to_pad_indices, region_global_pad_idx_to_local,
@@ -1159,6 +1185,7 @@ def run_placement(
                     record_frames, _eff_stride, extra_power_nets,
                 )
                 any_region = True
+                any_depen = any_depen or region_depen
                 if region_stop not in ("converged", "empty"):
                     all_stop = region_stop
                 all_residual = max(all_residual, region_residual)
@@ -1206,6 +1233,8 @@ def run_placement(
             frame_stride=_eff_stride if record_frames else 1,
             stop_reason=final_stop,
             residual_max_force_N=all_residual,
+            depenetrated=any_depen,
+            skipped_uuidless=skipped_uuidless,
             legality_is_legal=legality.is_legal,
             overlapping_pairs=legality.overlapping_pairs,
             wall_violations=legality.wall_violations,
@@ -1232,7 +1261,7 @@ def run_placement(
 
     (region_deltas, region_forces, region_iters, region_comps,
      region_frames, region_force_frames, region_stop,
-     region_residual, region_dbg) = _run_region_simulation(
+     region_residual, region_dbg, region_depen) = _run_region_simulation(
         0, virtual_region,
         region_pad_indices, region_pads, region_pad_to_fp_idx,
         region_fp_uuid_to_pad_indices, region_global_pad_idx_to_local,
@@ -1268,6 +1297,8 @@ def run_placement(
         frame_stride=_eff_stride if record_frames else 1,
         stop_reason=final_stop,
         residual_max_force_N=region_residual,
+        depenetrated=region_depen,
+        skipped_uuidless=skipped_uuidless,
         legality_is_legal=legality.is_legal,
         overlapping_pairs=legality.overlapping_pairs,
         wall_violations=legality.wall_violations,

@@ -91,6 +91,26 @@ No `fanout.py`, no `net_allowed_layers`, no `width_source`/solo in tree.
   Keep `fanout_gnd_vias` (default off) out of mode presets until
   validated.
 
+## Future work
+
+- **Split large modules**: `routing/pipeline.py`, `placement/runner.py`,
+  `ui/server.py`, and `board_model.py` have grown past comfortable review
+  size. Carve along existing seams (region simulation vs merge, job
+  handlers vs state, parse vs query helpers) with behavior-neutral moves,
+  suite green per split.
+- **Aesthetic row-alignment regime**: third placement pass that refines
+  eligible parts into straight rows (axis snap on position + coarse angle
+  quantization for opted-in refs), scored so legality still dominates —
+  rows never win over DRC-clean.
+- **THT-vs-opposite-SMD overlap**: re-audit courtyard accounting for a THT
+  part facing an SMD on the opposite layer — through-hole pins occupy both
+  sides, so opposite-side overlap may undercount. Needs a fixture pair +
+  legality case.
+- **Partial rip-up/reroute of massive nets (PWR)**: today a net routes
+  whole. Scope subnet selection (by footprint set, region rect, or
+  failed-segment list), route only that subset against existing copper as
+  obstacle, splice into the tree. Keeps big-rail iteration cheap.
+
 ## Documentation
 
 (none open — see `docs/tests.md` for the test map.)

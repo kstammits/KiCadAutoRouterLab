@@ -109,6 +109,21 @@ def _docs_title(text: str, fallback: str) -> str:
     return fallback
 
 
+def _safe_filename(name: str, suffix: str) -> str:
+    """Board-download filename that cannot break out of its header.
+
+    ``STATE.name`` arrives verbatim from ``/api/load?name=``; strip path
+    components and any quote/CR/LF (response splitting) plus other
+    RFC 6266-unsafe characters, keeping ``[A-Za-z0-9._-]``. Always ends
+    with ``suffix`` (a ``.kicad_pcb`` name).
+    """
+    stem = (name or "").rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    if stem.endswith(".kicad_pcb"):
+        stem = stem[: -len(".kicad_pcb")]
+    stem = "".join(c for c in stem if c.isalnum() or c in "._-").strip("._") or "board"
+    return stem[:128] + suffix
+
+
 def _docs_entry(name: str, path: Path) -> dict:
     try:
         size = path.stat().st_size
@@ -758,6 +773,13 @@ class BoardState:
             raise ValueError(
                 f"courtyard_layer must be F.CrtYd or F.Fab, got {courtyard_layer!r}"
             )
+        for name, val in (("x_mm", x_mm), ("y_mm", y_mm)):
+            if not isinstance(val, (int, float)) or not math.isfinite(val):
+                raise ValueError(f"{name} must be a finite number, got {val!r}")
+        if kind == "wall":
+            for name, val in (("w_mm", w_mm), ("h_mm", h_mm)):
+                if not isinstance(val, (int, float)) or not math.isfinite(val) or val <= 0:
+                    raise ValueError(f"{name} must be a positive finite number, got {val!r}")
         with self._lock:
             if self.model is None or self.pcb_tree is None:
                 raise ValueError("no board loaded")
@@ -787,7 +809,13 @@ class BoardState:
                     raise ValueError(f"size_mm must be numeric, got {size_mm!r}")
                 if not math.isfinite(size_f) or size_f <= 0:
                     raise ValueError(f"size_mm must be > 0, got {size_mm!r}")
-                fp = make_ghost_attractor(ref, x_mm, y_mm, target_ref, ka, size_mm=size_f)
+                try:
+                    ka_f = float(ka)
+                except (TypeError, ValueError):
+                    raise ValueError(f"ka must be numeric, got {ka!r}")
+                if not math.isfinite(ka_f):
+                    raise ValueError(f"ka must be finite, got {ka!r}")
+                fp = make_ghost_attractor(ref, x_mm, y_mm, target_ref, ka_f, size_mm=size_f)
                 library_id = "Ghost:Attractor"
             self.push_undo()
             self.pcb_tree = add_ghost_to_tree(
@@ -938,7 +966,7 @@ def _run_routing_job(job_id: str) -> None:
 
     try:
         route_params = RoutingParams.from_dict(params_dict)
-    except ValueError as exc:
+    except (ValueError, TypeError) as exc:
         with _JOBS_LOCK:
             job["state"] = "failed"
             job["error"] = f"bad params: {exc}"
@@ -974,6 +1002,11 @@ def _run_routing_job(job_id: str) -> None:
             job["finished"] = time.perf_counter()
         _ROUTING_JOB_LOCK.release()
         return
+    except BaseException:
+        # Never wedge the single-flight lock (KeyboardInterrupt/SystemExit
+        # in the worker must not 409-block the server forever).
+        _ROUTING_JOB_LOCK.release()
+        raise
 
     # Apply to shared state (same writeback as the sync endpoint: rebuild the
     # model from the updated tree so /api/board.svg and /api/nets see copper).
@@ -1192,6 +1225,8 @@ def proposal_to_json(proposal, include_frames=True) -> dict:
         "params": proposal.params,
         "stop_reason": getattr(proposal, "stop_reason", "budget"),
         "residual_max_force_N": r5(getattr(proposal, "residual_max_force_N", 0.0)),
+        "depenetrated": getattr(proposal, "depenetrated", False),
+        "skipped_uuidless": getattr(proposal, "skipped_uuidless", 0),
         "legality_is_legal": getattr(proposal, "legality_is_legal", True),
         "overlapping_pairs": getattr(proposal, "overlapping_pairs", []),
         "wall_violations": getattr(proposal, "wall_violations", []),
@@ -1346,6 +1381,8 @@ class Handler(BaseHTTPRequestHandler):
                         force_components=merged_comps,
                         stop_reason=getattr(proposal, "stop_reason", "budget"),
                         residual_max_force_N=getattr(proposal, "residual_max_force_N", 0.0),
+                        depenetrated=getattr(proposal, "depenetrated", False),
+                        skipped_uuidless=getattr(proposal, "skipped_uuidless", 0),
                     )
             
             # DRC overlay: draw cached violations; dim them when the cache is
@@ -1433,13 +1470,10 @@ class Handler(BaseHTTPRequestHandler):
                 l not in ("F.Cu", "B.Cu") for l in layers
             ):
                 tree, _ = collapse_to_two_layer(tree)
-                suffix, fallback = "-2layer.kicad_pcb", "-2layer.kicad_pcb"
+                suffix = "-2layer.kicad_pcb"
             else:
-                suffix, fallback = "-modified.kicad_pcb", "-modified.kicad_pcb"
-            if STATE.name.endswith(".kicad_pcb"):
-                filename = STATE.name.replace(".kicad_pcb", suffix)
-            else:
-                filename = (STATE.name or "board") + fallback
+                suffix = "-modified.kicad_pcb"
+            filename = _safe_filename(STATE.name, suffix)
             content = to_sexpr(tree) + "\n"
             self.send_response(200)
             self.send_header("Content-Type", "application/octet-stream")
@@ -1787,7 +1821,7 @@ class Handler(BaseHTTPRequestHandler):
             path_q = (qs.get("path") or [None])[0]
             if path_q:
                 full = (REPO_ROOT / path_q).resolve()
-                if not str(full).startswith(str(REPO_ROOT)) or not full.is_file():
+                if not full.is_relative_to(REPO_ROOT.resolve()) or not full.is_file():
                     self._send(400, b"bad path", "text/plain")
                     return
                 data = full.read_bytes()
@@ -1795,6 +1829,9 @@ class Handler(BaseHTTPRequestHandler):
                 length = int(self.headers.get("Content-Length") or 0)
                 if length <= 0:
                     self._send(400, b"empty body", "text/plain")
+                    return
+                if length > 32 * 1024 * 1024:
+                    self._send(400, b"board too large", "text/plain")
                     return
                 data = self.rfile.read(length)
             try:
@@ -1953,6 +1990,8 @@ class Handler(BaseHTTPRequestHandler):
                 "frame_stride": getattr(proposal, "frame_stride", 1),
                 "stop_reason": getattr(proposal, "stop_reason", "budget"),
                 "residual_max_force_N": getattr(proposal, "residual_max_force_N", 0.0),
+                "depenetrated": getattr(proposal, "depenetrated", False),
+                "skipped_uuidless": getattr(proposal, "skipped_uuidless", 0),
                 "legality_is_legal": getattr(proposal, "legality_is_legal", True),
                 "overlapping_pairs": getattr(proposal, "overlapping_pairs", []),
                 "wall_violations": getattr(proposal, "wall_violations", []),
@@ -1985,25 +2024,21 @@ class Handler(BaseHTTPRequestHandler):
 
             # Use parameters from request if provided, else load from file.
             # SI v2 set (newtons, meters, seconds); max_iterations=0 makes
-            # this a static force probe.
+            # this a static force probe. Merged dict goes through from_dict
+            # so client values face the same validation as /api/placement/params.
             base_params = load_params()
-            params = PlacementParams(
-                repulsion_k_N_m2=req.get("repulsion_k_N_m2", base_params.repulsion_k_N_m2),
-                attraction_k_N=req.get("attraction_k_N", base_params.attraction_k_N),
-                max_iterations=0,
-                convergence_eps_m=req.get("convergence_eps_m", base_params.convergence_eps_m),
-                wall_k_N=req.get("wall_k_N", base_params.wall_k_N),
-                wall_halo_m=req.get("wall_halo_m", base_params.wall_halo_m),
-                wall_exponent=req.get("wall_exponent", base_params.wall_exponent),
-                ghost_k_N=req.get("ghost_k_N", base_params.ghost_k_N),
-                damping_Ns_m=req.get("damping_Ns_m", base_params.damping_Ns_m),
-                friction_N=req.get("friction_N", base_params.friction_N),
-                dt_s=req.get("dt_s", base_params.dt_s),
-                vmax_m_s=req.get("vmax_m_s", base_params.vmax_m_s),
-                power_attraction_scale=req.get("power_attraction_scale", base_params.power_attraction_scale),
-                decap_boost=req.get("decap_boost", base_params.decap_boost),
-                include_power_nets=req.get("include_power_nets", base_params.include_power_nets),
-            )
+            if not isinstance(req, dict):
+                self._send(400, b"params must be an object", "text/plain")
+                return
+            merged = base_params.to_dict()
+            merged.update({k: v for k, v in req.items()
+                           if k != "max_iterations"})
+            try:
+                params = replace(
+                    PlacementParams.from_dict(merged), max_iterations=0)
+            except (ValueError, TypeError) as exc:
+                self._send(400, f"bad placement params: {exc}".encode(), "text/plain")
+                return
 
             # If movable_uuids not provided, compute as all unlocked except pinned
             if movable_uuids is None:
@@ -2521,7 +2556,14 @@ class Handler(BaseHTTPRequestHandler):
             except json.JSONDecodeError:
                 self._send(400, b"invalid JSON", "text/plain")
                 return
-            params = RoutingParams.from_dict(req)
+            if not isinstance(req, dict):
+                self._send(400, b"params must be an object", "text/plain")
+                return
+            try:
+                params = RoutingParams.from_dict(req)
+            except (ValueError, TypeError) as exc:
+                self._send(400, f"bad routing params: {exc}".encode(), "text/plain")
+                return
             save_routing_params(params)
             self._send(200, json.dumps({"ok": True, "params": params.to_dict()}).encode(), "application/json")
             return
@@ -2546,6 +2588,22 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(net_names, list) or not net_names:
                 self._send(400, b"net_names required (non-empty list)", "text/plain")
                 return
+            mode_info = STATE.mode_status()
+            params_dict = req.get("params", {})
+            if isinstance(params_dict, dict) and mode_info["mode"] is not None:
+                params_dict = apply_mode(params_dict, mode_info["mode"])
+            if not isinstance(params_dict, dict):
+                self._send(400, b"params must be an object", "text/plain")
+                return
+            try:
+                RoutingParams.from_dict(params_dict)
+            except (ValueError, TypeError) as exc:
+                self._send(400, f"bad routing params: {exc}".encode(), "text/plain")
+                return
+            clean_names = [n for n in net_names if isinstance(n, str) and n]
+            if not clean_names:
+                self._send(400, b"net_names required (non-empty list)", "text/plain")
+                return
             if not _ROUTING_JOB_LOCK.acquire(blocking=False):
                 self._send(409, b"another routing job is running", "text/plain")
                 return
@@ -2559,7 +2617,7 @@ class Handler(BaseHTTPRequestHandler):
                 _JOBS[job_id] = {
                     "job_id": job_id,
                     "state": "queued",
-                    "net_names": [n for n in net_names if isinstance(n, str) and n],
+                    "net_names": clean_names,
                     "params_dict": params_dict,
                     "mode": mode_info["mode"],
                     "mode_warning": mode_info["warning"],
@@ -2579,7 +2637,13 @@ class Handler(BaseHTTPRequestHandler):
                     "error": None,
                 }
             worker = threading.Thread(target=_run_routing_job, args=(job_id,), daemon=True)
-            worker.start()
+            try:
+                worker.start()
+            except Exception:
+                with _JOBS_LOCK:
+                    _JOBS.pop(job_id, None)
+                _ROUTING_JOB_LOCK.release()
+                raise
             self._send(200, json.dumps({"ok": True, "job_id": job_id, "state": "queued"}).encode(), "application/json")
             return
 
@@ -2612,7 +2676,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, b"invalid JSON", "text/plain")
                 return
             net_names = req.get("net_names", [])
-            if not net_names:
+            if not isinstance(net_names, list) or not net_names:
                 self._send(400, b"net_names required (non-empty list)", "text/plain")
                 return
             # Load routing params from request or file, overlaid with the
@@ -2621,7 +2685,14 @@ class Handler(BaseHTTPRequestHandler):
             mode_info = STATE.mode_status()
             if isinstance(route_params_dict, dict) and mode_info["mode"] is not None:
                 route_params_dict = apply_mode(route_params_dict, mode_info["mode"])
-            route_params = RoutingParams.from_dict(route_params_dict)
+            if not isinstance(route_params_dict, dict):
+                self._send(400, b"params must be an object", "text/plain")
+                return
+            try:
+                route_params = RoutingParams.from_dict(route_params_dict)
+            except (ValueError, TypeError) as exc:
+                self._send(400, f"bad routing params: {exc}".encode(), "text/plain")
+                return
             protected_nets = STATE.get_protected_nets()
             
             try:

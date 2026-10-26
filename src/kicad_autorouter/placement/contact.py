@@ -47,6 +47,8 @@ def _classify_rectangle(verts: np.ndarray) -> Optional[dict]:
     center = corners.mean(axis=0)
     edges = np.roll(corners, -1, axis=0) - corners
     edge_lengths = np.linalg.norm(edges, axis=1)
+    if np.any(edge_lengths <= 0):
+        return None  # degenerate corner (repeated vertex): not a rectangle
 
     def group_lengths(lengths, rel_tol=1e-3):
         groups = []

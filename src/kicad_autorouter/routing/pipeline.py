@@ -145,9 +145,78 @@ class RoutingParams:
             "corridor", "refill_zones", "allowed_layers",
         }
         filtered = {k: v for k, v in d.items() if k in valid_keys}
-        if filtered.get("allowed_layers") is not None:
+        if isinstance(filtered.get("allowed_layers"), (list, tuple)):
             filtered["allowed_layers"] = list(filtered["allowed_layers"])
-        return cls(**filtered)
+        # Anything else (e.g. a bare string, which list() would shred
+        # into characters) is left for _validate_routing_params to reject.
+        params = cls(**filtered)
+        _validate_routing_params(params)
+        return params
+
+
+def _validate_routing_params(params: "RoutingParams") -> None:
+    """Reject corrupt routing params (unvalidated client input otherwise
+    reaches grid math as zero-divisors or DoS-scale budgets)."""
+    import math
+
+    nonneg = (
+        "margin_mm", "via_cost_mm", "track_width_mm", "power_width_mm",
+        "clearance_mm", "via_size_mm", "via_drill_mm", "heuristic_weight",
+        "stitch_bridge_max_mm", "stitch_bridge_width_mm",
+        "pour_severance_weight", "fanout_margin_mm",
+    )
+    for name in nonneg:
+        value = getattr(params, name)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"{name} must be a number")
+        if not math.isfinite(value):
+            raise ValueError(f"{name} must be finite")
+        if value < 0:
+            raise ValueError(f"{name} must be >= 0")
+    if (
+        isinstance(params.grid_resolution_mm, bool)
+        or not isinstance(params.grid_resolution_mm, (int, float))
+        or not math.isfinite(params.grid_resolution_mm)
+        or params.grid_resolution_mm <= 0
+    ):
+        raise ValueError("grid_resolution_mm must be a positive finite number")
+    for name in (
+        "max_attempts_per_net", "max_expansions", "stitch_vias_max",
+        "stitch_bridges_max", "window_margin_cells", "window_retries",
+    ):
+        value = getattr(params, name)
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"{name} must be an integer")
+        if value < 0:
+            raise ValueError(f"{name} must be >= 0")
+    if params.max_expansions > 100_000_000:
+        raise ValueError("max_expansions is capped at 100M per search (single-flight server)")
+    if params.stitch_vias_max > 100_000 or params.stitch_bridges_max > 100_000:
+        raise ValueError("stitch budgets are capped at 100k")
+    if (
+        not isinstance(params.window_growth, (int, float))
+        or isinstance(params.window_growth, bool)
+        or not math.isfinite(params.window_growth)
+        or params.window_growth <= 0
+    ):
+        raise ValueError("window_growth must be a positive finite number")
+    for name in (
+        "run_drc", "debug", "stitch_gnd_vias", "strip_gnd_blockers",
+        "corridor", "refill_zones",
+    ):
+        if not isinstance(getattr(params, name), bool):
+            raise ValueError(f"{name} must be a boolean")
+    if not isinstance(params.net_widths, dict) or any(
+        not isinstance(v, (int, float)) or isinstance(v, bool)
+        or not math.isfinite(v) or v < 0
+        for v in params.net_widths.values()
+    ):
+        raise ValueError("net_widths must map net names to non-negative finite widths")
+    if params.allowed_layers is not None and (
+        not isinstance(params.allowed_layers, (list, tuple))
+        or any(not isinstance(layer, str) for layer in params.allowed_layers)
+    ):
+        raise ValueError("allowed_layers must be null or a list of layer names")
 
 
     # Upper bound on total routing cells (all layers) per route_nets call.

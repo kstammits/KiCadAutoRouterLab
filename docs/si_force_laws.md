@@ -166,7 +166,10 @@ forces below the settle scale
 `stop_reason` reports `converged` (quiet AND weak), `stalled` (no
 window-mean progress with residual forces), `budget` (max_iterations with
 residual force), or `empty`. Headless callers must treat `stalled` and
-`budget` as needs-attention, never as settled.
+`budget` as needs-attention, never as settled. `depenetrated` flags a
+post-loop geometric eject: the final pose moved after dynamics stopped,
+so `converged` + `depenetrated` means settled-then-pushed, and the
+residual was re-read at the ejected pose.
 
 Stall detection compares the mean pose over each `stall_window` against the
 previous window mean. A limit cycle averages out; real transit moves the

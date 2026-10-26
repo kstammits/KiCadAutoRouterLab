@@ -122,6 +122,25 @@ def test_collapse_drops_inner_arcs_annotations_and_top_fills():
     assert "net 0" in text
 
 
+def test_collapse_keeps_layer_less_nodes():
+    # Unknown layer is not inner copper: layer-less tracks/arcs survive
+    # (same keep-behavior as fills/zones), layer-less vias pass through.
+    tree = parse_sexpr(
+        "(kicad_pcb"
+        ' (layers (0 "F.Cu" signal) (1 "In1.Cu" signal) (3 "B.Cu" signal))'
+        ' (net 0 "")'
+        ' (segment (start 0 0) (end 1 0) (width 0.25) (net 0) (uuid "s-nolayer"))'
+        ' (arc (start 0 0) (mid 1 1) (end 2 0) (width 0.25) (net 0) (uuid "a-nolayer"))'
+        ' (via (at 5 5) (size 0.8) (drill 0.4) (net 0) (uuid "v-nolayers")))'
+    )
+    new_tree, report = collapse_to_two_layer(tree)
+    text = to_sexpr(new_tree)
+    assert "s-nolayer" in text
+    assert "a-nolayer" in text
+    assert "v-nolayers" in text
+    assert report["tracks_removed"] == 0
+
+
 def test_collapse_idempotent():
     once, report1 = collapse_to_two_layer(parse_sexpr(FOUR_LAYER))
     twice, report2 = collapse_to_two_layer(once)

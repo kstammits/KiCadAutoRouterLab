@@ -181,6 +181,21 @@ def test_preview_and_collapse_download(base):
 
 @pytest.mark.server
 @pytest.mark.minimal
+def test_download_filename_injection_neutralized(base):
+    import urllib.parse
+    evil = 'x";\r\nInjected: yes'
+    _load(base, name=urllib.parse.quote(evil, safe=""), data=(
+        (FIXTURES / "minimal.kicad_pcb").read_bytes()))
+    status, headers, _ = _get(f"{base}/api/board/download")
+    assert status == 200
+    disp = headers["Content-Disposition"]
+    assert "\r" not in disp and "\n" not in disp
+    assert disp.count('"') == 2  # exactly the wrapping pair
+    assert disp.endswith('.kicad_pcb"')
+
+
+@pytest.mark.server
+@pytest.mark.minimal
 def test_mode_response_carries_owned_keys(base):
     _load(base)
     _, _, body = _get(f"{base}/api/mode")

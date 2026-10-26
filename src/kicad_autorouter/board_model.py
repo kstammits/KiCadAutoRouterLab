@@ -978,6 +978,7 @@ def sample_quadratic_bezier(
     Legacy helper (kept for compatibility); arc code now uses
     :func:`sample_circular_arc` since KiCad stores three points ON the arc.
     """
+    n = max(1, n)
     for i in range(n + 1):
         t = i / n
         u = 1 - t
@@ -1135,6 +1136,8 @@ def _point_in_polygon(point: Point, polygon: List[Point]) -> bool:
 
 def _polygon_bbox(polygon: List[Point]) -> Tuple[float, float, float, float]:
     """Compute bounding box of polygon: (min_x, max_x, min_y, max_y)."""
+    if not polygon:
+        raise ValueError("empty polygon has no bounding box")
     xs = [p.x_mm for p in polygon]
     ys = [p.y_mm for p in polygon]
     return (min(xs), max(xs), min(ys), max(ys))

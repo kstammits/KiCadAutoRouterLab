@@ -186,8 +186,11 @@ def _validate(params: PlacementParams) -> None:
         raise ValueError("wall_exponent must be >= 1.0 (p < 1 is singular at the halo edge)")
     if not (0.0 <= params.momentum_alpha <= 1.0):
         raise ValueError("momentum_alpha must be in [0.0, 1.0]")
-    if params.contact_tangent_gamma < 0.0:
-        raise ValueError("contact_tangent_gamma must be >= 0.0")
+    gamma = params.contact_tangent_gamma
+    if isinstance(gamma, bool) or not isinstance(gamma, (int, float)):
+        raise ValueError("contact_tangent_gamma must be a number")
+    if not math.isfinite(gamma) or gamma < 0.0:
+        raise ValueError("contact_tangent_gamma must be finite and >= 0.0")
     if params.decap_boost < 0:
         raise ValueError("decap_boost must be >= 0")
     if not isinstance(params.include_power_nets, bool):
