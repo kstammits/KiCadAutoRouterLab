@@ -1,9 +1,22 @@
+// Fail-safe DOM helpers: a missing/renamed id warns instead of throwing at
+// load and killing the whole script (script runs after the DOM, end of body).
+function el(id) {
+  const n = document.getElementById(id);
+  if (!n) console.warn(`missing #${id}`);
+  return n;
+}
+function on(id, evt, fn, opts) {
+  const n = el(id);
+  if (n) n.addEventListener(evt, fn, opts);
+  return n;
+}
 // Side panel collapse/expand
-const sidePanel = document.getElementById("side-panel");
-const sidePanelToggle = document.getElementById("side-panel-toggle");
+const sidePanel = el("side-panel");
+const sidePanelToggle = el("side-panel-toggle");
 let sidePanelCollapsed = false;
-sidePanelToggle.addEventListener("click", () => {
+sidePanelToggle?.addEventListener("click", () => {
   sidePanelCollapsed = !sidePanelCollapsed;
+  if (!sidePanel) return;
   if (sidePanelCollapsed) {
     sidePanel.dataset.width = sidePanel.style.width;
     sidePanel.style.width = "";
@@ -17,11 +30,12 @@ sidePanelToggle.addEventListener("click", () => {
 // Left sidebar (parts list) collapse/expand — same pattern as the side
 // panel: shrinking to a slim strip during routing work, restoring the
 // (possibly resized) width on expand.
-const partsSidebar = document.getElementById("sidebar");
-const partsSidebarToggle = document.getElementById("sidebar-toggle");
+const partsSidebar = el("sidebar");
+const partsSidebarToggle = el("sidebar-toggle");
 let partsSidebarCollapsed = false;
-partsSidebarToggle.addEventListener("click", () => {
+partsSidebarToggle?.addEventListener("click", () => {
   partsSidebarCollapsed = !partsSidebarCollapsed;
+  if (!partsSidebar) return;
   if (partsSidebarCollapsed) {
     partsSidebar.dataset.width = partsSidebar.style.width;
     partsSidebar.style.width = "";
@@ -56,8 +70,12 @@ async function uploadFiles(files) {
   
   // Upload: PCB first, then SCH for each pair
   for (const [stem, { pcb, sch }] of byStem) {
-    if (pcb) await uploadFile(pcb);
-    if (sch) await uploadFile(sch);
+    try {
+      if (pcb) await uploadFile(pcb);
+      if (sch) await uploadFile(sch);
+    } catch (err) {
+      toast(`upload ${stem} failed: ${err.message}`);
+    }
   }
   // Any unpaired files (shouldn't happen with current grouping, but just in case)
   const unpaired = fileArray.filter(f => {
@@ -65,28 +83,42 @@ async function uploadFiles(files) {
     const entry = byStem.get(stem);
     return !entry || (!entry.pcb && !entry.sch);
   });
-  for (const f of unpaired) await uploadFile(f);
+  for (const f of unpaired) {
+    try {
+      await uploadFile(f);
+    } catch (err) {
+      toast(`upload ${f.name} failed: ${err.message}`);
+    }
+  }
 }
 
-const dropZone = document.getElementById("drop-zone");
-dropZone.addEventListener("dragover", e => { e.preventDefault(); dropZone.classList.add("drag-over"); });
-dropZone.addEventListener("dragleave", () => { dropZone.classList.remove("drag-over"); });
-dropZone.addEventListener("drop", async e => {
+const dropZone = el("drop-zone");
+dropZone?.addEventListener("dragover", e => { e.preventDefault(); dropZone.classList.add("drag-over"); });
+dropZone?.addEventListener("dragleave", () => { dropZone.classList.remove("drag-over"); });
+dropZone?.addEventListener("drop", async e => {
   e.preventDefault();
   dropZone.classList.remove("drag-over");
-  await uploadFiles(e.dataTransfer.files);
+  try {
+    await uploadFiles(e.dataTransfer.files);
+  } catch (err) {
+    toast(`drop upload failed: ${err.message}`);
+  }
 });
 
 // Prevent browser from opening dropped files globally (use capture to intercept early)
 document.addEventListener("dragover", e => e.preventDefault(), { capture: true });
 document.addEventListener("drop", e => e.preventDefault(), { capture: true });
 
-const loadInput = document.getElementById("load-input");
+const loadInput = el("load-input");
 document.querySelectorAll("#load-btn, #load-btn-drop").forEach(btn => {
-  btn.addEventListener("click", () => loadInput.click());
+  btn.addEventListener("click", () => loadInput?.click());
 });
-loadInput.addEventListener("change", async () => {
-  await uploadFiles(loadInput.files);
+loadInput?.addEventListener("change", async () => {
+  try {
+    await uploadFiles(loadInput.files);
+  } catch (err) {
+    toast(`upload failed: ${err.message}`);
+  }
   loadInput.value = "";
 });
 
@@ -193,11 +225,11 @@ function buildParamRow(def, desc) {
   return el;
 }
 
-const paramsGrid = document.getElementById("params-grid");
+const paramsGrid = el("params-grid");
 for (const def of PARAM_DEFS) {
   paramsGrid.appendChild(buildParamRow(def, PARAM_DESC[def.key] || ""));
 }
-const advancedGrid = document.getElementById("advanced-params-grid");
+const advancedGrid = el("advanced-params-grid");
 for (const def of ADVANCED_PARAM_DEFS) {
   advancedGrid.appendChild(buildParamRow(def, PARAM_DESC[def.key] || ""));
 }
@@ -310,18 +342,18 @@ async function applyRegimePreset(name) {
     body: JSON.stringify(preset),
   });
   await loadParams();
-  if (typeof diagEl !== "undefined" && diagEl) {
-    diagEl.textContent = `${name} preset applied (persists on next run)`;
+  if (diagEl) {
+    if (diagEl) diagEl.textContent = `${name} preset applied (persists on next run)`;
   }
 }
 
-document.getElementById("regime-cluster-btn").addEventListener("click", async () => {
+on("regime-cluster-btn", "click", async () => {
   try { await applyRegimePreset("cluster"); }
-  catch (err) { diagEl.textContent = `preset failed: ${err.message}`; }
+  catch (err) { if (diagEl) diagEl.textContent = `preset failed: ${err.message}`; }
 });
-document.getElementById("regime-legalize-btn").addEventListener("click", async () => {
+on("regime-legalize-btn", "click", async () => {
   try { await applyRegimePreset("legalize"); }
-  catch (err) { diagEl.textContent = `preset failed: ${err.message}`; }
+  catch (err) { if (diagEl) diagEl.textContent = `preset failed: ${err.message}`; }
 });
 
 // Bookmarkable parameter presets via URL query params. Keys are the
@@ -357,14 +389,14 @@ async function applyUrlPreset() {
     body: JSON.stringify(preset),
   });
   if (!res.ok) {
-    if (typeof diagEl !== "undefined" && diagEl) {
-      diagEl.textContent = `URL preset rejected: ${await res.text()}`;
+    if (diagEl) {
+      if (diagEl) diagEl.textContent = `URL preset rejected: ${await res.text()}`;
     }
     return;
   }
   await loadParams();
-  if (typeof diagEl !== "undefined" && diagEl) {
-    diagEl.textContent = `${n} param${n === 1 ? "" : "s"} applied from URL (persists on next run)`;
+  if (diagEl) {
+    if (diagEl) diagEl.textContent = `${n} param${n === 1 ? "" : "s"} applied from URL (persists on next run)`;
   }
 }
 
@@ -390,25 +422,25 @@ async function copyPresetLink() {
     document.execCommand("copy");
     ta.remove();
   }
-  if (typeof diagEl !== "undefined" && diagEl) {
-    diagEl.textContent = "preset link copied to clipboard";
+  if (diagEl) {
+    if (diagEl) diagEl.textContent = "preset link copied to clipboard";
   }
 }
 
-document.getElementById("copy-link-btn").addEventListener("click", async () => {
+on("copy-link-btn", "click", async () => {
   try { await copyPresetLink(); }
-  catch (err) { diagEl.textContent = `copy link failed: ${err.message}`; }
+  catch (err) { if (diagEl) diagEl.textContent = `copy link failed: ${err.message}`; }
 });
 
-const boardEl = document.getElementById("board");
-const nameEl = document.getElementById("board-name");
-const viewport = document.getElementById("board-viewport");
-const zoomInfo = document.getElementById("zoom-info");
-const schChip = document.getElementById("board-sch");
-const overlayToggle = document.getElementById("overlay-toggle");
-const forcesToggle = document.getElementById("forces-toggle");
-const drcToggle = document.getElementById("drc-toggle");
-const layerTogglesEl = document.getElementById("layer-toggles");
+const boardEl = el("board");
+const nameEl = el("board-name");
+const viewport = el("board-viewport");
+const zoomInfo = el("zoom-info");
+const schChip = el("board-sch");
+const overlayToggle = el("overlay-toggle");
+const forcesToggle = el("forces-toggle");
+const drcToggle = el("drc-toggle");
+const layerTogglesEl = el("layer-toggles");
 
 function layerToggleInputs() {
   return [...(layerTogglesEl?.querySelectorAll('input[data-layer]') ?? [])];
@@ -427,9 +459,10 @@ function renderLayerToggles(copperLayers) {
   // choices for layers that persist across board versions. Client-only:
   // visibility is display:none on the already-injected SVG (no refetch).
   const layers = (Array.isArray(copperLayers) && copperLayers.length) ? copperLayers : ["F.Cu", "B.Cu"];
+  if (!layerTogglesEl) return;
   const prev = layerToggleState();
   const current = layerToggleInputs().map(i => i.dataset.layer);
-  if (current.length === layers.length && current.every((l, i) => l === layers[i]) && document.getElementById("layer-solo-all")) return;
+  if (current.length === layers.length && current.every((l, i) => l === layers[i]) && el("layer-solo-all")) return;
   layerTogglesEl.innerHTML = "";
   for (const layer of layers) {
     const label = document.createElement("label");
@@ -479,7 +512,7 @@ function toggleSoloLayer(layer) {
 // Copper legend mirroring svg_render.py: F red solid, B green "3 2", inners
 // cycle teal/violet/amber/blue with dashes "5 2 / 2 2 / 7 2 2 2 / 4 1".
 function renderLayerLegend(layers) {
-  let legend = document.getElementById("layer-legend");
+  let legend = el("layer-legend");
   if (!legend) {
     legend = document.createElement("span");
     legend.id = "layer-legend";
@@ -497,22 +530,23 @@ function renderLayerLegend(layers) {
     else { const p = inners.indexOf(l); color = INNER_FILLS[p % INNER_FILLS.length]; dash = INNER_DASHES[p % INNER_DASHES.length]; }
     const border = dash === "solid" ? `border-top:2px solid ${color};` : `border-top:2px dashed ${color};`;
     const soloMark = (soloLayer === l) ? " ★" : "";
-    return `<span title="${l} ${dash}${soloMark}"><i style="display:inline-block;width:1.2rem;${border}"></i> ${l}${soloMark}</span>`;
+    const safe = escapeHtml(l);
+    return `<span title="${safe} ${dash}${soloMark}"><i style="display:inline-block;width:1.2rem;${border}"></i> ${safe}${soloMark}</span>`;
   }).join("");
 }
-const zonesToggle = document.getElementById("zones-toggle");
-const zonesFillToggle = document.getElementById("zones-fill-toggle");
-const fitBtn = document.getElementById("fit-btn");
-const diagEl = document.getElementById("diag");
+const zonesToggle = el("zones-toggle");
+const zonesFillToggle = el("zones-fill-toggle");
+const fitBtn = el("fit-btn");
+const diagEl = el("diag");
 // Hot-button/diag lookups cached once (script runs after the DOM, as above).
-const undoBtn = undoBtn;
-const stepSelectedBtn = stepSelectedBtn;
-const acceptBtn = acceptBtn;
-const routeDiag = routeDiag;
-const ghostDiag = ghostDiag;
-const docsSelect = docsSelect;
-const bridgesDiag = bridgesDiag;
-const inletsDiag = inletsDiag;
+const undoBtn = el("undo-btn");
+const stepSelectedBtn = el("step-selected-btn");
+const acceptBtn = el("accept-btn");
+const routeDiag = el("route-diag");
+const ghostDiag = el("ghost-diag");
+const docsSelect = el("docs-select");
+const bridgesDiag = el("bridges-diag");
+const inletsDiag = el("inlets-diag");
 
 let lastVersion = 0;
 let viewBox = null; // [minX, minY, width, height]
@@ -539,7 +573,7 @@ function updateZoomInfo() {
 }
 
 function applyViewBox() {
-  const svg = viewport.querySelector("svg");
+  const svg = viewport?.querySelector("svg");
   if (!svg || !viewBox) return;
   svg.setAttribute("viewBox", viewBox.join(" "));
   // Close-zoom rail labels: show .pad-net-label text only when zoomed in
@@ -549,7 +583,7 @@ function applyViewBox() {
 }
 
 function fitToView() {
-  const svg = viewport.querySelector("svg");
+  const svg = viewport?.querySelector("svg");
   if (!svg) return;
   // Read the original viewBox from the SVG
   const vbAttr = svg.getAttribute("viewBox");
@@ -567,12 +601,13 @@ let costGridOverlay = false;
 function showCostGridDebug(debug) {
   costGridDebug = debug;
   // Static checkbox in the top bar (hidden until debug data arrives).
-  const label = document.getElementById("cost-grid-label");
+  const label = el("cost-grid-label");
   if (label) label.hidden = false;
   renderCostGridOverlay();
 }
 
 function renderCostGridOverlay() {
+  if (!viewport) return;
   if (!costGridDebug || !costGridOverlay) {
     // Remove existing overlay
     const existing = viewport.querySelector(".cost-grid-overlay");
@@ -584,7 +619,7 @@ function renderCostGridOverlay() {
   const existing = viewport.querySelector(".cost-grid-overlay");
   if (existing) existing.remove();
   
-  const svg = viewport.querySelector("svg");
+  const svg = viewport?.querySelector("svg");
   if (!svg) return;
   
   // Get SVG viewBox for coordinate mapping
@@ -666,7 +701,7 @@ async function fetchAndInjectSVG(version) {
   // Also: force vectors must be rendered INSIDE footprint groups so they move
   // with the parts. Server renders forces at absolute coords; we need forces=0
   // and let the client inject them into the footprint groups.
-  if (typeof motion !== "undefined" && motion.frames.length) {
+  if (motion.frames.length) {
     src = src.replace("overlay=1", "overlay=0");
     src = src.replace("forces=1", "forces=0");
   }
@@ -678,16 +713,17 @@ async function fetchAndInjectSVG(version) {
     toast(`board refresh failed: ${err.message}`);
     return;
   }
-  viewport.querySelectorAll("svg").forEach(el => el.remove());
+  if (!viewport) return;
+  viewport.querySelectorAll("svg").forEach(n => n.remove());
   const tpl = document.createElement("template");
   tpl.innerHTML = svgText;
   for (const node of tpl.content.childNodes) viewport.appendChild(node);
-  const svg = viewport.querySelector("svg");
+  const svg = viewport?.querySelector("svg");
   // Single force layer while motion is active: the server base SVG must not
   // contribute absolute-coordinate static forces (they would stack under the
   // per-footprint client vectors and flicker). Normally forces=0 above already
   // excludes them; strip defensively for raced/cached injects.
-  if (svg && typeof motion !== "undefined" && motion.frames.length) {
+  if (svg && motion.frames.length) {
     svg.querySelectorAll('g[class^="forces-"]').forEach(el => el.remove());
   }
   if (svg && viewBox === null) {
@@ -703,14 +739,14 @@ async function fetchAndInjectSVG(version) {
   applyLayerVisibility();
   highlightSelectedNets();
   renderGndIslandsOverlay();
-  if (typeof motion !== "undefined" && motion.frames.length) applyMotionFrame(motion.idx);
+  if (motion.frames.length) applyMotionFrame(motion.idx);
 }
 
 function setConnected(ok) {
-  const badge = document.getElementById("conn-badge");
+  const badge = el("conn-badge");
   if (badge) badge.hidden = ok;
-  if (!ok && typeof diagEl !== "undefined" && diagEl) {
-    diagEl.textContent = "disconnected — server unreachable (retrying)";
+  if (!ok && diagEl) {
+    if (diagEl) diagEl.textContent = "disconnected — server unreachable (retrying)";
   }
 }
 
@@ -759,7 +795,7 @@ function svgTitle(text) {
 
 // Tri-state "select all" checkbox shared by the footprints and nets tables.
 function syncSelectAll(id, items, isChecked) {
-  const cb = document.getElementById(id);
+  const cb = el(id);
   if (!cb) return;
   cb.checked = items.length > 0 && items.every(isChecked);
   cb.indeterminate = items.some(isChecked) && !items.every(isChecked);
@@ -768,9 +804,9 @@ function syncSelectAll(id, items, isChecked) {
 // Shared overlay scaffold: drop the stale group, bail when hidden, empty,
 // or board-less, else hand a pointer-transparent <g> to drawFn.
 function makeSvgOverlay(cls, visible, data, drawFn) {
-  viewport.querySelectorAll(`.${cls}`).forEach(el => el.remove());
+  (viewport?.querySelectorAll(`.${cls}`) ?? []).forEach(n => n.remove());
   if (!visible || !data) return;
-  const svg = viewport.querySelector("svg");
+  const svg = viewport?.querySelector("svg");
   if (!svg) return;
   const g = document.createElementNS(SVG_NS, "g");
   g.classList.add(cls);
@@ -784,8 +820,9 @@ function makeSvgOverlay(cls, visible, data, drawFn) {
 // click clears the overlay without refetching. isOn/setOn close over the
 // feature's module-level visible flag so existing references keep working.
 async function runDiagToggle({ btnId, boxId, offLabel, onLabel, isOn, setOn, render, failPrefix, load }) {
-  const btn = document.getElementById(btnId);
-  const box = document.getElementById(boxId);
+  const btn = el(btnId);
+  const box = el(boxId);
+  if (!btn || !box) return;
   if (isOn()) {
     setOn(false);
     render();
@@ -815,7 +852,7 @@ async function runDiagToggle({ btnId, boxId, offLabel, onLabel, isOn, setOn, ren
 // spinner; route tails rely on updateNetSelectionUI for final enable.)
 function setRouteBusy(on) {
   const btns = ["route-selected-btn", "route-all-btn", "rip-selected-btn"]
-    .map(id => document.getElementById(id));
+    .map(id => el(id));
   for (const b of btns) if (b) b.disabled = on;
   for (const b of btns.slice(0, 2)) if (b) b.classList.toggle("loading", on);
 }
@@ -831,18 +868,18 @@ async function setInlets(body) {
 
 let toastTimer = 0;
 function toast(msg, ok = false) {
-  let el = document.getElementById("toast");
-  if (!el) {
-    el = document.createElement("div");
-    el.id = "toast";
-    document.body.appendChild(el);
+  let toastEl = el("toast");
+  if (!toastEl) {
+    toastEl = document.createElement("div");
+    toastEl.id = "toast";
+    document.body.appendChild(toastEl);
   }
-  el.textContent = msg;
-  el.classList.toggle("ok", ok);
-  el.hidden = false;
+  toastEl.textContent = msg;
+  toastEl.classList.toggle("ok", ok);
+  toastEl.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { el.hidden = true; }, 4000);
-  if (typeof diagEl !== "undefined" && diagEl) diagEl.textContent = msg;
+  toastTimer = setTimeout(() => { toastEl.hidden = true; }, 4000);
+  if (diagEl) diagEl.textContent = msg;
 }
 
 async function poll() {
@@ -856,15 +893,17 @@ async function poll() {
     return;
   }
   setConnected(true);
-  const dropZone = document.getElementById("drop-zone");
+  const dropZone = el("drop-zone");
   if (st.loaded) {
-    boardEl.hidden = false;
-    sidePanel.hidden = false;
+    if (boardEl) boardEl.hidden = false;
+    if (sidePanel) sidePanel.hidden = false;
     if (dropZone) dropZone.hidden = true;
-    nameEl.textContent = `${st.name} — v${st.version}`;
-    schChip.hidden = st.has_sch;
-    document.getElementById("download-btn").hidden = false;
-    document.getElementById("reset-btn").hidden = false;
+    if (nameEl) nameEl.textContent = `${st.name} — v${st.version}`;
+    if (schChip) schChip.hidden = st.has_sch;
+    const dlBtn = el("download-btn");
+    if (dlBtn) dlBtn.hidden = false;
+    const resetBtn = el("reset-btn");
+    if (resetBtn) resetBtn.hidden = false;
     renderLayerToggles(st.copper_layers);
     updateModeUI(st);
     if (st.version !== lastVersion) {
@@ -875,25 +914,27 @@ async function poll() {
       // force a fresh analyze on next click instead of showing stale boxes.
       gndIslandsData = null;
       gndIslandsVisible = false;
-      const gndBtn = document.getElementById("gnd-islands-btn");
+      const gndBtn = el("gnd-islands-btn");
       if (gndBtn) { gndBtn.textContent = "GND Islands"; gndBtn.disabled = false; }
       await fetchAndInjectSVG(st.version);
       await loadSelectionState();
       await loadMotionFrames(true);
     }
   } else {
-    sidePanel.hidden = true;
+    if (sidePanel) sidePanel.hidden = true;
     if (dropZone) dropZone.hidden = false;
-    document.getElementById("download-btn").hidden = true;
-    document.getElementById("reset-btn").hidden = true;
-    undoBtn.disabled = true;
+    const dlBtn = el("download-btn");
+    if (dlBtn) dlBtn.hidden = true;
+    const resetBtn = el("reset-btn");
+    if (resetBtn) resetBtn.hidden = true;
+    if (undoBtn) undoBtn.disabled = true;
     lastVersion = 0;
-    viewport.querySelectorAll("svg").forEach(el => el.remove());
+    (viewport?.querySelectorAll("svg") ?? []).forEach(elm => elm.remove());
     viewBox = null;
   }
 }
 
-overlayToggle.addEventListener("change", async () => {
+overlayToggle?.addEventListener("change", async () => {
   if (lastVersion) {
     await fetchAndInjectSVG(lastVersion);
     await loadSelectionState();
@@ -902,32 +943,32 @@ overlayToggle.addEventListener("change", async () => {
 
 async function refreshForces() {
   if (!lastVersion) return;
-  const btn = document.getElementById("refresh-forces-btn");
-  const originalText = btn.textContent;
-  btn.textContent = "⟳";
-  btn.disabled = true;
+  const btn = el("refresh-forces-btn");
+  const originalText = btn?.textContent;
+  if (btn) { btn.textContent = "⟳"; btn.disabled = true; }
   try {
     const res = await apiFetch("/api/placement/forces", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(readParams())
     });
-    diagEl.textContent = "forces refreshed";
+    if (diagEl) diagEl.textContent = "forces refreshed";
   } catch (err) {
-    console.error("Failed to fetch forces:", err);
-    forcesToggle.checked = false;
-    document.getElementById("forces-legend").style.display = "none";
-    diagEl.textContent = `forces failed: ${err.message}`;
+    toast(`forces failed: ${err.message}`);
+    if (forcesToggle) forcesToggle.checked = false;
+    const legend = el("forces-legend");
+    if (legend) legend.style.display = "none";
+    if (diagEl) diagEl.textContent = `forces failed: ${err.message}`;
   } finally {
-    btn.textContent = originalText;
-    btn.disabled = false;
+    if (btn) { btn.textContent = originalText; btn.disabled = false; }
   }
   await fetchAndInjectSVG(lastVersion);
   await loadSelectionState();
 }
 
-forcesToggle.addEventListener("change", async () => {
-  document.getElementById("forces-legend").style.display = forcesToggle.checked ? "inline-flex" : "none";
+forcesToggle?.addEventListener("change", async () => {
+  const legend = el("forces-legend");
+  if (legend && forcesToggle) legend.style.display = forcesToggle.checked ? "inline-flex" : "none";
   if (!lastVersion) return;
   if (forcesToggle.checked) {
     await refreshForces();
@@ -940,8 +981,8 @@ forcesToggle.addEventListener("change", async () => {
   // would flash then be wiped by the inject response.
 });
 
-const drcRunBtn = document.getElementById("drc-run-btn");
-const drcInfo = document.getElementById("drc-info");
+const drcRunBtn = el("drc-run-btn");
+const drcInfo = el("drc-info");
 
 function drcCountText(r) {
   const n = Array.isArray(r.violations) ? r.violations.length : (r.violations ?? 0);
@@ -997,7 +1038,7 @@ function layerGroup(svg, layer, kind) {
 }
 
 function applyLayerVisibility() {
-  const svg = viewport.querySelector("svg");
+  const svg = viewport?.querySelector("svg");
   if (!svg) return;
   const zonesOn = zonesToggle?.checked ?? true;
   const layers = layerToggleState();
@@ -1017,7 +1058,7 @@ function applyLayerVisibility() {
     const visible = span.length ? span.some(l => effective.get(l) ?? false) : true;
     el.style.display = visible ? "" : "none";
   });
-  const legend = document.getElementById("layer-legend");
+  const legend = el("layer-legend");
   if (legend) {
     const layersArr = [...layers.keys()];
     if (layersArr.length) renderLayerLegend(layersArr);
@@ -1032,16 +1073,16 @@ zonesFillToggle.addEventListener("change", async () => {
   await fetchAndInjectSVG(lastVersion);
 });
 
-document.getElementById("cost-grid-toggle")?.addEventListener("change", e => {
+el("cost-grid-toggle")?.addEventListener("change", e => {
   costGridOverlay = e.target.checked;
   renderCostGridOverlay();
 });
 
 // Zoom / Pan handlers
-viewport.addEventListener("wheel", e => {
+viewport?.addEventListener("wheel", e => {
   e.preventDefault();
   if (!viewBox) return;
-  const svg = viewport.querySelector("svg");
+  const svg = viewport?.querySelector("svg");
   if (!svg) return;
   // Mouse position in SVG user coordinates (before zoom), exact under any aspect ratio
   const ctm = svg.getScreenCTM();
@@ -1061,7 +1102,7 @@ let isMarqueeSelecting = false;
 let marqueeStart = null;
 let marqueeEl = null;
 
-viewport.addEventListener("mousedown", e => {
+viewport?.addEventListener("mousedown", e => {
   if (e.button !== 0) return; // left click only
   
   // Check if clicking on a footprint
@@ -1125,7 +1166,7 @@ window.addEventListener("mouseup", e => {
       const rect = marqueeEl.getBoundingClientRect();
 
       // Convert marquee bounds to SVG user coordinates via the browser's exact CTM
-      const svg = viewport.querySelector("svg");
+      const svg = viewport?.querySelector("svg");
       if (svg && viewBox) {
         const inv = svg.getScreenCTM().inverse();
         const p1 = new DOMPoint(rect.left, rect.top).matrixTransform(inv);
@@ -1195,30 +1236,30 @@ let pinnedUuids = new Set();
 let selectedGhostUuid = null; // Ghost selected for move/delete (never in selectedUuids)
 
 function updateSelectionUI() {
-  const selToolbar = document.getElementById("sel-toolbar");
-  const selCount = document.getElementById("sel-count");
-  const pinBtn = document.getElementById("pin-btn");
+  const selToolbar = el("sel-toolbar");
+  const selCount = el("sel-count");
+  const pinBtn = el("pin-btn");
 
-  if (selectedUuids.size > 0 || pinnedUuids.size > 0) {
-    selToolbar.hidden = false;
-  } else {
-    selToolbar.hidden = true;
+  if (selToolbar) {
+    selToolbar.hidden = !(selectedUuids.size > 0 || pinnedUuids.size > 0);
   }
-  selCount.textContent = `${selectedUuids.size} selected, ${pinnedUuids.size} pinned`;
-  pinBtn.textContent = selectedUuids.size > 0 ? "Pin" : "Unpin";
-  pinBtn.disabled = selectedUuids.size === 0;
+  if (selCount) selCount.textContent = `${selectedUuids.size} selected, ${pinnedUuids.size} pinned`;
+  if (pinBtn) {
+    pinBtn.textContent = selectedUuids.size > 0 ? "Pin" : "Unpin";
+    pinBtn.disabled = selectedUuids.size === 0;
+  }
   // Place-bar scope hint: Step/Run target the selection, or all movable when empty.
-  const scopeHint = document.getElementById("place-scope-hint");
+  const scopeHint = el("place-scope-hint");
   if (scopeHint) {
     scopeHint.textContent = selectedUuids.size > 0
       ? `${selectedUuids.size} selected → Step/Run targets selection`
       : "nothing selected → Step/Run targets all movable";
   }
   // Nudge pad mirrors the placement selection (ghosts excluded).
-  const nudgeCount = document.getElementById("nudge-count");
+  const nudgeCount = el("nudge-count");
   if (nudgeCount) nudgeCount.textContent = String(selectedUuids.size);
   for (const id of ["nudge-up", "nudge-down", "nudge-left", "nudge-right", "nudge-ccw", "nudge-cw"]) {
-    const btn = document.getElementById(id);
+    const btn = el(id);
     if (btn) btn.disabled = selectedUuids.size === 0;
   }
 }
@@ -1229,7 +1270,7 @@ async function fetchPinned() {
     pinnedUuids = new Set(data.pinned || []);
     updateSelectionUI();
   } catch (err) {
-    console.error("Failed to fetch pinned:", err);
+    toast(`pinned refresh failed: ${err.message}`);
   }
 }
 
@@ -1239,12 +1280,12 @@ async function fetchSelected() {
     selectedUuids = new Set(data.selected || []);
     updateSelectionUI();
   } catch (err) {
-    console.error("Failed to fetch selected:", err);
+    toast(`selection refresh failed: ${err.message}`);
   }
 }
 
 function updateFootprintVisuals() {
-  const svg = viewport.querySelector("svg");
+  const svg = viewport?.querySelector("svg");
   if (!svg) return;
   svg.querySelectorAll(".footprint").forEach(el => {
     const uuid = el.dataset.fpUuid;
@@ -1263,7 +1304,7 @@ async function togglePin(uuid) {
     updateFootprintVisuals();
     updateSelectionUI();
   } catch (err) {
-    console.error("Pin failed:", err);
+    toast(`pin failed: ${err.message}`);
   }
 }
 
@@ -1285,7 +1326,7 @@ async function toggleSelect(uuid) {
     updateFootprintVisuals();
     updateSelectionUI();
   } catch (err) {
-    console.error("Select failed:", err);
+    toast(`select failed: ${err.message}`);
   }
 }
 
@@ -1296,7 +1337,7 @@ async function selectAllUnlocked() {
     updateFootprintVisuals();
     updateSelectionUI();
   } catch (err) {
-    console.error("Select all failed:", err);
+    toast(`select all failed: ${err.message}`);
   }
 }
 
@@ -1310,12 +1351,12 @@ async function clearSelection() {
     renderFootprintTable();
     updateGhostSelUI();
   } catch (err) {
-    console.error("Clear selection failed:", err);
+    toast(`clear selection failed: ${err.message}`);
   }
 }
 
 // Click handler on SVG for footprint selection
-viewport.addEventListener("click", e => {
+viewport?.addEventListener("click", e => {
   if (isPanning) return; // Don't select while panning
   const fpEl = e.target.closest(".footprint");
   if (fpEl) {
@@ -1354,7 +1395,7 @@ viewport.addEventListener("click", e => {
 });
 
 function highlightSelectedNets() {
-  const svg = viewport.querySelector("svg");
+  const svg = viewport?.querySelector("svg");
   if (!svg) return;
   svg.querySelectorAll(".track, .via").forEach(el => {
     el.classList.toggle("net-selected", selectedNets.has(el.dataset.net));
@@ -1446,19 +1487,20 @@ async function fetchFootprints() {
     }
     renderFootprintTable();
   } catch (err) {
-    console.error("Failed to fetch footprints:", err);
+    toast(`footprints refresh failed: ${err.message}`);
   }
 }
 
 function getFilterValues() {
+  const val = (id, fallback = "") => el(id)?.value ?? fallback;
   return {
-    search: document.getElementById("fp-search").value.toLowerCase(),
-    ref: document.getElementById("filter-ref").value.toLowerCase(),
-    net: document.getElementById("filter-net").value.toLowerCase(),
-    layer: document.getElementById("filter-layer").value,
-    state: document.getElementById("filter-state").value,
-    hideLocked: document.getElementById("filter-hide-locked").checked,
-    hideFixed: document.getElementById("filter-hide-fixed").checked,
+    search: val("fp-search").toLowerCase(),
+    ref: val("filter-ref").toLowerCase(),
+    net: val("filter-net").toLowerCase(),
+    layer: val("filter-layer"),
+    state: val("filter-state"),
+    hideLocked: el("filter-hide-locked")?.checked ?? false,
+    hideFixed: el("filter-hide-fixed")?.checked ?? false,
   };
 }
 
@@ -1531,25 +1573,31 @@ function getLegalityTooltip(fp) {
 }
 
 function fpRowHtml(fp) {
-  const netsStr = fp.nets.slice(0, 3).join(", ") + (fp.nets.length > 3 ? ` +${fp.nets.length - 3}` : "");
+  const nets = Array.isArray(fp.nets) ? fp.nets : [];
+  const netsStr = escapeHtml(nets.slice(0, 3).join(", ") + (nets.length > 3 ? ` +${nets.length - 3}` : ""));
   const layerClass = fp.layer === "B" ? "B" : "F";
   const isGhostSel = fp.ghost && selectedGhostUuid === fp.uuid;
   const isIllegal = illegalUuids.has(fp.uuid);
-  const tooltip = getLegalityTooltip(fp);
+  const tooltip = escapeHtml(getLegalityTooltip(fp));
+  const ref = escapeHtml(fp.ref);
+  const fpId = escapeHtml(fp.footprint_id);
+  const uuid = escapeHtml(fp.uuid);
+  const netsTitle = escapeHtml(nets.join(", "));
   return `
-    <tr class="${fp.selected || isGhostSel ? 'fp-selected-row' : ''} ${fp.locked ? 'fp-locked-row' : ''} ${fp.pinned ? 'fp-pinned-row' : ''} ${fp.ghost ? 'fp-ghost-row' : ''} ${isIllegal ? 'fp-illegal-row' : ''}" data-uuid="${fp.uuid}" ${tooltip ? `title="${tooltip}"` : ''}>
-      <td class="fp-col-select"><input type="checkbox" ${fp.selected ? 'checked' : ''} ${fp.locked || fp.pinned || fp.ghost ? 'disabled' : ''} data-uuid="${fp.uuid}"></td>
-      <td class="fp-col-ref" title="${fp.ref}">${fp.ref}</td>
-      <td class="fp-col-footprint" title="${fp.footprint_id}">${fp.footprint_id}</td>
-      <td class="fp-col-layer"><span class="fp-col-layer ${layerClass}">${fp.layer}</span></td>
-      <td class="fp-col-nets" title="${fp.nets.join(", ")}">${netsStr}</td>
+    <tr class="${fp.selected || isGhostSel ? 'fp-selected-row' : ''} ${fp.locked ? 'fp-locked-row' : ''} ${fp.pinned ? 'fp-pinned-row' : ''} ${fp.ghost ? 'fp-ghost-row' : ''} ${isIllegal ? 'fp-illegal-row' : ''}" data-uuid="${uuid}" ${tooltip ? `title="${tooltip}"` : ''}>
+      <td class="fp-col-select"><input type="checkbox" ${fp.selected ? 'checked' : ''} ${fp.locked || fp.pinned || fp.ghost ? 'disabled' : ''} data-uuid="${uuid}"></td>
+      <td class="fp-col-ref" title="${ref}">${ref}</td>
+      <td class="fp-col-footprint" title="${fpId}">${fpId}</td>
+      <td class="fp-col-layer"><span class="fp-col-layer ${layerClass}">${escapeHtml(fp.layer)}</span></td>
+      <td class="fp-col-nets" title="${netsTitle}">${netsStr}</td>
       <td class="fp-col-state">${getStateBadge(fp)}</td>
     </tr>
   `;
 }
 
 function renderFootprintTable() {
-  const tbody = document.getElementById("fp-tbody");
+  const tbody = el("fp-tbody");
+  if (!tbody) return;
   const filtered = getFilteredFootprints();
   updateFpSortHeaders();
   tbody.innerHTML = filtered.map(fpRowHtml).join("");
@@ -1630,17 +1678,16 @@ async function loadSelectionState() {
 }
 
 // Toolbar buttons
-document.getElementById("select-all-btn").addEventListener("click", selectAllUnlocked);
-document.getElementById("clear-sel-btn").addEventListener("click", clearSelection);
-document.getElementById("pin-btn").addEventListener("click", () => {
+on("select-all-btn", "click", selectAllUnlocked);
+on("clear-sel-btn", "click", clearSelection);
+on("pin-btn", "click", () => {
   // Pin all currently selected
   selectedUuids.forEach(uuid => togglePin(uuid));
 });
 
 // Sidebar filter event listeners
 ["fp-search", "filter-ref", "filter-net", "filter-layer", "filter-state", "filter-hide-locked", "filter-hide-fixed"].forEach(id => {
-  const el = document.getElementById(id);
-  if (el) el.addEventListener("input", renderFootprintTable);
+  on(id, "input", renderFootprintTable);
 });
 
 // Sortable footprint table headers
@@ -1658,7 +1705,7 @@ document.querySelectorAll("#fp-table th.sortable").forEach(th => {
 });
 
 // Sidebar buttons
-document.getElementById("sidebar-select-visible").addEventListener("click", () => {
+on("sidebar-select-visible", "click", () => {
   const filtered = getFilteredFootprints();
   filtered.forEach(fp => {
     if (!fp.locked && !fp.pinned && !fp.ghost) {
@@ -1680,13 +1727,13 @@ document.getElementById("sidebar-select-visible").addEventListener("click", () =
   renderFootprintTable();
 });
 
-document.getElementById("sidebar-clear-sel").addEventListener("click", clearSelection);
+on("sidebar-clear-sel", "click", clearSelection);
 
-document.getElementById("sidebar-pin-sel").addEventListener("click", () => {
+on("sidebar-pin-sel", "click", () => {
   selectedUuids.forEach(uuid => togglePin(uuid));
 });
 
-document.getElementById("sidebar-unpin-sel").addEventListener("click", () => {
+on("sidebar-unpin-sel", "click", () => {
   // Unpin all currently pinned that are also selected (or all pinned if none selected)
   const toUnpin = selectedUuids.size > 0 
     ? Array.from(selectedUuids).filter(u => pinnedUuids.has(u))
@@ -1695,7 +1742,7 @@ document.getElementById("sidebar-unpin-sel").addEventListener("click", () => {
 });
 
 // Select all checkbox in table header
-document.getElementById("fp-select-all").addEventListener("change", e => {
+on("fp-select-all", "change", e => {
   const filtered = getFilteredFootprints();
   if (e.target.checked) {
     filtered.forEach(fp => {
@@ -1721,7 +1768,7 @@ document.getElementById("fp-select-all").addEventListener("change", e => {
   renderFootprintTable();
 });
 
-document.getElementById("refresh-forces-btn").addEventListener("click", refreshForces);
+on("refresh-forces-btn", "click", refreshForces);
 
 // ==================== Manual nudge (selected parts, 1mm) ====================
 // Shifts the placement selection via POST /api/placement/nudge (same
@@ -1738,23 +1785,23 @@ async function nudgeSelected(dx_mm, dy_mm, da_deg = 0) {
       body: JSON.stringify({ dx_mm, dy_mm, da_deg }),
     });
     const what = da_deg ? `rotate ${da_deg}°` : `move (${dx_mm}, ${dy_mm})`;
-    diagEl.textContent = `nudged ${(r.moved || []).length}: ${what} → v${r.version} (Undo restores)`;
-    undoBtn.disabled = false;
+    if (diagEl) diagEl.textContent = `nudged ${(r.moved || []).length}: ${what} → v${r.version} (Undo restores)`;
+    if (undoBtn) undoBtn.disabled = false;
     resetMotionState(); // server cleared the proposal; cached deltas are stale
     await poll();
   } catch (err) {
-    diagEl.textContent = `nudge failed: ${err.message}`;
+    if (diagEl) diagEl.textContent = `nudge failed: ${err.message}`;
   }
 }
 
 for (const [id, dx, dy] of [["nudge-up", 0, -1], ["nudge-down", 0, 1], ["nudge-left", -1, 0], ["nudge-right", 1, 0]]) {
-  document.getElementById(id).addEventListener("click", e => {
+  on(id, "click", e => {
     const step = e.shiftKey ? 10 : 1;
     nudgeSelected(dx * step, dy * step);
   });
 }
 for (const [id, da] of [["nudge-ccw", 15], ["nudge-cw", -15]]) {
-  document.getElementById(id).addEventListener("click", e => {
+  on(id, "click", e => {
     nudgeSelected(0, 0, e.shiftKey ? Math.sign(da) * 90 : da);
   });
 }
@@ -1772,12 +1819,12 @@ function selectGhost(uuid) {
 }
 
 function updateGhostSelUI() {
-  const panel = document.getElementById("ghost-sel");
-  const refEl = document.getElementById("ghost-sel-ref");
-  const sizeEl = document.getElementById("ghost-size-label");
+  const panel = el("ghost-sel");
+  const refEl = el("ghost-sel-ref");
+  const sizeEl = el("ghost-size-label");
   const fp = allFootprints.find(f => f.uuid === selectedGhostUuid);
   if (!fp) {
-    panel.hidden = true;
+    if (panel) panel.hidden = true;
     return;
   }
   panel.hidden = false;
@@ -1795,11 +1842,11 @@ function updateGhostSelUI() {
 }
 
 function refreshGhostTargets() {
-  const sel = document.getElementById("ghost-target");
+  const sel = el("ghost-target");
   if (!sel) return;
   const prev = sel.value;
   const refs = allFootprints.filter(fp => !fp.ghost && fp.ref).map(fp => fp.ref).sort();
-  sel.innerHTML = refs.map(r => `<option value="${r}">${r}</option>`).join("");
+  sel.innerHTML = refs.map(r => `<option value="${escapeHtml(r)}">${escapeHtml(r)}</option>`).join("");
   if (refs.includes(prev)) sel.value = prev;
 }
 
@@ -1821,12 +1868,12 @@ function suggestGhostRef(kind) {
 async function createGhost() {
   if (!lastVersion) return;
   const diag = ghostDiag;
-  const kind = document.getElementById("ghost-kind").value;
-  const refInput = document.getElementById("ghost-ref").value.trim();
+  const kind = el("ghost-kind")?.value ?? "wall";
+  const refInput = (el("ghost-ref")?.value ?? "").trim();
   const ref = refInput || suggestGhostRef(kind);
   const [cx, cy] = ghostViewCenter();
-  const xRaw = document.getElementById("ghost-x").value;
-  const yRaw = document.getElementById("ghost-y").value;
+  const xRaw = el("ghost-x")?.value;
+  const yRaw = el("ghost-y")?.value;
   const body = {
     kind, ref,
     x_mm: xRaw === "" ? Math.round(cx * 2) / 2 : Number(xRaw),
@@ -1834,12 +1881,12 @@ async function createGhost() {
     courtyard_layer: "F.CrtYd",
   };
   if (kind === "wall") {
-    body.w_mm = Number(document.getElementById("ghost-w").value);
-    body.h_mm = Number(document.getElementById("ghost-h").value);
+    body.w_mm = Number(el("ghost-w")?.value);
+    body.h_mm = Number(el("ghost-h")?.value);
   } else {
-    body.target_ref = document.getElementById("ghost-target").value;
-    body.ka = Number(document.getElementById("ghost-ka").value);
-    body.size_mm = Number(document.getElementById("ghost-size").value);
+    body.target_ref = el("ghost-target")?.value;
+    body.ka = Number(el("ghost-ka")?.value);
+    body.size_mm = Number(el("ghost-size")?.value);
   }
   try {
     const r = await apiJson("/api/ghosts", {
@@ -1848,8 +1895,8 @@ async function createGhost() {
       body: JSON.stringify(body),
     });
     diag.textContent = `ghost ${ref} added (v${r.version})`;
-    document.getElementById("ghost-ref").value = "";
-    undoBtn.disabled = false;
+    const _gr = el("ghost-ref"); if (_gr) _gr.value = "";
+    if (undoBtn) undoBtn.disabled = false;
     if (motion.frames.length) pauseMotion();
     resetMotionState();
     await poll();
@@ -1871,7 +1918,7 @@ async function moveGhost(dx_mm, dy_mm, da_deg = 0) {
     diag.textContent = da_deg
       ? `ghost rotated ${da_deg}° → v${r.version}`
       : `ghost moved (${dx_mm}, ${dy_mm}) → v${r.version}`;
-    undoBtn.disabled = false;
+    if (undoBtn) undoBtn.disabled = false;
     if (motion.frames.length) pauseMotion();
     resetMotionState();
     await poll();
@@ -1897,7 +1944,7 @@ async function resizeGhost(dw_mm, dh_mm) {
       body: JSON.stringify({ uuid: selectedGhostUuid, w_mm, h_mm }),
     });
     diag.textContent = `ghost resized ${w_mm.toFixed(1)}×${h_mm.toFixed(1)} → v${r.version}`;
-    undoBtn.disabled = false;
+    if (undoBtn) undoBtn.disabled = false;
     if (motion.frames.length) pauseMotion();
     resetMotionState();
     await poll();
@@ -1917,7 +1964,7 @@ async function deleteGhost() {
     });
     diag.textContent = `ghost deleted (v${r.version})`;
     selectedGhostUuid = null;
-    undoBtn.disabled = false;
+    if (undoBtn) undoBtn.disabled = false;
     if (motion.frames.length) pauseMotion();
     resetMotionState();
     await poll();
@@ -1926,29 +1973,29 @@ async function deleteGhost() {
   }
 }
 
-document.getElementById("ghost-create-btn").addEventListener("click", createGhost);
-document.getElementById("ghost-delete-btn").addEventListener("click", deleteGhost);
+on("ghost-create-btn", "click", createGhost);
+on("ghost-delete-btn", "click", deleteGhost);
 for (const [id, dx, dy] of [["ghost-up", 0, -1], ["ghost-down", 0, 1], ["ghost-left", -1, 0], ["ghost-right", 1, 0]]) {
-  document.getElementById(id).addEventListener("click", e => {
+  on(id, "click", e => {
     const step = e.shiftKey ? 10 : 1;
     moveGhost(dx * step, dy * step);
   });
 }
 for (const [id, da] of [["ghost-ccw", 15], ["ghost-cw", -15]]) {
-  document.getElementById(id).addEventListener("click", e => {
+  on(id, "click", e => {
     moveGhost(0, 0, e.shiftKey ? Math.sign(da) * 90 : da);
   });
 }
 for (const [id, dw, dh] of [["ghost-w-minus", -1, 0], ["ghost-w-plus", 1, 0], ["ghost-h-minus", 0, -1], ["ghost-h-plus", 0, 1]]) {
-  document.getElementById(id).addEventListener("click", e => {
+  on(id, "click", e => {
     const step = e.shiftKey ? 5 : 1;
     resizeGhost(dw * step, dh * step);
   });
 }
-document.getElementById("ghost-kind").addEventListener("change", e => {
+on("ghost-kind", "change", e => {
   const isWall = e.target.value === "wall";
-  document.getElementById("ghost-wall-row").hidden = !isWall;
-  document.getElementById("ghost-attr-row").hidden = isWall;
+  const _gwr = el("ghost-wall-row"); if (_gwr) _gwr.hidden = !isWall;
+  const _gar = el("ghost-attr-row"); if (_gar) _gar.hidden = isWall;
   if (!isWall) refreshGhostTargets();
 });
 
@@ -2002,30 +2049,31 @@ const motion = {
 
 function motionEls() {
   return {
-    slider: document.getElementById("motion-slider"),
-    readout: document.getElementById("motion-readout"),
-    playBtn: document.getElementById("motion-play-btn"),
-    first: document.getElementById("motion-first-btn"),
-    prev: document.getElementById("motion-prev-btn"),
-    next: document.getElementById("motion-next-btn"),
-    last: document.getElementById("motion-last-btn"),
-    speed: document.getElementById("motion-speed"),
-    trails: document.getElementById("motion-trails"),
-    reset: document.getElementById("motion-reset-btn"),
+    slider: el("motion-slider"),
+    readout: el("motion-readout"),
+    playBtn: el("motion-play-btn"),
+    first: el("motion-first-btn"),
+    prev: el("motion-prev-btn"),
+    next: el("motion-next-btn"),
+    last: el("motion-last-btn"),
+    speed: el("motion-speed"),
+    trails: el("motion-trails"),
+    reset: el("motion-reset-btn"),
   };
 }
 
 function motionSetEnabled(on) {
   const { slider, playBtn, first, prev, next, last } = motionEls();
   const canPlay = on && motion.frames.length > 1;
-  slider.disabled = !on;
-  playBtn.disabled = !canPlay;
-  for (const b of [first, prev, next, last]) b.disabled = !on;
+  if (slider) slider.disabled = !on;
+  if (playBtn) playBtn.disabled = !canPlay;
+  for (const b of [first, prev, next, last]) if (b) b.disabled = !on;
 }
 
 function motionReadout() {
   const { readout, slider } = motionEls();
   const n = motion.frames.length;
+  if (!readout || !slider) return;
   if (!n) { readout.textContent = "no frames"; return; }
   // frames[0] is the starting pose (iter 0); frames[k] follows k*stride
   // completed iterations; the last frame is always the final pose.
@@ -2038,7 +2086,7 @@ function motionReadout() {
 }
 
 function motionFpNode(uuid) {
-  return viewport.querySelector(`g.footprint[data-fp-uuid="${uuid}"]`);
+  return viewport?.querySelector(`g.footprint[data-fp-uuid="${uuid}"]`) ?? null;
 }
 
 // Force cause order (paint lives in CSS: .motion-force-vectors line.force-<cause>).
@@ -2050,7 +2098,7 @@ function drawForceVectors(svg, frameIdx) {
   svg.querySelectorAll("g.footprint .motion-force-vectors").forEach(el => el.remove());
   
   // Use the sidebar forces toggle
-  const forcesToggle = document.getElementById("forces-toggle");
+  const forcesToggle = el("forces-toggle");
   if (!forcesToggle?.checked) return;
   if (!motion.force_frames.length) return;
   const fframe = motion.force_frames[frameIdx];
@@ -2110,7 +2158,7 @@ function drawForceVectors(svg, frameIdx) {
 }
 
 function applyMotionFrame(i) {
-  const svg = viewport.querySelector("svg");
+  const svg = viewport?.querySelector("svg");
   if (!svg || !motion.frames.length) return;
   // Motion owns forces: drop any server-rendered static layer so only the
   // per-footprint client vectors below remain (prevents dual-layer flicker).
@@ -2134,7 +2182,7 @@ function applyMotionFrame(i) {
   // or a newer run whose frame set omits a previously-moved part). Runs on
   // every frame, not just idx 0 — scrubbing back from a dense frame would
   // otherwise leave later transforms behind.
-  viewport.querySelectorAll("g.footprint[transform]").forEach(g => {
+  (viewport?.querySelectorAll("g.footprint[transform]") ?? []).forEach(g => {
     const uuid = g.getAttribute("data-fp-uuid");
     if (uuid && !seen.has(uuid)) g.removeAttribute("transform");
   });
@@ -2144,10 +2192,10 @@ function applyMotionFrame(i) {
 }
 
 function drawMotionTrails() {
-  const svg = viewport.querySelector("svg");
+  const svg = viewport?.querySelector("svg");
   if (!svg) return;
   svg.querySelector("#motion-trails")?.remove();
-  if (!motionEls().trails.checked || !motion.frames.length || motion.idx < 1) return;
+  if (!motionEls().trails?.checked || !motion.frames.length || motion.idx < 1) return;
   const NS = "http://www.w3.org/2000/svg";
   const g = document.createElementNS(NS, "g");
   g.setAttribute("id", "motion-trails");
@@ -2182,8 +2230,9 @@ function drawMotionTrails() {
 }
 
 function clearMotionView() {
+  if (!viewport) return;
   viewport.querySelectorAll("g.footprint[transform]").forEach(g => g.removeAttribute("transform"));
-  viewport.querySelectorAll("g.footprint .motion-force-vectors").forEach(el => el.remove());
+  viewport.querySelectorAll("g.footprint .motion-force-vectors").forEach(n => n.remove());
   viewport.querySelector("#motion-trails")?.remove();
 }
 
@@ -2289,17 +2338,17 @@ async function loadMotionFrames(silent) {
   }
 }
 
-document.getElementById("motion-play-btn").addEventListener("click", toggleMotionPlay);
-document.getElementById("motion-prev-btn").addEventListener("click", () => stepMotion(-1));
-document.getElementById("motion-next-btn").addEventListener("click", () => stepMotion(1));
-document.getElementById("motion-first-btn").addEventListener("click", () => { pauseMotion(); applyMotionFrame(0); });
-document.getElementById("motion-last-btn").addEventListener("click", () => { pauseMotion(); applyMotionFrame(motion.frames.length - 1); });
-document.getElementById("motion-reset-btn").addEventListener("click", () => {
+on("motion-play-btn", "click", toggleMotionPlay);
+on("motion-prev-btn", "click", () => stepMotion(-1));
+on("motion-next-btn", "click", () => stepMotion(1));
+on("motion-first-btn", "click", () => { pauseMotion(); applyMotionFrame(0); });
+on("motion-last-btn", "click", () => { pauseMotion(); applyMotionFrame(motion.frames.length - 1); });
+on("motion-reset-btn", "click", () => {
   pauseMotion();
   clearMotionView();
   if (motion.frames.length) applyMotionFrame(motion.frames.length - 1);
 });
-document.getElementById("motion-slider").addEventListener("input", (e) => {
+on("motion-slider", "input", (e) => {
   pauseMotion();
   // Debounce rapid scrub events via rAF: only the latest slider value paints
   // per frame, preventing queued applyMotionFrame calls that flash stale
@@ -2310,12 +2359,12 @@ document.getElementById("motion-slider").addEventListener("input", (e) => {
   motion._scrubValue = v;
   requestAnimationFrame(() => {
     motion._scrubQueued = false;
-    const slider = document.getElementById("motion-slider");
+    const slider = el("motion-slider");
     if (slider) slider.value = String(motion._scrubValue);
     applyMotionFrame(motion._scrubValue);
   });
 });
-document.getElementById("motion-trails").addEventListener("change", drawMotionTrails);
+on("motion-trails", "change", drawMotionTrails);
 motionSetEnabled(false);
 
 // Pure string builder for the placement result line (button state and
@@ -2335,7 +2384,7 @@ function formatPlacementDiag(r) {
 
 async function runPlacement(movableUuids, iterations) {
   const stepBtn = stepSelectedBtn;
-  const runBtn = document.getElementById("run-selected-btn");
+  const runBtn = el("run-selected-btn");
   stepBtn.classList.add("loading");
   runBtn.classList.add("loading");
   stepBtn.disabled = true;
@@ -2351,14 +2400,14 @@ async function runPlacement(movableUuids, iterations) {
   const estKnown = allFootprints.length > 0;
   const ticker = setInterval(() => {
     const el = Math.round((performance.now() - t0) / 1000);
-    diagEl.textContent = estKnown
+    if (diagEl) diagEl.textContent = estKnown
       ? `placing… ${el}s elapsed (est. up to ${fmtDuration(est.ms)})`
       : `placing… ${el}s elapsed`;
   }, 1000);
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    diagEl.textContent = estKnown
+    if (diagEl) diagEl.textContent = estKnown
       ? `placing… (est. up to ${fmtDuration(est.ms)} at ${est.msPerIter.toFixed(1)}ms/iter, ` +
         `${est.fps} fps / ${est.pads} pads, budget ${budget} iters)`
       : `placing… (budget ${budget} iters)`;
@@ -2388,9 +2437,9 @@ async function runPlacement(movableUuids, iterations) {
       }
     }
     await loadMotionFrames(true);
-    diagEl.textContent = formatPlacementDiag(r);
-    acceptBtn.disabled = !(r.moved > 0);
-    stepSelectedBtn.textContent = "Step Again";
+    if (diagEl) diagEl.textContent = formatPlacementDiag(r);
+    if (acceptBtn) acceptBtn.disabled = !(r.moved > 0);
+    if (stepSelectedBtn) stepSelectedBtn.textContent = "Step Again";
     renderFootprintTable(); // Re-render to show illegal state
   } catch (err) {
     const msg = err?.name === "AbortError"
@@ -2408,19 +2457,20 @@ async function runPlacement(movableUuids, iterations) {
 }
 
 // Step: a few iterations on the selection (empty selection targets all movable)
-stepSelectedBtn.addEventListener("click", async () => {
-  const iters = parseInt(document.getElementById("step-iters").value, 10);
+stepSelectedBtn?.addEventListener("click", async () => {
+  const itersRaw = parseInt(el("step-iters")?.value, 10);
+  const iters = Number.isFinite(itersRaw) ? itersRaw : 1;
   const movableUuids = selectedUuids.size > 0 ? Array.from(selectedUuids) : undefined;
   await runPlacement(movableUuids, iters);
 });
 
 // Run: to convergence (saved max_iterations) on the selection (empty targets all)
-document.getElementById("run-selected-btn").addEventListener("click", async () => {
+on("run-selected-btn", "click", async () => {
   const movableUuids = selectedUuids.size > 0 ? Array.from(selectedUuids) : undefined;
   await runPlacement(movableUuids, null);
 });
 
-acceptBtn.addEventListener("click", async () => {
+acceptBtn?.addEventListener("click", async () => {
   try {
     const r = await apiJson("/api/placement/accept", { method: "POST" });
     const ripped = r.ripped || {};
@@ -2431,37 +2481,37 @@ acceptBtn.addEventListener("click", async () => {
     const skipped = (r.skipped_protected || []).join(", ");
     const moveTxt = r.moved != null ? `${r.moved} moved` : "";
     const iterTxt = r.iterations != null ? `${r.iterations} iters, disp ${r.final_max_disp_mm}mm` : "";
-    diagEl.textContent = `accepted v${r.version} (${moveTxt}; ${iterTxt}) — ripped ${rippedTxt}`
+    if (diagEl) diagEl.textContent = `accepted v${r.version} (${moveTxt}; ${iterTxt}) — ripped ${rippedTxt}`
       + (skipped ? `; kept protected ${skipped}` : "")
       + `. Re-route via Route panel if needed.`;
-    acceptBtn.disabled = true;
-    stepSelectedBtn.textContent = "Step";
-    undoBtn.disabled = false;
+    if (acceptBtn) acceptBtn.disabled = true;
+    if (stepSelectedBtn) stepSelectedBtn.textContent = "Step";
+    if (undoBtn) undoBtn.disabled = false;
     resetMotionState(); // positions committed — cached deltas are stale
   } catch (err) {
-    diagEl.textContent = `accept failed: ${err.message}`;
+    if (diagEl) diagEl.textContent = `accept failed: ${err.message}`;
   }
 });
 
-document.getElementById("clear-btn").addEventListener("click", async () => {
+on("clear-btn", "click", async () => {
   await fetch("/api/placement/clear", { method: "POST" });
   illegalUuids.clear();
   lastLegality = {};
-  diagEl.textContent = "proposal cleared";
-  acceptBtn.disabled = true;
-  stepSelectedBtn.textContent = "Step";
+  if (diagEl) diagEl.textContent = "proposal cleared";
+  if (acceptBtn) acceptBtn.disabled = true;
+  if (stepSelectedBtn) stepSelectedBtn.textContent = "Step";
   resetMotionState();
   renderFootprintTable();
 });
 
-undoBtn.addEventListener("click", async () => {
+undoBtn?.addEventListener("click", async () => {
   try {
     const r = await apiJson("/api/placement/undo", { method: "POST" });
     illegalUuids.clear();
     lastLegality = {};
-    diagEl.textContent = `undone — board reverted to v${r.version}`;
-    acceptBtn.disabled = true;
-    stepSelectedBtn.textContent = "Step";
+    if (diagEl) diagEl.textContent = `undone — board reverted to v${r.version}`;
+    if (acceptBtn) acceptBtn.disabled = true;
+    if (stepSelectedBtn) stepSelectedBtn.textContent = "Step";
     resetMotionState();
     renderFootprintTable();
     try {
@@ -2469,7 +2519,7 @@ undoBtn.addEventListener("click", async () => {
       if (mres.ok) { const m = await mres.json(); updateModeUI({ mode: m.mode, mode_warning: m.warning }); }
     } catch (err) { /* mode chip refresh is best-effort */ }
   } catch (err) {
-    diagEl.textContent = `undo failed: ${err.message}`;
+    if (diagEl) diagEl.textContent = `undo failed: ${err.message}`;
   }
 });
 
@@ -2479,11 +2529,11 @@ let boardMode = null;  // "two-layer" | "four-layer", from /api/state
 
 function updateModeUI(st) {
   boardMode = st.mode || null;
-  const b2 = document.getElementById("mode-2l");
-  const b4 = document.getElementById("mode-4l");
+  const b2 = el("mode-2l");
+  const b4 = el("mode-4l");
   if (b2) b2.classList.toggle("active", boardMode === "two-layer");
   if (b4) b4.classList.toggle("active", boardMode === "four-layer");
-  const warn = document.getElementById("mode-warn");
+  const warn = el("mode-warn");
   if (warn) {
     warn.hidden = !st.mode_warning;
     warn.textContent = "⚠ mode";
@@ -2507,10 +2557,10 @@ async function setBoardMode(mode) {
   }
 }
 
-document.getElementById("mode-2l").addEventListener("click", () => setBoardMode("two-layer"));
-document.getElementById("mode-4l").addEventListener("click", () => setBoardMode("four-layer"));
+on("mode-2l", "click", () => setBoardMode("two-layer"));
+on("mode-4l", "click", () => setBoardMode("four-layer"));
 
-document.getElementById("download-btn").addEventListener("click", async () => {
+on("download-btn", "click", async () => {
   try {
     // Two-layer mode with 4-layer content collapses on export: confirm
     // first (report counts + impedance note + "original untouched").
@@ -2541,22 +2591,22 @@ document.getElementById("download-btn").addEventListener("click", async () => {
     a.download = res.headers.get("Content-Disposition")?.split('filename="')[1]?.split('"')[0] || "board-modified.kicad_pcb";
     a.click();
     URL.revokeObjectURL(url);
-    diagEl.textContent = "PCB downloaded";
+    if (diagEl) diagEl.textContent = "PCB downloaded";
   } catch (err) {
-    diagEl.textContent = `download failed: ${err.message}`;
+    if (diagEl) diagEl.textContent = `download failed: ${err.message}`;
   }
 });
 
-document.getElementById("reset-btn").addEventListener("click", async () => {
+on("reset-btn", "click", async () => {
   try {
     const r = await apiJson("/api/board/reset", { method: "POST" });
     illegalUuids.clear();
     lastLegality = {};
-    diagEl.textContent = `board reset to original (v${r.version})`;
-    acceptBtn.disabled = true;
-    const runBtn = document.getElementById("run-btn");
+    if (diagEl) diagEl.textContent = `board reset to original (v${r.version})`;
+    if (acceptBtn) acceptBtn.disabled = true;
+    const runBtn = el("run-selected-btn");
     if (runBtn) runBtn.textContent = "Step placement";
-    undoBtn.disabled = true;
+    if (undoBtn) undoBtn.disabled = true;
     renderFootprintTable();
     try {
       const mres = await fetch("/api/mode");
@@ -2564,17 +2614,17 @@ document.getElementById("reset-btn").addEventListener("click", async () => {
       await loadRoutingParams();
     } catch (err) { /* mode refresh is best-effort */ }
   } catch (err) {
-    diagEl.textContent = `reset failed: ${err.message}`;
+    if (diagEl) diagEl.textContent = `reset failed: ${err.message}`;
   }
 });
 
 // The original reset-btn handler for params (renamed to avoid conflict)
-document.getElementById("reset-params-btn").addEventListener("click", async () => {
+on("reset-params-btn", "click", async () => {
   try {
     await loadParams(true);
-    diagEl.textContent = "params reset to defaults (persists on next run)";
+    if (diagEl) diagEl.textContent = "params reset to defaults (persists on next run)";
   } catch (err) {
-    diagEl.textContent = `reset failed: ${err.message}`;
+    if (diagEl) diagEl.textContent = `reset failed: ${err.message}`;
   }
 });
 
@@ -2588,12 +2638,12 @@ let routingParams = {};  // Current routing parameters
 // sorted-names golden-angle sweep when the row carries no color (e.g.
 // synthetic selection-only rows).
 function netColorByName(net, idx) {
-  const row = (typeof lastNetsByName !== "undefined") ? lastNetsByName.get(net) : null;
+  const row = (lastNetsByName) ? lastNetsByName.get(net) : null;
   if (row && row.color) return row.color;
   let names = [];
-  if (typeof lastNetsByName !== "undefined" && lastNetsByName.size) {
+  if (lastNetsByName && lastNetsByName.size) {
     names = [...lastNetsByName.keys()].filter(Boolean).sort();
-  } else if (typeof allFootprints !== "undefined" && allFootprints.length) {
+  } else if (allFootprints && allFootprints.length) {
     names = [...new Set(allFootprints.flatMap(fp => fp.nets || []).filter(Boolean))].sort();
   }
   const i = names.indexOf(net);
@@ -2611,7 +2661,7 @@ async function fetchNets() {
     lastNetsByName = new Map((data.nets || []).map(n => [n.name, n]));
     renderNetsTable(data.nets || []);
   } catch (err) {
-    console.error("Failed to fetch nets:", err);
+    toast(`nets refresh failed: ${err.message}`);
   }
 }
 
@@ -2631,7 +2681,9 @@ function netRowHtml(net, idx) {
   // Pwr cell control: always render a visible button (ghost bolt for
   // signal nets) — the old `${pwr || ""}` left signal cells empty and
   // undiscoverable. Name-column badge above stays static text.
-  const safeName = String(net.name).replace(/"/g, "&quot;");
+  // Board-controlled strings are HTML-escaped (net/ref names come from the file).
+  const safeName = escapeHtml(net.name);
+  const netName = escapeHtml(net.name);
   const pwrCtrl = net.is_power
     ? `<button type="button" class="pwr-toggle is-on" aria-pressed="true" aria-label="Unmark ${safeName} as power" title="${pwrTitle}">${pwr}</button>`
     : (net.is_ground
@@ -2640,31 +2692,31 @@ function netRowHtml(net, idx) {
   const width = (net.width_mm ?? "") === "" ? "" : Number(net.width_mm).toFixed(2);
   const decaps = Array.isArray(net.decap_refs) ? net.decap_refs : [];
   const decap = decaps.length
-    ? `<span class="decap-badge" title="Decoupling caps: ${decaps.join(", ")}">◉×${decaps.length}</span>`
+    ? `<span class="decap-badge" title="Decoupling caps: ${escapeHtml(decaps.join(", "))}">◉×${decaps.length}</span>`
     : "";
   return `
-    <tr class="${selectedNets.has(net.name) ? 'net-selected-row' : ''}" data-net="${net.name}" style="--net-color: ${color};">
-      <td class="net-col-select"><input type="checkbox" class="net-col-select" ${selectedNets.has(net.name) ? 'checked' : ''} data-net="${net.name}"></td>
+    <tr class="${selectedNets.has(net.name) ? 'net-selected-row' : ''}" data-net="${safeName}" style="--net-color: ${color};">
+      <td class="net-col-select"><input type="checkbox" class="net-col-select" ${selectedNets.has(net.name) ? 'checked' : ''} data-net="${safeName}"></td>
       <td class="net-col-name">
         <span class="net-swatch" style="background: ${color};"></span>
-        ${net.name}${pwr}
+        ${netName}${pwr}
       </td>
       <td class="net-col-pads">${net.pad_count ?? ""}</td>
       <td class="net-col-fps">${net.footprint_count ?? ""}</td>
       <td class="net-col-tracks">${net.track_count ?? ""}</td>
       <td class="net-col-vias">${net.via_count ?? ""}</td>
       <td class="net-col-width">${width}</td>
-      <td class="net-col-pwr" data-power-cell="${net.name}" title="${pwrTitle}" style="cursor:pointer;">${pwrCtrl}</td>
+      <td class="net-col-pwr" data-power-cell="${safeName}" title="${pwrTitle}" style="cursor:pointer;">${pwrCtrl}</td>
       <td class="net-col-decap">${decap}</td>
       <td class="net-col-protect">
-        <label class="chk"><input type="checkbox" class="net-protect-cb" ${net.protected ? 'checked' : ''} data-net="${net.name}" title="Protected nets are routed first and never ripped up"></label>
+        <label class="chk"><input type="checkbox" class="net-protect-cb" ${net.protected ? 'checked' : ''} data-net="${safeName}" title="Protected nets are routed first and never ripped up"></label>
       </td>
     </tr>
   `;
 }
 
 function renderNetsTable(nets) {
-  const tbody = document.getElementById("nets-tbody");
+  const tbody = el("nets-tbody");
   if (!tbody) return;
   
   tbody.innerHTML = nets.map(netRowHtml).join("");
@@ -2692,7 +2744,7 @@ function renderNetsTable(nets) {
         // Re-fetch to update table
         await fetchNets();
       } catch (err) {
-        console.error("Failed to toggle protected:", err);
+        toast(`protect toggle failed: ${err.message}`);
         // Revert checkbox on error
         await fetchNets();
       }
@@ -2712,7 +2764,7 @@ function renderNetsTable(nets) {
         await postJSON("/api/nets/power", { net, power: markPower });
         await fetchNets();
       } catch (err) {
-        console.error("Failed to toggle power:", err);
+        toast(`power toggle failed: ${err.message}`);
         await fetchNets();
       }
     });
@@ -2763,7 +2815,7 @@ function syncNetRowSelection() {
     if (cb) cb.checked = on;
     tr.classList.toggle("net-selected-row", on);
   });
-  const selectAllCb = document.getElementById("nets-select-all");
+  const selectAllCb = el("nets-select-all");
   if (selectAllCb) {
     const rows = [...document.querySelectorAll("#nets-tbody tr")].map(tr => tr.dataset.net).filter(Boolean);
     selectAllCb.checked = rows.length > 0 && rows.every(n => selectedNets.has(n));
@@ -2774,12 +2826,12 @@ function syncNetRowSelection() {
 
 function updateNetSelectionUI() {
   const count = selectedNets.size;
-  const routeBtn = document.getElementById("route-selected-btn");
+  const routeBtn = el("route-selected-btn");
   if (routeBtn) {
     routeBtn.disabled = count === 0;
     routeBtn.textContent = count > 0 ? `Route ${count} Selected Net${count > 1 ? 's' : ''}` : "Route Selected Nets";
   }
-  const ripBtn = document.getElementById("rip-selected-btn");
+  const ripBtn = el("rip-selected-btn");
   if (ripBtn) {
     ripBtn.disabled = count === 0;
     ripBtn.textContent = count > 0 ? `Rip Selected (${count})` : "Rip Selected Nets";
@@ -2807,14 +2859,14 @@ async function loadRoutingParams() {
     } catch (err) { /* no board loaded — nothing is mode-owned */ }
     renderRoutingParams(routingParams, owned, preset);
   } catch (err) {
-    console.error("Failed to load routing params:", err);
+    toast(`routing params load failed: ${err.message}`);
     renderRoutingParams({});
   }
 }
 
 // Render routing params sliders
 function renderRoutingParams(params, modeOwned = [], modePreset = {}) {
-  const grid = document.getElementById("routing-params-grid");
+  const grid = el("routing-params-grid");
   if (!grid) return;
   
   const ROUTING_PARAM_DEFS = [
@@ -2896,7 +2948,7 @@ function renderRoutingParams(params, modeOwned = [], modePreset = {}) {
 
 // Read routing params from UI
 function readRoutingParams() {
-  const grid = document.getElementById("routing-params-grid");
+  const grid = el("routing-params-grid");
   if (!grid) return {};
   const params = {};
   grid.querySelectorAll('input[data-key]').forEach(input => {
@@ -2920,7 +2972,7 @@ async function saveRoutingParams() {
     });
     routingParams = params;
   } catch (err) {
-    console.error("Failed to save routing params:", err);
+    toast(`routing params save failed: ${err.message}`);
   }
 }
 
@@ -2999,7 +3051,7 @@ async function cancelRoutingJob(jobId) {
   try {
     await apiFetch(jobUrl(jobId, "/cancel"), { method: "POST" });
   } catch (err) {
-    console.error("Cancel failed:", err);
+    toast(`cancel failed: ${err.message}`);
   }
 }
 
@@ -3063,8 +3115,12 @@ function formatTotalsDiag({ totals, failures, doneCount, netCount, lastBoardVers
 async function routeSelectedNets() {
   if (selectedNets.size === 0) return;
   const diag = routeDiag;
-  const cancelBtn = document.getElementById("route-cancel-btn");
-  const progress = document.getElementById("route-progress");
+  const cancelBtn = el("route-cancel-btn");
+  const progress = el("route-progress");
+  if (!diag || !progress) {
+    console.warn("missing route diag/progress nodes");
+    return;
+  }
 
   const nets = Array.from(selectedNets);
   await saveRoutingParams();
@@ -3079,6 +3135,7 @@ async function routeSelectedNets() {
   setRouteBusy(true);
   progress.hidden = false;
   progress.value = 0;
+  if (cancelBtn) cancelBtn.hidden = false;
   routeCancelRequested = false;
 
   const totals = { tracks: 0, vias: 0, routed: 0, failed: 0, expansions: 0, astarS: 0 };
@@ -3175,9 +3232,9 @@ async function routeSelectedNets() {
 async function ripSelectedNets() {
   if (selectedNets.size === 0) return;
   const diag = routeDiag;
-  const ripBtn = document.getElementById("rip-selected-btn");
-  const routeBtn = document.getElementById("route-selected-btn");
-  const routeAllBtn = document.getElementById("route-all-btn");
+  const ripBtn = el("rip-selected-btn");
+  const routeBtn = el("route-selected-btn");
+  const routeAllBtn = el("route-all-btn");
   const nets = Array.from(selectedNets);
   for (const b of [ripBtn, routeBtn, routeAllBtn]) {
     if (b) { b.disabled = true; b.classList.add("loading"); }
@@ -3192,7 +3249,7 @@ async function ripSelectedNets() {
       : "no copper removed";
     const skipped = (r.skipped_protected || []).join(", ");
     diag.textContent = `ripped ${txt}` + (skipped ? `; kept protected ${skipped}` : "") + ` (v${r.version})`;
-    undoBtn.disabled = false;
+    if (undoBtn) undoBtn.disabled = false;
     if (r.version) {
       lastVersion = r.version;
       await fetchAndInjectSVG(r.version);
@@ -3208,7 +3265,7 @@ async function ripSelectedNets() {
   }
 }
 
-document.getElementById("route-cancel-btn").addEventListener("click", () => {
+on("route-cancel-btn", "click", () => {
   // Cooperative cancel: the in-flight job stops between pairs/attempts
   // server-side (already-routed nets are kept). The poll loop observes the
   // flag, posts the cancel, then collects the partial outcome.
@@ -3241,10 +3298,10 @@ async function routeAllNets() {
 }
 
 // Event listeners for routing panel
-document.getElementById("route-selected-btn").addEventListener("click", routeSelectedNets);
-document.getElementById("route-all-btn").addEventListener("click", routeAllNets);
-document.getElementById("rip-selected-btn").addEventListener("click", ripSelectedNets);
-document.getElementById("gnd-islands-btn").addEventListener("click", fetchGndIslands);
+on("route-selected-btn", "click", routeSelectedNets);
+on("route-all-btn", "click", routeAllNets);
+on("rip-selected-btn", "click", ripSelectedNets);
+on("gnd-islands-btn", "click", fetchGndIslands);
 
 // GND pour continuity overlay (Phase 1 diagnostics): bbox per island,
 // red dashed = dead (no pad/via connection, cf. KiCad isolated-fill DRC).
@@ -3314,11 +3371,11 @@ async function refreshInletsDiag() {
 
 async function saveInlets() {
   const diag = inletsDiag;
-  const gRef = document.getElementById("inlet-gnd-ref").value.trim();
-  const gPad = document.getElementById("inlet-gnd-pad").value.trim();
-  const pNet = document.getElementById("inlet-pwr-net").value.trim();
-  const pRef = document.getElementById("inlet-pwr-ref").value.trim();
-  const pPad = document.getElementById("inlet-pwr-pad").value.trim();
+  const gRef = (el("inlet-gnd-ref")?.value ?? "").trim();
+  const gPad = (el("inlet-gnd-pad")?.value ?? "").trim();
+  const pNet = (el("inlet-pwr-net")?.value ?? "").trim();
+  const pRef = (el("inlet-pwr-ref")?.value ?? "").trim();
+  const pPad = (el("inlet-pwr-pad")?.value ?? "").trim();
   const body = { power: {} };
   if (gRef && gPad) body.gnd = { ref: gRef, pad: gPad };
   if (pNet && pRef && pPad) body.power[pNet] = { ref: pRef, pad: pPad };
@@ -3347,10 +3404,14 @@ async function fetchImpedance() {
     isOn: () => impedanceVisible, setOn: v => { impedanceVisible = v; },
     render: renderImpedanceOverlay, failPrefix: "impedance analysis failed",
     load: async () => {
+      // The results live inside the collapsed section: open it so the
+      // report is visible instead of filling a hidden box.
+      const sec = el("impedance-details");
+      if (sec) sec.open = true;
       // Fall back to each input's own default so empty fields can't silently
       // tighten the test to a stale hardcoded value.
-      const gEl = document.getElementById("imp-gnd-max");
-      const pEl = document.getElementById("imp-pwr-max");
+      const gEl = el("imp-gnd-max");
+      const pEl = el("imp-pwr-max");
       const gMax = gEl.value || gEl.defaultValue || "50";
       const pMax = pEl.value || pEl.defaultValue || "250";
       impedanceData = await apiJson(`/api/routing/debug/impedance?gnd_max_mohm=${encodeURIComponent(gMax)}&power_max_mohm=${encodeURIComponent(pMax)}`);
@@ -3363,9 +3424,9 @@ async function fetchImpedance() {
 // The full data is already client-side, so toggling never refetches.
 const impedanceExpanded = new Set();
 function renderImpedanceResults() {
-  const box = document.getElementById("impedance-results");
+  const box = el("impedance-results");
   const data = impedanceData;
-  if (!data) return;
+  if (!data || !box) return;
   const verdictColor = v => v === "pass" ? "#2ea87a" : (v === "attention" ? "#d9a13b" : "#e06c75");
   const s = data.summary || {};
   const br = data.bridges || {};
@@ -3374,19 +3435,19 @@ function renderImpedanceResults() {
     `<span style="color:#d9a13b;">attention ${s.attention ?? 0}</span>` +
     `<span style="color:#7d8b99;"> · bridges explicit ${(br.explicit || []).length} · auto ${br.auto ?? 0} · cross-net ${br.cross_net ?? 0}</span></div>`;
   for (const net of (data.nets || [])) {
-    const inl = (net.inlets || []).map(i => `${i.ref}.${i.pad}`).join(", ") || "no-inlet";
-    html += `<div style="margin-top:.35rem;"><b>${net.net}</b> <span style="color:#7d8b99;">inlet ${inl} · worst ${net.worst_mohm ?? "—"} mΩ · fail ${net.failures} · attn ${net.attention}</span>`;
+    const inl = (net.inlets || []).map(i => `${escapeHtml(i.ref)}.${escapeHtml(i.pad)}`).join(", ") || "no-inlet";
+    html += `<div style="margin-top:.35rem;"><b>${escapeHtml(net.net)}</b> <span style="color:#7d8b99;">inlet ${inl} · worst ${net.worst_mohm ?? "—"} mΩ · fail ${net.failures} · attn ${net.attention}</span>`;
     const expanded = impedanceExpanded.has(net.net);
     const pads = expanded ? (net.pads || []) : (net.pads || []).slice(0, 12);
     const rows = pads.map(p =>
-      `<tr><td>${p.ref}.${p.pad}</td><td>${p.connected ? (p.r_mohm ?? "—") : "—"}</td>` +
+      `<tr><td>${escapeHtml(p.ref)}.${escapeHtml(p.pad)}</td><td>${p.connected ? (p.r_mohm ?? "—") : "—"}</td>` +
       `<td>vias ${p.vias_used} · paths ${p.disjoint_paths}${p.bridges_used ? ` · br ${p.bridges_used}` : ""}</td>` +
-      `<td style="color:${verdictColor(p.verdict)};">${p.verdict}${p.reason ? ` (${p.reason})` : ""}</td></tr>`
+      `<td style="color:${verdictColor(p.verdict)};">${escapeHtml(p.verdict)}${p.reason ? ` (${escapeHtml(p.reason)})` : ""}</td></tr>`
     ).join("");
     if (rows) html += `<table style="margin-top:.2rem;border-collapse:collapse;"><tbody>${rows}</tbody></table>`;
     const hidden = (net.pads || []).length - Math.min(12, (net.pads || []).length);
     if (hidden > 0) {
-      html += `<div><button class="imp-expand-btn" data-net="${net.net}" style="font-size:.72rem;color:#7d8b99;background:none;border:none;cursor:pointer;padding:0;">` +
+      html += `<div><button class="imp-expand-btn" data-net="${escapeHtml(net.net)}" style="font-size:.72rem;color:#7d8b99;background:none;border:none;cursor:pointer;padding:0;">` +
         (expanded ? "show less ▲" : `… ${hidden} more pads (worst first) ▼`) + `</button></div>`;
     }
     html += `</div>`;
@@ -3427,29 +3488,29 @@ function renderImpedanceOverlay() {
     }
   });
 }
-document.getElementById("impedance-btn").addEventListener("click", fetchImpedance);
-document.getElementById("inlets-save-btn").addEventListener("click", saveInlets);
-document.getElementById("inlets-clear-btn").addEventListener("click", clearGndInlet);
+on("impedance-btn", "click", fetchImpedance);
+on("inlets-save-btn", "click", saveInlets);
+on("inlets-clear-btn", "click", clearGndInlet);
 
 // ---- Bridges: mated inter-panel pairs (pick two pins + link) ----
 let bridgePick = null; // 'a' | 'b' | null
 function setBridgePick(which) {
   bridgePick = (bridgePick === which) ? null : which;
-  const pa = document.getElementById("bridge-pick-a");
-  const pb = document.getElementById("bridge-pick-b");
+  const pa = el("bridge-pick-a");
+  const pb = el("bridge-pick-b");
   if (pa) pa.textContent = bridgePick === "a" ? "Picking…" : "Pick A";
   if (pb) pb.textContent = bridgePick === "b" ? "Picking…" : "Pick B";
 }
 // Capture-phase: claim pad clicks while picking, before footprint selection.
-viewport.addEventListener("click", e => {
+viewport?.addEventListener("click", e => {
   if (!bridgePick) return;
   const padEl = e.target.closest("[data-pad]");
   if (!padEl) return;
   const ref = padEl.getAttribute("data-ref") || "";
   const pad = padEl.getAttribute("data-pad") || "";
   if (!ref || !pad) return;
-  document.getElementById(`bridge-${bridgePick}-ref`).value = ref;
-  document.getElementById(`bridge-${bridgePick}-pad`).value = pad;
+  const _br = el(`bridge-${bridgePick}-ref`); if (_br) _br.value = ref;
+  const _bp = el(`bridge-${bridgePick}-pad`); if (_bp) _bp.value = pad;
   setBridgePick(bridgePick); // disarm (toggles off)
   e.stopPropagation();
   e.preventDefault();
@@ -3467,7 +3528,8 @@ async function postBridges(bridges) {
 }
 
 async function refreshBridges() {
-  const box = document.getElementById("bridges-list");
+  const box = el("bridges-list");
+  if (!box) return;
   const diag = bridgesDiag;
   try {
     const data = await getInlets();
@@ -3480,7 +3542,7 @@ async function refreshBridges() {
     }
     box.hidden = false;
     box.innerHTML = bridges.map((b, i) =>
-      `<span style="margin-right:.6rem;">${b.a.ref}.${b.a.pad}↔${b.b.ref}.${b.b.pad} (${b.r_mohm} mΩ)` +
+      `<span style="margin-right:.6rem;">${escapeHtml(b.a.ref)}.${escapeHtml(b.a.pad)}↔${escapeHtml(b.b.ref)}.${escapeHtml(b.b.pad)} (${b.r_mohm} mΩ)` +
       `<button data-bridge-del="${i}" title="Remove this bridge" style="margin-left:.2rem;">✕</button></span>`
     ).join("");
     box.querySelectorAll("[data-bridge-del]").forEach(btn => {
@@ -3498,11 +3560,11 @@ async function refreshBridges() {
 
 async function linkBridge() {
   const diag = bridgesDiag;
-  const aRef = document.getElementById("bridge-a-ref").value.trim();
-  const aPad = document.getElementById("bridge-a-pad").value.trim();
-  const bRef = document.getElementById("bridge-b-ref").value.trim();
-  const bPad = document.getElementById("bridge-b-pad").value.trim();
-  const r = parseFloat(document.getElementById("bridge-r").value) || 20.0; // BRIDGE_DEFAULT_MOHM
+  const aRef = (el("bridge-a-ref")?.value ?? "").trim();
+  const aPad = (el("bridge-a-pad")?.value ?? "").trim();
+  const bRef = (el("bridge-b-ref")?.value ?? "").trim();
+  const bPad = (el("bridge-b-pad")?.value ?? "").trim();
+  const r = parseFloat(el("bridge-r")?.value) || 20.0; // BRIDGE_DEFAULT_MOHM
   if (!aRef || !aPad || !bRef || !bPad) {
     if (diag) diag.textContent = "fill A ref/pad and B ref/pad (or Pick from the board)";
     return;
@@ -3513,8 +3575,10 @@ async function linkBridge() {
 }
 
 async function suggestBridges() {
-  const box = document.getElementById("bridge-suggest-list");
+  const box = el("bridge-suggest-list");
   const diag = bridgesDiag;
+  const sec = el("bridges-details");
+  if (sec) sec.open = true;
   try {
     const data = await apiJson("/api/nets/bridge-suggestions");
     const mates = data.mates || [];
@@ -3532,12 +3596,12 @@ async function suggestBridges() {
       `<span style="color:#d9a13b;">${diff.length} different-net pairs (names differ by design to fool KiCad DRC — tick to link as intended)</span> ` +
       `<button id="bridge-apply-btn">Apply checked</button></div>` +
       all.map(({ m, pre }, i) =>
-        `<label style="margin-right:.6rem;" title="${m.net_a || "—"} ↔ ${m.net_b || "—"}">` +
+        `<label style="margin-right:.6rem;" title="${escapeHtml(m.net_a || "—")} ↔ ${escapeHtml(m.net_b || "—")}">` +
         `<input type="checkbox" class="bridge-sug" data-i="${i}"${pre ? " checked" : ""}> ` +
-        `${m.a.ref}.${m.a.pad}↔${m.b.ref}.${m.b.pad} ` +
-        `<span style="color:#7d8b99;">${m.match ? m.net_a : `${m.net_a || "—"}↔${m.net_b || "—"}`}</span></label>`
+        `${escapeHtml(m.a.ref)}.${escapeHtml(m.a.pad)}↔${escapeHtml(m.b.ref)}.${escapeHtml(m.b.pad)} ` +
+        `<span style="color:#7d8b99;">${m.match ? escapeHtml(m.net_a) : `${escapeHtml(m.net_a || "—")}↔${escapeHtml(m.net_b || "—")}`}</span></label>`
       ).join("");
-    document.getElementById("bridge-apply-btn").addEventListener("click", async () => {
+    on("bridge-apply-btn", "click", async () => {
       const checked = [...box.querySelectorAll(".bridge-sug:checked")].map(cb => all[Number(cb.dataset.i)].m);
       if (!checked.length) return;
       const cur = (await getInlets()).bridges || [];
@@ -3553,15 +3617,30 @@ async function suggestBridges() {
     box.textContent = `suggestions failed: ${err}`;
   }
 }
-document.getElementById("bridge-pick-a").addEventListener("click", () => setBridgePick("a"));
-document.getElementById("bridge-pick-b").addEventListener("click", () => setBridgePick("b"));
-document.getElementById("bridge-link-btn").addEventListener("click", linkBridge);
-document.getElementById("bridge-suggest-btn").addEventListener("click", suggestBridges);
+on("bridge-pick-a", "click", () => setBridgePick("a"));
+on("bridge-pick-b", "click", () => setBridgePick("b"));
+on("bridge-link-btn", "click", linkBridge);
+on("bridge-suggest-btn", "click", suggestBridges);
 refreshBridges();
 refreshInletsDiag();
 
+// Collapsed route sections persist across reloads like other display-only
+// prefs (layer visibility, overlay toggles). State keys are UI-only.
+for (const id of ["impedance-details", "bridges-details"]) {
+  const sec = el(id);
+  if (!sec) continue;
+  try {
+    if (localStorage.getItem(`route-section:${id}`) === "open") sec.open = true;
+  } catch { /* private mode: default collapsed */ }
+  sec.addEventListener("toggle", () => {
+    try {
+      localStorage.setItem(`route-section:${id}`, sec.open ? "open" : "shut");
+    } catch { /* ignore */ }
+  });
+}
+
 // Select all checkbox in nets table (in-place: full list stays rendered)
-document.getElementById("nets-select-all").addEventListener("change", e => {
+on("nets-select-all", "change", e => {
   const rows = document.querySelectorAll("#nets-tbody tr");
   if (e.target.checked) {
     rows.forEach(tr => {
@@ -3578,7 +3657,7 @@ document.getElementById("nets-select-all").addEventListener("change", e => {
 });
 
 // Protect all checkbox
-document.getElementById("nets-protect-all").addEventListener("change", async e => {
+on("nets-protect-all", "change", async e => {
   const rows = document.querySelectorAll("#nets-tbody tr");
   for (const tr of rows) {
     const net = tr.dataset.net;
@@ -3588,45 +3667,45 @@ document.getElementById("nets-protect-all").addEventListener("change", async e =
       try {
         await postJSON("/api/nets/protected", { net, protected: e.target.checked });
       } catch (err) {
-        console.error("Failed to toggle protect all:", err);
+        toast(`protect toggle failed: ${err.message}`);
       }
     }
   }
   await fetchNets();
 });
 
-const routingPanel = document.getElementById("routing-panel");
-const placementPanel = document.getElementById("placement-panel");
-const docsPanel = document.getElementById("docs-panel");
+const routingPanel = el("routing-panel");
+const placementPanel = el("placement-panel");
+const docsPanel = el("docs-panel");
 
 function setActivePanel(which) {
   placementPanel.hidden = which !== "place";
   routingPanel.hidden = which !== "route";
   docsPanel.hidden = which !== "docs";
-  document.getElementById("place-tab-btn").classList.toggle("active", which === "place");
-  document.getElementById("route-tab-btn").classList.toggle("active", which === "route");
-  document.getElementById("docs-tab-btn").classList.toggle("active", which === "docs");
+  el("place-tab-btn")?.classList.toggle("active", which === "place");
+  el("route-tab-btn")?.classList.toggle("active", which === "route");
+  el("docs-tab-btn")?.classList.toggle("active", which === "docs");
 }
 
 // Tab switching for Place/Route/Docs panels
-document.getElementById("place-tab-btn").addEventListener("click", () => {
+on("place-tab-btn", "click", () => {
   setActivePanel("place");
 });
 
-document.getElementById("route-tab-btn").addEventListener("click", () => {
+on("route-tab-btn", "click", () => {
   setActivePanel("route");
   fetchNets();
   loadRoutingParams();
 });
 
-document.getElementById("docs-tab-btn").addEventListener("click", () => {
+on("docs-tab-btn", "click", () => {
   setActivePanel("docs");
   loadDocsList();
 });
 
 // ---- Docs tab: curated markdown served by /api/docs/* (no new deps) ----
 function escapeHtml(s) {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  return String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
 function renderInline(s) {
@@ -3705,7 +3784,7 @@ function stripDocsFrontMatter(md) {
 
 async function loadDocsList() {
   const sel = docsSelect;
-  const diag = document.getElementById("docs-diag");
+  const diag = el("docs-diag");
   if (docsLoaded && sel.options.length) { loadDocContent(sel.value); return; }
   try {
     const data = await apiJson("/api/docs/list");
@@ -3729,49 +3808,52 @@ async function loadDocsList() {
 }
 
 async function loadDocContent(name) {
-  const el = document.getElementById("docs-content");
-  const diag = document.getElementById("docs-diag");
+  const docEl = el("docs-content");
+  const diag = el("docs-diag");
   if (!name) return;
-  diag.textContent = "loading…";
+  if (diag) diag.textContent = "loading…";
   try {
     const data = await apiJson(`/api/docs/content?name=${encodeURIComponent(name)}`);
-    el.innerHTML = renderMarkdown(stripDocsFrontMatter(data.markdown || ""));
-    const rl = document.getElementById("docs-rendered-link");
-    if (data.rendered_url) {
-      rl.style.display = "";
-      rl.href = data.rendered_url;
-      rl.textContent = data.rendered_stale ? "rendered (stale) ↗" : "rendered ↗";
-      rl.title = data.rendered_stale
-        ? "Pre-rendered HTML is older than the source — re-run scripts/regen_*.sh"
-        : "Pre-rendered HTML with figures and math";
-    } else {
-      rl.style.display = "none";
+    if (docEl) docEl.innerHTML = renderMarkdown(stripDocsFrontMatter(data.markdown || ""));
+    const rl = el("docs-rendered-link");
+    if (rl) {
+      if (data.rendered_url) {
+        rl.style.display = "";
+        rl.href = data.rendered_url;
+        rl.textContent = data.rendered_stale ? "rendered (stale) ↗" : "rendered ↗";
+        rl.title = data.rendered_stale
+          ? "Pre-rendered HTML is older than the source — re-run scripts/regen_*.sh"
+          : "Pre-rendered HTML with figures and math";
+      } else {
+        rl.style.display = "none";
+      }
     }
     // Rewrite relative .md links to stay inside the allowlisted viewer
-    el.querySelectorAll("a").forEach(a => {
+    docEl?.querySelectorAll("a").forEach(a => {
       const href = a.getAttribute("href") || "";
       if (/^[^:/?#]+\.md(#.*)?$/i.test(href) || href.startsWith("docs/")) {
         const target = href.split("#")[0].replace(/^\.\//, "");
         a.addEventListener("click", (e) => {
           e.preventDefault();
           const sel = docsSelect;
+          if (!sel) return;
           const match = [...sel.options].find(o => o.value === target || o.value.endsWith("/" + target) || target.endsWith(o.value));
           if (match) { sel.value = match.value; loadDocContent(match.value); }
         });
       }
     });
-    diag.textContent = data.truncated ? "truncated (size cap)" : `${data.title}`;
+    if (diag) diag.textContent = data.truncated ? "truncated (size cap)" : `${data.title}`;
   } catch (err) {
-    diag.textContent = `docs failed: ${err.message}`;
+    if (diag) diag.textContent = `docs failed: ${err.message}`;
   }
 }
 
-docsSelect.addEventListener("change", (e) => {
+docsSelect?.addEventListener("change", (e) => {
   loadDocContent(e.target.value);
 });
 
-document.getElementById("docs-open-tab-btn").addEventListener("click", () => {
-  const name = docsSelect.value;
+on("docs-open-tab-btn", "click", () => {
+  const name = docsSelect?.value;
   if (name) window.open(`/docs.html?doc=${encodeURIComponent(name)}`, "_blank", "noopener");
 });
 
@@ -3782,7 +3864,7 @@ document.getElementById("docs-open-tab-btn").addEventListener("click", () => {
 // Saves parseInt px so a reload restores "<n>px" (previously the sidebar
 // saved the "px"-suffixed string and restored "<n>pxpx", i.e. never).
 function initHorizResizer({ resizerId, panel, minW, maxW, storageKey, sign = 1, onDown }) {
-  const resizer = document.getElementById(resizerId);
+  const resizer = el(resizerId);
   if (!resizer || !panel) return;
   const saved = localStorage.getItem(storageKey);
   if (saved) panel.style.width = parseInt(saved, 10) + "px";
@@ -3813,9 +3895,8 @@ function initHorizResizer({ resizerId, panel, minW, maxW, storageKey, sign = 1, 
 }
 
 // Resizable sidebar splitter (script runs after the DOM, so elements exist).
-const sidebar = document.getElementById("sidebar");
 initHorizResizer({
-  resizerId: "resizer", panel: sidebar,
+  resizerId: "resizer", panel: partsSidebar,
   minW: 320, maxW: 500, storageKey: "sidebar-width", sign: 1,
 });
 
@@ -3850,7 +3931,7 @@ document.addEventListener("keydown", e => {
   } else if (e.key === " ") {
     // Space - step selected
     e.preventDefault();
-    stepSelectedBtn.click();
+    stepSelectedBtn?.click();
   } else if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && motion.frames.length) {
     const tag = (document.activeElement?.tagName || "").toLowerCase();
     if (tag === "input" || tag === "select" || tag === "textarea") return;
@@ -3874,16 +3955,18 @@ async function loadAppVersion() {
     const res = await fetch("/api/version");
     if (res.ok) {
       const data = await res.json();
-      document.getElementById("app-version").textContent = "v" + data.version;
+      const _av = el("app-version"); if (_av) _av.textContent = "v" + data.version;
     }
   } catch (err) {
-    console.error("Failed to load version:", err);
+    /* version badge is best-effort */
   }
 }
 
 loadAppVersion();
 loadParams().then(applyUrlPreset).catch(() => {});
-document.getElementById("forces-legend").style.display =
-  document.getElementById("forces-toggle").checked ? "inline-flex" : "none";
+{
+  const _fl = el("forces-legend");
+  if (_fl) _fl.style.display = el("forces-toggle")?.checked ? "inline-flex" : "none";
+}
 poll();
 setInterval(poll, 2000);

@@ -167,6 +167,15 @@
   #docs-content a { color:#7ee0a0; }
   #docs-content table { border-collapse:collapse; font-size:.65rem; margin:.4em 0; }
   #docs-content th, #docs-content td { border:1px solid #2a3540; padding:.2rem .4rem; text-align:left; }
+  /* Collapsible route-panel sections (power integrity, mated pairs).
+     Same disclosure pattern as #advanced-params-details on Place. */
+  .route-section { border-top:1px solid #2a3540; padding:.3rem .7rem .4rem; font-size:.72rem; }
+  .route-section > summary { cursor:pointer; color:#d7e0e9; font-size:.72rem; font-weight:600; }
+  .route-section > summary:hover { color:#7ee0a0; }
+  .route-section .section-hint { margin:.3rem 0 .2rem; font-size:.68rem; color:#9fb0c0; line-height:1.4; }
+  #advanced-params-details { padding:.3rem .7rem; font-size:.7rem; color:#9fb0c0; }
+  #advanced-params-details > summary { cursor:pointer; color:#d7e0e9; }
+  #advanced-params-details > summary:hover { color:#7ee0a0; }
   .chk { display:flex; gap:.3rem; align-items:center; font-size:.7rem; color:#9fb0c0; }
   #diag { margin-left:auto; color:#7d8b99; font-size:.65rem; min-width:200px; }
   

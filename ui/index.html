@@ -256,35 +256,43 @@
             <span id="route-diag"></span>
           </div>
           <div id="gnd-islands-results" style="font-size:.72rem;padding:.2rem .7rem;" hidden></div>
-          <div id="inlets-bar" style="font-size:.72rem;padding:.2rem .7rem;display:flex;gap:.4rem;flex-wrap:wrap;align-items:center;">
-            <span title="User-picked power-entry anchors for the impedance report">Inlets:</span>
-            <label>GND <input id="inlet-gnd-ref" size="5" placeholder="J1" title="GND inlet footprint ref"></label>
-            <label><input id="inlet-gnd-pad" size="3" placeholder="1" title="GND inlet pad number"></label>
-            <label>PWR net <input id="inlet-pwr-net" size="6" placeholder="VIN" title="Power net name"></label>
-            <label><input id="inlet-pwr-ref" size="5" placeholder="J1" title="Power inlet footprint ref"></label>
-            <label><input id="inlet-pwr-pad" size="3" placeholder="2" title="Power inlet pad number"></label>
-            <button id="inlets-save-btn" title="Save inlet anchors">Set</button>
-            <button id="inlets-clear-btn" title="Clear the GND inlet">Clear GND</button>
-            <label title="Fail threshold for GND pads">GND≤<input id="imp-gnd-max" size="4" value="50" title="GND max mΩ">mΩ</label>
-            <label title="Fail threshold for power pads">PWR≤<input id="imp-pwr-max" size="4" value="250" title="Power max mΩ">mΩ</label>
-            <span id="inlets-diag" style="color:#7d8b99;"></span>
-          </div>
-          <div id="bridges-bar" style="font-size:.72rem;padding:.2rem .7rem;display:flex;gap:.4rem;flex-wrap:wrap;align-items:center;">
-            <span title="Mated inter-panel pairs (pin headers, board-to-board connectors). Analysis shorts each pair with contact resistance.">Bridges:</span>
-            <label>A <input id="bridge-a-ref" size="5" placeholder="J7" title="Bridge endpoint A footprint ref"></label>
-            <label><input id="bridge-a-pad" size="3" placeholder="4" title="Bridge endpoint A pad number"></label>
-            <label>B <input id="bridge-b-ref" size="5" placeholder="J9" title="Bridge endpoint B footprint ref"></label>
-            <label><input id="bridge-b-pad" size="3" placeholder="4" title="Bridge endpoint B pad number"></label>
-            <label title="Contact resistance per mated pair (header contacts run ~10-20 mΩ, well above a via)">R<input id="bridge-r" size="4" value="20.0" title="mΩ">mΩ</label>
-            <button id="bridge-pick-a" title="Click a pad on the board to fill A">Pick A</button>
-            <button id="bridge-pick-b" title="Click a pad on the board to fill B">Pick B</button>
-            <button id="bridge-link-btn" title="Short A↔B as a mated pair">Link</button>
-            <button id="bridge-suggest-btn" title="Propose header mates by panel position + pin count">Suggest</button>
-            <span id="bridges-diag" style="color:#7d8b99;"></span>
-          </div>
-          <div id="bridges-list" style="font-size:.72rem;padding:.1rem .7rem;" hidden></div>
-          <div id="bridge-suggest-list" style="font-size:.72rem;padding:.1rem .7rem;" hidden></div>
-          <div id="impedance-results" style="font-size:.72rem;padding:.2rem .7rem;overflow:auto;" hidden></div>
+          <details class="route-section" id="impedance-details">
+            <summary title="DC-resistance screening for GND + power nets. Report only — never changes copper.">Power integrity (report only)</summary>
+            <p class="section-hint">Picks where power enters the board, then grades every GND/power pad by DC resistance from that entry. Set one GND entry and one entry per power net, choose fail thresholds, then run Impedance. Report only — it never changes copper.</p>
+            <div id="inlets-bar" style="font-size:.72rem;padding:.2rem .7rem;display:flex;gap:.4rem;flex-wrap:wrap;align-items:center;">
+              <span title="Power-entry anchors: where current enters the board, measured from here">Power entry:</span>
+              <label>GND <input id="inlet-gnd-ref" size="5" placeholder="J1" title="GND entry footprint ref (e.g. power connector)"></label>
+              <label><input id="inlet-gnd-pad" size="3" placeholder="1" title="GND entry pad number"></label>
+              <label>PWR net <input id="inlet-pwr-net" size="6" placeholder="VIN" title="Power net name"></label>
+              <label><input id="inlet-pwr-ref" size="5" placeholder="J1" title="Power entry footprint ref"></label>
+              <label><input id="inlet-pwr-pad" size="3" placeholder="2" title="Power entry pad number"></label>
+              <button id="inlets-save-btn" title="Save entry anchors">Set</button>
+              <button id="inlets-clear-btn" title="Clear the GND entry">Clear GND</button>
+              <label title="Pads above this resistance from the GND entry fail">GND fail over <input id="imp-gnd-max" size="4" value="50" title="GND fail threshold in mΩ">mΩ</label>
+              <label title="Pads above this resistance from their power entry fail">PWR fail over <input id="imp-pwr-max" size="4" value="250" title="Power fail threshold in mΩ">mΩ</label>
+              <span id="inlets-diag" style="color:#7d8b99;"></span>
+            </div>
+            <div id="impedance-results" style="font-size:.72rem;padding:.2rem .7rem;overflow:auto;" hidden></div>
+          </details>
+          <details class="route-section" id="bridges-details">
+            <summary title="Declare the two halves of a mated connector so the report can see through the joint.">Mated pairs (bridges)</summary>
+            <p class="section-hint">Declares that two pads are the two halves of one mated connector (pin header, board-to-board) so the report can see through the mechanical joint. Each link adds a small contact resistance — headers typically 10–20 mΩ, far above a via. Pick fills from the board, Link joins the pair, Suggest proposes mates.</p>
+            <div id="bridges-bar" style="font-size:.72rem;padding:.2rem .7rem;display:flex;gap:.4rem;flex-wrap:wrap;align-items:center;">
+              <span title="Mated inter-panel pairs (pin headers, board-to-board connectors). Analysis shorts each pair with contact resistance.">Mated pair:</span>
+              <label>Side A <input id="bridge-a-ref" size="5" placeholder="J7" title="Side A footprint ref (e.g. plug side)"></label>
+              <label><input id="bridge-a-pad" size="3" placeholder="4" title="Side A pad number"></label>
+              <label>Side B <input id="bridge-b-ref" size="5" placeholder="J9" title="Side B footprint ref (e.g. socket side)"></label>
+              <label><input id="bridge-b-pad" size="3" placeholder="4" title="Side B pad number"></label>
+              <label title="Contact resistance per mated pair (header contacts run ~10-20 mΩ, well above a via)">Contact <input id="bridge-r" size="4" value="20.0" title="mΩ per mated pair">mΩ</label>
+              <button id="bridge-pick-a" title="Click a pad on the board to fill Side A">Pick A</button>
+              <button id="bridge-pick-b" title="Click a pad on the board to fill Side B">Pick B</button>
+              <button id="bridge-link-btn" title="Short Side A↔Side B as one mated pair">Link A↔B</button>
+              <button id="bridge-suggest-btn" title="Propose header mates by panel position + pin count">Suggest</button>
+              <span id="bridges-diag" style="color:#7d8b99;"></span>
+            </div>
+            <div id="bridges-list" style="font-size:.72rem;padding:.1rem .7rem;" hidden></div>
+            <div id="bridge-suggest-list" style="font-size:.72rem;padding:.1rem .7rem;" hidden></div>
+          </details>
           <div class="params" id="routing-params-grid"></div>
           <div class="nets-table-container">
             <table id="nets-table">
