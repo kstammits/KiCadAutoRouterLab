@@ -86,8 +86,10 @@ def test_chunked_sequential_matches_batched(minimal_tree):
         assert 0.8 <= ratio <= 1.2, f"track totals diverged: {totals['tracks']} vs {batched_route_tracks}"
     assert totals["vias"] <= (batched.vias_added - batched.stitch_vias_added) + 2
 
-    # Both flows must leave fewer GND islands than they found. (Chunked
-    # typically repairs more: it stitches after every net.)
+    # Both flows must not leave more GND islands than they found. (On the
+    # old fragmented pours this was a strict reduction; on intact pours
+    # routing carves and stitching restores, so non-regression is the
+    # invariant. Chunked typically repairs more: it stitches after every net.)
     from kicad_autorouter.routing.grid import create_grid_from_model
     from kicad_autorouter.routing.pour import gnd_islands
     initial = sum(len(v) for v in gnd_islands(
@@ -96,7 +98,7 @@ def test_chunked_sequential_matches_batched(minimal_tree):
         final_model = board_model(final_tree)
         final = sum(len(v) for v in gnd_islands(
             final_model, create_grid_from_model(final_model)).values())
-        assert final < initial, f"{tag}: islands {initial} -> {final}"
+        assert final <= initial, f"{tag}: islands {initial} -> {final}"
     """Cancelling after k nets keeps their copper (no rollback by design)."""
     model = board_model(minimal_tree)
     nets = _routable_nets(model)

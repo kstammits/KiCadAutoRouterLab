@@ -32,6 +32,9 @@ Open work only. Completed changes belong in git history, not here.
   and the tight Q2 neighborhood. Landed: no-net halos, `unconnected-*`
   handling, foreign-SMD hard exclusion, conservative track half. Remaining
   suspects: the own-cell secondary toll and narrow inter-pad gaps.
+  Corridor guidance misses: the fine-grid walkable Q1–Q2 thread is sealed
+  by ANY-blocked-supercell coarsening (no corridor at 4x or 2x); needs a
+  thread-preserving finder or push-and-shove.
 - **Heuristic-weight experiment**: sweep `heuristic_weight` 3.0 vs 1.0 on
   tube111 signal nets and a DCCF sample; gate on routing regressions and
   path-cost parity before changing the default.
@@ -47,6 +50,11 @@ Open work only. Completed changes belong in git history, not here.
 - **`pour_copper_mask` foreign cuts**: accumulate different-net cuts into
   one mask per zone instead of allocating and ANDing a full `zeros(H, W)`
   per track.
+- **Rebuild width-awareness**: rebuilt grids mark pre-existing tracks
+  centerline-only (`obstacles._mark_track` has no width inflation) while
+  in-batch `_apply_route_to_grid` reserves the full emitted-width corridor,
+  so later chunked nets may take slightly tighter paths than batched ones.
+  Make rebuilds width-aware so the flows converge.
 
 ## Four-layer support (retired spec; none landed)
 
