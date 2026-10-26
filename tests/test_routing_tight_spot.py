@@ -31,8 +31,7 @@ from kicad_autorouter.routing.pipeline import (
     resolve_track_width,
     via_halo_radius_cells,
 )
-from kicad_autorouter.routing.router import CostMap, SingleNetRouter
-from kicad_autorouter.routing.scheduler import RipUpManager
+from kicad_autorouter.routing.router import CostMap, RipUpManager, SingleNetRouter
 
 from .helpers import make_fp as make_test_fp
 

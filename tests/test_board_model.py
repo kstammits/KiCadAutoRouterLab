@@ -17,8 +17,10 @@ from kicad_autorouter.board_model import (
     keepout_zones,
     netlist,
     sample_circular_arc,
+    sample_quadratic_bezier,
     transform_local,
     zones,
+    _polygon_bbox,
 )
 from kicad_autorouter.sexpr import SExpr, parse, parse_file
 
@@ -328,3 +330,53 @@ class TestGhostFootprints:
         ferrule_ghost = next(fp for fp in model.ghost_footprints if fp.ref == "GHOST_FERRULE")
         assert ferrule_ghost.uuid == "ghost-ferrule-001"
         assert ferrule_ghost.uuid in model.footprint_region
+
+
+# ---------------------------------------------------------------------------
+# Degenerate-geometry guards: defined behavior instead of crashes.
+#
+# (Moved from test_geometry_guards.py: board_model + contact geometry edge
+# cases live with the rest of the board-model coverage.)
+
+import numpy as np  # noqa: E402
+
+from kicad_autorouter.placement.contact import _classify_rectangle  # noqa: E402
+
+
+@pytest.mark.unit
+def test_bezier_zero_segments_yields_endpoints():
+    pts = list(sample_quadratic_bezier((0.0, 0.0), (1.0, 2.0), (2.0, 0.0), 0))
+    assert pts == [(0.0, 0.0), (2.0, 0.0)]
+
+
+@pytest.mark.unit
+def test_empty_polygon_bbox_rejected_with_context():
+    with pytest.raises(ValueError, match="empty polygon"):
+        _polygon_bbox([])
+
+
+@pytest.mark.unit
+def test_degenerate_courtyard_corner_is_not_rectangle():
+    verts = np.array(
+        [
+            [0.0, 0.0],
+            [0.0, 0.0],  # repeated vertex: zero-length edge
+            [2.0, 0.0],
+            [2.0, 1.0],
+        ]
+    )
+    assert _classify_rectangle(verts) is None
+
+
+@pytest.mark.unit
+def test_valid_rectangle_still_classifies():
+    verts = np.array(
+        [
+            [0.0, 0.0],
+            [2.0, 0.0],
+            [2.0, 1.0],
+            [0.0, 1.0],
+        ]
+    )
+    assert _classify_rectangle(verts) is not None
+    assert _polygon_bbox([Point(x, y) for x, y in verts]) == (0.0, 2.0, 0.0, 1.0)

@@ -21,7 +21,7 @@ from kicad_autorouter.routing.pipeline import (
     _strip_gnd_blockers_from_model,
     route_nets,
 )
-from kicad_autorouter.routing.scheduler import RipUpManager, is_rippupable_victim
+from kicad_autorouter.routing.router import RipUpManager, is_rippupable_victim
 from kicad_autorouter.sexpr import SExpr, parse_file
 
 from .helpers import make_fp

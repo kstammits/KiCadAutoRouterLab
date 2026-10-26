@@ -4,17 +4,17 @@ from __future__ import annotations
 
 import math
 import time
+from collections import defaultdict
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
+from scipy import ndimage
 
+from ..board_model import is_ground_net
 from .corridor import find_corridor
 from .grid import RoutingGrid
 from .obstacles import POUR
-from .pair_cost import kruskal_connect, ordered_pairs, UnionFind
-from .search_window import Window, for_pair, full_board, grow
-from .via_sites import build_via_ok_mask
 
 
 @dataclass(frozen=True)
@@ -793,3 +793,266 @@ class SingleNetRouter:
         elif cell_val >= 25:  # COURTYARD
             base += self.cost_map.courtyard_penalty
         return base
+
+
+# ---------------------------------------------------------------------------
+# Pair ordering for multi-terminal nets: Kruskal by Manhattan proximity.
+#
+# Eager MST ran A* on all ``n*(n-1)/2`` terminal pairs, then kept ``n-1``.
+# Since rip/re-lay favors speed over bit-identical paths, pairs are visited
+# in cheap Manhattan order and unioned on success, stopping once the tree is
+# complete. Typical cost: ``~n-1`` searches instead of ``~n^2/2``. A failing
+# pair is simply skipped; later pairs bridge the remaining components.
+
+def manhattan(a: Tuple[int, int, int], b: Tuple[int, int, int]) -> int:
+    """Lower bound on wire steps between terminals (layers count as steps)."""
+    return abs(a[0] - b[0]) + abs(a[1] - b[1]) + abs(a[2] - b[2])
+
+
+def ordered_pairs(terminals: List[Tuple[int, int, int]]) -> List[Tuple[int, int]]:
+    """All ``(i, j)`` pairs, shortest Manhattan distance first."""
+    pairs = [
+        (manhattan(terminals[i], terminals[j]), i, j)
+        for i in range(len(terminals))
+        for j in range(i + 1, len(terminals))
+    ]
+    pairs.sort()
+    return [(i, j) for _, i, j in pairs]
+
+
+class UnionFind:
+    """Disjoint-set with path compression for Kruskal assembly."""
+
+    def __init__(self, n: int):
+        self.root = list(range(n))
+        self.components = n
+
+    def find(self, x: int) -> int:
+        root = self.root
+        while root[x] != x:
+            root[x] = root[root[x]]
+            x = root[x]
+        return x
+
+    def union(self, a: int, b: int) -> bool:
+        """Merge sets; True when this connected two components."""
+        ra, rb = self.find(a), self.find(b)
+        if ra == rb:
+            return False
+        self.root[rb] = ra
+        self.components -= 1
+        return True
+
+
+def kruskal_connect(
+    terminals: List[Tuple[int, int, int]],
+    search_fn: Callable[[int, int], Tuple[bool, object, float]],
+) -> Tuple[List[Tuple[int, int]], Dict[Tuple[int, int], object], Dict[Tuple[int, int], float], int, bool]:
+    """Search pairs in Manhattan order until connected (or pairs exhaust).
+
+    ``search_fn(i, j)`` returns ``(success, path, cost)``. Returns
+    ``(edges, paths, costs, searches, connected)`` where ``paths``/``costs``
+    are keyed both ``(i, j)`` and ``(j, i)`` for drop-in MST use.
+    """
+    n = len(terminals)
+    edges: List[Tuple[int, int]] = []
+    paths: Dict[Tuple[int, int], object] = {}
+    costs: Dict[Tuple[int, int], float] = {}
+    if n < 2:
+        return edges, paths, costs, 0, False
+
+    uf = UnionFind(n)
+    searches = 0
+    for i, j in ordered_pairs(terminals):
+        if uf.components == 1:
+            break
+        if uf.find(i) == uf.find(j):
+            continue
+        searches += 1
+        success, path, cost = search_fn(i, j)
+        if success:
+            uf.union(i, j)
+            edges.append((i, j))
+            paths[(i, j)] = paths[(j, i)] = path
+            costs[(i, j)] = costs[(j, i)] = cost
+    return edges, paths, costs, searches, uf.components == 1
+
+
+# ---------------------------------------------------------------------------
+# Search windows: bound each A* run to a sub-rectangle of the board.
+#
+# A long 2-pad net (e.g. VIN across 20cm of DCCF) otherwise floods the full
+# ``H x W x layers`` grid: every pair-search allocates a full-size ``g_score``
+# array and may expand far from the straight-line corridor. A window clips
+# both the allocation and the expansion to ``bbox(start, goal) + margin``,
+# grown on failure with a full-board fallback so routability never regresses.
+
+@dataclass(frozen=True)
+class Window:
+    """Inclusive board-cell rectangle ``[c0..c1] x [r0..r1]``."""
+
+    c0: int
+    r0: int
+    c1: int
+    r1: int
+
+
+def for_pair(
+    sc: int,
+    sr: int,
+    gc: int,
+    gr: int,
+    W: int,
+    H: int,
+    margin: int,
+) -> Window:
+    """Bounding box of both terminals dilated by ``margin`` and clipped."""
+    m = max(0, int(margin))
+    return Window(
+        c0=max(0, min(sc, gc) - m),
+        r0=max(0, min(sr, gr) - m),
+        c1=min(W - 1, max(sc, gc) + m),
+        r1=min(H - 1, max(sr, gr) + m),
+    )
+
+
+def grow(window: Window, W: int, H: int, factor: float = 2.0) -> Window:
+    """Expand about the center by ``factor`` (each side), clipped to board."""
+    f = max(1.0, float(factor))
+    cw = (window.c0 + window.c1) / 2.0
+    rw = (window.r0 + window.r1) / 2.0
+    hw = (window.c1 - window.c0 + 1) * f / 2.0
+    hh = (window.r1 - window.r0 + 1) * f / 2.0
+    return Window(
+        c0=max(0, int(cw - hw)),
+        r0=max(0, int(rw - hh)),
+        c1=min(W - 1, int(cw + hw)),
+        r1=min(H - 1, int(rw + hh)),
+    )
+
+
+def full_board(W: int, H: int) -> Window:
+    """Fallback window covering the whole board."""
+    return Window(c0=0, r0=0, c1=W - 1, r1=H - 1)
+
+
+# ---------------------------------------------------------------------------
+# Precomputed via-landing mask: hoist the clearance scan out of A*.
+#
+# ``SingleNetRouter._via_landing_blocked`` scanned a ``radius``-disc on every
+# layer for every via candidate — up to twice per expansion, in pure Python.
+# The predicate depends only on static-per-net inputs (cost grid, secondary
+# exclusion rings, via-block solder areas, clearance radius), so it is
+# evaluated once per net here with identical disc semantics, by reverse
+# stamping: each obstacle cell forbids all via centers within ``radius``.
+#
+# Returns ``(H, W)`` bool where True = via landing allowed (before the
+# THT-free / via-block checks the search still applies per cell).
+
+def _disc_structure(radius: int) -> np.ndarray:
+    """Boolean ``(2*radius+1, 2*radius+1)`` disc (``dr²+dc² <= r²``).
+
+    Matches the historical per-cell ``_stamp`` scan exactly (integer
+    arithmetic, no float error): a via center is forbidden when an
+    obstacle cell lies within the Euclidean ``radius`` disc.
+    """
+    y, x = np.ogrid[-radius : radius + 1, -radius : radius + 1]
+    return (x * x + y * y <= radius * radius)
+
+
+def build_via_ok_mask(
+    cost_grid: np.ndarray,
+    via_block_mask: np.ndarray,
+    tht_via_mask: np.ndarray,
+    secondary,
+    radius: int,
+    blocked_threshold: int,
+    secondary_blocked: int,
+) -> np.ndarray:
+    """Boolean ``(H, W)`` mask of allowed via centers."""
+    n_layers, H, W = cost_grid.shape
+    radius = max(0, int(radius))
+    if radius <= 0:
+        return np.ones((H, W), dtype=bool)
+
+    # Union of all obstacle sources across layers (2D): a via halo on
+    # any layer forbids the (row, col) center on every layer. OR-then-
+    # dilate equals dilate-then-OR, so one dilation replaces the old
+    # per-obstacle-cell Python ``_stamp`` loop with identical results.
+    obstacle = np.zeros((H, W), dtype=bool)
+    for l in range(n_layers):
+        layer = cost_grid[l]
+        sec = secondary[l] if secondary is not None else None
+        if sec is not None:
+            obstacle |= (layer >= blocked_threshold) | (sec >= secondary_blocked)
+        else:
+            obstacle |= layer >= blocked_threshold
+    obstacle |= np.asarray(via_block_mask, dtype=bool)
+
+    if not obstacle.any():
+        forbidden = np.zeros((H, W), dtype=bool)
+    else:
+        forbidden = ndimage.binary_dilation(
+            obstacle, structure=_disc_structure(radius)
+        )
+        forbidden = np.asarray(forbidden, dtype=bool)
+
+    ok = ~forbidden
+    # Drilled holes stay legal hop sites (the barrel already exists).
+    ok |= np.asarray(tht_via_mask, dtype=bool)
+    return ok
+
+
+# ---------------------------------------------------------------------------
+# Net scheduling and rip-up management for multi-net routing.
+
+def is_rippupable_victim(net_name: Optional[str]) -> bool:
+    """True when a net's copper may be evicted to make way for another net.
+
+    GND-only rule: ground-pour copper (GND/GND_PWR/VGND, ...) is cheaply
+    replicated elsewhere (zones refill + ``plan_stitches()`` rebuilds
+    inter-layer continuity), so it is always fair game. Signal/power
+    copper is never evicted except when explicitly requested or
+    placement-moved — this is what stops tracks ripping each other out.
+    """
+    return is_ground_net(net_name)
+
+
+class RipUpManager:
+    """Manages rip-up and retry for failed nets."""
+
+    def __init__(self, max_attempts: int = 3):
+        self.max_attempts = max_attempts
+        self.attempts: Dict[str, int] = defaultdict(int)
+        self.routed_paths: Dict[str, List[Tuple[int, int, int]]] = {}
+        self.net_failures: Dict[str, str] = {}
+
+    def can_rip(self, requestor_net: str, victim_net: Optional[str]) -> bool:
+        """True when ``requestor_net`` may evict ``victim_net``'s copper.
+
+        Priority rule ("don't rip anyone higher than you"): only GND-family
+        victims are evictable, regardless of requestor. Same-net re-route
+        (requestor == victim) is always allowed and handled by the
+        pipeline's requested-net rip-up, not by this gate.
+        """
+        if victim_net is None:
+            return False
+        if requestor_net == victim_net:
+            return True
+        return is_rippupable_victim(victim_net)
+
+    def record_success(self, net_name: str, path: List[Tuple[int, int, int]]) -> None:
+        """Record successful routing."""
+        self.routed_paths[net_name] = path
+        self.net_failures.pop(net_name, None)
+
+    def record_failure(self, net_name: str, reason: str) -> None:
+        """Record failed routing attempt."""
+        self.attempts[net_name] += 1
+        self.net_failures[net_name] = reason
+
+    def can_retry(self, net_name: str) -> bool:
+        return self.attempts[net_name] < self.max_attempts
+
+    def get_failed_nets(self) -> List[str]:
+        return [n for n, a in self.attempts.items() if a >= self.max_attempts]

@@ -11,14 +11,17 @@ import pytest
 
 from kicad_autorouter.routing.grid import RoutingGrid
 from kicad_autorouter.routing.output import routes_to_tracks_vias
-from kicad_autorouter.routing.pair_cost import (
+from kicad_autorouter.routing.router import (
+    CostMap,
+    SingleNetRouter,
+    build_via_ok_mask,
+    for_pair,
+    full_board,
+    grow,
     kruskal_connect,
     manhattan,
     ordered_pairs,
 )
-from kicad_autorouter.routing.router import CostMap, SingleNetRouter
-from kicad_autorouter.routing.search_window import for_pair, full_board, grow
-from kicad_autorouter.routing.via_sites import build_via_ok_mask
 
 
 def _grid(w=80, h=40):

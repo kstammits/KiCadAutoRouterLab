@@ -48,7 +48,7 @@ from kicad_autorouter.routing.pipeline import (  # noqa: E402
     route_nets,
 )
 from kicad_autorouter.routing.router import SECONDARY_BLOCKED  # noqa: E402
-from kicad_autorouter.routing.via_sites import build_via_ok_mask  # noqa: E402
+from kicad_autorouter.routing.router import build_via_ok_mask  # noqa: E402
 from kicad_autorouter.sexpr import parse_file  # noqa: E402
 from kicad_autorouter.board_model import board_model  # noqa: E402
 
