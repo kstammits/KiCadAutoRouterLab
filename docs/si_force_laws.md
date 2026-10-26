@@ -183,6 +183,7 @@ mean. `stall_window=0` disables.
 | `attraction_k_N` | N | 8e-3 | legalize-regime net pull |
 | `wall_k_N` | N | 0.1 | contact/halo strength |
 | `wall_halo_m` | m | 0.006 | near-miss reach and depth scale (Legalize preset: 0.004) |
+| `cross_layer_pin_halo_m` | m | 0.0007 | THT-pin vs far-side body near-miss (0 = off) |
 | `wall_exponent` | — | 2.0 | wall-law exponent (`≥ 1`) |
 | `wall_cap_depth_mm` | mm | 0.0 | deep-penetration cap (0 = off) |
 | `momentum_alpha` | — | 0.7 | old-velocity blend after rigid projection |

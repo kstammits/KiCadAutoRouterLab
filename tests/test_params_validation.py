@@ -41,6 +41,19 @@ def test_from_dict_round_trip_defaults():
 
 @pytest.mark.unit
 @pytest.mark.params
+def test_cross_layer_pin_halo_tunable():
+    """0.7mm default, round-trips, 0 allowed (off), negatives/non-finite rejected."""
+    assert PlacementParams.from_dict({}).cross_layer_pin_halo_m == pytest.approx(0.0007)
+    p = PlacementParams.from_dict({"cross_layer_pin_halo_m": 0.001})
+    assert PlacementParams.from_dict(p.to_dict()) == p
+    assert PlacementParams.from_dict({"cross_layer_pin_halo_m": 0.0}).cross_layer_pin_halo_m == 0.0
+    for bad in (-1e-6, float("nan"), float("inf"), "0.0005", True):
+        with pytest.raises(ValueError):
+            PlacementParams.from_dict({"cross_layer_pin_halo_m": bad})
+
+
+@pytest.mark.unit
+@pytest.mark.params
 def test_from_dict_rejects_bad_numerics():
     for key, bad in (
         ("grid_resolution_mm", 0),

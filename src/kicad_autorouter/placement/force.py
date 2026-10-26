@@ -396,6 +396,14 @@ def _compute_total_force(
                     if dist_sq < reach_sq + 1e-8:
                         _close[i, j] = _close[j, i] = True
                         _halo_matrix_local[i, j] = _halo_matrix_local[j, i] = halo
+                else:
+                    # Cross-layer: bodies never collide, but THT pins
+                    # protruding onto the far side do (pin-vs-body below).
+                    # Seed the pair halo with the pin halo so those pushes
+                    # use solder-fillet clearance, not the courtyard halo.
+                    # _close stays False: no body-body response. 0 disables.
+                    pin_halo = params.cross_layer_pin_halo_m * 1000.0
+                    _halo_matrix_local[i, j] = _halo_matrix_local[j, i] = pin_halo
 
             fp_centroids_arr = body_centroids_arr
             fp_radii_arr = body_radii_arr
@@ -630,6 +638,10 @@ def _compute_total_force(
                 pins_j = pins_data[fp_j_uuid]
                 body_i_empty = body_empty[fp_i_uuid]
                 body_j_empty = body_empty[fp_j_uuid]
+                # Per-pair halo from the broadphase matrix: same-layer pairs
+                # carry wall_halo_m, cross-layer pairs carry
+                # cross_layer_pin_halo_m (0 when out of reach / disabled).
+                pair_halo = float(_halo_matrix_local[i, j])
                 pins_i_empty = pins_empty[fp_i_uuid]
                 pins_j_empty = pins_empty[fp_j_uuid]
 
@@ -693,7 +705,7 @@ def _compute_total_force(
                         dy = pin_cy - body_cy
                         center_dist = math.hypot(dx, dy)
                         max_reach = (
-                            pin_radius + body_radii_arr[j] + params.wall_halo_m * 1000.0
+                            pin_radius + body_radii_arr[j] + pair_halo
                         )
                         if center_dist > max_reach:
                             continue
@@ -714,7 +726,7 @@ def _compute_total_force(
                                 _apply_contact_push(i, j, pin_poly, body_j, 0.0, cand)
                             else:
                                 pin_dist = pin_poly.distance(body_j)
-                                pin_halo = params.wall_halo_m * 1000.0
+                                pin_halo = pair_halo
                                 if pin_dist < pin_halo:
                                     _apply_contact_push(
                                         i, j, pin_poly, body_j, -pin_dist, cand
@@ -736,7 +748,7 @@ def _compute_total_force(
                         dy = body_cy - pin_cy
                         center_dist = math.hypot(dx, dy)
                         max_reach = (
-                            body_radii_arr[i] + pin_radius + params.wall_halo_m * 1000.0
+                            body_radii_arr[i] + pin_radius + pair_halo
                         )
                         if center_dist > max_reach:
                             continue
@@ -757,7 +769,7 @@ def _compute_total_force(
                                 _apply_contact_push(i, j, body_i, pin_poly, 0.0, cand)
                             else:
                                 pin_dist = body_i.distance(pin_poly)
-                                pin_halo = params.wall_halo_m * 1000.0
+                                pin_halo = pair_halo
                                 if pin_dist < pin_halo:
                                     _apply_contact_push(
                                         i, j, body_i, pin_poly, -pin_dist, cand
@@ -778,7 +790,7 @@ def _compute_total_force(
                             dy = pin_i_center[1] - pin_j_center[1]
                             center_dist = math.hypot(dx, dy)
                             max_reach = (
-                                pin_i_radius + pin_j_radius + params.wall_halo_m * 1000.0
+                                pin_i_radius + pin_j_radius + pair_halo
                             )
                             if center_dist > max_reach:
                                 continue
@@ -800,7 +812,7 @@ def _compute_total_force(
                                     )
                                 else:
                                     pin_dist = pin_i_poly.distance(pin_j_poly)
-                                    pin_halo = params.wall_halo_m * 1000.0
+                                    pin_halo = pair_halo
                                     if pin_dist < pin_halo:
                                         _apply_contact_push(
                                             i, j, pin_i_poly, pin_j_poly, -pin_dist, cand
@@ -832,7 +844,7 @@ def _compute_total_force(
                             _ux, _uy = _bx / _bn, _by / _bn
                     if ctx is not None:
                         ctx.last_contact[_pair] = (_ux, _uy)
-                    _halo_mm = params.wall_halo_m * 1000.0
+                    _halo_mm = pair_halo
                     _mag = _wall_mag(
                         params.wall_k_N, _s_mm, _halo_mm,
                         params.wall_exponent, params.wall_cap_depth_mm,

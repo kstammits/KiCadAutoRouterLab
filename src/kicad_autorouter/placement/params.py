@@ -57,6 +57,12 @@ class PlacementParams:
     wall_k_N: float = 0.1
     # Near-miss halo reach (meters). Calibrated 6mm (sweep_wall_hardening.py).
     wall_halo_m: float = 0.006
+    # Cross-layer pin halo reach (meters). THT pins protruding onto the far
+    # side collide with opposite-side bodies through this near-miss reach
+    # instead of the full courtyard halo: a solder fillet needs ~0.7mm of
+    # clearance, not the 4-6mm part-outline halo. 0 disables cross-layer
+    # pin response entirely (bodies on opposite sides never collide).
+    cross_layer_pin_halo_m: float = 0.0007
     # Wall-law exponent (dimensionless, default 2 = quadratic).
     # Quadratic reduces overlaps on real boards (sweep_wall_hardening.py).
     wall_exponent: float = 2.0
@@ -148,6 +154,7 @@ def _validate(params: PlacementParams) -> None:
         "attraction_k_N",
         "wall_k_N",
         "wall_halo_m",
+        "cross_layer_pin_halo_m",
         "ghost_k_N",
         "damping_Ns_m",
         "friction_N",

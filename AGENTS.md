@@ -77,6 +77,8 @@ browser workflow UI. Works on real boards, DRC-validated.
   ghost / tangential.
 - Post-hoc legality (`placement/legality.py`) checks the final merged
   pose. A `converged` run that is illegal is reported as `stalled`.
+  Cross-layer pairs use pin keep-out (true-shape THT copper vs opposite
+  courtyard), not courtyard overlap — opposite-side SMD may stack.
 - The DCCF overlap audit compares final courtyards against the input
   board: pre-existing squeezes are baselined, while new or materially
   worsened >1 mm² overlaps fail. Magnet boards scatter inside the outline.

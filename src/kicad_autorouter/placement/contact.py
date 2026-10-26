@@ -379,6 +379,61 @@ def _wall_mag(
 
 
 # ---------------------------------------------------------------------------
+# Pad copper geometry (per-layer, true shape)
+# ---------------------------------------------------------------------------
+
+def pad_copper_polygon(pad) -> Polygon:
+    """Copper polygon of one pad in board coordinates (true shape, not a disc).
+
+    ``circle`` (and square ``oval``) is exact; ``rect`` is exact;
+    ``roundrect`` uses its bounding rect (corner radius only removes copper,
+    so this over-covers); ``oval`` is a capsule along the pad's local x-axis
+    (same construction as the router's ``_paint_pad``); ``chamfered`` /
+    ``trapezoid`` / ``custom`` / unknown fall back to the bounding rect and
+    are documented as conservative. Rotation uses ``pad.angle_deg`` (absolute
+    board orientation), so polygons built from posed pads are pose-correct.
+    """
+    w = float(pad.size_mm[0])
+    h = float(pad.size_mm[1])
+    cx = float(pad.position.x_mm)
+    cy = float(pad.position.y_mm)
+    shape = (getattr(pad, "shape", "") or "").lower()
+    if shape == "circle" or (shape == "oval" and w == h):
+        return Point(cx, cy).buffer(max(w, h) / 2.0)
+    ang = math.radians(float(pad.angle_deg or 0.0))
+    ca, sa = math.cos(ang), math.sin(ang)
+
+    def rot(sx: float, sy: float) -> tuple:
+        return (cx + sx * ca - sy * sa, cy + sy * ca + sx * sa)
+
+    hw, hh = w / 2.0, h / 2.0
+    rect = Polygon([rot(-hw, -hh), rot(hw, -hh), rot(hw, hh), rot(-hw, hh)])
+    if shape == "oval":
+        # Capsule ends (pour._paint_pad spelling): spine offset along local
+        # x by (w-h)/2, end discs of radius min/2.
+        ex, ey = ca * (w - h) / 2.0, sa * (w - h) / 2.0
+        r_end = min(w, h) / 2.0
+        ends = [
+            Point(cx - ex, cy - ey).buffer(r_end),
+            Point(cx + ex, cy + ey).buffer(r_end),
+        ]
+        return unary_union([rect, *ends])
+    return rect
+
+
+def pad_present_on_layer(pad, fp_layer: str, layer: str, copper_layers) -> bool:
+    """Whether a pad has copper on a given copper layer.
+
+    Through-hole pads (plated or bare, ``*.Cu``) span every copper layer;
+    SMD pads live only on their footprint's layer (mirrors the router's
+    ``_pad_layers``).
+    """
+    if pad.is_through_hole:
+        return layer in tuple(copper_layers or ())
+    return layer == fp_layer
+
+
+# ---------------------------------------------------------------------------
 # Courtyard geometry
 # ---------------------------------------------------------------------------
 

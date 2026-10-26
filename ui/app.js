@@ -143,6 +143,8 @@ const ADVANCED_PARAM_DEFS = [
   { key: "decap_boost", label: "Decap boost", min: 0, max: 16, step: 0.5 },
   { key: "ghost_k_N", label: "Ghost pull (N)", min: 1e-7, max: 1e-3, step: 1e-7, log: true },
   { key: "wall_exponent", label: "Wall exponent", min: 1.0, max: 3.0, step: 0.1 },
+  { key: "cross_layer_pin_halo_m", label: "X-layer pin halo (mm)", min: 0, max: 5, step: 0.05,
+    display: { unit: "mm", scale: 1000, step: 0.05 } },
   { key: "momentum_alpha", label: "Momentum alpha", min: 0.0, max: 1.0, step: 0.05 },
   { key: "contact_tangent_gamma", label: "Contact tangent γ", min: 0.0, max: 0.5, step: 0.01 },
   { key: "convergence_eps_m", label: "Convergence eps (mm)", min: 1e-7, max: 1e-3, step: 1e-7, log: true,
@@ -167,6 +169,7 @@ const PARAM_DESC = {
   decap_boost: "Decoupling-cap edge multiplier (on top of fanout scaling). Also gates the decap GND-side exception: 0 removes decap GND edges.",
   ghost_k_N: "Ghost attractor spring scale (newtons); file ka values weight it. Log scale. Only matters with ghost attractors.",
   wall_exponent: "Exponent p in wall force F = k*(1-s/h)^p. 1 = linear, 2 = quadratic (stiffens deep penetration). Legalize: 2.0; Cluster: 1.0-1.5.",
+  cross_layer_pin_halo_m: "Near-miss reach for THT pins protruding onto the far side vs opposite-side bodies. Shown in mm; stored in meters. Solder-fillet clearance (~0.7mm default), not the 4-6mm courtyard halo. 0 disables cross-layer pin response.",
   momentum_alpha: "Velocity blending alpha after rigid projection: 0 = re-derive from displacement, 1 = keep old velocity. Higher = more momentum persistence to nudge past wedges. Default 0.7.",
   contact_tangent_gamma: "Tangential assist coefficient γ: fraction of normal force applied along the tangential axis at contact. Helps parts slide along walls instead of wedging. 0 = disabled, 0.1-0.3 typical. Default 0.15.",
   convergence_eps_m: "Stop when max pad displacement per step falls below this. Shown in mm; stored in meters. Calibrated 20µm (si_force_laws.md): smaller fake-settles under contact chatter, larger stops earlier. Log scale.",
@@ -328,10 +331,12 @@ async function loadParams(defaultsOnly = false) {
 // friction ride along via the merge-POST even though they have no main-panel sliders.
 // Calibrated values: Cluster uses a 6mm halo; Legalize uses 4mm so dense
 // neighbor fields do not overpower a part's own wall. wall_exponent=2.0 and
-// convergence_eps_m=2e-5 ride along via merge-POST.
+// convergence_eps_m=2e-5 ride along via merge-POST. Both pin
+// cross_layer_pin_halo_m=0.7mm so a stale saved value cannot silently
+// diverge from calibration (far-side solder clearance is regime-independent).
 const REGIME_PRESETS = {
-  cluster: { attraction_k_N: 0.05, wall_k_N: 0.025, damping_Ns_m: 0.08, dt_s: 2e-3, vmax_m_s: 1.0, friction_N: 1e-6, wall_halo_m: 0.006, wall_exponent: 1.0, convergence_eps_m: 2e-5 },
-  legalize: { attraction_k_N: 0.008, wall_k_N: 0.1, damping_Ns_m: 0.12, dt_s: 1e-3, vmax_m_s: 1.0, friction_N: 1e-6, wall_halo_m: 0.004, wall_exponent: 2.0, convergence_eps_m: 2e-5 },
+  cluster: { attraction_k_N: 0.05, wall_k_N: 0.025, damping_Ns_m: 0.08, dt_s: 2e-3, vmax_m_s: 1.0, friction_N: 1e-6, wall_halo_m: 0.006, cross_layer_pin_halo_m: 0.0007, wall_exponent: 1.0, convergence_eps_m: 2e-5 },
+  legalize: { attraction_k_N: 0.008, wall_k_N: 0.1, damping_Ns_m: 0.12, dt_s: 1e-3, vmax_m_s: 1.0, friction_N: 1e-6, wall_halo_m: 0.004, cross_layer_pin_halo_m: 0.0007, wall_exponent: 2.0, convergence_eps_m: 2e-5 },
 };
 
 async function applyRegimePreset(name) {

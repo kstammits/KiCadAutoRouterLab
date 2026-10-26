@@ -10,9 +10,14 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 from shapely.geometry import Polygon
+from shapely.ops import unary_union
 
 from ..board_model import BoardModel, Footprint
-from .contact import _footprint_courtyard_polygon
+from .contact import (
+    _footprint_courtyard_polygon,
+    pad_copper_polygon,
+    pad_present_on_layer,
+)
 
 
 @dataclass(frozen=True)
@@ -66,6 +71,7 @@ def _collect_posed_polygons(
         uuid -> polygon (empty polygon if no courtyard)
         pad_positions array (n_pads, 2)
         uuid -> pad_indices list
+        moved model (deltas applied) for pose-correct pad geometry
     """
     from ..board_model import apply_deltas
     from .model import _collect_pad_nodes
@@ -86,15 +92,56 @@ def _collect_posed_polygons(
         pad_idx = uuid_to_idx.get(fp.uuid, [])
         polys[fp.uuid] = _build_posed_courtyard(fp, pos, pad_idx)
 
-    return polys, pos, uuid_to_idx
+    return polys, pos, uuid_to_idx, moved
+
+
+def _cross_layer_pin_overlap(
+    fa: Footprint,
+    fb: Footprint,
+    polys: Dict[str, Polygon],
+    copper_layers,
+) -> float:
+    """Worst THT-pin-vs-opposite-courtyard overlap area for a cross-layer pair.
+
+    Bodies on opposite sides stack freely; only through-hole copper
+    protruding onto the shared physical layer counts (true pad shape via
+    :func:`pad_copper_polygon`, not a disc). SMD-only pairs have no pins on
+    the far side and always return 0.0.
+    """
+    best = 0.0
+    for fp_self, other_uuid, other_layer in (
+        (fa, fb.uuid, fb.layer),
+        (fb, fa.uuid, fa.layer),
+    ):
+        other_poly = polys.get(other_uuid)
+        if other_poly is None or other_poly.is_empty:
+            continue
+        pins = [
+            pad_copper_polygon(p)
+            for p in fp_self.pads
+            if p.is_through_hole
+            and pad_present_on_layer(p, fp_self.layer, other_layer, copper_layers)
+        ]
+        if not pins:
+            continue
+        inter = unary_union(pins).intersection(other_poly)
+        if not inter.is_empty:
+            best = max(best, float(inter.area))
+    return best
 
 
 def _check_pairwise_overlaps(
     polys: Dict[str, Polygon],
     model: BoardModel,
     overlap_tolerance_mm2: float,
+    moved: BoardModel,
 ) -> Tuple[List[Tuple[str, str, float]], List[Tuple[str, str]], float]:
     """Check all pairwise courtyard overlaps within regions.
+
+    Same-layer pairs use courtyard-vs-courtyard as before. Cross-layer pairs
+    of real footprints use pin-vs-opposite-courtyard (bodies stack, THT pins
+    don't); pairs involving ghosts keep the courtyard test. Layers come from
+    the posed (moved) model.
 
     Returns:
         overlapping_pairs: list of (uuid_a, uuid_b, area_mm2) where area > tolerance
@@ -113,6 +160,18 @@ def _check_pairwise_overlaps(
     for fp in model.ghost_footprints:
         if fp.uuid:
             fp_types[fp.uuid] = _get_footprint_type(fp)
+
+    # Posed footprints + layers (deltas applied; uuids/regions unchanged).
+    posed: Dict[str, Footprint] = {}
+    layers: Dict[str, str] = {}
+    for fp in moved.footprints:
+        if fp.uuid:
+            posed[fp.uuid] = fp
+            layers[fp.uuid] = fp.layer or ""
+    for fp in moved.ghost_footprints:
+        if fp.uuid:
+            posed[fp.uuid] = fp
+            layers[fp.uuid] = getattr(fp, "layer", "") or ""
 
     # Build region groups: only compare within same region
     region_groups: Dict[int, List[str]] = {}
@@ -149,6 +208,23 @@ def _check_pairwise_overlaps(
                         inter = pa.intersection(pb)
                         if not inter.is_empty and inter.area > 1e-12:
                             exempt_pairs.append(tuple(sorted((ua, ub))))
+                    continue
+
+                # Cross-layer real footprints: bodies stack freely, so the
+                # courtyard test is replaced by THT-pin-vs-opposite-body.
+                # Ghosts keep the courtyard test (no pads to measure).
+                la = layers.get(ua, "")
+                lb = layers.get(ub, "")
+                if la and lb and la != lb and type_a != "ghost" and type_b != "ghost":
+                    fa = posed.get(ua)
+                    fb = posed.get(ub)
+                    area = _cross_layer_pin_overlap(
+                        fa, fb, polys, model.copper_layers,
+                    ) if fa is not None and fb is not None else 0.0
+                    if area > overlap_tolerance_mm2:
+                        overlapping_pairs.append((ua, ub, round(area, 6)))
+                        if area > max_overlap:
+                            max_overlap = area
                     continue
 
                 # Check overlap
@@ -259,11 +335,11 @@ def check_legality(
         LegalityReport with all findings
     """
     # Build posed courtyard polygons
-    polys, _, _ = _collect_posed_polygons(model, deltas)
+    polys, _, _, moved = _collect_posed_polygons(model, deltas)
 
     # Check pairwise overlaps
     overlapping_pairs, exempt_pairs, max_pair_overlap = _check_pairwise_overlaps(
-        polys, model, overlap_tolerance_mm2
+        polys, model, overlap_tolerance_mm2, moved
     )
 
     # Check wall violations
