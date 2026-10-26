@@ -72,6 +72,16 @@ with open(REPO_ROOT / "pyproject.toml", "rb") as f:
 # User-tuned placement parameters persist here (gitignored).
 PARAMS_PATH = REPO_ROOT / "placement.json"
 
+# MIME types for the UI_DIR static fallback below. Stylesheets are
+# MIME-blocked by browsers unless served as text/css, and scripts need
+# text/javascript; everything else keeps the previous octet-stream default.
+_STATIC_MIME = {
+    ".html": "text/html",
+    ".js": "text/javascript",
+    ".css": "text/css",
+    ".svg": "image/svg+xml",
+}
+
 # Curated docs servable via /api/docs/*. Large KiCad manuals and wikipedia
 # sources are deliberately excluded (pcbnew.md alone is ~700KB and would
 # freeze the side panel on inject).
@@ -1811,7 +1821,7 @@ class Handler(BaseHTTPRequestHandler):
         if not full.is_file():
             self._send(404, b"not found", "text/plain")
             return
-        ctype = "text/html" if full.suffix == ".html" else "application/octet-stream"
+        ctype = _STATIC_MIME.get(full.suffix, "application/octet-stream")
         self._send(200, full.read_bytes(), ctype)
 
     def do_POST(self):  # noqa: N802

@@ -1,6 +1,6 @@
 """Frames -> SVG round trip: the motion player must show internal poses.
 
-The player (`ui/index.html::applyMotionFrame`) poses each part with an
+The player (`ui/app.js::applyMotionFrame`) poses each part with an
 SVG group transform built from the frame delta vs the committed board::
 
     translate(dx dy) rotate(-da about base)
@@ -96,7 +96,7 @@ def _run_frames():
 
 
 def _player_pose(base, px, py, delta):
-    """Python replica of index.html applyMotionFrame.
+    """Python replica of app.js applyMotionFrame.
 
     SVG ``translate(dx dy) rotate(-da cx cy)`` maps ``p`` to
     ``base + R(-da).(p - base) + d`` (transforms compose left-to-right;

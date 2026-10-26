@@ -14,8 +14,8 @@ browser workflow UI. Works on real boards, DRC-validated.
     smoothing, corridor
   - top-level: `board_model.py`, `io.py`, `sexpr.py`, `drc.py`,
     `validate.py`, `ghost.py`, `mass.py`, `svg_render.py`, `pipeline.py`
-- `ui/server.py` — stdlib-HTTP API + state; `ui/index.html` — the whole
-  frontend (single file, inline CSS/JS); `ui/docs.html` — docs viewer.
+- `ui/server.py` — stdlib-HTTP API + state; `ui/index.html` + `ui/app.js`
+  (all frontend JS) + `ui/style.css`; `ui/docs.html` — docs viewer.
 - `tests/fixtures/` — `tube111.*` (105 parts, 73 nets, reference board),
   `DCCF.sved.*` (audio board, split rails), `minimal.*` (4 parts, no nets),
   plus `ghost_test.*`, `minimal_placed.*`, and `placement_parity_golden.json`.
@@ -48,7 +48,7 @@ browser workflow UI. Works on real boards, DRC-validated.
 ## Conventions
 
 - **SI units in the engine** (N, m, s); the UI converts at the boundary
-  (`toDisplay`/`fromDisplay` in `index.html`, `display: {scale}` in param
+  (`toDisplay`/`fromDisplay` in `app.js`, `display: {scale}` in param
   defs).
 - **No `print` telemetry in library code**, no function-attribute state.
   Debug output goes through return values or `logging`, never stdout.
