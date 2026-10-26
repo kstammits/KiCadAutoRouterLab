@@ -93,7 +93,7 @@ For quick iterations (not production quality), tune:
 | `dt_s` | 1 ms | 2 ms | larger steps |
 | `convergence_eps_m` | 2 µm | 10–50 µm | looser settle |
 | `stall_window` | 100 | 20–50 | stops sooner |
-| `wall_k_N` | 0.08 | 0.02–0.05 | weaker pushes |
+| `wall_k_N` | 0.1 | 0.02–0.05 | weaker pushes |
 
 Low-power runs report `stalled`/`budget` more often — expected, not a bug.
 Treat as "needs attention," not settled.

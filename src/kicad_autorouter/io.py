@@ -146,6 +146,21 @@ def rip_up_nets(
 
 COLLAPSE_OUTERS = ("F.Cu", "B.Cu")
 
+# Top-level copper graphics that carry a ``(layer …)`` child. Inner-copper
+# instances are dropped on collapse; every other layer passes through.
+COLLAPSE_ANNOTATION_HEADS = frozenset({
+    "gr_text",
+    "gr_rect",
+    "gr_circle",
+    "gr_line",
+    "gr_arc",
+    "gr_poly",
+    "gr_curve",
+    "dimension",
+    "leader",
+    "target",
+})
+
 COLLAPSE_IMPEDANCE_NOTE = (
     "collapse keeps the first dielectric/core (thickness untouched) and "
     "restacks every via as a through via (F.Cu-B.Cu): controlled-impedance "
@@ -253,13 +268,18 @@ def collapse_to_two_layer(tree: SExpr) -> Tuple[SExpr, dict]:
     """Return ``(tree, report)`` with 4-layer content collapsed to 2-layer.
 
     Pure, same style as :func:`rip_up_nets`: drops inner-layer
-    ``(segment)`` nodes, restricts or deletes ``(zone)`` nodes,
-    restacks every via to ``(layers "F.Cu" "B.Cu")`` (never drops —
-    orphaned through-vias are harmless and DRC-clean), drops inner-layer
-    ``(filled_polygon)`` caches, and prunes the stackup + ``(layers …)``
+    ``(segment)`` and ``(arc)`` track nodes, drops top-level
+    ``(filled_polygon)`` caches and copper annotations (``gr_*`` /
+    ``dimension`` / ``leader`` / ``target``) whose ``(layer …)`` is inner
+    copper, restricts or deletes ``(zone)`` nodes, restacks every via to
+    ``(layers "F.Cu" "B.Cu")`` (never drops — orphaned through-vias are
+    harmless and DRC-clean), and prunes the stackup + ``(layers …)``
     header to the two outer coppers. Footprints, pads, netclasses and
-    ``pcbplotparams`` pass through untouched. A 2-layer input returns the
-    same tree object with a zeroed report (byte-identical output).
+    ``pcbplotparams`` (including the ``layerselection`` bitmask, which
+    names no layers explicitly) pass through untouched, so ``grep In1.Cu``
+    can still hit non-structural spots such as footprint pad wildcard
+    templates. A 2-layer input returns the same tree object with a zeroed
+    report (byte-identical output).
     """
     stackup_before = list(copper_layers(tree))
     tracks_removed = 0
@@ -279,10 +299,27 @@ def collapse_to_two_layer(tree: SExpr) -> Tuple[SExpr, dict]:
         if not isinstance(child, SExpr):
             new_children.append(child)
             continue
-        if child.head == "segment":
+        if child.head in ("segment", "arc"):
             layer_node = child.find("layer")
             layer = str(layer_node.args[0]) if layer_node is not None and layer_node.args else ""
             if layer not in COLLAPSE_OUTERS:
+                tracks_removed += 1
+                changed = True
+                _note_net(child.find("net"))
+                continue
+            new_children.append(child)
+        elif child.head == "filled_polygon":
+            layer_node = child.find("layer")
+            layer = str(layer_node.args[0]) if layer_node is not None and layer_node.args else ""
+            if layer and layer not in COLLAPSE_OUTERS:
+                tracks_removed += 1
+                changed = True
+                continue
+            new_children.append(child)
+        elif child.head in COLLAPSE_ANNOTATION_HEADS:
+            layer_node = child.find("layer")
+            layer = str(layer_node.args[0]) if layer_node is not None and layer_node.args else ""
+            if _is_inner_copper(layer):
                 tracks_removed += 1
                 changed = True
                 _note_net(child.find("net"))

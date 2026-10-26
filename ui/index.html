@@ -914,7 +914,7 @@ async function loadParams(defaultsOnly = false) {
 // convergence_eps_m=2e-5 ride along via merge-POST.
 const REGIME_PRESETS = {
   cluster: { attraction_k_N: 0.05, wall_k_N: 0.025, damping_Ns_m: 0.08, dt_s: 2e-3, vmax_m_s: 1.0, friction_N: 1e-6, wall_halo_m: 0.006, wall_exponent: 1.0, convergence_eps_m: 2e-5 },
-  legalize: { attraction_k_N: 0.008, wall_k_N: 0.08, damping_Ns_m: 0.12, dt_s: 1e-3, vmax_m_s: 1.0, friction_N: 1e-6, wall_halo_m: 0.004, wall_exponent: 2.0, convergence_eps_m: 2e-5 },
+  legalize: { attraction_k_N: 0.008, wall_k_N: 0.1, damping_Ns_m: 0.12, dt_s: 1e-3, vmax_m_s: 1.0, friction_N: 1e-6, wall_halo_m: 0.004, wall_exponent: 2.0, convergence_eps_m: 2e-5 },
 };
 
 async function applyRegimePreset(name) {
@@ -2933,6 +2933,10 @@ document.getElementById("undo-btn").addEventListener("click", async () => {
     document.getElementById("step-selected-btn").textContent = "Step";
     resetMotionState();
     renderFootprintTable();
+    try {
+      const mres = await fetch("/api/mode");
+      if (mres.ok) { const m = await mres.json(); updateModeUI({ mode: m.mode, mode_warning: m.warning }); }
+    } catch (err) { /* mode chip refresh is best-effort */ }
   } catch (err) {
     diagEl.textContent = `undo failed: ${err.message}`;
   }
@@ -3028,6 +3032,11 @@ document.getElementById("reset-btn").addEventListener("click", async () => {
     if (runBtn) runBtn.textContent = "Step placement";
     document.getElementById("undo-btn").disabled = true;
     renderFootprintTable();
+    try {
+      const mres = await fetch("/api/mode");
+      if (mres.ok) { const m = await mres.json(); updateModeUI({ mode: m.mode, mode_warning: m.warning }); }
+      await loadRoutingParams();
+    } catch (err) { /* mode refresh is best-effort */ }
   } catch (err) {
     diagEl.textContent = `reset failed: ${err.message}`;
   }
@@ -3272,16 +3281,21 @@ async function loadRoutingParams() {
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
     routingParams = data.params || {};
-    // Mode-owned keys render disabled ("Managed by mode"); refill_zones
-    // always stays editable per spec. The server forces the preset at
-    // job time regardless of checkbox state.
+    // Mode-owned keys render disabled/badged ("Managed by mode"); the
+    // server forces the preset at job time regardless of input state.
+    // The owned set comes from the server (/api/mode `owned`, single
+    // source in strategy.mode_owned_keys).
     let owned = [];
+    let preset = {};
     try {
       const mres = await fetch("/api/mode");
-      if (mres.ok) owned = Object.keys((await mres.json()).preset || {})
-        .filter(k => k !== "refill_zones");
+      if (mres.ok) {
+        const minfo = await mres.json();
+        preset = minfo.preset || {};
+        owned = minfo.owned || Object.keys(preset);
+      }
     } catch (err) { /* no board loaded — nothing is mode-owned */ }
-    renderRoutingParams(routingParams, owned);
+    renderRoutingParams(routingParams, owned, preset);
   } catch (err) {
     console.error("Failed to load routing params:", err);
     renderRoutingParams({});
@@ -3289,7 +3303,7 @@ async function loadRoutingParams() {
 }
 
 // Render routing params sliders
-function renderRoutingParams(params, modeOwned = []) {
+function renderRoutingParams(params, modeOwned = [], modePreset = {}) {
   const grid = document.getElementById("routing-params-grid");
   if (!grid) return;
   
@@ -3311,34 +3325,42 @@ function renderRoutingParams(params, modeOwned = []) {
   const refillChecked = params.refill_zones ? "checked" : "";
   const stitchManaged = modeOwned.includes("stitch_gnd_vias");
   const stripManaged = modeOwned.includes("strip_gnd_blockers");
+  const refillManaged = modeOwned.includes("refill_zones");
+  const layersManaged = modeOwned.includes("allowed_layers");
+  const layersVal = modePreset.allowed_layers;
+  const layersText = layersManaged
+    ? (Array.isArray(layersVal) ? layersVal.join(", ") : "all copper layers")
+    : null;
   const debugHtml = `
     <div class="param param-flags" style="grid-column:1/-1;">
       <span>Options</span>
       <div class="row" style="gap:.9rem; flex-wrap:wrap;">
         <label class="chk" style="margin:0;" title="${stitchManaged ? "Managed by mode" : "Auto-repair GND pour continuity after routing (stitching vias + bridge tracks)"}">
-          <input type="checkbox" data-key="stitch_gnd_vias" ${stitchChecked} ${stitchManaged ? "disabled" : ""}> GND stitching
+          <input type="checkbox" data-key="stitch_gnd_vias" ${stitchChecked} ${stitchManaged ? "disabled" : ""}> GND stitching${stitchManaged ? " (mode)" : ""}
         </label>
         <label class="chk" style="margin:0;" title="${stripManaged ? "Managed by mode" : "Evict GND vias/tracks upfront before routing (rebuildable via stitching); signal/power copper is never evicted"}">
-          <input type="checkbox" data-key="strip_gnd_blockers" ${stripChecked} ${stripManaged ? "disabled" : ""}> Strip GND blockers
+          <input type="checkbox" data-key="strip_gnd_blockers" ${stripChecked} ${stripManaged ? "disabled" : ""}> Strip GND blockers${stripManaged ? " (mode)" : ""}
         </label>
-        <label class="chk" style="margin:0;" title="Refill copper pours after routing using kicad-cli (requires KiCad installed)">
-          <input type="checkbox" data-key="refill_zones" ${refillChecked}> Refill zones
+        <label class="chk" style="margin:0;" title="${refillManaged ? "Managed by mode" : "Refill copper pours after routing using kicad-cli (requires KiCad installed)"}">
+          <input type="checkbox" data-key="refill_zones" ${refillChecked} ${refillManaged ? "disabled" : ""}> Refill zones${refillManaged ? " (mode)" : ""}
         </label>
         <label class="chk" style="margin:0;" title="Enable debug output (cost grid, search frontier)">
           <input type="checkbox" data-key="debug" ${debugChecked}> Debug
         </label>
       </div>
+      ${layersManaged ? `<div class="row" style="margin-top:.4rem; font-size:.85em; opacity:.85;" title="Managed by mode — forced at job time">Layers: ${layersText} (mode)</div>` : ""}
     </div>
   `;
   
   grid.innerHTML = ROUTING_PARAM_DEFS.map(def => {
     const value = params[def.key] ?? def.default;
+    const managed = modeOwned.includes(def.key);
     return `
       <div class="param">
-        <span title="${def.label}">${def.label}</span>
+        <span title="${managed ? "Managed by mode" : def.label}">${def.label}${managed ? " (mode)" : ""}</span>
         <div class="row">
-          <input type="range" data-key="${def.key}" min="${def.min}" max="${def.max}" step="${def.step}" value="${value}">
-          <input type="number" data-key="${def.key}" min="${def.min}" max="${def.max}" step="${def.step}" value="${value}">
+          <input type="range" data-key="${def.key}" min="${def.min}" max="${def.max}" step="${def.step}" value="${value}" ${managed ? "disabled" : ""}>
+          <input type="number" data-key="${def.key}" min="${def.min}" max="${def.max}" step="${def.step}" value="${value}" ${managed ? "disabled" : ""}>
         </div>
       </div>
     `;

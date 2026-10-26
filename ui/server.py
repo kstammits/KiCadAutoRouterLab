@@ -60,6 +60,7 @@ from kicad_autorouter.strategy import (
     MODE_PRESETS,
     apply_mode,
     infer_mode,
+    mode_owned_keys,
     mode_warning,
 )
 from kicad_autorouter.svg_render import decap_fp_uuids, net_colors, render_board_svg
@@ -582,7 +583,7 @@ class BoardState:
             return self.version
 
     def reset_to_original(self) -> int:
-        """Reset to the originally loaded board."""
+        """Reset to the originally loaded board (mode re-inferred)."""
         with self._lock:
             if self.original_pcb_tree is not None:
                 self.model = board_model(self.original_pcb_tree)
@@ -599,6 +600,11 @@ class BoardState:
                 # Restore board version and warning from original
                 self.board_version = self.model.version if self.model else ""
                 self.version_warning = self.model.version_warning if self.model else None
+                # The restored bytes may carry a different stackup than the
+                # edited board; re-infer so mode matches the served content.
+                # Undo keeps the user's mode (single-step revert, same board).
+                self.mode = infer_mode(
+                    self.model.copper_layers) if self.model else None
                 self.version += 1
             return self.version
 
@@ -1283,6 +1289,7 @@ class Handler(BaseHTTPRequestHandler):
             payload = {"ok": True, **mode_info}
             if mode_info["mode"] is not None:
                 payload["preset"] = MODE_PRESETS[mode_info["mode"]]
+                payload["owned"] = mode_owned_keys(mode_info["mode"])
             self._send(200, json.dumps(payload).encode(), "application/json")
             return
         if parsed.path == "/api/board/collapse-preview":
@@ -1426,9 +1433,13 @@ class Handler(BaseHTTPRequestHandler):
                 l not in ("F.Cu", "B.Cu") for l in layers
             ):
                 tree, _ = collapse_to_two_layer(tree)
-                filename = STATE.name.replace(".kicad_pcb", "-2layer.kicad_pcb")
+                suffix, fallback = "-2layer.kicad_pcb", "-2layer.kicad_pcb"
             else:
-                filename = STATE.name.replace(".kicad_pcb", "-modified.kicad_pcb")
+                suffix, fallback = "-modified.kicad_pcb", "-modified.kicad_pcb"
+            if STATE.name.endswith(".kicad_pcb"):
+                filename = STATE.name.replace(".kicad_pcb", suffix)
+            else:
+                filename = (STATE.name or "board") + fallback
             content = to_sexpr(tree) + "\n"
             self.send_response(200)
             self.send_header("Content-Type", "application/octet-stream")
@@ -2494,7 +2505,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             STATE.set_mode(mode)
             self._send(200, json.dumps({"ok": True, **STATE.mode_status(),
-                                        "preset": MODE_PRESETS[mode]}).encode(),
+                                        "preset": MODE_PRESETS[mode],
+                                        "owned": mode_owned_keys(mode)}).encode(),
                        "application/json")
             return
 

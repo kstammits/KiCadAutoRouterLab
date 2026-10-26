@@ -99,6 +99,29 @@ def test_collapse_zone_restrict_vs_delete_shapes():
     assert len(list(new_tree.children("zone"))) == 2
 
 
+def test_collapse_drops_inner_arcs_annotations_and_top_fills():
+    tree = parse_sexpr(
+        "(kicad_pcb"
+        ' (layers (0 "F.Cu" signal) (1 "In1.Cu" signal) (3 "B.Cu" signal))'
+        ' (net 0 "")'
+        ' (arc (start 0 0) (mid 1 1) (end 2 0) (width 0.25) (layer "In1.Cu") (net 0) (uuid "a-inner"))'
+        ' (arc (start 0 0) (mid 1 1) (end 2 0) (width 0.25) (layer "F.Cu") (net 0) (uuid "a-outer"))'
+        ' (gr_text "x" (at 0 0) (layer "In1.Cu") (uuid "g-inner"))'
+        ' (gr_text "y" (at 0 0) (layer "Cmts.User") (uuid "g-user"))'
+        ' (filled_polygon (layer "In1.Cu") (pts (xy 0 0) (xy 1 0))))'
+    )
+    new_tree, report = collapse_to_two_layer(tree)
+    text = to_sexpr(new_tree)
+    assert "a-inner" not in text
+    assert "a-outer" in text
+    assert "g-inner" not in text
+    assert "g-user" in text
+    assert "filled_polygon" not in text
+    assert report["tracks_removed"] == 3
+    # Structural-only guarantee: footprints/pads/netclasses untouched.
+    assert "net 0" in text
+
+
 def test_collapse_idempotent():
     once, report1 = collapse_to_two_layer(parse_sexpr(FOUR_LAYER))
     twice, report2 = collapse_to_two_layer(once)

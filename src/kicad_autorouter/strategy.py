@@ -44,7 +44,7 @@ def apply_mode(params_dict: dict, mode: str) -> dict:
     """Return ``params_dict`` with the mode preset forced on preset-owned keys.
 
     Preset-owned keys always take the preset value (the mode owns them —
-    the UI disables those checkboxes); every other key passes through
+    the UI disables/badges those inputs); every other key passes through
     untouched.
     """
     _check_mode(mode)
@@ -53,6 +53,23 @@ def apply_mode(params_dict: dict, mode: str) -> dict:
     for key, value in preset.items():
         out[key] = list(value) if isinstance(value, list) else value
     return out
+
+
+def mode_owned_keys(mode: str) -> list:
+    """Preset-owned keys for ``mode`` (single source for UI gating).
+
+    The server forces these via :func:`apply_mode` at job time; the UI
+    disables/badges exactly this set when the mode is active.
+    """
+    _check_mode(mode)
+    return list(MODE_PRESETS[mode].keys())
+
+
+def _preset_equal(have: object, want: object) -> bool:
+    """Preset-value equality with order-insensitive list comparison."""
+    if isinstance(have, (list, tuple)) and isinstance(want, (list, tuple)):
+        return sorted(str(v) for v in have) == sorted(str(v) for v in want)
+    return have == want
 
 
 def is_custom(effective: dict, mode: str) -> bool:
@@ -64,7 +81,7 @@ def is_custom(effective: dict, mode: str) -> bool:
     _check_mode(mode)
     preset = MODE_PRESETS[mode]
     for key, value in preset.items():
-        if key not in effective or effective[key] != value:
+        if key not in effective or not _preset_equal(effective[key], value):
             return True
     return False
 

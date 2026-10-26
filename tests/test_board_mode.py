@@ -181,6 +181,47 @@ def test_preview_and_collapse_download(base):
 
 @pytest.mark.server
 @pytest.mark.minimal
+def test_mode_response_carries_owned_keys(base):
+    _load(base)
+    _, _, body = _get(f"{base}/api/mode")
+    info = json.loads(body)
+    assert info["owned"] == ["stitch_gnd_vias", "strip_gnd_blockers",
+                             "pour_severance_weight", "allowed_layers"]
+    status, _, body = _post(f"{base}/api/mode", payload={"mode": "four-layer"})
+    assert status == 200
+    assert json.loads(body)["owned"] == [
+        "stitch_gnd_vias", "strip_gnd_blockers",
+        "pour_severance_weight", "allowed_layers", "refill_zones"]
+
+
+@pytest.mark.server
+@pytest.mark.minimal
+def test_download_suffix_less_name_gets_extension(base):
+    _load(base, name="board-without-suffix", data=(
+        (FIXTURES / "minimal.kicad_pcb").read_bytes()))
+    status, headers, _ = _get(f"{base}/api/board/download")
+    assert status == 200
+    assert headers["Content-Disposition"].endswith('.kicad_pcb"')
+    assert "board-without-suffix-modified.kicad_pcb" in headers["Content-Disposition"]
+
+
+@pytest.mark.server
+@pytest.mark.minimal
+def test_reset_reinfers_mode(base):
+    _load(base, name="fourlayer.kicad_pcb", data=_grafted_four_layer_bytes())
+    _, _, body = _get(f"{base}/api/mode")
+    assert json.loads(body)["inferred"] == "four-layer"
+    _post(f"{base}/api/mode", payload={"mode": "two-layer"})
+    status, _, _ = _post(f"{base}/api/board/reset", data=b"")
+    assert status == 200
+    _, _, body = _get(f"{base}/api/mode")
+    info = json.loads(body)
+    assert info["mode"] == "four-layer"
+    assert info["inferred"] == "four-layer"
+
+
+@pytest.mark.server
+@pytest.mark.minimal
 def test_job_submit_attaches_mode_warning(base):
     _load(base)
     _post(f"{base}/api/mode", payload={"mode": "four-layer"})

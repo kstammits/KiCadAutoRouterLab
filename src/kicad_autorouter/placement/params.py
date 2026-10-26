@@ -54,7 +54,7 @@ class PlacementParams:
     # Net attraction spring pull (constant magnitude, newtons).
     attraction_k_N: float = 8e-3
     # Courtyard contact strength (newtons; elastic push-out on collision).
-    wall_k_N: float = 8e-2
+    wall_k_N: float = 0.1
     # Near-miss halo reach (meters). Calibrated 6mm (sweep_wall_hardening.py).
     wall_halo_m: float = 0.006
     # Wall-law exponent (dimensionless, default 2 = quadratic).

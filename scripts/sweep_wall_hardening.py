@@ -38,7 +38,7 @@ from kicad_autorouter.placement import PlacementParams, run_placement
 from kicad_autorouter.sexpr import parse_file
 from tests.helpers import make_fp
 
-K0 = 0.08
+K0 = 0.1
 HALO_MM = 6.0
 
 
@@ -262,9 +262,9 @@ def main(argv=None) -> int:
     if not args.skip_full:
         dccf = board_model(parse_file(REPO_ROOT / "tests/fixtures/DCCF.sved.kicad_pcb"))
         presets = {
-            "defaults": dict(attraction_k_N=0.008, wall_k_N=0.08, damping_Ns_m=0.12,
+            "defaults": dict(attraction_k_N=0.008, wall_k_N=0.1, damping_Ns_m=0.12,
                              dt_s=1e-3),
-            "legalize": dict(attraction_k_N=0.008, wall_k_N=0.09, damping_Ns_m=0.13,
+            "legalize": dict(attraction_k_N=0.008, wall_k_N=0.1, damping_Ns_m=0.13,
                              dt_s=1e-3),
         }
         for preset, kw in presets.items():
@@ -295,13 +295,13 @@ def main(argv=None) -> int:
         for p in (2.0, 3.0):
             params = PlacementParams(
                 max_iterations=args.dccf_iters, convergence_eps_m=2e-5,
-                attraction_k_N=0.008, wall_k_N=0.08, damping_Ns_m=0.12,
+                attraction_k_N=0.008, wall_k_N=0.1, damping_Ns_m=0.12,
                 dt_s=1e-3, wall_exponent=p, wall_cap_depth_mm=6.0)
             r = run_cell(dccf, params, f"dccf/defaults p={p} same-k cap=6")
             prop = r["prop"]
             pairs, max_rot = board_overlap_stats(dccf, prop)
             out["cells"].append({
-                "family": "dccf", "preset": "defaults", "p": p, "k_N": 0.08,
+                "family": "dccf", "preset": "defaults", "p": p, "k_N": 0.1,
                 "klabel": "same-k", "cap_mm": 6.0, "iters": prop.iterations,
                 "stop": prop.stop_reason,
                 "residual_N": round(prop.residual_max_force_N, 6),

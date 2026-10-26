@@ -4,9 +4,11 @@ Open work only. Completed changes belong in git history, not here.
 
 ## Placement
 
-- **DCCF long-budget regrowth**: the Legalize preset's 4 mm halo clears the
-  RV1/U1 wedge at the 200-iteration audit, but 1000-iteration runs regrow
-  C10/U2 (~1.8 → 6.1 mm²). Needs anchor-side or budget-aware work.
+- **DCCF long-budget regrowth**: `wall_k_N` 0.08 → 0.1 clears the RV1/U1
+  wedge at the 200-iteration audit (sweep `wall_hardening_2026-10-26.json`:
+  same-k DCCF cells drop 9–10 pairs / ~36–68 mm² to 1–2 pairs / ~8–12 mm²),
+  but 1000-iteration runs regrow C10/U2 (~1.8 → 6.1 mm²). Needs anchor-side
+  or budget-aware work.
 - **Halo reach recalibration**: Legalize uses 4 mm while Cluster and the
   engine default remain 6 mm. A full sweep is still needed before changing
   either global default.
@@ -51,24 +53,6 @@ Open work only. Completed changes belong in git history, not here.
 - **`plan_stitches` hoists**: move `binary_erosion(copper)` out of the group
   loop, compute the windowed EDT on the group bbox, and cache `joined_mask`
   incrementally.
-
-## Board modes and export (follow-ups; switch + collapse landed in working tree)
-
-- **Collapse inner-`arc` leak**: only `segment` nodes are dropped —
-  `(arc (layer "In1.Cu"))` survives. Apply the same outer-only filter
-  to arcs, and audit top-level `filled_polygon`, copper annotations
-  (`gr_text`/`dimension`/`leader` on `In*.Cu`), and `pcbplotparams`
-  `layerselection` (currently passthrough). Document the
-  structural-only guarantee (footprints/pads/netclasses untouched, so
-  `grep In1.Cu` can still hit non-structural spots).
-- **Mode-owned param gating**: only the stitch checkboxes are disabled
-  with "Managed by mode" — `pour_severance_weight` stays editable (and
-  `allowed_layers` invisible) while silently forced at job time.
-  Disable/badge all preset-owned keys when a mode is active.
-- **Small hardening**: `is_custom` order-sensitivity (`["B.Cu","F.Cu"]`
-  reads as custom); download filename for suffix-less board names;
-  download bytes carry no warning (visible only via `/api/state`);
-  `reset`/`undo` leave `mode` untouched (only `load()` sets it).
 
 ## Four-layer support (retired spec; none landed)
 

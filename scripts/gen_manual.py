@@ -44,7 +44,7 @@ DEFAULT_OUT = REPO_ROOT / "ui" / "manual.html"
 
 LEGALIZE = PlacementParams(
     attraction_k_N=0.008,
-    wall_k_N=0.08,
+    wall_k_N=0.1,
     damping_Ns_m=0.12,
     wall_halo_m=0.004,
     dt_s=1e-3,
@@ -327,7 +327,7 @@ or attractors that pull a named target.</p>
 
 <h2>Generated examples</h2>
 <p class="muted">All three use the Legalize preset: <code>attraction_k_N=0.008</code>,
-<code>wall_k_N=0.08</code>, <code>damping_Ns_m=0.12</code>,
+<code>wall_k_N=0.1</code>, <code>damping_Ns_m=0.12</code>,
 <code>wall_halo_m=0.004</code>, <code>wall_exponent=2</code>, 1 ms steps.
 Regenerate with <code>.venv/bin/python scripts/gen_manual.py</code>.
 Each example asserts its own invariant; generation fails if the engine drifts.</p>
