@@ -45,7 +45,6 @@
   .state-pinned { background:#3d2a1a; color:#e0a458; border:1px solid #5a4a2a; }
   .state-selected { background:#1a3d1a; color:#7ee0a0; border:1px solid #2a5a2a; }
   .state-movable { background:#1a2a1a; color:#5aaa5a; border:1px solid #2a4a2a; }
-  .state-fixed { background:#2a2a2a; color:#5b6b7a; border:1px solid #3a3a3a; }
   .state-ghost { background:#3d1a3d; color:#a85cf5; border:1px solid #5a2a5a; }
   .state-illegal { background:#3d1a1a; color:#e06c75; border:1px solid #5a2a2a; }
   
@@ -82,8 +81,6 @@
   /* Resizer */
   .resizer { width:4px; background:#2a3540; cursor:col-resize; flex-shrink:0; }
   .resizer:hover, .resizer.dragging { background:#7ee0a0; }
-  .resizer-h { height:4px; cursor:row-resize; }
-  .resizer-h:hover, .resizer-h.dragging { background:#7ee0a0; }
   
   [hidden] { display: none !important; }
 
@@ -95,7 +92,7 @@
   .num { color:#5b6b7a; font-size:.7rem; }
   p { margin:0; color:#9fb0c0; font-size:.75rem; }
   .chip { margin-left:auto; font-size:.6rem; padding:.1rem .4rem; border-radius:999px; border:1px solid #3a4a5a; color:#8fa2b5; text-transform:uppercase; letter-spacing:.05em; }
-  .chip.implemented { color:#7ee0a0; border-color:#2e6b45; }
+  .chip.layer-legend { font-size:.6rem; display:inline-flex; gap:.5rem; align-items:center; margin-left:.4rem; }
   
   .board { border:1px solid #2a3540; border-radius:8px; background:#0b0e12; overflow:hidden; flex:1; display:flex; flex-direction:column; min-height:0; }
   .board .bar { display:flex; gap:.5rem; align-items:center; padding:.4rem .7rem; border-bottom:1px solid #2a3540; font-size:.7rem; color:#7d8b99; flex-wrap:wrap; }
@@ -158,6 +155,7 @@
   .tab-btn { background:#1a222a; border-color:#3a4a5a; color:#9fb0c0; padding:.2rem .5rem; font-size:.65rem; }
   .tab-btn:hover:not(:disabled) { border-color:#7ee0a0; color:#d7e0e9; }
   .tab-btn.active { background:#1a3a1a; border-color:#2e6b45; color:#7ee0a0; }
+  .btn-mini { font-size:.65rem; padding:.05rem .35rem; }
   /* Docs panel rendering (minimal client-side markdown subset) */
   #docs-content h1, #docs-content h2, #docs-content h3 { color:#d7e0e9; margin:.6em 0 .3em; }
   #docs-content h1 { font-size:.9rem; } #docs-content h2 { font-size:.8rem; } #docs-content h3 { font-size:.75rem; }
@@ -196,13 +194,6 @@
   .sel-count { margin-left:auto; font-variant-numeric:tabular-nums; }
   
   /* Net legend (removed): nets table + SVG copper click own selection. */
-  
-  /* Parameter description table */
-  .param-desc-table { width:100%; border-collapse:collapse; font-size:.65rem; color:#9fb0c0; margin-top:.4rem; }
-  .param-desc-table th, .param-desc-table td { padding:.25rem .4rem; border:1px solid #2a3540; text-align:left; }
-  .param-desc-table th { background:#161c22; color:#d7e0e9; font-weight:600; }
-  .param-desc-table code { background:#0b0e12; padding:.05rem .25rem; border-radius:3px; font-size:.6rem; }
-  .param-desc-table tr:nth-child(even) td { background:#161c22; }
   
   /* Footprint states in SVG */
   .footprint.fp-locked line { stroke: #e06c75; stroke-dasharray: 2 2; }
@@ -272,6 +263,9 @@
 
   /* Marquee selection rectangle */
   .marquee { position:absolute; pointer-events:none; border:1px dashed #7ee0a0; background:rgba(126,224,160,0.1); z-index:10; }
+
+  /* SVG overlay groups are display-only: never capture pointer events. */
+  .overlay-none { pointer-events:none; }
 
   /* Copper (track/via) click-to-select net */
   .track { pointer-events: stroke; cursor: pointer; }

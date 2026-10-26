@@ -34,11 +34,10 @@ partsSidebarToggle.addEventListener("click", () => {
 
 async function uploadFile(f) {
   const kind = f.name.endsWith(".kicad_sch") ? "sch" : "pcb";
-  const res = await fetch(
+  const res = await apiFetch(
     `/api/load?name=${encodeURIComponent(f.name)}&kind=${kind}`,
     { method: "POST", body: f }
   );
-  if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
 
@@ -270,9 +269,7 @@ function readParams() {
 }
 
 async function loadParams(defaultsOnly = false) {
-  const res = await fetch(`/api/placement/params${defaultsOnly ? "?defaults=1" : ""}`);
-  if (!res.ok) throw new Error(await res.text());
-  const p = await res.json();
+  const p = await apiJson(`/api/placement/params${defaultsOnly ? "?defaults=1" : ""}`);
   for (const def of ALL_PARAM_DEFS) {
     if (!(def.key in p)) continue;
     // API speaks SI; convert to display units for both inputs.
@@ -308,11 +305,10 @@ const REGIME_PRESETS = {
 async function applyRegimePreset(name) {
   const preset = REGIME_PRESETS[name];
   if (!preset) return;
-  const res = await fetch("/api/placement/params", {
+  const res = await apiFetch("/api/placement/params", {
     method: "POST",
     body: JSON.stringify(preset),
   });
-  if (!res.ok) throw new Error(await res.text());
   await loadParams();
   if (typeof diagEl !== "undefined" && diagEl) {
     diagEl.textContent = `${name} preset applied (persists on next run)`;
@@ -352,7 +348,7 @@ function parseUrlPreset(knownKeys) {
 }
 
 async function applyUrlPreset() {
-  const cur = await (await fetch("/api/placement/params")).json();
+  const cur = await apiJson("/api/placement/params");
   const preset = parseUrlPreset(new Set(Object.keys(cur)));
   const n = Object.keys(preset).length;
   if (n === 0) return;
@@ -373,9 +369,7 @@ async function applyUrlPreset() {
 }
 
 async function copyPresetLink() {
-  const res = await fetch("/api/placement/params");
-  if (!res.ok) throw new Error(await res.text());
-  const p = await res.json();
+  const p = await apiJson("/api/placement/params");
   const url = new URL(location.href);
   url.search = "";
   for (const [key, val] of Object.entries(p)) {
@@ -450,8 +444,8 @@ function renderLayerToggles(copperLayers) {
     label.appendChild(document.createTextNode(` ${layer}`));
     layerTogglesEl.appendChild(label);
     const solo = document.createElement("button");
-    solo.className = "tab-btn";
-    solo.style.cssText = "font-size:.65rem;padding:.05rem .35rem;margin-left:.15rem;";
+    solo.className = "tab-btn btn-mini";
+    solo.style.marginLeft = ".15rem";
     solo.textContent = "solo";
     solo.title = `Isolate ${layer} (display-only)`;
     solo.dataset.soloLayer = layer;
@@ -461,8 +455,7 @@ function renderLayerToggles(copperLayers) {
   }
   const all = document.createElement("button");
   all.id = "layer-solo-all";
-  all.className = "tab-btn";
-  all.style.cssText = "font-size:.65rem;padding:.05rem .35rem;";
+  all.className = "tab-btn btn-mini";
   all.textContent = "all";
   all.title = "Show all copper layers (display-only)";
   all.addEventListener("click", (e) => { e.preventDefault(); setSoloLayer(null); });
@@ -490,8 +483,7 @@ function renderLayerLegend(layers) {
   if (!legend) {
     legend = document.createElement("span");
     legend.id = "layer-legend";
-    legend.className = "chip";
-    legend.style.cssText = "font-size:.6rem;display:inline-flex;gap:.5rem;align-items:center;margin-left:.4rem;";
+    legend.className = "chip layer-legend";
     layerTogglesEl.after(legend);
   }
   const FILL = { "F.Cu": "#e74c3c", "B.Cu": "#2ecc71" };
@@ -512,6 +504,15 @@ const zonesToggle = document.getElementById("zones-toggle");
 const zonesFillToggle = document.getElementById("zones-fill-toggle");
 const fitBtn = document.getElementById("fit-btn");
 const diagEl = document.getElementById("diag");
+// Hot-button/diag lookups cached once (script runs after the DOM, as above).
+const undoBtn = undoBtn;
+const stepSelectedBtn = stepSelectedBtn;
+const acceptBtn = acceptBtn;
+const routeDiag = routeDiag;
+const ghostDiag = ghostDiag;
+const docsSelect = docsSelect;
+const bridgesDiag = bridgesDiag;
+const inletsDiag = inletsDiag;
 
 let lastVersion = 0;
 let viewBox = null; // [minX, minY, width, height]
@@ -721,6 +722,113 @@ async function apiFetch(path, opts) {
   return res;
 }
 
+// JSON variant: parsed body, same throw-on-!ok semantics.
+async function apiJson(path, opts) {
+  return (await apiFetch(path, opts)).json();
+}
+
+// POST a JSON body; returns the parsed response.
+async function postJSON(path, body) {
+  return apiJson(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+function jobUrl(id, suffix = "") {
+  return `/api/routing/jobs/${encodeURIComponent(id)}${suffix}`;
+}
+
+// ---- SVG overlay + diagnostics-toggle scaffolds ----
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+const OVERLAY_COLORS = { pass: "#2ea87a", attention: "#d9a13b", fail: "#e06c75" };
+
+function svgEl(tag, attrs = {}) {
+  const el = document.createElementNS(SVG_NS, tag);
+  for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+  return el;
+}
+
+function svgTitle(text) {
+  const t = document.createElementNS(SVG_NS, "title");
+  t.textContent = text;
+  return t;
+}
+
+// Tri-state "select all" checkbox shared by the footprints and nets tables.
+function syncSelectAll(id, items, isChecked) {
+  const cb = document.getElementById(id);
+  if (!cb) return;
+  cb.checked = items.length > 0 && items.every(isChecked);
+  cb.indeterminate = items.some(isChecked) && !items.every(isChecked);
+}
+
+// Shared overlay scaffold: drop the stale group, bail when hidden, empty,
+// or board-less, else hand a pointer-transparent <g> to drawFn.
+function makeSvgOverlay(cls, visible, data, drawFn) {
+  viewport.querySelectorAll(`.${cls}`).forEach(el => el.remove());
+  if (!visible || !data) return;
+  const svg = viewport.querySelector("svg");
+  if (!svg) return;
+  const g = document.createElementNS(SVG_NS, "g");
+  g.classList.add(cls);
+  g.classList.add("overlay-none");
+  drawFn(g);
+  svg.appendChild(g);
+}
+
+// Shared fetch-with-toggle-off scaffold for diagnostics buttons: first
+// click fetches, paints the result box + overlay and relabels; second
+// click clears the overlay without refetching. isOn/setOn close over the
+// feature's module-level visible flag so existing references keep working.
+async function runDiagToggle({ btnId, boxId, offLabel, onLabel, isOn, setOn, render, failPrefix, load }) {
+  const btn = document.getElementById(btnId);
+  const box = document.getElementById(boxId);
+  if (isOn()) {
+    setOn(false);
+    render();
+    btn.textContent = offLabel;
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = "Analyzing…";
+  try {
+    const summary = await load();
+    box.hidden = false;
+    if (summary !== undefined) box.textContent = summary;
+    setOn(true);
+    btn.textContent = onLabel;
+    render();
+  } catch (err) {
+    box.hidden = false;
+    box.textContent = `${failPrefix}: ${err}`;
+  } finally {
+    btn.disabled = false;
+    if (!isOn()) btn.textContent = offLabel;
+  }
+}
+
+// Route/rip buttons share one busy state: all three disable, the two
+// route buttons show the spinner. (ripSelectedNets manages ripBtn's own
+// spinner; route tails rely on updateNetSelectionUI for final enable.)
+function setRouteBusy(on) {
+  const btns = ["route-selected-btn", "route-all-btn", "rip-selected-btn"]
+    .map(id => document.getElementById(id));
+  for (const b of btns) if (b) b.disabled = on;
+  for (const b of btns.slice(0, 2)) if (b) b.classList.toggle("loading", on);
+}
+
+// Inlet/bridge state lives in one endpoint; read-modify-write callers
+// share these so the URL and parse appear once.
+async function getInlets() {
+  return apiJson("/api/nets/inlets");
+}
+async function setInlets(body) {
+  return postJSON("/api/nets/inlets", body);
+}
+
 let toastTimer = 0;
 function toast(msg, ok = false) {
   let el = document.getElementById("toast");
@@ -740,8 +848,7 @@ function toast(msg, ok = false) {
 async function poll() {
   let st;
   try {
-    const res = await fetch("/api/state");
-    st = await res.json();
+    st = await apiJson("/api/state");
   } catch (err) {
     // Server down: badge it and skip all downstream refresh work. The
     // 2s tick doubles as the reconnect detector — next success clears it.
@@ -779,7 +886,7 @@ async function poll() {
     if (dropZone) dropZone.hidden = false;
     document.getElementById("download-btn").hidden = true;
     document.getElementById("reset-btn").hidden = true;
-    document.getElementById("undo-btn").disabled = true;
+    undoBtn.disabled = true;
     lastVersion = 0;
     viewport.querySelectorAll("svg").forEach(el => el.remove());
     viewBox = null;
@@ -800,12 +907,11 @@ async function refreshForces() {
   btn.textContent = "⟳";
   btn.disabled = true;
   try {
-    const res = await fetch("/api/placement/forces", {
+    const res = await apiFetch("/api/placement/forces", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(readParams())
     });
-    if (!res.ok) throw new Error(await res.text());
     diagEl.textContent = "forces refreshed";
   } catch (err) {
     console.error("Failed to fetch forces:", err);
@@ -849,9 +955,7 @@ async function runDrc() {
   drcRunBtn.classList.add("loading");
   drcInfo.textContent = "DRC running…";
   try {
-    const res = await fetch("/api/drc", { method: "POST" });
-    if (!res.ok) throw new Error(await res.text());
-    const r = await res.json();
+    const r = await apiJson("/api/drc", { method: "POST" });
     if (r.error) throw new Error(r.error);
     drcInfo.textContent = drcCountText(r) + (r.cached ? " (cached)" : "");
     drcToggle.checked = true;
@@ -874,9 +978,7 @@ drcToggle.addEventListener("change", async () => {
   }
   // Toggle-on: run DRC when the cache is empty, stale, or errored.
   try {
-    const res = await fetch("/api/drc/status");
-    if (!res.ok) throw new Error(await res.text());
-    const st = await res.json();
+    const st = await apiJson("/api/drc/status");
     if (st.for_version == null || st.stale || st.error) {
       await runDrc();
       return;
@@ -1123,8 +1225,7 @@ function updateSelectionUI() {
 
 async function fetchPinned() {
   try {
-    const res = await fetch("/api/placement/pinned");
-    const data = await res.json();
+    const data = await apiJson("/api/placement/pinned");
     pinnedUuids = new Set(data.pinned || []);
     updateSelectionUI();
   } catch (err) {
@@ -1134,8 +1235,7 @@ async function fetchPinned() {
 
 async function fetchSelected() {
   try {
-    const res = await fetch("/api/placement/selected");
-    const data = await res.json();
+    const data = await apiJson("/api/placement/selected");
     selectedUuids = new Set(data.selected || []);
     updateSelectionUI();
   } catch (err) {
@@ -1156,12 +1256,7 @@ function updateFootprintVisuals() {
 
 async function togglePin(uuid) {
   try {
-    const res = await fetch("/api/placement/pin", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ uuid })
-    });
-    const data = await res.json();
+    const data = await postJSON("/api/placement/pin", { uuid });
     pinnedUuids = new Set(data.pinned || []);
     // If pinned, remove from selected
     selectedUuids.delete(uuid);
@@ -1196,8 +1291,7 @@ async function toggleSelect(uuid) {
 
 async function selectAllUnlocked() {
   try {
-    const res = await fetch("/api/placement/select_all", { method: "POST" });
-    const data = await res.json();
+    const data = await apiJson("/api/placement/select_all", { method: "POST" });
     selectedUuids = new Set(data.selected || []);
     updateFootprintVisuals();
     updateSelectionUI();
@@ -1269,7 +1363,7 @@ function highlightSelectedNets() {
 
 function selectNetFromCopper(net, additive) {
   if (!net) {
-    const diag = document.getElementById("route-diag");
+    const diag = routeDiag;
     if (diag) diag.textContent = "copper has no net assignment";
     return;
   }
@@ -1284,7 +1378,7 @@ function selectNetFromCopper(net, additive) {
   highlightSelectedNets();
   // Sync nets table rows if rendered (single helper: rows + header + counts)
   syncNetRowSelection();
-  const diag = document.getElementById("route-diag");
+  const diag = routeDiag;
   if (diag) {
     diag.textContent = selectedNets.size
       ? `net: ${[...selectedNets].join(", ")}`
@@ -1343,9 +1437,7 @@ function updateFpSortHeaders() {
 async function fetchFootprints() {
   if (!lastVersion) return;
   try {
-    const res = await fetch("/api/footprints");
-    if (!res.ok) throw new Error(await res.text());
-    const data = await res.json();
+    const data = await apiJson("/api/footprints");
     allFootprints = data.footprints || [];
     // Drop ghost focus when its ghost is gone (deleted/reset/undo).
     if (selectedGhostUuid && !allFootprints.some(fp => fp.uuid === selectedGhostUuid)) {
@@ -1438,27 +1530,29 @@ function getLegalityTooltip(fp) {
   return parts.join("; ");
 }
 
+function fpRowHtml(fp) {
+  const netsStr = fp.nets.slice(0, 3).join(", ") + (fp.nets.length > 3 ? ` +${fp.nets.length - 3}` : "");
+  const layerClass = fp.layer === "B" ? "B" : "F";
+  const isGhostSel = fp.ghost && selectedGhostUuid === fp.uuid;
+  const isIllegal = illegalUuids.has(fp.uuid);
+  const tooltip = getLegalityTooltip(fp);
+  return `
+    <tr class="${fp.selected || isGhostSel ? 'fp-selected-row' : ''} ${fp.locked ? 'fp-locked-row' : ''} ${fp.pinned ? 'fp-pinned-row' : ''} ${fp.ghost ? 'fp-ghost-row' : ''} ${isIllegal ? 'fp-illegal-row' : ''}" data-uuid="${fp.uuid}" ${tooltip ? `title="${tooltip}"` : ''}>
+      <td class="fp-col-select"><input type="checkbox" ${fp.selected ? 'checked' : ''} ${fp.locked || fp.pinned || fp.ghost ? 'disabled' : ''} data-uuid="${fp.uuid}"></td>
+      <td class="fp-col-ref" title="${fp.ref}">${fp.ref}</td>
+      <td class="fp-col-footprint" title="${fp.footprint_id}">${fp.footprint_id}</td>
+      <td class="fp-col-layer"><span class="fp-col-layer ${layerClass}">${fp.layer}</span></td>
+      <td class="fp-col-nets" title="${fp.nets.join(", ")}">${netsStr}</td>
+      <td class="fp-col-state">${getStateBadge(fp)}</td>
+    </tr>
+  `;
+}
+
 function renderFootprintTable() {
   const tbody = document.getElementById("fp-tbody");
   const filtered = getFilteredFootprints();
   updateFpSortHeaders();
-  tbody.innerHTML = filtered.map(fp => {
-    const netsStr = fp.nets.slice(0, 3).join(", ") + (fp.nets.length > 3 ? ` +${fp.nets.length - 3}` : "");
-    const layerClass = fp.layer === "B" ? "B" : "F";
-    const isGhostSel = fp.ghost && selectedGhostUuid === fp.uuid;
-    const isIllegal = illegalUuids.has(fp.uuid);
-    const tooltip = getLegalityTooltip(fp);
-    return `
-      <tr class="${fp.selected || isGhostSel ? 'fp-selected-row' : ''} ${fp.locked ? 'fp-locked-row' : ''} ${fp.pinned ? 'fp-pinned-row' : ''} ${fp.ghost ? 'fp-ghost-row' : ''} ${isIllegal ? 'fp-illegal-row' : ''}" data-uuid="${fp.uuid}" ${tooltip ? `title="${tooltip}"` : ''}>
-        <td class="fp-col-select"><input type="checkbox" ${fp.selected ? 'checked' : ''} ${fp.locked || fp.pinned || fp.ghost ? 'disabled' : ''} data-uuid="${fp.uuid}"></td>
-        <td class="fp-col-ref" title="${fp.ref}">${fp.ref}</td>
-        <td class="fp-col-footprint" title="${fp.footprint_id}">${fp.footprint_id}</td>
-        <td class="fp-col-layer"><span class="fp-col-layer ${layerClass}">${fp.layer}</span></td>
-        <td class="fp-col-nets" title="${fp.nets.join(", ")}">${netsStr}</td>
-        <td class="fp-col-state">${getStateBadge(fp)}</td>
-      </tr>
-    `;
-  }).join("");
+  tbody.innerHTML = filtered.map(fpRowHtml).join("");
   
   // Add click handlers for checkboxes
   tbody.querySelectorAll('input[type="checkbox"]').forEach(cb => {
@@ -1513,11 +1607,7 @@ function renderFootprintTable() {
   });
   
   // Update select all checkbox
-  const selectAllCb = document.getElementById("fp-select-all");
-  if (selectAllCb) {
-    selectAllCb.checked = filtered.length > 0 && filtered.every(fp => fp.selected);
-    selectAllCb.indeterminate = filtered.some(fp => fp.selected) && !filtered.every(fp => fp.selected);
-  }
+  syncSelectAll("fp-select-all", filtered, fp => fp.selected);
   
   // Keep ghost target options + selected-ghost panel in sync with the cache.
   refreshGhostTargets();
@@ -1642,16 +1732,14 @@ async function nudgeSelected(dx_mm, dy_mm, da_deg = 0) {
   if (!selectedUuids.size || !lastVersion) return;
   if (motion.frames.length) pauseMotion();
   try {
-    const res = await fetch("/api/placement/nudge", {
+    const r = await apiJson("/api/placement/nudge", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ dx_mm, dy_mm, da_deg }),
     });
-    if (!res.ok) throw new Error(await res.text());
-    const r = await res.json();
     const what = da_deg ? `rotate ${da_deg}°` : `move (${dx_mm}, ${dy_mm})`;
     diagEl.textContent = `nudged ${(r.moved || []).length}: ${what} → v${r.version} (Undo restores)`;
-    document.getElementById("undo-btn").disabled = false;
+    undoBtn.disabled = false;
     resetMotionState(); // server cleared the proposal; cached deltas are stale
     await poll();
   } catch (err) {
@@ -1732,7 +1820,7 @@ function suggestGhostRef(kind) {
 
 async function createGhost() {
   if (!lastVersion) return;
-  const diag = document.getElementById("ghost-diag");
+  const diag = ghostDiag;
   const kind = document.getElementById("ghost-kind").value;
   const refInput = document.getElementById("ghost-ref").value.trim();
   const ref = refInput || suggestGhostRef(kind);
@@ -1754,16 +1842,14 @@ async function createGhost() {
     body.size_mm = Number(document.getElementById("ghost-size").value);
   }
   try {
-    const res = await fetch("/api/ghosts", {
+    const r = await apiJson("/api/ghosts", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    if (!res.ok) throw new Error(await res.text());
-    const r = await res.json();
     diag.textContent = `ghost ${ref} added (v${r.version})`;
     document.getElementById("ghost-ref").value = "";
-    document.getElementById("undo-btn").disabled = false;
+    undoBtn.disabled = false;
     if (motion.frames.length) pauseMotion();
     resetMotionState();
     await poll();
@@ -1775,19 +1861,17 @@ async function createGhost() {
 
 async function moveGhost(dx_mm, dy_mm, da_deg = 0) {
   if (!selectedGhostUuid || !lastVersion) return;
-  const diag = document.getElementById("ghost-diag");
+  const diag = ghostDiag;
   try {
-    const res = await fetch("/api/ghosts/move", {
+    const r = await apiJson("/api/ghosts/move", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ uuid: selectedGhostUuid, dx_mm, dy_mm, da_deg }),
     });
-    if (!res.ok) throw new Error(await res.text());
-    const r = await res.json();
     diag.textContent = da_deg
       ? `ghost rotated ${da_deg}° → v${r.version}`
       : `ghost moved (${dx_mm}, ${dy_mm}) → v${r.version}`;
-    document.getElementById("undo-btn").disabled = false;
+    undoBtn.disabled = false;
     if (motion.frames.length) pauseMotion();
     resetMotionState();
     await poll();
@@ -1798,7 +1882,7 @@ async function moveGhost(dx_mm, dy_mm, da_deg = 0) {
 
 async function resizeGhost(dw_mm, dh_mm) {
   if (!selectedGhostUuid || !lastVersion) return;
-  const diag = document.getElementById("ghost-diag");
+  const diag = ghostDiag;
   const fp = allFootprints.find(f => f.uuid === selectedGhostUuid);
   if (!fp || !fp.bbox || fp.bbox.length !== 4) {
     diag.textContent = "resize failed: ghost extents unknown";
@@ -1807,15 +1891,13 @@ async function resizeGhost(dw_mm, dh_mm) {
   const w_mm = Math.max(0.5, (fp.bbox[2] - fp.bbox[0]) + dw_mm);
   const h_mm = Math.max(0.5, (fp.bbox[3] - fp.bbox[1]) + dh_mm);
   try {
-    const res = await fetch("/api/ghosts/resize", {
+    const r = await apiJson("/api/ghosts/resize", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ uuid: selectedGhostUuid, w_mm, h_mm }),
     });
-    if (!res.ok) throw new Error(await res.text());
-    const r = await res.json();
     diag.textContent = `ghost resized ${w_mm.toFixed(1)}×${h_mm.toFixed(1)} → v${r.version}`;
-    document.getElementById("undo-btn").disabled = false;
+    undoBtn.disabled = false;
     if (motion.frames.length) pauseMotion();
     resetMotionState();
     await poll();
@@ -1826,18 +1908,16 @@ async function resizeGhost(dw_mm, dh_mm) {
 
 async function deleteGhost() {
   if (!selectedGhostUuid || !lastVersion) return;
-  const diag = document.getElementById("ghost-diag");
+  const diag = ghostDiag;
   try {
-    const res = await fetch("/api/ghosts/delete", {
+    const r = await apiJson("/api/ghosts/delete", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ uuid: selectedGhostUuid }),
     });
-    if (!res.ok) throw new Error(await res.text());
-    const r = await res.json();
     diag.textContent = `ghost deleted (v${r.version})`;
     selectedGhostUuid = null;
-    document.getElementById("undo-btn").disabled = false;
+    undoBtn.disabled = false;
     if (motion.frames.length) pauseMotion();
     resetMotionState();
     await poll();
@@ -2238,8 +2318,23 @@ document.getElementById("motion-slider").addEventListener("input", (e) => {
 document.getElementById("motion-trails").addEventListener("change", drawMotionTrails);
 motionSetEnabled(false);
 
+// Pure string builder for the placement result line (button state and
+// table refresh stay with the caller).
+function formatPlacementDiag(r) {
+  if (!(r.moved > 0)) {
+    return `v${r.version} — no movement (nothing movable, no nets, or already converged)`;
+  }
+  let diag = `v${r.version} — ${r.moved} moved, max Δ ${r.final_max_disp_mm.toFixed(2)} mm, ${r.iterations} iters, ${r.elapsed_s.toPrecision(2)} s`;
+  if (r.stop_reason === "stalled" && !r.legality_is_legal) {
+    const nOverlap = r.overlapping_pairs ? r.overlapping_pairs.length : 0;
+    const nWall = r.wall_violations ? r.wall_violations.length : 0;
+    if (nOverlap || nWall) diag += ` — ${nOverlap} overlap${nOverlap !== 1 ? "s" : ""}, ${nWall} wall violation${nWall !== 1 ? "s" : ""}`;
+  }
+  return diag;
+}
+
 async function runPlacement(movableUuids, iterations) {
-  const stepBtn = document.getElementById("step-selected-btn");
+  const stepBtn = stepSelectedBtn;
   const runBtn = document.getElementById("run-selected-btn");
   stepBtn.classList.add("loading");
   runBtn.classList.add("loading");
@@ -2267,19 +2362,16 @@ async function runPlacement(movableUuids, iterations) {
       ? `placing… (est. up to ${fmtDuration(est.ms)} at ${est.msPerIter.toFixed(1)}ms/iter, ` +
         `${est.fps} fps / ${est.pads} pads, budget ${budget} iters)`
       : `placing… (budget ${budget} iters)`;
-    const saveRes = await fetch("/api/placement/params", { method: "POST", body: JSON.stringify(params) });
-    if (!saveRes.ok) throw new Error(await saveRes.text());
+    await apiFetch("/api/placement/params", { method: "POST", body: JSON.stringify(params) });
 
     const body = { movable_uuids: movableUuids, record_frames: true, max_frames: 200 };
     if (iterations != null) body.iterations = iterations;
-    const res = await fetch("/api/placement/run", {
+    const r = await apiJson("/api/placement/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
       signal: ctrl.signal,
     });
-    if (!res.ok) throw new Error(await res.text());
-    const r = await res.json();
     
     // Capture legality data for parts table
     illegalUuids.clear();
@@ -2295,22 +2387,10 @@ async function runPlacement(movableUuids, iterations) {
         illegalUuids.add(uuid);
       }
     }
-    
     await loadMotionFrames(true);
-    if (r.moved > 0) {
-      let diag = `v${r.version} — ${r.moved} moved, max Δ ${r.final_max_disp_mm.toFixed(2)} mm, ${r.iterations} iters, ${r.elapsed_s.toPrecision(2)} s`;
-      if (r.stop_reason === "stalled" && !r.legality_is_legal) {
-        const nOverlap = r.overlapping_pairs ? r.overlapping_pairs.length : 0;
-        const nWall = r.wall_violations ? r.wall_violations.length : 0;
-        if (nOverlap || nWall) diag += ` — ${nOverlap} overlap${nOverlap !== 1 ? "s" : ""}, ${nWall} wall violation${nWall !== 1 ? "s" : ""}`;
-      }
-      diagEl.textContent = diag;
-      document.getElementById("accept-btn").disabled = false;
-    } else {
-      diagEl.textContent = `v${r.version} — no movement (nothing movable, no nets, or already converged)`;
-      document.getElementById("accept-btn").disabled = true;
-    }
-    document.getElementById("step-selected-btn").textContent = "Step Again";
+    diagEl.textContent = formatPlacementDiag(r);
+    acceptBtn.disabled = !(r.moved > 0);
+    stepSelectedBtn.textContent = "Step Again";
     renderFootprintTable(); // Re-render to show illegal state
   } catch (err) {
     const msg = err?.name === "AbortError"
@@ -2328,7 +2408,7 @@ async function runPlacement(movableUuids, iterations) {
 }
 
 // Step: a few iterations on the selection (empty selection targets all movable)
-document.getElementById("step-selected-btn").addEventListener("click", async () => {
+stepSelectedBtn.addEventListener("click", async () => {
   const iters = parseInt(document.getElementById("step-iters").value, 10);
   const movableUuids = selectedUuids.size > 0 ? Array.from(selectedUuids) : undefined;
   await runPlacement(movableUuids, iters);
@@ -2340,11 +2420,9 @@ document.getElementById("run-selected-btn").addEventListener("click", async () =
   await runPlacement(movableUuids, null);
 });
 
-document.getElementById("accept-btn").addEventListener("click", async () => {
+acceptBtn.addEventListener("click", async () => {
   try {
-    const res = await fetch("/api/placement/accept", { method: "POST" });
-    if (!res.ok) throw new Error(await res.text());
-    const r = await res.json();
+    const r = await apiJson("/api/placement/accept", { method: "POST" });
     const ripped = r.ripped || {};
     const rippedNames = Object.keys(ripped);
     const rippedTxt = rippedNames.length
@@ -2356,9 +2434,9 @@ document.getElementById("accept-btn").addEventListener("click", async () => {
     diagEl.textContent = `accepted v${r.version} (${moveTxt}; ${iterTxt}) — ripped ${rippedTxt}`
       + (skipped ? `; kept protected ${skipped}` : "")
       + `. Re-route via Route panel if needed.`;
-    document.getElementById("accept-btn").disabled = true;
-    document.getElementById("step-selected-btn").textContent = "Step";
-    document.getElementById("undo-btn").disabled = false;
+    acceptBtn.disabled = true;
+    stepSelectedBtn.textContent = "Step";
+    undoBtn.disabled = false;
     resetMotionState(); // positions committed — cached deltas are stale
   } catch (err) {
     diagEl.textContent = `accept failed: ${err.message}`;
@@ -2370,22 +2448,20 @@ document.getElementById("clear-btn").addEventListener("click", async () => {
   illegalUuids.clear();
   lastLegality = {};
   diagEl.textContent = "proposal cleared";
-  document.getElementById("accept-btn").disabled = true;
-  document.getElementById("step-selected-btn").textContent = "Step";
+  acceptBtn.disabled = true;
+  stepSelectedBtn.textContent = "Step";
   resetMotionState();
   renderFootprintTable();
 });
 
-document.getElementById("undo-btn").addEventListener("click", async () => {
+undoBtn.addEventListener("click", async () => {
   try {
-    const res = await fetch("/api/placement/undo", { method: "POST" });
-    if (!res.ok) throw new Error(await res.text());
-    const r = await res.json();
+    const r = await apiJson("/api/placement/undo", { method: "POST" });
     illegalUuids.clear();
     lastLegality = {};
     diagEl.textContent = `undone — board reverted to v${r.version}`;
-    document.getElementById("accept-btn").disabled = true;
-    document.getElementById("step-selected-btn").textContent = "Step";
+    acceptBtn.disabled = true;
+    stepSelectedBtn.textContent = "Step";
     resetMotionState();
     renderFootprintTable();
     try {
@@ -2417,13 +2493,11 @@ function updateModeUI(st) {
 
 async function setBoardMode(mode) {
   try {
-    const res = await fetch("/api/mode", {
+    const r = await apiJson("/api/mode", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ mode })
     });
-    if (!res.ok) throw new Error(await res.text());
-    const r = await res.json();
     boardMode = r.mode;
     updateModeUI({ mode: r.mode, mode_warning: r.warning });
     await loadRoutingParams();  // refresh mode-owned checkbox gating
@@ -2459,8 +2533,7 @@ document.getElementById("download-btn").addEventListener("click", async () => {
         }
       }
     }
-    const res = await fetch("/api/board/download");
-    if (!res.ok) throw new Error(await res.text());
+    const res = await apiFetch("/api/board/download");
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -2476,16 +2549,14 @@ document.getElementById("download-btn").addEventListener("click", async () => {
 
 document.getElementById("reset-btn").addEventListener("click", async () => {
   try {
-    const res = await fetch("/api/board/reset", { method: "POST" });
-    if (!res.ok) throw new Error(await res.text());
-    const r = await res.json();
+    const r = await apiJson("/api/board/reset", { method: "POST" });
     illegalUuids.clear();
     lastLegality = {};
     diagEl.textContent = `board reset to original (v${r.version})`;
-    document.getElementById("accept-btn").disabled = true;
+    acceptBtn.disabled = true;
     const runBtn = document.getElementById("run-btn");
     if (runBtn) runBtn.textContent = "Step placement";
-    document.getElementById("undo-btn").disabled = true;
+    undoBtn.disabled = true;
     renderFootprintTable();
     try {
       const mres = await fetch("/api/mode");
@@ -2536,9 +2607,7 @@ let lastNetsByName = new Map();
 async function fetchNets() {
   if (!lastVersion) return;
   try {
-    const res = await fetch("/api/nets");
-    if (!res.ok) throw new Error(await res.text());
-    const data = await res.json();
+    const data = await apiJson("/api/nets");
     lastNetsByName = new Map((data.nets || []).map(n => [n.name, n]));
     renderNetsTable(data.nets || []);
   } catch (err) {
@@ -2547,56 +2616,58 @@ async function fetchNets() {
 }
 
 // Render nets table
+function netRowHtml(net, idx) {
+  const color = netColorByName(net.name, idx);
+  const pwrTitle = net.power_user
+    ? "Power net (your override — click Pwr cell to unmark)"
+    : (net.is_power
+      ? "Power net (keyword rules — click Pwr cell to unmark)"
+      : "Signal net — click Pwr cell to mark as power");
+  const pwr = net.is_power
+    ? `<span class="power-badge is-power" title="${pwrTitle}">PWR</span>`
+    : (net.is_ground
+      ? `<span class="power-badge is-ground" title="Ground net (keyword rules)">GND</span>`
+      : "");
+  // Pwr cell control: always render a visible button (ghost bolt for
+  // signal nets) — the old `${pwr || ""}` left signal cells empty and
+  // undiscoverable. Name-column badge above stays static text.
+  const safeName = String(net.name).replace(/"/g, "&quot;");
+  const pwrCtrl = net.is_power
+    ? `<button type="button" class="pwr-toggle is-on" aria-pressed="true" aria-label="Unmark ${safeName} as power" title="${pwrTitle}">${pwr}</button>`
+    : (net.is_ground
+      ? `<button type="button" class="pwr-toggle is-ground" aria-pressed="false" aria-label="Mark ${safeName} as power (override)" title="Ground net (keyword rules) — click to add your power override">${pwr}</button>`
+      : `<button type="button" class="pwr-toggle" aria-pressed="false" aria-label="Mark ${safeName} as power" title="${pwrTitle}">&#9889;</button>`);
+  const width = (net.width_mm ?? "") === "" ? "" : Number(net.width_mm).toFixed(2);
+  const decaps = Array.isArray(net.decap_refs) ? net.decap_refs : [];
+  const decap = decaps.length
+    ? `<span class="decap-badge" title="Decoupling caps: ${decaps.join(", ")}">◉×${decaps.length}</span>`
+    : "";
+  return `
+    <tr class="${selectedNets.has(net.name) ? 'net-selected-row' : ''}" data-net="${net.name}" style="--net-color: ${color};">
+      <td class="net-col-select"><input type="checkbox" class="net-col-select" ${selectedNets.has(net.name) ? 'checked' : ''} data-net="${net.name}"></td>
+      <td class="net-col-name">
+        <span class="net-swatch" style="background: ${color};"></span>
+        ${net.name}${pwr}
+      </td>
+      <td class="net-col-pads">${net.pad_count ?? ""}</td>
+      <td class="net-col-fps">${net.footprint_count ?? ""}</td>
+      <td class="net-col-tracks">${net.track_count ?? ""}</td>
+      <td class="net-col-vias">${net.via_count ?? ""}</td>
+      <td class="net-col-width">${width}</td>
+      <td class="net-col-pwr" data-power-cell="${net.name}" title="${pwrTitle}" style="cursor:pointer;">${pwrCtrl}</td>
+      <td class="net-col-decap">${decap}</td>
+      <td class="net-col-protect">
+        <label class="chk"><input type="checkbox" class="net-protect-cb" ${net.protected ? 'checked' : ''} data-net="${net.name}" title="Protected nets are routed first and never ripped up"></label>
+      </td>
+    </tr>
+  `;
+}
+
 function renderNetsTable(nets) {
   const tbody = document.getElementById("nets-tbody");
   if (!tbody) return;
   
-  tbody.innerHTML = nets.map((net, idx) => {
-    const color = netColorByName(net.name, idx);
-    const pwrTitle = net.power_user
-      ? "Power net (your override — click Pwr cell to unmark)"
-      : (net.is_power
-        ? "Power net (keyword rules — click Pwr cell to unmark)"
-        : "Signal net — click Pwr cell to mark as power");
-    const pwr = net.is_power
-      ? `<span class="power-badge is-power" title="${pwrTitle}">PWR</span>`
-      : (net.is_ground
-        ? `<span class="power-badge is-ground" title="Ground net (keyword rules)">GND</span>`
-        : "");
-    // Pwr cell control: always render a visible button (ghost bolt for
-    // signal nets) — the old `${pwr || ""}` left signal cells empty and
-    // undiscoverable. Name-column badge above stays static text.
-    const safeName = String(net.name).replace(/"/g, "&quot;");
-    const pwrCtrl = net.is_power
-      ? `<button type="button" class="pwr-toggle is-on" aria-pressed="true" aria-label="Unmark ${safeName} as power" title="${pwrTitle}">${pwr}</button>`
-      : (net.is_ground
-        ? `<button type="button" class="pwr-toggle is-ground" aria-pressed="false" aria-label="Mark ${safeName} as power (override)" title="Ground net (keyword rules) — click to add your power override">${pwr}</button>`
-        : `<button type="button" class="pwr-toggle" aria-pressed="false" aria-label="Mark ${safeName} as power" title="${pwrTitle}">&#9889;</button>`);
-    const width = (net.width_mm ?? "") === "" ? "" : Number(net.width_mm).toFixed(2);
-    const decaps = Array.isArray(net.decap_refs) ? net.decap_refs : [];
-    const decap = decaps.length
-      ? `<span class="decap-badge" title="Decoupling caps: ${decaps.join(", ")}">◉×${decaps.length}</span>`
-      : "";
-    return `
-      <tr class="${selectedNets.has(net.name) ? 'net-selected-row' : ''}" data-net="${net.name}" style="--net-color: ${color};">
-        <td class="net-col-select"><input type="checkbox" class="net-col-select" ${selectedNets.has(net.name) ? 'checked' : ''} data-net="${net.name}"></td>
-        <td class="net-col-name">
-          <span class="net-swatch" style="background: ${color};"></span>
-          ${net.name}${pwr}
-        </td>
-        <td class="net-col-pads">${net.pad_count ?? ""}</td>
-        <td class="net-col-fps">${net.footprint_count ?? ""}</td>
-        <td class="net-col-tracks">${net.track_count ?? ""}</td>
-        <td class="net-col-vias">${net.via_count ?? ""}</td>
-        <td class="net-col-width">${width}</td>
-        <td class="net-col-pwr" data-power-cell="${net.name}" title="${pwrTitle}" style="cursor:pointer;">${pwrCtrl}</td>
-        <td class="net-col-decap">${decap}</td>
-        <td class="net-col-protect">
-          <label class="chk"><input type="checkbox" class="net-protect-cb" ${net.protected ? 'checked' : ''} data-net="${net.name}" title="Protected nets are routed first and never ripped up"></label>
-        </td>
-      </tr>
-    `;
-  }).join("");
+  tbody.innerHTML = nets.map(netRowHtml).join("");
   
   // Add click handlers for checkboxes (in-place highlight, no re-render)
   tbody.querySelectorAll('input.net-col-select[type="checkbox"]').forEach(cb => {
@@ -2617,12 +2688,7 @@ function renderNetsTable(nets) {
       const net = e.target.dataset.net;
       const protectedFlag = e.target.checked;
       try {
-        const res = await fetch("/api/nets/protected", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ net, protected: protectedFlag })
-        });
-        if (!res.ok) throw new Error(await res.text());
+        await postJSON("/api/nets/protected", { net, protected: protectedFlag });
         // Re-fetch to update table
         await fetchNets();
       } catch (err) {
@@ -2643,12 +2709,7 @@ function renderNetsTable(nets) {
       const row = lastNetsByName.get(net);
       const markPower = !(row && row.is_power);
       try {
-        const res = await fetch("/api/nets/power", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ net, power: markPower })
-        });
-        if (!res.ok) throw new Error(await res.text());
+        await postJSON("/api/nets/power", { net, power: markPower });
         await fetchNets();
       } catch (err) {
         console.error("Failed to toggle power:", err);
@@ -2677,11 +2738,7 @@ function renderNetsTable(nets) {
   });
   
   // Update "select all" checkbox
-  const selectAllCb = document.getElementById("nets-select-all");
-  if (selectAllCb) {
-    selectAllCb.checked = nets.length > 0 && nets.every(n => selectedNets.has(n.name));
-    selectAllCb.indeterminate = nets.some(n => selectedNets.has(n.name)) && !nets.every(n => selectedNets.has(n.name));
-  }
+  syncSelectAll("nets-select-all", nets, n => selectedNets.has(n.name));
   // Counts must match the selection after every (full-data) render.
   updateNetSelectionUI();
 }
@@ -2732,9 +2789,7 @@ function updateNetSelectionUI() {
 // Load routing params from server
 async function loadRoutingParams() {
   try {
-    const res = await fetch("/api/routing/params");
-    if (!res.ok) throw new Error(await res.text());
-    const data = await res.json();
+    const data = await apiJson("/api/routing/params");
     routingParams = data.params || {};
     // Mode-owned keys render disabled/badged ("Managed by mode"); the
     // server forces the preset at job time regardless of input state.
@@ -2858,12 +2913,11 @@ function readRoutingParams() {
 async function saveRoutingParams() {
   const params = readRoutingParams();
   try {
-    const res = await fetch("/api/routing/params", {
+    const res = await apiFetch("/api/routing/params", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(params)
     });
-    if (!res.ok) throw new Error(await res.text());
     routingParams = params;
   } catch (err) {
     console.error("Failed to save routing params:", err);
@@ -2943,7 +2997,7 @@ async function startRoutingJob(net, params) {
 
 async function cancelRoutingJob(jobId) {
   try {
-    await fetch(`/api/routing/jobs/${encodeURIComponent(jobId)}/cancel`, { method: "POST" });
+    await apiFetch(jobUrl(jobId, "/cancel"), { method: "POST" });
   } catch (err) {
     console.error("Cancel failed:", err);
   }
@@ -2956,16 +3010,14 @@ async function pollRoutingJob(jobId, net, idx, total, diag, progress, estNote, t
     if (routeCancelRequested) {
       await cancelRoutingJob(jobId);
       // Fall through to one final poll below to collect the outcome.
-      const res = await fetch(`/api/routing/jobs/${encodeURIComponent(jobId)}`);
+      const res = await fetch(jobUrl(jobId));
       if (res.ok) {
         const job = await res.json();
         if (job.state === "done" && job.result) return { result: job.result, userCancelled: true };
       }
       return { result: null, userCancelled: true };
     }
-    const res = await fetch(`/api/routing/jobs/${encodeURIComponent(jobId)}`);
-    if (!res.ok) throw new Error(await res.text());
-    const job = await res.json();
+    const job = await apiJson(jobUrl(jobId));
     const p = job.progress || {};
     const frac = (p.pairs_total > 0) ? (p.pairs_done / p.pairs_total) : 0;
     progress.value = (idx + Math.min(1, frac)) / total;
@@ -2982,7 +3034,7 @@ async function pollRoutingJob(jobId, net, idx, total, diag, progress, estNote, t
       // Collect the (partial) outcome after the cancel lands.
       for (let k = 0; k < 10; k++) {
         await new Promise(r => setTimeout(r, ROUTE_JOB_POLL_MS));
-        const r2 = await fetch(`/api/routing/jobs/${encodeURIComponent(jobId)}`);
+        const r2 = await fetch(jobUrl(jobId));
         if (!r2.ok) break;
         const j2 = await r2.json();
         if (j2.state === "done") return { result: j2.result, timedOut: true };
@@ -2994,12 +3046,23 @@ async function pollRoutingJob(jobId, net, idx, total, diag, progress, estNote, t
   }
 }
 
+// Pure string builder for the route-batch summary line.
+function formatTotalsDiag({ totals, failures, doneCount, netCount, lastBoardVersion, elapsedTxt, cancelled }) {
+  const kept = `v${lastBoardVersion} — ${totals.tracks} tracks, ${totals.vias} vias, ` +
+    `${totals.routed} routed, ${totals.failed} failed (${elapsedTxt} · ${fmtExpansions(totals.expansions)}` +
+    (totals.astarS ? `, ${totals.astarS.toFixed(0)}s A*` : "") + `)` +
+    (totals.stitchVias || totals.stitchTracks
+      ? ` — GND stitch: ${totals.stitchVias || 0} vias, ${totals.stitchTracks || 0} bridges` +
+        (totals.gndBefore ? ` (islands ${totals.gndBefore}→${totals.gndAfter})` : "")
+      : "");
+  if (cancelled) return `cancelled after ${doneCount}/${netCount} nets — kept ${totals.routed} — ${kept}`;
+  if (failures.length) return `${kept} — failures: ${failures.join("; ")}`;
+  return kept;
+}
+
 async function routeSelectedNets() {
   if (selectedNets.size === 0) return;
-  const diag = document.getElementById("route-diag");
-  const routeBtn = document.getElementById("route-selected-btn");
-  const routeAllBtn = document.getElementById("route-all-btn");
-  const ripBtn = document.getElementById("rip-selected-btn");
+  const diag = routeDiag;
   const cancelBtn = document.getElementById("route-cancel-btn");
   const progress = document.getElementById("route-progress");
 
@@ -3013,12 +3076,7 @@ async function routeSelectedNets() {
     ` (est. up to ≈${Math.round(est.seconds)}s${stitchNote})` +
     (est.worst.pairs > 100 ? ` — worst: ${est.worst.net} (~${est.worst.pairs}; expect minutes)` : "");
 
-  routeBtn.disabled = true;
-  routeAllBtn.disabled = true;
-  if (ripBtn) ripBtn.disabled = true;
-  routeBtn.classList.add("loading");
-  routeAllBtn.classList.add("loading");
-  cancelBtn.hidden = false;
+  setRouteBusy(true);
   progress.hidden = false;
   progress.value = 0;
   routeCancelRequested = false;
@@ -3101,25 +3159,12 @@ async function routeSelectedNets() {
   // Re-fetch nets to update track/via counts.
   await fetchNets();
 
-  const kept = `v${lastBoardVersion} — ${totals.tracks} tracks, ${totals.vias} vias, ` +
-    `${totals.routed} routed, ${totals.failed} failed (${elapsed()} · ${fmtExpansions(totals.expansions)}` +
-    (totals.astarS ? `, ${totals.astarS.toFixed(0)}s A*` : "") + `)` +
-    (totals.stitchVias || totals.stitchTracks
-      ? ` — GND stitch: ${totals.stitchVias || 0} vias, ${totals.stitchTracks || 0} bridges` +
-        (totals.gndBefore ? ` (islands ${totals.gndBefore}→${totals.gndAfter})` : "")
-      : "");
-  if (routeCancelRequested) {
-    diag.textContent = `cancelled after ${doneCount}/${nets.length} nets — kept ${totals.routed} — ${kept}`;
-  } else if (failures.length) {
-    diag.textContent = `${kept} — failures: ${failures.join("; ")}`;
-  } else {
-    diag.textContent = kept;
-  }
+  diag.textContent = formatTotalsDiag({
+    totals, failures, doneCount, netCount: nets.length, lastBoardVersion,
+    elapsedTxt: elapsed(), cancelled: routeCancelRequested,
+  });
 
-  routeBtn.disabled = false;
-  routeAllBtn.disabled = false;
-  routeBtn.classList.remove("loading");
-  routeAllBtn.classList.remove("loading");
+  setRouteBusy(false);
   cancelBtn.hidden = true;
   progress.hidden = true;
   updateNetSelectionUI();
@@ -3129,7 +3174,7 @@ async function routeSelectedNets() {
 // Protected nets are skipped server-side and reported in the diag line.
 async function ripSelectedNets() {
   if (selectedNets.size === 0) return;
-  const diag = document.getElementById("route-diag");
+  const diag = routeDiag;
   const ripBtn = document.getElementById("rip-selected-btn");
   const routeBtn = document.getElementById("route-selected-btn");
   const routeAllBtn = document.getElementById("route-all-btn");
@@ -3139,13 +3184,7 @@ async function ripSelectedNets() {
   }
   try {
     diag.textContent = `ripping ${nets.length} net${nets.length > 1 ? "s" : ""}…`;
-    const res = await fetch("/api/routing/ripup", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ net_names: nets }),
-    });
-    if (!res.ok) throw new Error(await res.text());
-    const r = await res.json();
+    const r = await postJSON("/api/routing/ripup", { net_names: nets });
     const ripped = r.ripped || {};
     const names = Object.keys(ripped);
     const txt = names.length
@@ -3153,7 +3192,7 @@ async function ripSelectedNets() {
       : "no copper removed";
     const skipped = (r.skipped_protected || []).join(", ");
     diag.textContent = `ripped ${txt}` + (skipped ? `; kept protected ${skipped}` : "") + ` (v${r.version})`;
-    document.getElementById("undo-btn").disabled = false;
+    undoBtn.disabled = false;
     if (r.version) {
       lastVersion = r.version;
       await fetchAndInjectSVG(r.version);
@@ -3179,22 +3218,13 @@ document.getElementById("route-cancel-btn").addEventListener("click", () => {
 
 // Route all unprotected nets
 async function routeAllNets() {
-  const diag = document.getElementById("route-diag");
-  const routeBtn = document.getElementById("route-selected-btn");
-  const routeAllBtn = document.getElementById("route-all-btn");
-  const ripBtn = document.getElementById("rip-selected-btn");
-  
-  routeBtn.disabled = true;
-  routeAllBtn.disabled = true;
-  if (ripBtn) ripBtn.disabled = true;
-  routeBtn.classList.add("loading");
-  routeAllBtn.classList.add("loading");
+  const diag = routeDiag;
+
+  setRouteBusy(true);
   diag.textContent = "Routing...";
   
   try {
-    const res = await fetch("/api/nets");
-    if (!res.ok) throw new Error(await res.text());
-    const data = await res.json();
+    const data = await apiJson("/api/nets");
     const unprotected = (data.nets || []).filter(n => !n.protected).map(n => n.name);
     if (unprotected.length === 0) return;
     
@@ -3205,10 +3235,7 @@ async function routeAllNets() {
   } catch (err) {
     diag.textContent = `routing failed: ${err.message}`;
   } finally {
-    routeBtn.disabled = false;
-    routeAllBtn.disabled = false;
-    routeBtn.classList.remove("loading");
-    routeAllBtn.classList.remove("loading");
+    setRouteBusy(false);
     updateNetSelectionUI();
   }
 }
@@ -3223,101 +3250,55 @@ document.getElementById("gnd-islands-btn").addEventListener("click", fetchGndIsl
 // red dashed = dead (no pad/via connection, cf. KiCad isolated-fill DRC).
 let gndIslandsData = null;
 let gndIslandsVisible = false;
-function boardMmToViewport(xMm, yMm) {
-  const svg = viewport.querySelector("svg");
-  if (!svg) return null;
-  const vbAttr = svg.getAttribute("viewBox");
-  if (!vbAttr) return null;
-  const [vbx, vby, vbw, vbh] = vbAttr.split(" ").map(Number);
-  return {
-    x: ((xMm - vbx) / vbw) * viewport.clientWidth,
-    y: ((vby + vbh - yMm) / vbh) * viewport.clientHeight,
-    sx: viewport.clientWidth / vbw,
-    sy: viewport.clientHeight / vbh,
-  };
-}
 
 function renderGndIslandsOverlay() {
-  viewport.querySelectorAll(".gnd-island-overlay").forEach(el => el.remove());
-  if (!gndIslandsVisible || !gndIslandsData) return;
-  const svg = viewport.querySelector("svg");
-  if (!svg) return;
-  // NOTE: coordinates are board-mm SVG user units (same as every other
-  // server-rendered element via the viewBox). Do NOT run them through
-  // boardMmToViewport() here: that helper converts to viewport *pixels*
-  // for HTML overlays, which would misplace in-SVG rects.
-  const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
-  g.classList.add("gnd-island-overlay");
-  g.style.pointerEvents = "none";
-  for (const [layer, items] of Object.entries(gndIslandsData.layers)) {
-    for (const isl of items) {
-      const [x0, y0, x1, y1] = isl.bbox_mm;
-      const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-      rect.setAttribute("x", Math.min(x0, x1));
-      rect.setAttribute("y", Math.min(y0, y1));
-      rect.setAttribute("width", Math.abs(x1 - x0));
-      rect.setAttribute("height", Math.abs(y1 - y0));
-      rect.setAttribute("fill", isl.connected ? "#2ea87a" : "#e06c75");
-      rect.setAttribute("fill-opacity", "0.12");
-      rect.setAttribute("stroke", isl.connected ? "#2ea87a" : "#e06c75");
-      rect.setAttribute("stroke-width", isl.connected ? "0.15" : "0.3");
-      if (!isl.connected) rect.setAttribute("stroke-dasharray", "1 0.6");
-      const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
-      title.textContent = `${isl.net} ${layer}: ${isl.area_mm2}mm² ${isl.connected ? "fed" : "DEAD"}`;
-      rect.appendChild(title);
-      g.appendChild(rect);
-      const dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-      dot.setAttribute("cx", isl.cx_mm);
-      dot.setAttribute("cy", isl.cy_mm);
-      dot.setAttribute("r", "0.5");
-      dot.setAttribute("fill", isl.connected ? "#2ea87a" : "#e06c75");
-      g.appendChild(dot);
+  makeSvgOverlay("gnd-island-overlay", gndIslandsVisible, gndIslandsData, g => {
+    // NOTE: coordinates are board-mm SVG user units (same as every other
+    // server-rendered element via the viewBox), so they place directly
+    // as in-SVG rects with no pixel conversion.
+    for (const [layer, items] of Object.entries(gndIslandsData.layers)) {
+      for (const isl of items) {
+        const [x0, y0, x1, y1] = isl.bbox_mm;
+        const c = isl.connected ? OVERLAY_COLORS.pass : OVERLAY_COLORS.fail;
+        const rect = svgEl("rect", {
+          x: Math.min(x0, x1), y: Math.min(y0, y1),
+          width: Math.abs(x1 - x0), height: Math.abs(y1 - y0),
+          fill: c, "fill-opacity": "0.12", stroke: c,
+          "stroke-width": isl.connected ? "0.15" : "0.3",
+          ...(!isl.connected ? { "stroke-dasharray": "1 0.6" } : {}),
+        });
+        rect.appendChild(svgTitle(
+          `${isl.net} ${layer}: ${isl.area_mm2}mm² ${isl.connected ? "fed" : "DEAD"}`));
+        g.appendChild(rect);
+        g.appendChild(svgEl("circle", { cx: isl.cx_mm, cy: isl.cy_mm, r: "0.5", fill: c }));
+      }
     }
-  }
-  svg.appendChild(g);
+  });
 }
 
 async function fetchGndIslands() {
-  const btn = document.getElementById("gnd-islands-btn");
-  const box = document.getElementById("gnd-islands-results");
-  // Toggle off: clear the overlay without refetching.
-  if (gndIslandsVisible) {
-    gndIslandsVisible = false;
-    renderGndIslandsOverlay();
-    btn.textContent = "GND Islands";
-    return;
-  }
-  btn.disabled = true;
-  btn.textContent = "Analyzing…";
-  try {
-    const res = await fetch("/api/routing/debug/gnd-islands");
-    if (!res.ok) throw new Error(await res.text());
-    gndIslandsData = await res.json();
-    const parts = [];
-    for (const [layer, items] of Object.entries(gndIslandsData.layers)) {
-      const dead = items.filter(i => !i.connected).length;
-      parts.push(`${layer}: ${items.length} island${items.length === 1 ? "" : "s"}${dead ? ` (${dead} DEAD)` : ""}`);
-    }
-    box.hidden = false;
-    box.textContent = parts.join(" · ") || "no zoned ground pours";
-    gndIslandsVisible = true;
-    btn.textContent = "Hide Islands";
-    renderGndIslandsOverlay();
-  } catch (err) {
-    box.hidden = false;
-    box.textContent = `island analysis failed: ${err}`;
-  } finally {
-    btn.disabled = false;
-    if (!gndIslandsVisible) btn.textContent = "GND Islands";
-  }
+  await runDiagToggle({
+    btnId: "gnd-islands-btn", boxId: "gnd-islands-results",
+    offLabel: "GND Islands", onLabel: "Hide Islands",
+    isOn: () => gndIslandsVisible, setOn: v => { gndIslandsVisible = v; },
+    render: renderGndIslandsOverlay, failPrefix: "island analysis failed",
+    load: async () => {
+      const data = await apiJson("/api/routing/debug/gnd-islands");
+      gndIslandsData = data;
+      const parts = [];
+      for (const [layer, items] of Object.entries(gndIslandsData.layers)) {
+        const dead = items.filter(i => !i.connected).length;
+        parts.push(`${layer}: ${items.length} island${items.length === 1 ? "" : "s"}${dead ? ` (${dead} DEAD)` : ""}`);
+      }
+      return parts.join(" · ") || "no zoned ground pours";
+    },
+  });
 }
 
 async function refreshInletsDiag() {
-  const diag = document.getElementById("inlets-diag");
+  const diag = inletsDiag;
   try {
-    const res = await fetch("/api/nets/inlets");
-    if (!res.ok) return;
-    const data = await res.json();
+    const data = await getInlets();
     const gl = data.gnd_list || data.gnd;
     const g = (Array.isArray(gl) ? gl : (gl ? [gl] : [])).map(a => `${a.ref}.${a.pad}`).join(", ") || "unset";
     const p = Object.entries(data.power || {}).map(([n, a]) => {
@@ -3332,7 +3313,7 @@ async function refreshInletsDiag() {
 }
 
 async function saveInlets() {
-  const diag = document.getElementById("inlets-diag");
+  const diag = inletsDiag;
   const gRef = document.getElementById("inlet-gnd-ref").value.trim();
   const gPad = document.getElementById("inlet-gnd-pad").value.trim();
   const pNet = document.getElementById("inlet-pwr-net").value.trim();
@@ -3342,10 +3323,7 @@ async function saveInlets() {
   if (gRef && gPad) body.gnd = { ref: gRef, pad: gPad };
   if (pNet && pRef && pPad) body.power[pNet] = { ref: pRef, pad: pPad };
   try {
-    const res = await fetch("/api/nets/inlets", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
-    });
-    if (!res.ok) throw new Error(await res.text());
+    await setInlets(body);
     await refreshInletsDiag();
   } catch (err) {
     if (diag) diag.textContent = `inlet save failed: ${err}`;
@@ -3353,12 +3331,9 @@ async function saveInlets() {
 }
 
 async function clearGndInlet() {
-  const diag = document.getElementById("inlets-diag");
+  const diag = inletsDiag;
   try {
-    const res = await fetch("/api/nets/inlets", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ gnd: null }),
-    });
-    if (!res.ok) throw new Error(await res.text());
+    await setInlets({ gnd: null });
     await refreshInletsDiag();
   } catch (err) {
     if (diag) diag.textContent = `inlet clear failed: ${err}`;
@@ -3366,39 +3341,22 @@ async function clearGndInlet() {
 }
 
 async function fetchImpedance() {
-  const btn = document.getElementById("impedance-btn");
-  const box = document.getElementById("impedance-results");
-  // Toggle off: clear the overlay without refetching.
-  if (impedanceVisible) {
-    impedanceVisible = false;
-    renderImpedanceOverlay();
-    btn.textContent = "Impedance";
-    return;
-  }
-  btn.disabled = true;
-  btn.textContent = "Analyzing…";
-  try {
-    // Fall back to each input's own default so empty fields can't silently
-    // tighten the test to a stale hardcoded value.
-    const gEl = document.getElementById("imp-gnd-max");
-    const pEl = document.getElementById("imp-pwr-max");
-    const gMax = gEl.value || gEl.defaultValue || "50";
-    const pMax = pEl.value || pEl.defaultValue || "250";
-    const res = await fetch(`/api/routing/debug/impedance?gnd_max_mohm=${encodeURIComponent(gMax)}&power_max_mohm=${encodeURIComponent(pMax)}`);
-    if (!res.ok) throw new Error(await res.text());
-    const data = await res.json();
-    impedanceData = data;
-    renderImpedanceResults();
-    impedanceVisible = true;
-    btn.textContent = "Hide Z";
-    renderImpedanceOverlay();
-  } catch (err) {
-    box.hidden = false;
-    box.textContent = `impedance analysis failed: ${err}`;
-  } finally {
-    btn.disabled = false;
-    if (!impedanceVisible) btn.textContent = "Impedance";
-  }
+  await runDiagToggle({
+    btnId: "impedance-btn", boxId: "impedance-results",
+    offLabel: "Impedance", onLabel: "Hide Z",
+    isOn: () => impedanceVisible, setOn: v => { impedanceVisible = v; },
+    render: renderImpedanceOverlay, failPrefix: "impedance analysis failed",
+    load: async () => {
+      // Fall back to each input's own default so empty fields can't silently
+      // tighten the test to a stale hardcoded value.
+      const gEl = document.getElementById("imp-gnd-max");
+      const pEl = document.getElementById("imp-pwr-max");
+      const gMax = gEl.value || gEl.defaultValue || "50";
+      const pMax = pEl.value || pEl.defaultValue || "250";
+      impedanceData = await apiJson(`/api/routing/debug/impedance?gnd_max_mohm=${encodeURIComponent(gMax)}&power_max_mohm=${encodeURIComponent(pMax)}`);
+      renderImpedanceResults(); // unhides the box itself; no text summary
+    },
+  });
 }
 
 // Pad lists render worst-first, capped per net with a show-all toggle.
@@ -3451,34 +3409,23 @@ function renderImpedanceResults() {
 let impedanceData = null;
 let impedanceVisible = false;
 function renderImpedanceOverlay() {
-  viewport.querySelectorAll(".impedance-overlay").forEach(el => el.remove());
-  if (!impedanceVisible || !impedanceData) return;
-  const svg = viewport.querySelector("svg");
-  if (!svg) return;
-  const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
-  g.classList.add("impedance-overlay");
-  g.style.pointerEvents = "none";
-  const color = v => v === "pass" ? "#2ea87a" : (v === "attention" ? "#d9a13b" : "#e06c75");
-  for (const net of (impedanceData.nets || [])) {
-    for (const p of (net.pads || [])) {
-      if (p.x_mm === undefined) continue;
-      const dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-      dot.setAttribute("cx", p.x_mm);
-      dot.setAttribute("cy", p.y_mm);
-      dot.setAttribute("r", p.reason === "inlet" ? "1.0" : "0.6");
-      dot.setAttribute("fill", color(p.verdict));
-      dot.setAttribute("fill-opacity", p.reason === "inlet" ? "0.9" : "0.75");
-      if (p.reason === "inlet") {
-        dot.setAttribute("stroke", "#ffffff");
-        dot.setAttribute("stroke-width", "0.25");
+  makeSvgOverlay("impedance-overlay", impedanceVisible, impedanceData, g => {
+    const color = v => OVERLAY_COLORS[v] || OVERLAY_COLORS.fail;
+    for (const net of (impedanceData.nets || [])) {
+      for (const p of (net.pads || [])) {
+        if (p.x_mm === undefined) continue;
+        const inlet = p.reason === "inlet";
+        const dot = svgEl("circle", {
+          cx: p.x_mm, cy: p.y_mm, r: inlet ? "1.0" : "0.6",
+          fill: color(p.verdict), "fill-opacity": inlet ? "0.9" : "0.75",
+          ...(inlet ? { stroke: "#ffffff", "stroke-width": "0.25" } : {}),
+        });
+        dot.appendChild(svgTitle(
+          `${p.ref}.${p.pad} ${p.net}: ${p.connected ? p.r_mohm + " mΩ" : p.reason} via ${p.inlet || "—"}`));
+        g.appendChild(dot);
       }
-      const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
-      title.textContent = `${p.ref}.${p.pad} ${p.net}: ${p.connected ? p.r_mohm + " mΩ" : p.reason} via ${p.inlet || "—"}`;
-      dot.appendChild(title);
-      g.appendChild(dot);
     }
-  }
-  svg.appendChild(g);
+  });
 }
 document.getElementById("impedance-btn").addEventListener("click", fetchImpedance);
 document.getElementById("inlets-save-btn").addEventListener("click", saveInlets);
@@ -3509,13 +3456,9 @@ viewport.addEventListener("click", e => {
 }, true);
 
 async function postBridges(bridges) {
-  const diag = document.getElementById("bridges-diag");
+  const diag = bridgesDiag;
   try {
-    const res = await fetch("/api/nets/inlets", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ bridges }),
-    });
-    if (!res.ok) throw new Error(await res.text());
+    await setInlets({ bridges });
     await refreshBridges();
     await refreshInletsDiag();
   } catch (err) {
@@ -3525,11 +3468,9 @@ async function postBridges(bridges) {
 
 async function refreshBridges() {
   const box = document.getElementById("bridges-list");
-  const diag = document.getElementById("bridges-diag");
+  const diag = bridgesDiag;
   try {
-    const res = await fetch("/api/nets/inlets");
-    if (!res.ok) return;
-    const data = await res.json();
+    const data = await getInlets();
     const bridges = data.bridges || [];
     if (!bridges.length) {
       box.hidden = true;
@@ -3544,7 +3485,7 @@ async function refreshBridges() {
     ).join("");
     box.querySelectorAll("[data-bridge-del]").forEach(btn => {
       btn.addEventListener("click", async () => {
-        const cur = (await (await fetch("/api/nets/inlets")).json()).bridges || [];
+        const cur = (await getInlets()).bridges || [];
         cur.splice(Number(btn.dataset.bridgeDel), 1);
         await postBridges(cur);
       });
@@ -3556,7 +3497,7 @@ async function refreshBridges() {
 }
 
 async function linkBridge() {
-  const diag = document.getElementById("bridges-diag");
+  const diag = bridgesDiag;
   const aRef = document.getElementById("bridge-a-ref").value.trim();
   const aPad = document.getElementById("bridge-a-pad").value.trim();
   const bRef = document.getElementById("bridge-b-ref").value.trim();
@@ -3566,18 +3507,16 @@ async function linkBridge() {
     if (diag) diag.textContent = "fill A ref/pad and B ref/pad (or Pick from the board)";
     return;
   }
-  const cur = (await (await fetch("/api/nets/inlets")).json()).bridges || [];
+  const cur = (await getInlets()).bridges || [];
   cur.push({ a: { ref: aRef, pad: aPad }, b: { ref: bRef, pad: bPad }, r_mohm: r });
   await postBridges(cur);
 }
 
 async function suggestBridges() {
   const box = document.getElementById("bridge-suggest-list");
-  const diag = document.getElementById("bridges-diag");
+  const diag = bridgesDiag;
   try {
-    const res = await fetch("/api/nets/bridge-suggestions");
-    if (!res.ok) throw new Error(await res.text());
-    const data = await res.json();
+    const data = await apiJson("/api/nets/bridge-suggestions");
     const mates = data.mates || [];
     if (!mates.length) {
       box.hidden = false;
@@ -3601,7 +3540,7 @@ async function suggestBridges() {
     document.getElementById("bridge-apply-btn").addEventListener("click", async () => {
       const checked = [...box.querySelectorAll(".bridge-sug:checked")].map(cb => all[Number(cb.dataset.i)].m);
       if (!checked.length) return;
-      const cur = (await (await fetch("/api/nets/inlets")).json()).bridges || [];
+      const cur = (await getInlets()).bridges || [];
       for (const m of checked) {
         const b = { a: m.a, b: m.b, r_mohm: 20.0 }; // BRIDGE_DEFAULT_MOHM
         if (!cur.some(c => JSON.stringify(c) === JSON.stringify(b))) cur.push(b);
@@ -3647,11 +3586,7 @@ document.getElementById("nets-protect-all").addEventListener("change", async e =
     if (cb && cb.checked !== e.target.checked) {
       cb.checked = e.target.checked;
       try {
-        await fetch("/api/nets/protected", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ net, protected: e.target.checked })
-        });
+        await postJSON("/api/nets/protected", { net, protected: e.target.checked });
       } catch (err) {
         console.error("Failed to toggle protect all:", err);
       }
@@ -3769,13 +3704,11 @@ function stripDocsFrontMatter(md) {
 }
 
 async function loadDocsList() {
-  const sel = document.getElementById("docs-select");
+  const sel = docsSelect;
   const diag = document.getElementById("docs-diag");
   if (docsLoaded && sel.options.length) { loadDocContent(sel.value); return; }
   try {
-    const res = await fetch("/api/docs/list");
-    if (!res.ok) throw new Error(await res.text());
-    const data = await res.json();
+    const data = await apiJson("/api/docs/list");
     sel.innerHTML = "";
     docsByName = {};
     for (const d of (data.docs || [])) {
@@ -3801,9 +3734,7 @@ async function loadDocContent(name) {
   if (!name) return;
   diag.textContent = "loading…";
   try {
-    const res = await fetch(`/api/docs/content?name=${encodeURIComponent(name)}`);
-    if (!res.ok) throw new Error(await res.text());
-    const data = await res.json();
+    const data = await apiJson(`/api/docs/content?name=${encodeURIComponent(name)}`);
     el.innerHTML = renderMarkdown(stripDocsFrontMatter(data.markdown || ""));
     const rl = document.getElementById("docs-rendered-link");
     if (data.rendered_url) {
@@ -3823,7 +3754,7 @@ async function loadDocContent(name) {
         const target = href.split("#")[0].replace(/^\.\//, "");
         a.addEventListener("click", (e) => {
           e.preventDefault();
-          const sel = document.getElementById("docs-select");
+          const sel = docsSelect;
           const match = [...sel.options].find(o => o.value === target || o.value.endsWith("/" + target) || target.endsWith(o.value));
           if (match) { sel.value = match.value; loadDocContent(match.value); }
         });
@@ -3835,113 +3766,65 @@ async function loadDocContent(name) {
   }
 }
 
-document.getElementById("docs-select").addEventListener("change", (e) => {
+docsSelect.addEventListener("change", (e) => {
   loadDocContent(e.target.value);
 });
 
 document.getElementById("docs-open-tab-btn").addEventListener("click", () => {
-  const name = document.getElementById("docs-select").value;
+  const name = docsSelect.value;
   if (name) window.open(`/docs.html?doc=${encodeURIComponent(name)}`, "_blank", "noopener");
 });
 
-// Resizable sidebar splitter
-const sidebar = document.getElementById("sidebar");
-const resizer = document.getElementById("resizer");
-const mainContent = document.querySelector(".main-content");
-
-let startX, startWidth;
-
-function getSidebarWidth() {
-  const computed = getComputedStyle(sidebar).width;
-  const px = parseInt(computed, 10);
-  return isNaN(px) || px === 0 ? sidebar.offsetWidth : px;
-}
-
-function initResizer() {
-  // Restore from localStorage
-  const savedWidth = localStorage.getItem("sidebar-width");
-  if (savedWidth) {
-    sidebar.style.width = savedWidth + "px";
-  }
-
+// Shared horizontal-resizer scaffold: drag to resize `panel` within
+// [minW, maxW], persisted under `storageKey`. `sign` is +1 when dragging
+// right widens (left sidebar) and -1 when dragging right narrows (right
+// drawer); `onDown` runs first (e.g. expand a collapsed panel).
+// Saves parseInt px so a reload restores "<n>px" (previously the sidebar
+// saved the "px"-suffixed string and restored "<n>pxpx", i.e. never).
+function initHorizResizer({ resizerId, panel, minW, maxW, storageKey, sign = 1, onDown }) {
+  const resizer = document.getElementById(resizerId);
+  if (!resizer || !panel) return;
+  const saved = localStorage.getItem(storageKey);
+  if (saved) panel.style.width = parseInt(saved, 10) + "px";
+  let startX = 0, startWidth = 0;
+  const curWidth = () => {
+    const px = parseInt(getComputedStyle(panel).width, 10);
+    return isNaN(px) || px === 0 ? panel.offsetWidth : px;
+  };
+  const doDrag = e => {
+    const width = startWidth + sign * (e.clientX - startX);
+    panel.style.width = Math.max(minW, Math.min(maxW, width)) + "px";
+  };
+  const stopDrag = () => {
+    resizer.classList.remove("dragging");
+    document.removeEventListener("mousemove", doDrag);
+    document.removeEventListener("mouseup", stopDrag);
+    localStorage.setItem(storageKey, parseInt(panel.style.width, 10));
+  };
   resizer.addEventListener("mousedown", e => {
     e.preventDefault();
+    if (onDown) onDown();
     startX = e.clientX;
-    startWidth = getSidebarWidth();
+    startWidth = curWidth();
     resizer.classList.add("dragging");
     document.addEventListener("mousemove", doDrag);
     document.addEventListener("mouseup", stopDrag);
   });
 }
 
-function doDrag(e) {
-  const width = startWidth + (e.clientX - startX);
-  const clamped = Math.max(320, Math.min(500, width));
-  sidebar.style.width = clamped + "px";
-}
+// Resizable sidebar splitter (script runs after the DOM, so elements exist).
+const sidebar = document.getElementById("sidebar");
+initHorizResizer({
+  resizerId: "resizer", panel: sidebar,
+  minW: 320, maxW: 500, storageKey: "sidebar-width", sign: 1,
+});
 
-function stopDrag() {
-  resizer.classList.remove("dragging");
-  document.removeEventListener("mousemove", doDrag);
-  document.removeEventListener("mouseup", stopDrag);
-  localStorage.setItem("sidebar-width", sidebar.style.width);
-}
-
-// Initialize after DOM is ready (handles timing issues)
-if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", initResizer);
-} else {
-  initResizer();
-}
-
-// Side panel horizontal resizer
-const panelResizer = document.getElementById("panel-resizer");
-let panelStartX, panelStartWidth;
-
-function getSidePanelWidth() {
-  const computed = getComputedStyle(sidePanel).width;
-  const px = parseInt(computed, 10);
-  return isNaN(px) || px === 0 ? sidePanel.offsetWidth : px;
-}
-
-function initPanelResizer() {
-  // Restore from localStorage
-  const savedWidth = localStorage.getItem("side-panel-width");
-  if (savedWidth) {
-    sidePanel.style.width = savedWidth + "px";
-  }
-
-  panelResizer.addEventListener("mousedown", e => {
-    e.preventDefault();
-    if (sidePanelCollapsed) sidePanelToggle.click();
-    panelStartX = e.clientX;
-    panelStartWidth = getSidePanelWidth();
-    panelResizer.classList.add("dragging");
-    document.addEventListener("mousemove", doPanelDrag);
-    document.addEventListener("mouseup", stopPanelDrag);
-  });
-}
-
-function doPanelDrag(e) {
-  // Drag left = widen panel (X increases rightward)
-  const width = panelStartWidth - (e.clientX - panelStartX);
-  const clamped = Math.max(300, Math.min(600, width));
-  sidePanel.style.width = clamped + "px";
-}
-
-function stopPanelDrag() {
-  panelResizer.classList.remove("dragging");
-  document.removeEventListener("mousemove", doPanelDrag);
-  document.removeEventListener("mouseup", stopPanelDrag);
-  localStorage.setItem("side-panel-width", parseInt(sidePanel.style.width, 10));
-}
-
-// Initialize panel resizer
-if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", initPanelResizer);
-} else {
-  initPanelResizer();
-}
+// Side panel horizontal resizer (drag left = widen).
+initHorizResizer({
+  resizerId: "panel-resizer", panel: sidePanel,
+  minW: 300, maxW: 600, storageKey: "side-panel-width", sign: -1,
+  onDown: () => { if (sidePanelCollapsed) sidePanelToggle.click(); },
+});
 
 // Keyboard shortcuts
 document.addEventListener("keydown", e => {
@@ -3967,7 +3850,7 @@ document.addEventListener("keydown", e => {
   } else if (e.key === " ") {
     // Space - step selected
     e.preventDefault();
-    document.getElementById("step-selected-btn").click();
+    stepSelectedBtn.click();
   } else if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && motion.frames.length) {
     const tag = (document.activeElement?.tagName || "").toLowerCase();
     if (tag === "input" || tag === "select" || tag === "textarea") return;
