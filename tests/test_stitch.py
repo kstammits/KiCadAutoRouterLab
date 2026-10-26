@@ -202,14 +202,34 @@ class TestWriteback:
     """Stitch vias survive writeback and re-parse with their GND net."""
 
     def test_stitch_vias_in_tree_and_reparsed(self):
+        from dataclasses import replace
         from pathlib import Path
 
-        from kicad_autorouter.board_model import board_model
+        from kicad_autorouter.board_model import Track, board_model
+        from kicad_autorouter.routing.grid import create_grid_from_model
         from kicad_autorouter.routing.pipeline import RoutingParams, route_nets
+        from kicad_autorouter.routing.pour import gnd_islands
         from kicad_autorouter.sexpr import parse_file
 
         tree = parse_file(Path(__file__).parent / "fixtures" / "DCCF.sved.kicad_pcb")
         model = board_model(tree)
+        # The post-ab5735a pour is one intact island per layer, so routing a
+        # small net never fragments GND and the stitcher is legitimately
+        # idle. Sever it artificially with a model-only foreign box in solid
+        # panel-2 pour: the enclosed F.Cu island has no barrel union to B.Cu,
+        # forcing exactly the overlap-via repair this test exercises. The
+        # SEVER tracks never enter the written tree (scaffolding only).
+        x0, y0, s = 226.0, 136.0, 8.0
+        corners = [(x0, y0), (x0 + s, y0), (x0 + s, y0 + s), (x0, y0 + s)]
+        sever = tuple(
+            Track(start=Point(*corners[k]), end=Point(*corners[(k + 1) % 4]),
+                  width_mm=0.5, layer="F.Cu", net_name="SEVER")
+            for k in range(4)
+        )
+        model = replace(model, tracks=model.tracks + sever)
+        islands = gnd_islands(model, create_grid_from_model(model))["F.Cu"]
+        assert len(islands) >= 2, (
+            "sever box did not fragment GND — fixture drifted, re-site it")
         small = [n for n, conns in model.nets.items() if 2 <= len(conns) <= 6]
         net = sorted(small)[0]
         res, _, _ = route_nets(

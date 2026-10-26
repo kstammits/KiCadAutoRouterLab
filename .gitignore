@@ -29,7 +29,9 @@ tmp/
 # Quarto rendered output (regenerated on demand via scripts/regen_*.sh)
 docs/_output/
 
-# KiCad project-local / cache files (not for version control)
+# KiCad project-local / cache files (not for version control;
+# the engine and tests read .kicad_pcb only, KiCad regenerates these)
+*.kicad_pro
 *.kicad_prl
 fp-info-cache
 

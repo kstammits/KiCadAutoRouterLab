@@ -178,8 +178,13 @@ class TestFixtureCharacterization:
         assert any(not isl.has_connection for isl in out["F.Cu"])
 
     def test_dccf_island_counts(self):
+        # ab5735a widened the GND zone across both panels and refilled, so
+        # the pour is one fed island per layer (was 54/50 fragments on the
+        # old single-panel pour). Re-record with justification per above.
         model = board_model(parse_file(FIXTURES / "DCCF.sved.kicad_pcb"))
         grid = create_grid_from_model(model)
         out = gnd_islands(model, grid)
-        assert len(out["F.Cu"]) == 54
-        assert len(out["B.Cu"]) == 50
+        assert len(out["F.Cu"]) == 1
+        assert len(out["B.Cu"]) == 1
+        assert out["F.Cu"][0].has_connection
+        assert out["B.Cu"][0].has_connection

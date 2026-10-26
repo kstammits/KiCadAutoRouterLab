@@ -44,15 +44,9 @@ Open work only. Completed changes belong in git history, not here.
   names (names differ by design to fool KiCad DRC); mates are never
   inferred from net names — positional suggestions + manual linking only.
   Faceplate mounting holes stay unbridged (non-electrical) by policy.
-- **DCCF fixture pour**: the single GND zone covers panel 1 only; panel 2
-  (VIN parts) has no pour. Add the second zone in pcbnew so stitching does
-  not spend time repairing an incomplete board.
 - **`pour_copper_mask` foreign cuts**: accumulate different-net cuts into
   one mask per zone instead of allocating and ANDing a full `zeros(H, W)`
   per track.
-- **`plan_stitches` hoists**: move `binary_erosion(copper)` out of the group
-  loop, compute the windowed EDT on the group bbox, and cache `joined_mask`
-  incrementally.
 
 ## Four-layer support (retired spec; none landed)
 
