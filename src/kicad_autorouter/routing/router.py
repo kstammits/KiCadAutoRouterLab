@@ -38,6 +38,11 @@ class RouteResult:
     # corridor reservation) must iterate ``branches`` to avoid teleport
     # segments between spokes of a star.
     branches: Tuple[Tuple[int, int, int], ...] = ()
+    # Per-A*-attempt trace (only populated when the router runs with
+    # debug=True): one dict per attempt with pair, window kind/size,
+    # expansions, success, and seconds. Timings live in return values so
+    # benchmarks can record them without log scraping.
+    debug_attempts: Tuple[dict, ...] = ()
 
 
 @dataclass
@@ -100,6 +105,8 @@ class SingleNetRouter:
         window_growth: float = 2.0,
         window_retries: int = 3,
         corridor: bool = True,
+        debug: bool = False,
+        max_expansions_per_net: int = 0,
     ):
         self.grid = grid
         self.cost_grid = cost_grid
@@ -128,6 +135,21 @@ class SingleNetRouter:
         self.window_growth = max(1.0, float(window_growth))
         self.window_retries = max(0, int(window_retries))
         self.corridor_enabled = bool(corridor)
+        # Debug trace: per-A*-attempt records collected by route() and
+        # returned on RouteResult.debug_attempts. Off by default (zero
+        # overhead beyond one branch per attempt when disabled).
+        self.debug_enabled = bool(debug)
+        # Net-level expansion budget: stop starting new A* searches once
+        # the running total reaches this (0 = no cap). Per-search
+        # max_expansions still bounds each attempt; this bounds the
+        # ~n-1 pair-searches × window-growth retries that make massive
+        # nets burn tens of millions of expansions.
+        self.max_expansions_per_net = max(0, int(max_expansions_per_net))
+
+    def _budget_spent(self, expansions_total: int) -> bool:
+        """True when the net-level expansion budget is exhausted."""
+        return (self.max_expansions_per_net > 0
+                and expansions_total >= self.max_expansions_per_net)
 
     def route(
         self,
@@ -165,6 +187,7 @@ class SingleNetRouter:
         pairs_done = 0
         expansions_total = 0
         pair_cstats: list[dict] = []
+        attempt_log: list[dict] = []
 
         def _report():
             if progress_cb is not None:
@@ -218,9 +241,26 @@ class SingleNetRouter:
 
             base = expansions_total
 
-            def attempt(search_window, allow_mask=None, weight_override=None):
+            def attempt(search_window, allow_mask=None, weight_override=None, kind="window"):
                 """One A* attempt with progress accounting; returns result."""
                 nonlocal base, result, pairs_done, expansions_total
+                if self._budget_spent(expansions_total):
+                    # Net budget spent: fail fast without launching another
+                    # capped search. Later pairs/windows fail the same way,
+                    # so the net reports ~budget expansions total.
+                    result = RouteResult([], 0.0, 0, 0.0, False, 0)
+                    pairs_done += 1
+                    _report()
+                    if self.debug_enabled:
+                        attempt_log.append({
+                            "pair": [i, j],
+                            "kind": kind + ":budget",
+                            "window_cells": 0,
+                            "expansions": 0,
+                            "success": False,
+                            "seconds": 0.0,
+                        })
+                    return result
                 search_cb = None
                 if progress_cb is not None:
                     def search_cb(e, _base=base):
@@ -228,6 +268,12 @@ class SingleNetRouter:
                             progress_cb(pairs_done, pairs_total, _base + e)
                         except Exception:
                             pass
+                t_attempt = time.perf_counter()
+                if self.max_expansions_per_net > 0:
+                    allowance: Optional[int] = max(
+                        0, self.max_expansions_per_net - base)
+                else:
+                    allowance = None
                 result = self._a_star(
                     si, sj, secondary,
                     progress_cb=search_cb,
@@ -237,22 +283,40 @@ class SingleNetRouter:
                     allow_mask=allow_mask,
                     heuristic_weight=weight_override,
                     goal_mask=goal_mask,
+                    expansion_allowance=allowance,
                 )
+                dt_attempt = time.perf_counter() - t_attempt
                 expansions_total += result.expansions
                 base += result.expansions
                 pairs_done += 1
                 _report()
+                if self.debug_enabled:
+                    if search_window is None:
+                        window_cells = self.W * self.H
+                    else:
+                        window_cells = ((search_window.c1 - search_window.c0 + 1)
+                                        * (search_window.r1 - search_window.r0 + 1))
+                    attempt_log.append({
+                        "pair": [i, j],
+                        "kind": kind,
+                        "window_cells": window_cells,
+                        "expansions": result.expansions,
+                        "success": result.success,
+                        "seconds": round(dt_attempt, 4),
+                    })
                 return result
 
             # Attempt 1: initial (smallest) window.
-            attempt(window)
+            attempt(window, kind="window0")
             cstats["window0_exp"] = result.expansions
             if result.success:
                 pair_cstats.append(cstats)
                 return result.success, result.path, result.cost
 
             # Corridor fallback (only when enabled and window 0 failed).
-            if self.corridor_enabled:
+            # Skipped when the net budget is already spent: the restricted
+            # search would instant-fail and find_corridor is wasted work.
+            if self.corridor_enabled and not self._budget_spent(expansions_total):
                 cstats["tried"] = 1
                 if should_cancel is not None and should_cancel():
                     raise RoutingCancelled(f"cancelled before pair {(i, j)}")
@@ -269,6 +333,7 @@ class SingleNetRouter:
                         full_board(self.W, self.H),
                         allow_mask=corridor,
                         weight_override=1.0,
+                        kind="corridor",
                     )
                     cstats["corridor_exp"] = result.expansions
                     if result.success:
@@ -278,7 +343,8 @@ class SingleNetRouter:
 
             # Attempts 2..N: grown windows + full-board fallback.
             for wi in range(1, len(windows)):
-                attempt(windows[wi])
+                attempt(windows[wi],
+                        kind="full" if wi == len(windows) - 1 else f"window{wi}")
                 if result.success:
                     break
             cstats["subsequent_exp"] = result.expansions
@@ -331,6 +397,8 @@ class SingleNetRouter:
         for i, j in ordered_pairs(terminals):
             if uf.components == 1:
                 break
+            if self._budget_spent(expansions_total):
+                break  # budget spent: remaining pairs fail without searches
             if uf.find(i) == uf.find(j):
                 continue
             searches += 1
@@ -363,7 +431,8 @@ class SingleNetRouter:
 
         connected = uf.components == 1
         if not connected:
-            return RouteResult([], 0.0, 0, 0.0, False, expansions_total)
+            return RouteResult([], 0.0, 0, 0.0, False, expansions_total,
+                               debug_attempts=tuple(attempt_log))
         if not mst_edges:
             return RouteResult([], 0.0, 0, 0.0, False, expansions_total)
 
@@ -413,11 +482,12 @@ class SingleNetRouter:
 
         return RouteResult(
             path=union_path,
-            wire_mm=wire_mm,
+            wire_mm=total_wire,
             via_count=total_vias,
             cost=total_cost,
             success=True,
             expansions=expansions_total,
+            debug_attempts=tuple(attempt_log),
             corridor_tried=ctried,
             corridor_found=cfnd,
             corridor_used=cused,
@@ -495,6 +565,47 @@ class SingleNetRouter:
                         return True
         return False
 
+    def terminal_escape_counts(
+        self,
+        terminals: List[Tuple[int, int, int]],
+        secondary: Optional[np.ndarray] = None,
+        limit: int = 4096,
+    ) -> List[int]:
+        """Bounded flood-fill reachable-cell count per terminal (debug aid).
+
+        Upper bound on escape room: layer changes are allowed wherever the
+        target cell is passable (via rules ignored), 4-neighborhood moves
+        must clear both the cost grid and the secondary exclusion rings. A
+        tiny count means the terminal is sealed by blocked/exclusion cells
+        and its pair-searches will burn the expansion cap. Runs in
+        milliseconds (bounded by ``limit`` pops per terminal).
+        """
+        from collections import deque
+
+        counts = []
+        for (sc, sr, sl) in terminals:
+            seen = {(sc, sr, sl)}
+            queue = deque([(sc, sr, sl)])
+            while queue and len(seen) < limit:
+                c, r, l = queue.popleft()
+                for nc, nr, nl in ((c + 1, r, l), (c - 1, r, l),
+                                   (c, r + 1, l), (c, r - 1, l),
+                                   (c, r, l - 1), (c, r, l + 1)):
+                    if not (0 <= nr < self.H and 0 <= nc < self.W
+                            and 0 <= nl < self.n_layers):
+                        continue
+                    if (nc, nr, nl) in seen:
+                        continue
+                    if self.cost_grid[nl, nr, nc] >= self.cost_map.blocked_threshold:
+                        continue
+                    if (secondary is not None
+                            and int(secondary[nl, nr, nc]) >= SECONDARY_BLOCKED):
+                        continue
+                    seen.add((nc, nr, nl))
+                    queue.append((nc, nr, nl))
+            counts.append(len(seen))
+        return counts
+
     def _a_star(
         self,
         start: Tuple[int, int, int],
@@ -507,6 +618,7 @@ class SingleNetRouter:
         allow_mask: Optional[np.ndarray] = None,  # corridor restriction (H, W); None = anywhere
         heuristic_weight: Optional[float] = None,  # override CostMap weight for this search
         goal_mask: Optional[np.ndarray] = None,  # (n_layers, H, W) bool: any True cell is a valid goal
+        expansion_allowance: Optional[int] = None,  # stop this search after this many pops (net budget remainder; None = no cap)
     ) -> RouteResult:
         """A* search on 3D grid with via transitions.
 
@@ -570,6 +682,8 @@ class SingleNetRouter:
             f, g, c, r, l, p = heapq.heappop(open_set)
             expansions += 1
             if expansions > self.max_expansions:
+                return RouteResult([], 0.0, 0, 0.0, False, expansions)
+            if expansion_allowance is not None and expansions >= expansion_allowance:
                 return RouteResult([], 0.0, 0, 0.0, False, expansions)
             if expansions % 4096 == 0:
                 if should_cancel is not None and should_cancel():

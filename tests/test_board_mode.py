@@ -201,12 +201,14 @@ def test_mode_response_carries_owned_keys(base):
     _, _, body = _get(f"{base}/api/mode")
     info = json.loads(body)
     assert info["owned"] == ["stitch_gnd_vias", "strip_gnd_blockers",
-                             "pour_severance_weight", "allowed_layers"]
+                             "pour_severance_weight", "allowed_layers",
+                             "fanout_planes", "fanout_plane_vias_max"]
     status, _, body = _post(f"{base}/api/mode", payload={"mode": "four-layer"})
     assert status == 200
     assert json.loads(body)["owned"] == [
         "stitch_gnd_vias", "strip_gnd_blockers",
-        "pour_severance_weight", "allowed_layers", "refill_zones"]
+        "pour_severance_weight", "allowed_layers", "refill_zones",
+        "fanout_planes", "fanout_plane_vias_max"]
 
 
 @pytest.mark.server

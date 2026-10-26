@@ -31,6 +31,8 @@ def test_preset_contents_exact():
         "strip_gnd_blockers": True,
         "pour_severance_weight": 30.0,
         "allowed_layers": ["F.Cu", "B.Cu"],
+        "fanout_planes": False,
+        "fanout_plane_vias_max": 16,
     }
     assert MODE_PRESETS["four-layer"] == {
         "stitch_gnd_vias": False,
@@ -38,6 +40,8 @@ def test_preset_contents_exact():
         "pour_severance_weight": 0.0,
         "allowed_layers": None,
         "refill_zones": True,
+        "fanout_planes": True,
+        "fanout_plane_vias_max": 16,
     }
     assert "via_cost_mm" not in MODE_PRESETS["two-layer"]
     assert "via_cost_mm" not in MODE_PRESETS["four-layer"]

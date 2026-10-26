@@ -1,0 +1,1152 @@
+{
+  "budget": 100000,
+  "retries": 2,
+  "spot_facts": {
+    "DCCF_VIN": {
+      "net": "VIN",
+      "terminals": 3,
+      "terminal": [
+        1383,
+        1376,
+        0
+      ],
+      "own_cell_secondary": 10000,
+      "own_cell_via_blocked": true
+    },
+    "tube111_+12V": {
+      "net": "+12V",
+      "terminals": 21,
+      "terminal": [
+        646,
+        438,
+        1
+      ],
+      "own_cell_secondary": 10000,
+      "own_cell_via_blocked": true
+    },
+    "tube111_-12V": {
+      "net": "-12V",
+      "terminals": 17,
+      "terminal": [
+        596,
+        399,
+        1
+      ],
+      "own_cell_secondary": 10000,
+      "own_cell_via_blocked": true
+    },
+    "tube111_C2Output": {
+      "net": "C2Output",
+      "terminals": 3,
+      "terminal": [
+        943,
+        970,
+        1
+      ],
+      "own_cell_secondary": 10000,
+      "own_cell_via_blocked": true
+    },
+    "tube111_C2OutCV": {
+      "net": "C2OutCV",
+      "terminals": 3,
+      "terminal": [
+        992,
+        957,
+        1
+      ],
+      "own_cell_secondary": 10000,
+      "own_cell_via_blocked": true
+    },
+    "tube111_C2OutCVLED": {
+      "net": "C2OutCVLED",
+      "terminals": 4,
+      "terminal": [
+        992,
+        970,
+        1
+      ],
+      "own_cell_secondary": 10000,
+      "own_cell_via_blocked": true
+    },
+    "tube111_grid_cv": {
+      "net": "grid_cv",
+      "terminals": 4,
+      "terminal": [
+        596,
+        438,
+        1
+      ],
+      "own_cell_secondary": 10000,
+      "own_cell_via_blocked": true
+    },
+    "tube111_Net-(R31-Pad1)": {
+      "net": "Net-(R31-Pad1)",
+      "terminals": 3,
+      "terminal": [
+        947,
+        802,
+        1
+      ],
+      "own_cell_secondary": 10000,
+      "own_cell_via_blocked": true
+    }
+  },
+  "cases": [
+    {
+      "case": "DCCF_pair-control(C6-Q1)",
+      "config": "w=3.0 halo=1.0",
+      "pairs": 2,
+      "success": true,
+      "expansions": 43427,
+      "time_s": 0.925,
+      "cost": 2410.0,
+      "path_len": 191,
+      "exp_per_s": 46940.0
+    },
+    {
+      "case": "DCCF_pair-control(C6-Q1)",
+      "config": "w=1.0 halo=1.0",
+      "pairs": 2,
+      "success": true,
+      "expansions": 44115,
+      "time_s": 0.925,
+      "cost": 2410.0,
+      "path_len": 191,
+      "exp_per_s": 47713.5
+    },
+    {
+      "case": "DCCF_pair-control(C6-Q1)",
+      "config": "w=3.0 halo=0.3",
+      "pairs": 2,
+      "success": true,
+      "expansions": 43484,
+      "time_s": 0.916,
+      "cost": 2410.0,
+      "path_len": 191,
+      "exp_per_s": 47449.1
+    },
+    {
+      "case": "DCCF_pair-control(C6-Q1)",
+      "config": "w=1.0 halo=0.3",
+      "pairs": 2,
+      "success": true,
+      "expansions": 44149,
+      "time_s": 0.936,
+      "cost": 2410.0,
+      "path_len": 191,
+      "exp_per_s": 47188.4
+    },
+    {
+      "case": "DCCF_pair-tight(Q1-Q2)",
+      "config": "w=3.0 halo=1.0",
+      "pairs": 2,
+      "success": false,
+      "expansions": 300003,
+      "time_s": 2.473,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 121321.3
+    },
+    {
+      "case": "DCCF_pair-tight(Q1-Q2)",
+      "config": "w=1.0 halo=1.0",
+      "pairs": 2,
+      "success": false,
+      "expansions": 300003,
+      "time_s": 2.548,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 117732.7
+    },
+    {
+      "case": "DCCF_pair-tight(Q1-Q2)",
+      "config": "w=3.0 halo=0.3",
+      "pairs": 2,
+      "success": false,
+      "expansions": 300003,
+      "time_s": 2.641,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 113581.8
+    },
+    {
+      "case": "DCCF_pair-tight(Q1-Q2)",
+      "config": "w=1.0 halo=0.3",
+      "pairs": 2,
+      "success": false,
+      "expansions": 300003,
+      "time_s": 2.646,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 113358.5
+    },
+    {
+      "case": "DCCF_full-VIN",
+      "config": "w=3.0 halo=1.0",
+      "pairs": 3,
+      "success": false,
+      "expansions": 643433,
+      "time_s": 4.803,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 133962.3
+    },
+    {
+      "case": "DCCF_full-VIN",
+      "config": "w=1.0 halo=1.0",
+      "pairs": 3,
+      "success": false,
+      "expansions": 644121,
+      "time_s": 4.832,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 133315.4
+    },
+    {
+      "case": "DCCF_full-VIN",
+      "config": "w=3.0 halo=0.3",
+      "pairs": 3,
+      "success": false,
+      "expansions": 643490,
+      "time_s": 5.417,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 118798.7
+    },
+    {
+      "case": "DCCF_full-VIN",
+      "config": "w=1.0 halo=0.3",
+      "pairs": 3,
+      "success": false,
+      "expansions": 644155,
+      "time_s": 5.31,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 121315.9
+    },
+    {
+      "case": "tube111_+12V_control",
+      "config": "w=3.0 halo=1.0",
+      "pairs": 2,
+      "success": true,
+      "expansions": 139347,
+      "time_s": 1.135,
+      "cost": 9152.0,
+      "path_len": 814,
+      "exp_per_s": 122819.2
+    },
+    {
+      "case": "tube111_+12V_control",
+      "config": "w=1.0 halo=1.0",
+      "pairs": 2,
+      "success": true,
+      "expansions": 139347,
+      "time_s": 1.103,
+      "cost": 9152.0,
+      "path_len": 814,
+      "exp_per_s": 126333.1
+    },
+    {
+      "case": "tube111_+12V_control",
+      "config": "w=3.0 halo=0.3",
+      "pairs": 2,
+      "success": true,
+      "expansions": 139355,
+      "time_s": 1.125,
+      "cost": 9152.0,
+      "path_len": 814,
+      "exp_per_s": 123903.1
+    },
+    {
+      "case": "tube111_+12V_control",
+      "config": "w=1.0 halo=0.3",
+      "pairs": 2,
+      "success": true,
+      "expansions": 139355,
+      "time_s": 1.088,
+      "cost": 9152.0,
+      "path_len": 814,
+      "exp_per_s": 128102.1
+    },
+    {
+      "case": "tube111_+12V_tight",
+      "config": "w=3.0 halo=1.0",
+      "pairs": 2,
+      "success": false,
+      "expansions": 3,
+      "time_s": 0.248,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 12.1
+    },
+    {
+      "case": "tube111_+12V_tight",
+      "config": "w=1.0 halo=1.0",
+      "pairs": 2,
+      "success": false,
+      "expansions": 3,
+      "time_s": 0.24,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 12.5
+    },
+    {
+      "case": "tube111_+12V_tight",
+      "config": "w=3.0 halo=0.3",
+      "pairs": 2,
+      "success": false,
+      "expansions": 3,
+      "time_s": 0.239,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 12.6
+    },
+    {
+      "case": "tube111_+12V_tight",
+      "config": "w=1.0 halo=0.3",
+      "pairs": 2,
+      "success": false,
+      "expansions": 3,
+      "time_s": 0.24,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 12.5
+    },
+    {
+      "case": "tube111_+12V_full",
+      "config": "w=3.0 halo=1.0",
+      "pairs": 21,
+      "success": false,
+      "expansions": 18833379,
+      "time_s": 117.525,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 160249.4
+    },
+    {
+      "case": "tube111_+12V_full",
+      "config": "w=1.0 halo=1.0",
+      "pairs": 21,
+      "success": false,
+      "expansions": 18600993,
+      "time_s": 111.047,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 167505.4
+    },
+    {
+      "case": "tube111_+12V_full",
+      "config": "w=3.0 halo=0.3",
+      "pairs": 21,
+      "success": false,
+      "expansions": 18839608,
+      "time_s": 111.603,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 168809.6
+    },
+    {
+      "case": "tube111_+12V_full",
+      "config": "w=1.0 halo=0.3",
+      "pairs": 21,
+      "success": false,
+      "expansions": 18603261,
+      "time_s": 111.063,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 167502.1
+    },
+    {
+      "case": "tube111_-12V_control",
+      "config": "w=3.0 halo=1.0",
+      "pairs": 2,
+      "success": true,
+      "expansions": 17554,
+      "time_s": 0.298,
+      "cost": 2988.0,
+      "path_len": 241,
+      "exp_per_s": 58816.8
+    },
+    {
+      "case": "tube111_-12V_control",
+      "config": "w=1.0 halo=1.0",
+      "pairs": 2,
+      "success": true,
+      "expansions": 18112,
+      "time_s": 0.298,
+      "cost": 2988.0,
+      "path_len": 241,
+      "exp_per_s": 60737.8
+    },
+    {
+      "case": "tube111_-12V_control",
+      "config": "w=3.0 halo=0.3",
+      "pairs": 2,
+      "success": true,
+      "expansions": 17679,
+      "time_s": 0.296,
+      "cost": 2988.0,
+      "path_len": 241,
+      "exp_per_s": 59644.8
+    },
+    {
+      "case": "tube111_-12V_control",
+      "config": "w=1.0 halo=0.3",
+      "pairs": 2,
+      "success": true,
+      "expansions": 18233,
+      "time_s": 0.306,
+      "cost": 2988.0,
+      "path_len": 241,
+      "exp_per_s": 59522.3
+    },
+    {
+      "case": "tube111_-12V_tight",
+      "config": "w=3.0 halo=1.0",
+      "pairs": 2,
+      "success": false,
+      "expansions": 3,
+      "time_s": 0.231,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 13.0
+    },
+    {
+      "case": "tube111_-12V_tight",
+      "config": "w=1.0 halo=1.0",
+      "pairs": 2,
+      "success": false,
+      "expansions": 3,
+      "time_s": 0.257,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 11.7
+    },
+    {
+      "case": "tube111_-12V_tight",
+      "config": "w=3.0 halo=0.3",
+      "pairs": 2,
+      "success": false,
+      "expansions": 3,
+      "time_s": 0.223,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 13.5
+    },
+    {
+      "case": "tube111_-12V_tight",
+      "config": "w=1.0 halo=0.3",
+      "pairs": 2,
+      "success": false,
+      "expansions": 3,
+      "time_s": 0.217,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 13.9
+    },
+    {
+      "case": "tube111_-12V_full",
+      "config": "w=3.0 halo=1.0",
+      "pairs": 17,
+      "success": false,
+      "expansions": 13042776,
+      "time_s": 74.582,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 174877.4
+    },
+    {
+      "case": "tube111_-12V_full",
+      "config": "w=1.0 halo=1.0",
+      "pairs": 17,
+      "success": false,
+      "expansions": 12824732,
+      "time_s": 68.898,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 186141.8
+    },
+    {
+      "case": "tube111_-12V_full",
+      "config": "w=3.0 halo=0.3",
+      "pairs": 17,
+      "success": false,
+      "expansions": 13044348,
+      "time_s": 69.75,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 187015.4
+    },
+    {
+      "case": "tube111_-12V_full",
+      "config": "w=1.0 halo=0.3",
+      "pairs": 17,
+      "success": false,
+      "expansions": 12826172,
+      "time_s": 69.694,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 184035.1
+    },
+    {
+      "case": "tube111_C2Output_control",
+      "config": "w=3.0 halo=1.0",
+      "pairs": 2,
+      "success": true,
+      "expansions": 8864,
+      "time_s": 0.203,
+      "cost": 1073.0,
+      "path_len": 75,
+      "exp_per_s": 43676.5
+    },
+    {
+      "case": "tube111_C2Output_control",
+      "config": "w=1.0 halo=1.0",
+      "pairs": 2,
+      "success": true,
+      "expansions": 10550,
+      "time_s": 0.211,
+      "cost": 1073.0,
+      "path_len": 75,
+      "exp_per_s": 50043.5
+    },
+    {
+      "case": "tube111_C2Output_control",
+      "config": "w=3.0 halo=0.3",
+      "pairs": 2,
+      "success": true,
+      "expansions": 9058,
+      "time_s": 0.204,
+      "cost": 1073.0,
+      "path_len": 75,
+      "exp_per_s": 44426.6
+    },
+    {
+      "case": "tube111_C2Output_control",
+      "config": "w=1.0 halo=0.3",
+      "pairs": 2,
+      "success": true,
+      "expansions": 10690,
+      "time_s": 0.212,
+      "cost": 1073.0,
+      "path_len": 75,
+      "exp_per_s": 50425.1
+    },
+    {
+      "case": "tube111_C2Output_tight",
+      "config": "w=3.0 halo=1.0",
+      "pairs": 2,
+      "success": false,
+      "expansions": 3,
+      "time_s": 0.168,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 17.9
+    },
+    {
+      "case": "tube111_C2Output_tight",
+      "config": "w=1.0 halo=1.0",
+      "pairs": 2,
+      "success": false,
+      "expansions": 3,
+      "time_s": 0.167,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 17.9
+    },
+    {
+      "case": "tube111_C2Output_tight",
+      "config": "w=3.0 halo=0.3",
+      "pairs": 2,
+      "success": false,
+      "expansions": 3,
+      "time_s": 0.168,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 17.8
+    },
+    {
+      "case": "tube111_C2Output_tight",
+      "config": "w=1.0 halo=0.3",
+      "pairs": 2,
+      "success": false,
+      "expansions": 3,
+      "time_s": 0.169,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 17.8
+    },
+    {
+      "case": "tube111_C2Output_full",
+      "config": "w=3.0 halo=1.0",
+      "pairs": 3,
+      "success": false,
+      "expansions": 331554,
+      "time_s": 1.886,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 175824.2
+    },
+    {
+      "case": "tube111_C2Output_full",
+      "config": "w=1.0 halo=1.0",
+      "pairs": 3,
+      "success": false,
+      "expansions": 333205,
+      "time_s": 1.927,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 172920.8
+    },
+    {
+      "case": "tube111_C2Output_full",
+      "config": "w=3.0 halo=0.3",
+      "pairs": 3,
+      "success": false,
+      "expansions": 331748,
+      "time_s": 1.88,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 176429.9
+    },
+    {
+      "case": "tube111_C2Output_full",
+      "config": "w=1.0 halo=0.3",
+      "pairs": 3,
+      "success": false,
+      "expansions": 333345,
+      "time_s": 1.925,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 173161.1
+    },
+    {
+      "case": "tube111_C2OutCV_control",
+      "config": "w=3.0 halo=1.0",
+      "pairs": 2,
+      "success": true,
+      "expansions": 13585,
+      "time_s": 0.226,
+      "cost": 1509.0,
+      "path_len": 111,
+      "exp_per_s": 60070.8
+    },
+    {
+      "case": "tube111_C2OutCV_control",
+      "config": "w=1.0 halo=1.0",
+      "pairs": 2,
+      "success": true,
+      "expansions": 14707,
+      "time_s": 0.232,
+      "cost": 1509.0,
+      "path_len": 111,
+      "exp_per_s": 63490.3
+    },
+    {
+      "case": "tube111_C2OutCV_control",
+      "config": "w=3.0 halo=0.3",
+      "pairs": 2,
+      "success": true,
+      "expansions": 13775,
+      "time_s": 0.227,
+      "cost": 1509.0,
+      "path_len": 111,
+      "exp_per_s": 60785.0
+    },
+    {
+      "case": "tube111_C2OutCV_control",
+      "config": "w=1.0 halo=0.3",
+      "pairs": 2,
+      "success": true,
+      "expansions": 14836,
+      "time_s": 0.232,
+      "cost": 1509.0,
+      "path_len": 111,
+      "exp_per_s": 63976.6
+    },
+    {
+      "case": "tube111_C2OutCV_tight",
+      "config": "w=3.0 halo=1.0",
+      "pairs": 2,
+      "success": false,
+      "expansions": 3,
+      "time_s": 0.168,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 17.8
+    },
+    {
+      "case": "tube111_C2OutCV_tight",
+      "config": "w=1.0 halo=1.0",
+      "pairs": 2,
+      "success": false,
+      "expansions": 3,
+      "time_s": 0.168,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 17.9
+    },
+    {
+      "case": "tube111_C2OutCV_tight",
+      "config": "w=3.0 halo=0.3",
+      "pairs": 2,
+      "success": false,
+      "expansions": 3,
+      "time_s": 0.167,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 17.9
+    },
+    {
+      "case": "tube111_C2OutCV_tight",
+      "config": "w=1.0 halo=0.3",
+      "pairs": 2,
+      "success": false,
+      "expansions": 3,
+      "time_s": 0.168,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 17.8
+    },
+    {
+      "case": "tube111_C2OutCV_full",
+      "config": "w=3.0 halo=1.0",
+      "pairs": 3,
+      "success": false,
+      "expansions": 347872,
+      "time_s": 1.998,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 174150.4
+    },
+    {
+      "case": "tube111_C2OutCV_full",
+      "config": "w=1.0 halo=1.0",
+      "pairs": 3,
+      "success": false,
+      "expansions": 348924,
+      "time_s": 2.04,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 171024.1
+    },
+    {
+      "case": "tube111_C2OutCV_full",
+      "config": "w=3.0 halo=0.3",
+      "pairs": 3,
+      "success": false,
+      "expansions": 348057,
+      "time_s": 2.004,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 173659.4
+    },
+    {
+      "case": "tube111_C2OutCV_full",
+      "config": "w=1.0 halo=0.3",
+      "pairs": 3,
+      "success": false,
+      "expansions": 349049,
+      "time_s": 2.013,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 173396.1
+    },
+    {
+      "case": "tube111_C2OutCVLED_control",
+      "config": "w=3.0 halo=1.0",
+      "pairs": 2,
+      "success": true,
+      "expansions": 102595,
+      "time_s": 0.815,
+      "cost": 2715.0,
+      "path_len": 217,
+      "exp_per_s": 125863.2
+    },
+    {
+      "case": "tube111_C2OutCVLED_control",
+      "config": "w=1.0 halo=1.0",
+      "pairs": 2,
+      "success": true,
+      "expansions": 104357,
+      "time_s": 0.751,
+      "cost": 2715.0,
+      "path_len": 217,
+      "exp_per_s": 138903.3
+    },
+    {
+      "case": "tube111_C2OutCVLED_control",
+      "config": "w=3.0 halo=0.3",
+      "pairs": 2,
+      "success": true,
+      "expansions": 102739,
+      "time_s": 0.744,
+      "cost": 2715.0,
+      "path_len": 217,
+      "exp_per_s": 138137.3
+    },
+    {
+      "case": "tube111_C2OutCVLED_control",
+      "config": "w=1.0 halo=0.3",
+      "pairs": 2,
+      "success": true,
+      "expansions": 104486,
+      "time_s": 0.745,
+      "cost": 2715.0,
+      "path_len": 217,
+      "exp_per_s": 140241.4
+    },
+    {
+      "case": "tube111_C2OutCVLED_tight",
+      "config": "w=3.0 halo=1.0",
+      "pairs": 2,
+      "success": false,
+      "expansions": 3,
+      "time_s": 0.168,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 17.9
+    },
+    {
+      "case": "tube111_C2OutCVLED_tight",
+      "config": "w=1.0 halo=1.0",
+      "pairs": 2,
+      "success": false,
+      "expansions": 3,
+      "time_s": 0.168,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 17.9
+    },
+    {
+      "case": "tube111_C2OutCVLED_tight",
+      "config": "w=3.0 halo=0.3",
+      "pairs": 2,
+      "success": false,
+      "expansions": 3,
+      "time_s": 0.169,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 17.7
+    },
+    {
+      "case": "tube111_C2OutCVLED_tight",
+      "config": "w=1.0 halo=0.3",
+      "pairs": 2,
+      "success": false,
+      "expansions": 3,
+      "time_s": 0.173,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 17.4
+    },
+    {
+      "case": "tube111_C2OutCVLED_full",
+      "config": "w=3.0 halo=1.0",
+      "pairs": 4,
+      "success": false,
+      "expansions": 653526,
+      "time_s": 3.668,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 178171.5
+    },
+    {
+      "case": "tube111_C2OutCVLED_full",
+      "config": "w=1.0 halo=1.0",
+      "pairs": 4,
+      "success": false,
+      "expansions": 652336,
+      "time_s": 3.783,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 172417.2
+    },
+    {
+      "case": "tube111_C2OutCVLED_full",
+      "config": "w=3.0 halo=0.3",
+      "pairs": 4,
+      "success": false,
+      "expansions": 655709,
+      "time_s": 3.606,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 181856.5
+    },
+    {
+      "case": "tube111_C2OutCVLED_full",
+      "config": "w=1.0 halo=0.3",
+      "pairs": 4,
+      "success": false,
+      "expansions": 652980,
+      "time_s": 3.675,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 177703.0
+    },
+    {
+      "case": "tube111_grid_cv_control",
+      "config": "w=3.0 halo=1.0",
+      "pairs": 2,
+      "success": true,
+      "expansions": 818,
+      "time_s": 0.163,
+      "cost": 525.0,
+      "path_len": 26,
+      "exp_per_s": 5031.8
+    },
+    {
+      "case": "tube111_grid_cv_control",
+      "config": "w=1.0 halo=1.0",
+      "pairs": 2,
+      "success": true,
+      "expansions": 1103,
+      "time_s": 0.164,
+      "cost": 525.0,
+      "path_len": 26,
+      "exp_per_s": 6718.3
+    },
+    {
+      "case": "tube111_grid_cv_control",
+      "config": "w=3.0 halo=0.3",
+      "pairs": 2,
+      "success": true,
+      "expansions": 850,
+      "time_s": 0.163,
+      "cost": 525.0,
+      "path_len": 26,
+      "exp_per_s": 5226.0
+    },
+    {
+      "case": "tube111_grid_cv_control",
+      "config": "w=1.0 halo=0.3",
+      "pairs": 2,
+      "success": true,
+      "expansions": 1155,
+      "time_s": 0.164,
+      "cost": 525.0,
+      "path_len": 26,
+      "exp_per_s": 7036.4
+    },
+    {
+      "case": "tube111_grid_cv_tight",
+      "config": "w=3.0 halo=1.0",
+      "pairs": 2,
+      "success": false,
+      "expansions": 3,
+      "time_s": 0.168,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 17.8
+    },
+    {
+      "case": "tube111_grid_cv_tight",
+      "config": "w=1.0 halo=1.0",
+      "pairs": 2,
+      "success": false,
+      "expansions": 3,
+      "time_s": 0.168,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 17.9
+    },
+    {
+      "case": "tube111_grid_cv_tight",
+      "config": "w=3.0 halo=0.3",
+      "pairs": 2,
+      "success": false,
+      "expansions": 3,
+      "time_s": 0.167,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 17.9
+    },
+    {
+      "case": "tube111_grid_cv_tight",
+      "config": "w=1.0 halo=0.3",
+      "pairs": 2,
+      "success": false,
+      "expansions": 3,
+      "time_s": 0.167,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 18.0
+    },
+    {
+      "case": "tube111_grid_cv_full",
+      "config": "w=3.0 halo=1.0",
+      "pairs": 4,
+      "success": false,
+      "expansions": 512479,
+      "time_s": 2.893,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 177139.5
+    },
+    {
+      "case": "tube111_grid_cv_full",
+      "config": "w=1.0 halo=1.0",
+      "pairs": 4,
+      "success": false,
+      "expansions": 512697,
+      "time_s": 2.888,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 177521.3
+    },
+    {
+      "case": "tube111_grid_cv_full",
+      "config": "w=3.0 halo=0.3",
+      "pairs": 4,
+      "success": false,
+      "expansions": 512511,
+      "time_s": 2.897,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 176888.5
+    },
+    {
+      "case": "tube111_grid_cv_full",
+      "config": "w=1.0 halo=0.3",
+      "pairs": 4,
+      "success": false,
+      "expansions": 512749,
+      "time_s": 2.909,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 176248.3
+    },
+    {
+      "case": "tube111_Net-(R31-Pad1)_control",
+      "config": "w=3.0 halo=1.0",
+      "pairs": 2,
+      "success": true,
+      "expansions": 1047,
+      "time_s": 0.164,
+      "cost": 546.0,
+      "path_len": 27,
+      "exp_per_s": 6381.6
+    },
+    {
+      "case": "tube111_Net-(R31-Pad1)_control",
+      "config": "w=1.0 halo=1.0",
+      "pairs": 2,
+      "success": true,
+      "expansions": 1406,
+      "time_s": 0.165,
+      "cost": 546.0,
+      "path_len": 27,
+      "exp_per_s": 8508.1
+    },
+    {
+      "case": "tube111_Net-(R31-Pad1)_control",
+      "config": "w=3.0 halo=0.3",
+      "pairs": 2,
+      "success": true,
+      "expansions": 1074,
+      "time_s": 0.164,
+      "cost": 546.0,
+      "path_len": 27,
+      "exp_per_s": 6550.6
+    },
+    {
+      "case": "tube111_Net-(R31-Pad1)_control",
+      "config": "w=1.0 halo=0.3",
+      "pairs": 2,
+      "success": true,
+      "expansions": 1446,
+      "time_s": 0.166,
+      "cost": 546.0,
+      "path_len": 27,
+      "exp_per_s": 8734.5
+    },
+    {
+      "case": "tube111_Net-(R31-Pad1)_tight",
+      "config": "w=3.0 halo=1.0",
+      "pairs": 2,
+      "success": false,
+      "expansions": 3,
+      "time_s": 0.168,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 17.9
+    },
+    {
+      "case": "tube111_Net-(R31-Pad1)_tight",
+      "config": "w=1.0 halo=1.0",
+      "pairs": 2,
+      "success": false,
+      "expansions": 3,
+      "time_s": 0.168,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 17.9
+    },
+    {
+      "case": "tube111_Net-(R31-Pad1)_tight",
+      "config": "w=3.0 halo=0.3",
+      "pairs": 2,
+      "success": false,
+      "expansions": 3,
+      "time_s": 0.167,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 17.9
+    },
+    {
+      "case": "tube111_Net-(R31-Pad1)_tight",
+      "config": "w=1.0 halo=0.3",
+      "pairs": 2,
+      "success": false,
+      "expansions": 3,
+      "time_s": 0.167,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 17.9
+    },
+    {
+      "case": "tube111_Net-(R31-Pad1)_full",
+      "config": "w=3.0 halo=1.0",
+      "pairs": 3,
+      "success": false,
+      "expansions": 296995,
+      "time_s": 1.727,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 171992.3
+    },
+    {
+      "case": "tube111_Net-(R31-Pad1)_full",
+      "config": "w=1.0 halo=1.0",
+      "pairs": 3,
+      "success": false,
+      "expansions": 297301,
+      "time_s": 1.755,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 169354.2
+    },
+    {
+      "case": "tube111_Net-(R31-Pad1)_full",
+      "config": "w=3.0 halo=0.3",
+      "pairs": 3,
+      "success": false,
+      "expansions": 297021,
+      "time_s": 1.746,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 170135.1
+    },
+    {
+      "case": "tube111_Net-(R31-Pad1)_full",
+      "config": "w=1.0 halo=0.3",
+      "pairs": 3,
+      "success": false,
+      "expansions": 297341,
+      "time_s": 1.774,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 167585.8
+    }
+  ]
+}

@@ -422,7 +422,7 @@
       <span id="conn-badge" class="chip" hidden style="color:#f87171; border-color:#f87171;">● disconnected — server unreachable</span>
       <span id="board-sch" class="chip" hidden>pcb only</span>
       <span id="mode-switch" title="Board mode: routing defaults + 2-layer export collapse">
-        <button id="mode-2l" class="tab-btn" title="Two-layer mode (outer copper only; export collapses)">2-layer</button><button id="mode-4l" class="tab-btn" title="Four-layer mode">4-layer</button>
+        <button id="mode-2l" class="tab-btn" title="Two-layer mode (outer copper only; export collapses, prior behavior)">2-layer</button><button id="mode-4l" class="tab-btn" title="Four-layer mode (outer routing + inner planes via stubs; inners preserved)">4-layer</button>
       </span>
       <span id="mode-warn" class="chip" hidden style="color:#fbbf24; border-color:#fbbf24;">⚠ mode</span>
       <span id="app-version" class="chip" style="margin-left:0.5rem; font-size:0.6rem;">v?</span>
@@ -1041,16 +1041,18 @@ function layerToggleState() {
 }
 
 function renderLayerToggles(copperLayers) {
-  // Rebuild one checkbox per stackup layer, preserving user choices for
-  // layers that persist across board versions.
+  // Rebuild one checkbox + Solo button per stackup layer, preserving user
+  // choices for layers that persist across board versions. Client-only:
+  // visibility is display:none on the already-injected SVG (no refetch).
   const layers = (Array.isArray(copperLayers) && copperLayers.length) ? copperLayers : ["F.Cu", "B.Cu"];
   const prev = layerToggleState();
   const current = layerToggleInputs().map(i => i.dataset.layer);
-  if (current.length === layers.length && current.every((l, i) => l === layers[i])) return;
+  if (current.length === layers.length && current.every((l, i) => l === layers[i]) && document.getElementById("layer-solo-all")) return;
   layerTogglesEl.innerHTML = "";
   for (const layer of layers) {
     const label = document.createElement("label");
     label.className = "chk";
+    label.title = layer === "F.Cu" ? "Front copper (solid)" : layer === "B.Cu" ? "Back copper (dashed 3 2)" : "Inner copper (dashed, stackup order)";
     const input = document.createElement("input");
     input.type = "checkbox";
     input.dataset.layer = layer;
@@ -1059,8 +1061,64 @@ function renderLayerToggles(copperLayers) {
     label.appendChild(input);
     label.appendChild(document.createTextNode(` ${layer}`));
     layerTogglesEl.appendChild(label);
+    const solo = document.createElement("button");
+    solo.className = "tab-btn";
+    solo.style.cssText = "font-size:.65rem;padding:.05rem .35rem;margin-left:.15rem;";
+    solo.textContent = "solo";
+    solo.title = `Isolate ${layer} (display-only)`;
+    solo.dataset.soloLayer = layer;
+    solo.addEventListener("click", (e) => { e.preventDefault(); toggleSoloLayer(layer); });
+    layerTogglesEl.appendChild(solo);
     layerTogglesEl.appendChild(document.createTextNode(" "));
   }
+  const all = document.createElement("button");
+  all.id = "layer-solo-all";
+  all.className = "tab-btn";
+  all.style.cssText = "font-size:.65rem;padding:.05rem .35rem;";
+  all.textContent = "all";
+  all.title = "Show all copper layers (display-only)";
+  all.addEventListener("click", (e) => { e.preventDefault(); setSoloLayer(null); });
+  layerTogglesEl.appendChild(all);
+  renderLayerLegend(layers);
+}
+
+// Solo isolate state: null = follow checkboxes, otherwise only that layer.
+let soloLayer = null;
+
+function setSoloLayer(layer) {
+  soloLayer = layer;
+  applyLayerVisibility();
+}
+
+function toggleSoloLayer(layer) {
+  soloLayer = (soloLayer === layer) ? null : layer;
+  applyLayerVisibility();
+}
+
+// Copper legend mirroring svg_render.py: F red solid, B green "3 2", inners
+// cycle teal/violet/amber/blue with dashes "5 2 / 2 2 / 7 2 2 2 / 4 1".
+function renderLayerLegend(layers) {
+  let legend = document.getElementById("layer-legend");
+  if (!legend) {
+    legend = document.createElement("span");
+    legend.id = "layer-legend";
+    legend.className = "chip";
+    legend.style.cssText = "font-size:.6rem;display:inline-flex;gap:.5rem;align-items:center;margin-left:.4rem;";
+    layerTogglesEl.after(legend);
+  }
+  const FILL = { "F.Cu": "#e74c3c", "B.Cu": "#2ecc71" };
+  const INNER_FILLS = ["#2dd4bf", "#a78bfa", "#f5a623", "#59a7f5"];
+  const INNER_DASHES = ["5 2", "2 2", "7 2 2 2", "4 1"];
+  const inners = layers.filter(l => l !== "F.Cu" && l !== "B.Cu");
+  legend.innerHTML = layers.map(l => {
+    let color, dash;
+    if (l === "F.Cu") { color = FILL["F.Cu"]; dash = "solid"; }
+    else if (l === "B.Cu") { color = FILL["B.Cu"]; dash = "3 2"; }
+    else { const p = inners.indexOf(l); color = INNER_FILLS[p % INNER_FILLS.length]; dash = INNER_DASHES[p % INNER_DASHES.length]; }
+    const border = dash === "solid" ? `border-top:2px solid ${color};` : `border-top:2px dashed ${color};`;
+    const soloMark = (soloLayer === l) ? " ★" : "";
+    return `<span title="${l} ${dash}${soloMark}"><i style="display:inline-block;width:1.2rem;${border}"></i> ${l}${soloMark}</span>`;
+  }).join("");
 }
 const zonesToggle = document.getElementById("zones-toggle");
 const zonesFillToggle = document.getElementById("zones-fill-toggle");
@@ -1453,18 +1511,27 @@ function applyLayerVisibility() {
   if (!svg) return;
   const zonesOn = zonesToggle?.checked ?? true;
   const layers = layerToggleState();
-  for (const [layer, layerOn] of layers) {
+  // Solo isolate (display-only): when set, only that layer shows.
+  const effective = new Map();
+  for (const [layer, on] of layers) effective.set(layer, soloLayer ? layer === soloLayer : on);
+  for (const [layer, layerOn] of effective) {
     const tracks = layerGroup(svg, layer, "tracks");
     if (tracks) tracks.style.display = layerOn ? "" : "none";
     const zones = layerGroup(svg, layer, "zones");
     if (zones) zones.style.display = (layerOn && zonesOn) ? "" : "none";
   }
   // Vias span layers (data-layers): visible when any spanned layer is on.
+  // Solo narrows the span test to the isolated layer.
   svg.querySelectorAll("#layer-vias .via").forEach(el => {
     const span = (el.getAttribute("data-layers") || "F.Cu B.Cu").split(/\s+/).filter(Boolean);
-    const visible = span.length ? span.some(l => layers.get(l) ?? false) : true;
+    const visible = span.length ? span.some(l => effective.get(l) ?? false) : true;
     el.style.display = visible ? "" : "none";
   });
+  const legend = document.getElementById("layer-legend");
+  if (legend) {
+    const layersArr = [...layers.keys()];
+    if (layersArr.length) renderLayerLegend(layersArr);
+  }
 }
 
 layerTogglesEl?.addEventListener("change", applyLayerVisibility);
@@ -2424,7 +2491,7 @@ document.getElementById("ghost-kind").addEventListener("change", e => {
 // UX STAGE 1 — estimate-first: the POST is synchronous, so we show a
 // pre-flight estimate + an elapsed ticker + a client-side timeout backstop.
 // Full-board ms/iter ≈ 0.0045*N^2 + 1 (N = movable non-ghost footprints,
-// from docs/benchmarks/placement_2026-10-21.json), scaled by the moved
+// from docs/benchmarks/placement_2026-10-26.json), scaled by the moved
 // fraction. Order-of-magnitude only — real boards deviate with courtyard
 // complexity — and worst-case (runs often converge early), so the line
 // reads "up to".
@@ -3315,6 +3382,7 @@ function renderRoutingParams(params, modeOwned = [], modePreset = {}) {
     { key: "via_cost_mm", label: "Via Cost (mm)", min: 1, max: 20, step: 0.5, default: 5 },
     { key: "pour_severance_weight", label: "Pour Severance Weight (0 disables)", min: 0, max: 200, step: 5, default: 30 },
     { key: "grid_resolution_mm", label: "Grid Resolution (mm) — 0.05 is 4x cells, may be rejected on large boards", min: 0.05, max: 0.5, step: 0.05, default: 0.1 },
+    { key: "max_terminals_per_net", label: "Max terminals per net (0 = no cap; larger nets fail fast)", min: 0, max: 128, step: 1, default: 32 },
   ];
   
   // Option flags share one full-width row below the sliders (not one
@@ -3427,11 +3495,12 @@ let routeCurrentJobId = null;
 
 // Pre-flight cost estimate: pairwise A* searches per net = k*(k-1)/2 over
 // pad counts (upper bound on terminals), plus a wall-time fit. Shown before
-// the run so a 66-pad GND (~2k searches, minutes) never surprises.
-// Time fit from docs/benchmarks/routing_2026-10-21.json: first net pays
-// ~2-3.5s fixed (occupancy+grids+via_ok), then ~1-1.5s/net (DCCF
-// 1/2/5/10 nets: 3.2/3.9/6.5/10.6s; tube111 1/2: 1.4/1.7s). GND stitching
-// is a separate surcharge measured in docs/benchmarks/stitch_pour_2026-10-21.json.
+// the run so a 66-pad GND never surprises: it fails fast via
+// max_terminals_per_net instead of burning hours of Steiner searches.
+// Time fit from docs/benchmarks/routing_2026-10-26.json: first net pays
+// ~2-2.6s fixed (occupancy+grids+via_ok), then ~1s/net (DCCF
+// 1/2/5/10 nets: 2.6/3.3/5.3/11.6s; tube111 1/2: 1.3/1.6s). GND stitching
+// is a separate surcharge measured in docs/benchmarks/stitch_pour_2026-10-26.json.
 function estimateRoutingWork(netNames) {
   let pairs = 0;
   let worst = { net: null, pairs: 0 };

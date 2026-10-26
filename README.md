@@ -110,6 +110,7 @@ Placement and routing are separate passes but designed to cycle. Move a connecto
 | **10° angle smoothing** (default) | 36 angle options vs hardcoded 45° — routes look shallower, more gradual |
 | **Params auto-save** | All sliders persist to `placement.json` — your tuned settings survive restarts |
 | **Region-aware** | Multi-panel boards: stitcher never joins separate panels |
+| **Copper layer solo + legend** | Per-layer Solo/All isolate buttons and a layer color key (display-only, no re-fetch) |
 | **DRC gate** | `kicad-cli pcb drc` runs on writeback — the acceptance check |
 
 ---
@@ -124,8 +125,13 @@ Placement and routing are separate passes but designed to cycle. Move a connecto
 | **Clearance** | Minimum spacing between tracks | 0.15–0.25 mm |
 | **Grid Resolution** | A* cell size (0.05 = 4× cells, slower) | 0.1 mm default |
 | **Pour Severance Weight** | Penalty for narrowing a pour corridor | 0–100 (0 = off) |
-| **GND Stitching** | Auto-add vias/bridges to connect pour islands | **On** |
-| **Strip GND Blockers** | Remove old GND copper before routing | **On** |
+| **GND Stitching** | Auto-add vias/bridges to connect pour islands (2-layer mode) | **On** |
+| **Strip GND Blockers** | Remove old GND copper before routing (2-layer mode) | **On** |
+| **2-layer / 4-layer toggle** | 2-layer: outer-only routing, export collapses to genuine 2-layer. 4-layer: same outer routing, but inner planes are preserved and tapped (see below) | Top bar |
+
+### Inner planes (4-layer boards)
+
+In 4-layer mode, ground and power nets that own an inner-copper zone (e.g. an `In2.Cu` GND plane) are connected with a short outer stub + through-via per SMD pad instead of long outer tracks — the plane itself joins the stubs. Through-hole pads need no stub (the barrel already pierces the plane). Results are reported separately as `fanout_vias_added` / `fanout_tracks_added`. 2-layer mode never does this: inner copper is ignored while routing and removed on export.
 
 ---
 

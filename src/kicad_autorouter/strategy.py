@@ -19,6 +19,9 @@ MODE_PRESETS: Dict[str, Dict[str, object]] = {
         "strip_gnd_blockers": True,
         "pour_severance_weight": 30.0,
         "allowed_layers": ["F.Cu", "B.Cu"],
+        # Ignore inner copper: no plane fanout (prior behavior retained).
+        "fanout_planes": False,
+        "fanout_plane_vias_max": 16,
     },
     "four-layer": {
         "stitch_gnd_vias": False,
@@ -26,6 +29,10 @@ MODE_PRESETS: Dict[str, Dict[str, object]] = {
         "pour_severance_weight": 0.0,
         "allowed_layers": None,
         "refill_zones": True,
+        # Use inner copper as planes: short outer stubs + through-vias tap
+        # In1.Cu/In2.Cu instead of long outer tracks for plane-owned nets.
+        "fanout_planes": True,
+        "fanout_plane_vias_max": 16,
     },
 }
 

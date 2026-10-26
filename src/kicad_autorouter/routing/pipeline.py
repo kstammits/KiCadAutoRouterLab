@@ -11,7 +11,7 @@ from typing import Collection, Optional, Tuple, List, Set, Dict
 
 import numpy as np
 
-from ..board_model import BoardModel, Point, Track, Via, is_ground_net, netclass_clearance, resolve_track_width_mm
+from ..board_model import BoardModel, Point, Track, Via, is_ground_net, is_power_net_effective, netclass_clearance, resolve_track_width_mm
 from ..io import rip_up_nets
 from ..drc import run_drc_on_tree, DRCResult
 from ..sexpr import parse_file, to_sexpr
@@ -29,7 +29,7 @@ from .output import Track as OutputTrack, Via as OutputVia
 from .smooth import own_net_soft_mask, smooth_grid_path, smoothed_wire_mm
 from .router import SECONDARY_BLOCKED
 from .power import identify_power_nets
-from .grid import RoutingGrid, board_to_grid
+from .grid import RoutingGrid, board_to_grid, grid_to_board
 from .pour import pour_corridors, pour_net_names, severance_cost
 from .stitch import plan_stitches
 from .obstacles import BLOCKED, bresenham_cells, build_fanout_cost, build_via_block_mask, drill_radius_cells, stamp_discs, stamp_square, tht_drill_cells, track_corridor_radius_cells, via_halo_radius_cells
@@ -55,6 +55,8 @@ class RoutingResult:
     expansions: int = 0  # Total A* node expansions across all pair-searches
     timings: Dict[str, float] = field(default_factory=dict)  # Stage seconds + grid cells
     refill_zones_done: bool = False  # True if copper pour refill was executed
+    fanout_vias_added: int = 0  # Plane-tap stubs (four-layer strategy; additive, never folded into vias_added inputs)
+    fanout_tracks_added: int = 0  # Stub tracks accompanying plane-tap vias
     failed_reasons: Dict[str, str] = field(default_factory=dict)  # net -> explicit failure reason
 
 
@@ -75,6 +77,14 @@ class RoutingParams:
     net_widths: Dict[str, float] = field(default_factory=dict)  # Explicit per-net trace widths (override)
     heuristic_weight: float = 3.0     # Weighted-A* greediness (lower respects penalties)
     max_expansions: int = 2_000_000   # A* node-expansion cap per search (fail fast, don't hang)
+    max_expansions_per_net: int = 8_000_000  # Fail-fast cap on total
+    # expansions across one net's pair-searches (0 = no cap). Bounds the
+    # ~n-1 capped searches × window retries that make dense multi-terminal
+    # nets burn tens of millions of expansions; failing nets report the
+    # budget in their failure reason instead of hanging the job.
+    max_terminals_per_net: int = 32  # Fail-fast cap on net size (grid
+    # terminals); larger nets fail with an explicit reason instead of
+    # burning hours of Steiner pair-searches. 0 = no cap.
     stitch_gnd_vias: bool = True      # Auto-repair GND pour continuity after routing
     strip_gnd_blockers: bool = True  # Evict GND vias/tracks upfront (rebuildable via stitcher);
     # GND-only exception to protected_nets: signal/power copper is never
@@ -92,6 +102,12 @@ class RoutingParams:
     window_retries: int = 3  # Window attempts per pair (last = full board)
     corridor: bool = True  # Attempt coarse corridor guidance when initial window fails
     refill_zones: bool = False  # Refill copper pours after routing (kicad-cli --refill-zones --save-board)
+    fanout_planes: bool = False  # Via-to-plane stubs for plane-owned nets (inner zones)
+    # When True, a ground/power-effective net owning an inner-copper zone
+    # (In*.Cu) is satisfied with short outer stubs + through-vias tapping
+    # the plane instead of long outer MST tracks. Two-layer preset forces
+    # False (prior behavior retained); four-layer preset forces True.
+    fanout_plane_vias_max: int = 16  # Cap on plane-fanout vias per route_nets call
     allowed_layers: Optional[List[str]] = None  # Copper subset to route on (None = all stackup layers).
     # Enforced in route_nets: terminals on disallowed layers fail the net
     # with an explicit reason, and A* moves / via landings are confined to
@@ -115,6 +131,8 @@ class RoutingParams:
             "net_widths": dict(self.net_widths),
             "heuristic_weight": self.heuristic_weight,
             "max_expansions": self.max_expansions,
+            "max_expansions_per_net": self.max_expansions_per_net,
+            "max_terminals_per_net": self.max_terminals_per_net,
             "stitch_gnd_vias": self.stitch_gnd_vias,
             "strip_gnd_blockers": self.strip_gnd_blockers,
             "stitch_vias_max": self.stitch_vias_max,
@@ -128,6 +146,8 @@ class RoutingParams:
             "window_retries": self.window_retries,
             "corridor": self.corridor,
             "refill_zones": self.refill_zones,
+            "fanout_planes": self.fanout_planes,
+            "fanout_plane_vias_max": self.fanout_plane_vias_max,
             "allowed_layers": list(self.allowed_layers) if self.allowed_layers is not None else None,
         }
 
@@ -139,10 +159,12 @@ class RoutingParams:
             "track_width_mm", "power_width_mm", "clearance_mm", "via_size_mm",
             "via_drill_mm", "max_attempts_per_net", "run_drc", "debug",
             "net_widths", "heuristic_weight", "max_expansions",
+            "max_expansions_per_net", "max_terminals_per_net",
             "stitch_gnd_vias", "strip_gnd_blockers", "stitch_vias_max", "stitch_bridges_max",
             "stitch_bridge_max_mm", "stitch_bridge_width_mm", "pour_severance_weight", "fanout_margin_mm",
             "window_margin_cells", "window_growth", "window_retries",
             "corridor", "refill_zones", "allowed_layers",
+            "fanout_planes", "fanout_plane_vias_max",
         }
         filtered = {k: v for k, v in d.items() if k in valid_keys}
         if isinstance(filtered.get("allowed_layers"), (list, tuple)):
@@ -181,8 +203,8 @@ def _validate_routing_params(params: "RoutingParams") -> None:
     ):
         raise ValueError("grid_resolution_mm must be a positive finite number")
     for name in (
-        "max_attempts_per_net", "max_expansions", "stitch_vias_max",
-        "stitch_bridges_max", "window_margin_cells", "window_retries",
+        "max_attempts_per_net", "max_expansions", "max_expansions_per_net", "max_terminals_per_net", "stitch_vias_max",
+        "stitch_bridges_max", "fanout_plane_vias_max", "window_margin_cells", "window_retries",
     ):
         value = getattr(params, name)
         if isinstance(value, bool) or not isinstance(value, int):
@@ -191,8 +213,12 @@ def _validate_routing_params(params: "RoutingParams") -> None:
             raise ValueError(f"{name} must be >= 0")
     if params.max_expansions > 100_000_000:
         raise ValueError("max_expansions is capped at 100M per search (single-flight server)")
+    if params.max_expansions_per_net > 1_000_000_000:
+        raise ValueError("max_expansions_per_net is capped at 1B per net (single-flight server)")
     if params.stitch_vias_max > 100_000 or params.stitch_bridges_max > 100_000:
         raise ValueError("stitch budgets are capped at 100k")
+    if params.fanout_plane_vias_max > 100_000:
+        raise ValueError("fanout_plane_vias_max is capped at 100k")
     if (
         not isinstance(params.window_growth, (int, float))
         or isinstance(params.window_growth, bool)
@@ -202,7 +228,7 @@ def _validate_routing_params(params: "RoutingParams") -> None:
         raise ValueError("window_growth must be a positive finite number")
     for name in (
         "run_drc", "debug", "stitch_gnd_vias", "strip_gnd_blockers",
-        "corridor", "refill_zones",
+        "corridor", "refill_zones", "fanout_planes",
     ):
         if not isinstance(getattr(params, name), bool):
             raise ValueError(f"{name} must be a boolean")
@@ -326,6 +352,99 @@ def _width_cells(width_mm: float, resolution_mm: float) -> int:
     if resolution_mm <= 0:
         return 1
     return max(1, int(math.ceil(width_mm / resolution_mm / 2.0)))
+
+
+def _inner_plane_layers_for_net(model: BoardModel, net_name: str) -> Tuple[str, ...]:
+    """Inner copper layers carrying a zone for ``net_name``.
+
+    Empty when the net owns no inner plane: the caller falls back to normal
+    outer routing. Pure zone-ownership test (no pour-refill inference).
+    """
+    seen: List[str] = []
+    for zone in model.zones:
+        if zone.net_name != net_name:
+            continue
+        for layer in zone.layers:
+            if layer not in ("F.Cu", "B.Cu") and layer not in seen:
+                seen.append(layer)
+    return tuple(seen)
+
+
+def _plan_plane_stubs(
+    model: BoardModel,
+    routing_grid: RoutingGrid,
+    cost_grid: "np.ndarray",
+    via_block_mask: "np.ndarray",
+    params: "RoutingParams",
+    net_name: str,
+    extra_power_nets: Collection[str],
+    budget_left: Optional[int],
+) -> Tuple[list, list, float, Optional[str]]:
+    """Stub geometry tapping a net's inner plane, or a failure reason.
+
+    Returns ``(stubs, via_pts, width_mm, reason)``: ``stubs`` are
+    ``(x0, y0, x1, y1, layer)`` pad→via segments, ``via_pts`` are
+    ``(x_mm, y_mm)`` via positions, ``reason`` is None on success
+    (including the all-THT no-op, which emits nothing — the barrels already
+    pierce the plane). Pure search: reserves nothing; the caller commits
+    and stamps halos. SMD-only; ``budget_left`` caps new vias (None = no
+    cap).
+    """
+    res_mm = routing_grid.resolution_mm
+    H, W = routing_grid.height_cells, routing_grid.width_cells
+    width_mm = resolve_track_width(model, params, net_name, extra_power_nets)
+    stubs: List[Tuple[float, float, float, float, str]] = []
+    via_pts: List[Tuple[float, float]] = []
+    need = 0
+    for conn in model.nets.get(net_name, []):
+        fp = model.by_ref.get(conn.ref)
+        if not fp:
+            continue
+        pad = next((p for p in fp.pads if p.number == conn.pad_number), None)
+        if not pad:
+            continue
+        if pad.is_through_hole:
+            continue  # barrel already taps the plane
+        need += 1
+        if budget_left is not None and len(via_pts) >= budget_left:
+            return [], [], width_mm, (
+                f"plane fanout blocked ({len(via_pts)}/{need} stubs, "
+                f"cap={params.fanout_plane_vias_max})"
+            )
+        c0, r0 = board_to_grid(routing_grid, pad.position.x_mm, pad.position.y_mm)
+        layer_idx = routing_grid.layer_to_idx.get(fp.layer, 0)
+        # Spiral search for a free via cell near the pad (≤2 mm).
+        search_cells = max(1, int(math.ceil(2.0 / res_mm))) if res_mm > 0 else 8
+        found = None
+        for rad in range(0, search_cells + 1):
+            ring_found = False
+            for dr in range(-rad, rad + 1):
+                for dc in range(-rad, rad + 1):
+                    if max(abs(dr), abs(dc)) != rad:
+                        continue
+                    cc, rr = c0 + dc, r0 + dr
+                    if not (0 <= cc < W and 0 <= rr < H):
+                        continue
+                    if bool(via_block_mask[rr, cc]):
+                        continue
+                    if cost_grid[layer_idx, rr, cc] >= BLOCKED:
+                        continue
+                    found = (cc, rr)
+                    ring_found = True
+                    break
+                if ring_found:
+                    break
+            if found is not None:
+                break
+        if found is None:
+            return [], [], width_mm, (
+                f"plane fanout blocked ({len(via_pts)}/{need} stubs, "
+                f"cap={params.fanout_plane_vias_max})"
+            )
+        vx_mm, vy_mm = grid_to_board(routing_grid, found[0], found[1])
+        via_pts.append((vx_mm, vy_mm))
+        stubs.append((pad.position.x_mm, pad.position.y_mm, vx_mm, vy_mm, fp.layer))
+    return stubs, via_pts, width_mm, None
 
 
 def _branch_paths(result) -> List[List[int]]:
@@ -663,6 +782,8 @@ def route_nets(
         window_growth=params.window_growth,
         window_retries=params.window_retries,
         corridor=params.corridor,
+        debug=params.debug,
+        max_expansions_per_net=params.max_expansions_per_net,
     )
     
     # 5. Identify net classes (user-marked power membership included)
@@ -674,7 +795,7 @@ def route_nets(
     corridors, corridor_min_thick = (None, 0.0)
     if params.pour_severance_weight > 0 and pour_nets:
         corridors, corridor_min_thick = pour_corridors(model, routing_grid)
-    
+
     # 6. Separate requested nets into categories
     requested_power = [n for n in net_names if n in power_nets]
     requested_ground = [n for n in net_names if n in ground_nets]
@@ -686,6 +807,72 @@ def route_nets(
     nets_routed = 0
     nets_failed = 0
     width_map: Dict[str, float] = {}
+    plane_tracks: List[OutputTrack] = []
+    plane_vias: List[OutputVia] = []
+    plane_done: Set[str] = set()
+    fanout_cap = params.fanout_plane_vias_max
+
+    # 6b. Plane-tap fanout (four-layer strategy only; two-layer forces it
+    # off so prior behavior is retained verbatim). A ground/power-effective
+    # net owning an inner-copper zone is satisfied with short outer stubs +
+    # through-vias tapping the plane: the plane itself connects the stubs.
+    # SMD-only (THT barrels already pierce the plane); capped; pour-gated
+    # clean no-op (no inner zone → normal outer routing below).
+    if params.fanout_planes:
+        res_mm = routing_grid.resolution_mm
+        for net_name in list(net_names):
+            if net_name in plane_done or net_name in ripup.net_failures:
+                continue
+            if not _inner_plane_layers_for_net(model, net_name):
+                continue
+            if not (
+                is_ground_net(net_name)
+                or is_power_net_effective(net_name, extra_power_nets)
+            ):
+                continue
+            if len(model.nets.get(net_name, ())) < 2:
+                continue
+            budget_left = (
+                max(0, fanout_cap - len(plane_vias)) if fanout_cap > 0 else None
+            )
+            stubs, via_pts, width_mm, reason = _plan_plane_stubs(
+                model, routing_grid, cost_grid, via_block_mask,
+                params, net_name, extra_power_nets, budget_left,
+            )
+            if reason is not None:
+                ripup.record_failure(net_name, reason)
+                nets_failed += 1
+                plane_done.add(net_name)
+                continue
+            # Commit stubs: emit + reserve halos so later MST nets keep
+            # clearance. Stub tracks live on one outer layer; vias pierce,
+            # so the via halo stamps every grid layer.
+            clearance_mm = resolve_clearance(model, params, net_name)
+            track_radius = track_corridor_radius_cells(width_mm, clearance_mm, res_mm)
+            via_radius = via_halo_radius_cells(
+                params.via_size_mm, clearance_mm, width_mm / 2.0, res_mm)
+            for (x0, y0, x1, y1, layer) in stubs:
+                plane_tracks.append(OutputTrack(
+                    start=(x0, y0), end=(x1, y1),
+                    width_mm=width_mm, layer=layer, net_name=net_name,
+                ))
+                li = routing_grid.layer_to_idx.get(layer, 0)
+                c0, r0 = board_to_grid(routing_grid, x0, y0)
+                c1, r1 = board_to_grid(routing_grid, x1, y1)
+                _mark_line_blocked(cost_grid[li], r0, c0, r1, c1, track_radius)
+            for (vx_mm, vy_mm) in via_pts:
+                plane_vias.append(OutputVia(
+                    position=(vx_mm, vy_mm),
+                    size_mm=params.via_size_mm, drill_mm=params.via_drill_mm,
+                    layers=("F.Cu", "B.Cu"), net_name=net_name,
+                ))
+                cc, rr = board_to_grid(routing_grid, vx_mm, vy_mm)
+                for li in range(len(routing_grid.layers)):
+                    stamp_square(cost_grid[li], rr, cc, via_radius, BLOCKED)
+            ripup.record_success(net_name, [])
+            width_map[net_name] = width_mm
+            nets_routed += 1
+            plane_done.add(net_name)
 
     def _route_one_net(net_name: str) -> bool:
         """Route one net with its resolved width/clearance + fanout halo.
@@ -714,6 +901,20 @@ def route_nets(
         )
         if len(terminals) < 2:
             return False
+        if params.max_terminals_per_net > 0 and len(terminals) > params.max_terminals_per_net:
+            # Heuristic guard: Steiner pair-searches scale ~n-1 capped A*
+            # runs per net, so massive planes burn tens of millions of
+            # expansions and still fail. Fail fast with an actionable
+            # reason instead of hanging the job.
+            ripup.record_failure(
+                net_name,
+                f"{len(terminals)} terminals exceeds max_terminals_per_net="
+                f"{params.max_terminals_per_net} (massive nets do not route "
+                f"in a single flight — split into smaller subsets, or rely "
+                f"on copper pours + GND stitching for planes)",
+            )
+            nets_failed += 1
+            return False
         pairs_total = len(terminals) * (len(terminals) - 1) // 2
         _report(net_name, 0, pairs_total, expansions_total)
         width_mm = resolve_track_width(model, params, net_name, extra_power_nets)
@@ -725,6 +926,12 @@ def route_nets(
             track_half_mm=width_mm / 2.0,
             extra_margin_mm=margin_mm,
         )
+        if params.debug:
+            # Sealed-terminal probe: bounded flood-fill per terminal, runs
+            # in milliseconds. Tiny counts mean pair-searches will burn cap.
+            timings[f"debug_escape_{net_name}"] = router.terminal_escape_counts(
+                terminals, secondary
+            )
         if corridors is not None and net_name not in pour_nets:
             # Pour-severance toll: tracks may still cross narrow pour
             # channels, but prefer paths that keep pours whole.
@@ -758,6 +965,7 @@ def route_nets(
         # Own pads read 0 by construction, so terminals stay reachable.
         blocked_mask = secondary >= SECONDARY_BLOCKED
         success = False
+        budget_hit = False
         while ripup.can_retry(net_name):
             if should_cancel is not None and should_cancel():
                 raise RoutingCancelled(f"cancelled before attempt for {net_name}")
@@ -773,6 +981,13 @@ def route_nets(
             )
             timings["astar_s"] = timings.get("astar_s", 0.0) + (time.perf_counter() - t_astar)
             expansions_total += result.expansions
+            if (params.max_expansions_per_net > 0
+                    and result.expansions >= params.max_expansions_per_net):
+                budget_hit = True
+            if params.debug and result.debug_attempts:
+                timings[f"debug_attempts_{net_name}"] = [
+                    dict(a) for a in result.debug_attempts
+                ]
             _report(net_name, pairs_total, pairs_total, expansions_total)
             if result.success:
                 t_smooth = time.perf_counter()
@@ -796,7 +1011,17 @@ def route_nets(
                 success = True
                 break
             else:
-                ripup.record_failure(net_name, "no path found")
+                if budget_hit:
+                    ripup.record_failure(
+                        net_name,
+                        f"expansion budget exhausted ({result.expansions} >= "
+                        f"max_expansions_per_net={params.max_expansions_per_net}): "
+                        f"no DRC-clean path found within budget — try a narrower "
+                        f"track width, fewer terminals per run (piecemeal), or a "
+                        f"coarser grid",
+                    )
+                else:
+                    ripup.record_failure(net_name, "no path found")
         if not success:
             nets_failed += 1
         return success
@@ -808,15 +1033,18 @@ def route_nets(
     try:
         # 7. Route requested power nets (respects pad layers)
         for net_name in requested_power:
-            _route_one_net(net_name)
+            if net_name not in plane_done:
+                _route_one_net(net_name)
 
         # 8. Route requested ground nets
         for net_name in requested_ground:
-            _route_one_net(net_name)
+            if net_name not in plane_done:
+                _route_one_net(net_name)
 
         # 9. Route signal nets
         for net_name in requested_signal:
-            _route_one_net(net_name)
+            if net_name not in plane_done:
+                _route_one_net(net_name)
     except RoutingCancelled:
         cancelled = True
         for net_name in net_names:
@@ -850,6 +1078,11 @@ def route_nets(
         tht_sites=_tht_sites_by_net(model, routing_grid),
         extra_power=extra_power_nets,
     )
+    # 10a. Plane-tap stubs (four-layer strategy): additive, never folded
+    # into MST results. Reserved in the cost grid at emission, so stitching
+    # below sees them as existing copper.
+    tracks.extend(plane_tracks)
+    vias.extend(plane_vias)
 
     # 10b. Automatic GND continuity repair (stitching vias + bridge tracks).
     # Runs on the routed board: newly routed copper joins the island model,
@@ -947,6 +1180,8 @@ def route_nets(
         expansions=expansions_total,
         timings=timings,
         refill_zones_done=refill_done,
+        fanout_vias_added=len(plane_vias),
+        fanout_tracks_added=len(plane_tracks),
         failed_reasons=dict(ripup.net_failures),
     ), cost_grid, routing_grid
 

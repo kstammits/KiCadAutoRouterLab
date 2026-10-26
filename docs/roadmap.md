@@ -35,6 +35,36 @@ Open work only. Completed changes belong in git history, not here.
   Corridor guidance misses: the fine-grid walkable Q1–Q2 thread is sealed
   by ANY-blocked-supercell coarsening (no corridor at 4x or 2x); needs a
   thread-preserving finder or push-and-shove.
+  2026-10-26 benchmarks: full-VIN tight-spot 0/4 (was 4/4 on 10-21;
+  own-cell secondary 500 → 10000 after the foreign-SMD hard exclusion);
+  one DCCF power net now fails at ~4M expansions / 25 s (was routed,
+  951k / 9 s);   routing GND (66 terminals) as a signal net burned ~86M
+  expansions / ~9 min and failed with the whole grid tolled and corridor
+  never triggering. Landed: `max_terminals_per_net` fail-fast guard in
+  `route_nets` (default 32, `0` = no cap) with an explicit failure reason.
+  Remaining: piecemeal strategy for massive power nets (subnet selection
+  routed against existing copper, per Future work below) instead of
+  all-or-nothing single flight.
+  Follow-up: tube111 +12V (21 terminals, under the cap) also hangs —
+  >280 s with and without corridor, while the whole Oct-21 7-net row took
+  ~8 s. The static grid is healthy (tolled 0.00, blocked ~0.16), so this
+  is a search-dynamics regression for wide multi-terminal nets, not a
+  blocked board; suspects are the Oct 23–25 fanout hardening, impedance
+  screening, fill-only pours, and foreign hard exclusion. Keep the cap at
+  32 (it only trips on plane-scale nets) and fix the search rather than
+  lowering it; publish no new corridor JSON until power rows finish in
+  reasonable time again.
+  Quantified 2026-10-26: softening all hard secondary rings to toll level
+  restores +12V in 8.2 s / 1.29M expansions (Oct-21 parity), but DRC on
+  that board jumps 174 → 481 violations (+229 clearance) — Oct-21-era
+  routability was violation-tolerant. w=1.0 control still fails (25.7M
+  expansions at 100k cap): not guidance thrash, true maze. Shrinking the
+  hard radius by track_half (R1) and capping all hard stamps at 2000 toll
+  (R2) both still hang. An 11-terminal +12V subset routes DRC-clean in
+  3.4 s / 447k expansions under hard rings, so clean subpaths exist and
+  the full-net failure is search-scale: piecemeal (route subsets, splice)
+  is the DRC-clean restoration path. Normal baseline: DCCF B1/B2 ~2.7 s /
+  ~11k expansions, tube111 C1InCVLED 1.3 s / 51k.
 - **Heuristic-weight experiment**: sweep `heuristic_weight` 3.0 vs 1.0 on
   tube111 signal nets and a DCCF sample; gate on routing regressions and
   path-cost parity before changing the default.
@@ -56,14 +86,24 @@ Open work only. Completed changes belong in git history, not here.
   so later chunked nets may take slightly tighter paths than batched ones.
   Make rebuilds width-aware so the flows converge.
 
-## Four-layer support (retired spec; none landed)
+## Four-layer support (part landed: viewer solo + plane-tap fanout)
 
-No `fanout.py`, no `net_allowed_layers`, no `width_source`/solo in tree.
+Two-layer mode retains prior behavior verbatim (outer-only routing, collapse
+on export, no plane fanout). Four-layer mode routes outer-only but preserves
+inners and taps them: `fanout_planes` (two-layer `False` / four-layer `True`,
+both mode-owned via `strategy.py`) short-circuits ground/power-effective nets
+owning an inner zone to SMD stubs + through-vias (`fanout_plane_vias_max`
+cap, default 16; THT barrels need no stub) instead of long outer MST tracks.
+Counts are additive (`fanout_vias_added` / `fanout_tracks_added`).
 
-- **Phase A viewer (client-only)**: layer-name solo/isolate + copper
-  legend through `applyLayerVisibility` (stay `display:none`-only, no
-  refetch). Mirror `_INNER_DASHES` / `FILL_INNER_COLORS` exactly,
+- **Phase A viewer (landed)**: per-layer checkboxes + Solo/All isolate and a
+  copper legend through `applyLayerVisibility` (`display:none`-only, no
+  refetch). Dashes/colors mirror `_INNER_DASHES` / `FILL_INNER_COLORS`
   including the B-outer `3 2` dash.
+- **Remaining**: Phase B nets-table widths/clearances, Phase C per-net
+  `net_allowed_layers`, full Phase D `routing/fanout.py` (GND-only SMD
+  hardening, stitcher-predicate extraction, `size/2 + clearance` vs
+  `track_half` reconciliation).
 - **Phase B nets table**: additive `clearance_mm` + `width_source`
   (`net` / `netclass:<name>` / `power` / `default` via
   `resolve_track_width_mm` + `extra_power`; `clearance<=0` falls back
