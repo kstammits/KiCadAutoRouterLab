@@ -6,11 +6,12 @@ browser workflow UI. Works on real boards, DRC-validated.
 ## Layout
 
 - `src/kicad_autorouter/` — engine:
-  - `placement/` — force-spring simulation: `force.py`, `runner.py`,
-    `contact.py`, `rigid.py`, `legality.py`, `params.py`, `model.py`,
-    `integrate.py`
-  - `routing/` — grid, obstacles, A* router, pipeline, pour/stitch/power,
-    smoothing, corridor, search window, via sites
+  - `placement/` — force-spring simulation: `force.py`, `runner.py`
+    (incl. frame helpers), `contact.py`, `rigid.py`, `legality.py`,
+    `params.py`, `model.py`
+  - `routing/` — grid, obstacles, A* router (incl. pair ordering, search
+    windows, via sites, rip-up scheduling), pipeline, pour/stitch/power,
+    smoothing, corridor
   - top-level: `board_model.py`, `io.py`, `sexpr.py`, `drc.py`,
     `validate.py`, `ghost.py`, `mass.py`, `svg_render.py`, `pipeline.py`
 - `ui/server.py` — stdlib-HTTP API + state; `ui/index.html` — the whole
