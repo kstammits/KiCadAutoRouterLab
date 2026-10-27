@@ -14,8 +14,9 @@ are rough guesses, good enough to give inertia the right order of magnitude.
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional, Tuple
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_TABLE_PATH = REPO_ROOT / "data" / "footprint_mass.json"
@@ -72,14 +73,66 @@ def footprint_mass_kg(
     return max(density_kg_m2 * area + floor_kg, floor_kg)
 
 
+def _pad_copper_corners(pad) -> List[Tuple[float, float]]:
+    """Four corners of a pad's copper rect in board coordinates.
+
+    Same orientation convention as the rest of board geometry: the size box
+    rotated by R(-angle) (local Y-DOWN to board, as in ``_to_board`` and the
+    SVG pad paint). Covers oval capsules along their axis (end discs fit
+    inside the corner span) and over-covers roundrect corners slightly —
+    fine for a mass fallback.
+    """
+    try:
+        w, h = float(pad.size_mm[0]), float(pad.size_mm[1])
+        cx, cy = float(pad.position.x_mm), float(pad.position.y_mm)
+        ang = math.radians(-float(getattr(pad, "angle_deg", 0.0) or 0.0))
+    except (TypeError, ValueError, AttributeError):
+        return []
+    ca, sa = math.cos(ang), math.sin(ang)
+    hw, hh = w / 2.0, h / 2.0
+    return [
+        (cx + sx * ca - sy * sa, cy + sx * sa + sy * ca)
+        for sx, sy in ((-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh))
+    ]
+
+
+def _convex_hull_area(points: List[Tuple[float, float]]) -> float:
+    """Shoelace area of the convex hull (monotone chain, no shapely needed)."""
+    pts = sorted(set(points))
+    if len(pts) < 3:
+        return 0.0
+
+    def _cross(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+    lower, upper = [], []
+    for p in pts:
+        while len(lower) >= 2 and _cross(lower[-2], lower[-1], p) <= 0:
+            lower.pop()
+        lower.append(p)
+    for p in reversed(pts):
+        while len(upper) >= 2 and _cross(upper[-2], upper[-1], p) <= 0:
+            upper.pop()
+        upper.append(p)
+    hull = lower[:-1] + upper[:-1]
+    return abs(sum(
+        hull[i][0] * hull[(i + 1) % len(hull)][1]
+        - hull[(i + 1) % len(hull)][0] * hull[i][1]
+        for i in range(len(hull))
+    )) / 2.0
+
+
 def courtyard_bbox_area_m2(footprint) -> float:
     """Bounding-box area of a footprint's courtyard segments, in m².
 
-    Floored by the pad-copper bounding box: files whose courtyard is
+    Floored by the pad-copper convex-hull area: files whose courtyard is
     drafting debris (e.g. pin-marker dots with no body outline) report a
     smaller box than the pads themselves, which would drop the area mass
-    fallback to the floor and leave the part hyper-mobile. A real
-    courtyard always encloses the pads, so the max is exact for honest
+    fallback to the floor and leave the part hyper-mobile. The hull is
+    computed in file coordinates from rotated pad corners, so — unlike an
+    axis-aligned box — it is rotation-invariant: mass depends on copper
+    size, never on placement angle, and stays fixed for the run. A real
+    courtyard always encloses the pads, so the max() is exact for honest
     files and a sane body-scale fallback for degenerate ones.
     """
     try:
@@ -87,18 +140,15 @@ def courtyard_bbox_area_m2(footprint) -> float:
         ys = [p.y_mm for seg in (footprint.courtyard or ()) for p in seg]
     except (TypeError, AttributeError):
         xs, ys = [], []
+    seg_area = 0.0
+    if xs and ys:
+        seg_area = max(max(xs) - min(xs), 0.0) * max(max(ys) - min(ys), 0.0)
+    corners: List[Tuple[float, float]] = []
     try:
         pads = list(getattr(footprint, "pads", None) or ())
     except (TypeError, AttributeError):
         pads = []
-    for p in pads:
-        try:
-            w, h = float(p.size_mm[0]), float(p.size_mm[1])
-            cx, cy = float(p.position.x_mm), float(p.position.y_mm)
-        except (TypeError, ValueError, AttributeError):
-            continue
-        xs.extend((cx - w / 2.0, cx + w / 2.0))
-        ys.extend((cy - h / 2.0, cy + h / 2.0))
-    if not xs or not ys:
-        return 0.0
-    return max(max(xs) - min(xs), 0.0) * max(max(ys) - min(ys), 0.0) * 1e-6
+    for pad in pads:
+        corners.extend(_pad_copper_corners(pad))
+    hull_area = _convex_hull_area(corners)
+    return max(seg_area, hull_area) * 1e-6

@@ -391,7 +391,10 @@ def pad_copper_polygon(pad) -> Polygon:
     (same construction as the router's ``_paint_pad``); ``chamfered`` /
     ``trapezoid`` / ``custom`` / unknown fall back to the bounding rect and
     are documented as conservative. Rotation uses ``pad.angle_deg`` (absolute
-    board orientation), so polygons built from posed pads are pose-correct.
+    board orientation) with the board-geometry sign convention R(-angle):
+    same negation as ``_to_board`` and the SVG pad paint (local Y-DOWN to
+    board), verified against pcbnew — R(+angle) mirrors copper against its
+    own pad row. Polygons built from posed pads are pose-correct.
     """
     w = float(pad.size_mm[0])
     h = float(pad.size_mm[1])
@@ -400,7 +403,7 @@ def pad_copper_polygon(pad) -> Polygon:
     shape = (getattr(pad, "shape", "") or "").lower()
     if shape == "circle" or (shape == "oval" and w == h):
         return Point(cx, cy).buffer(max(w, h) / 2.0)
-    ang = math.radians(float(pad.angle_deg or 0.0))
+    ang = math.radians(-float(pad.angle_deg or 0.0))
     ca, sa = math.cos(ang), math.sin(ang)
 
     def rot(sx: float, sy: float) -> tuple:
@@ -409,8 +412,9 @@ def pad_copper_polygon(pad) -> Polygon:
     hw, hh = w / 2.0, h / 2.0
     rect = Polygon([rot(-hw, -hh), rot(hw, -hh), rot(hw, hh), rot(-hw, hh)])
     if shape == "oval":
-        # Capsule ends (pour._paint_pad spelling): spine offset along local
-        # x by (w-h)/2, end discs of radius min/2.
+        # Capsule ends (pour._paint_pad construction, but with the board
+        # sign convention): spine offset along local x by (w-h)/2, end
+        # discs of radius min/2.
         ex, ey = ca * (w - h) / 2.0, sa * (w - h) / 2.0
         r_end = min(w, h) / 2.0
         ends = [
@@ -553,6 +557,27 @@ def _courtyard_outline_polygon(segments: Tuple[Segment, ...]) -> Optional[Polygo
     return max(parts, key=lambda p: p.area)
 
 
+def _pose_ring(vertices, fp, pad_positions, pad_indices) -> list:
+    """Rigidly re-fit a vertex ring from file pads onto current pad centers.
+
+    Node set must mirror the footprint pads (unconnected copper is a node
+    too) for the fit; on mismatch keep file coordinates rather than
+    fitting the wrong cloud. A lone pad gives translation without spin.
+    """
+    if pad_positions is None or not pad_indices or not fp.pads:
+        return vertices
+    orig_pad_pos = np.array(
+        [(p.position.x_mm, p.position.y_mm) for p in fp.pads], dtype=np.float64
+    )
+    curr_pad_pos = pad_positions[pad_indices]
+    if len(orig_pad_pos) != len(curr_pad_pos) or len(orig_pad_pos) == 0:
+        return vertices
+    posed = _rigid_pose_vertices(
+        np.asarray(vertices, dtype=np.float64), orig_pad_pos, curr_pad_pos
+    )
+    return [tuple(map(float, row)) for row in posed.tolist()]
+
+
 def _footprint_courtyard_polygon(
     fp: Footprint,
     pad_positions: Optional[np.ndarray] = None,
@@ -562,13 +587,13 @@ def _footprint_courtyard_polygon(
 
     Closed/repaired courtyards use their true outline — unless the outline
     is degenerate: drafting that cannot contain the pads (e.g. pin-marker
-    Fab dots with no body outline) is discarded in favor of the pad bounding
-    box. The gate compares outline area against the pad-bbox area (a real
+    Fab dots with no body outline) is discarded in favor of the pad-copper
+    hull. The gate compares outline area against the hull area (a real
     courtyard encloses the pads, so a smaller outline is drafting debris,
     never a tighter courtyard). A non-empty courtyard that still cannot
-    close falls back to the bounding box of its declared segments (plus the
-    same 0.1mm margin as the pad fallback). Only footprints with no
-    courtyard at all fall back to the pad bounding box.
+    close falls back to the bounding box of its declared segments (plus
+    the same 0.1mm margin as the pad fallback). Only footprints with no
+    courtyard at all fall back to the pad hull.
     """
 
     def _get_courtyard_vertices() -> list:
@@ -577,30 +602,8 @@ def _footprint_courtyard_polygon(
             return []
         return list(outline.exterior.coords)
 
-    def _get_original_pad_positions() -> np.ndarray:
-        if not fp.pads:
-            return np.empty((0, 2), dtype=np.float64)
-        return np.array(
-            [(p.position.x_mm, p.position.y_mm) for p in fp.pads], dtype=np.float64
-        )
-
-    def _transform_vertices(vertices, orig_pos, curr_pos):
-        posed = _rigid_pose_vertices(
-            np.asarray(vertices, dtype=np.float64), orig_pos, curr_pos
-        )
-        return [tuple(map(float, row)) for row in posed.tolist()]
-
     def _pose_vertices(vertices):
-        if pad_positions is None or not pad_indices or not fp.pads:
-            return vertices
-        orig_pad_pos = _get_original_pad_positions()
-        curr_pad_pos = pad_positions[pad_indices]
-        if len(orig_pad_pos) != len(curr_pad_pos) or len(orig_pad_pos) == 0:
-            # Node set must mirror the footprint pads (unconnected copper is
-            # a node too) for the rigid re-fit; on mismatch keep file
-            # coordinates rather than fitting the wrong cloud.
-            return vertices
-        return _transform_vertices(vertices, orig_pad_pos, curr_pad_pos)
+        return _pose_ring(vertices, fp, pad_positions, pad_indices)
 
     def _as_polygon(vertices) -> Optional[Polygon]:
         if len(vertices) < 3:
@@ -614,15 +617,15 @@ def _footprint_courtyard_polygon(
         return None
 
     courtyard_vertices = _get_courtyard_vertices()
-    pad_poly = _pad_bbox_polygon(fp, pad_positions, pad_indices)
+    pad_body = _pad_body_polygon(fp, pad_positions, pad_indices)
     degenerate_outline = False
     if courtyard_vertices:
         poly = _as_polygon(_pose_vertices(courtyard_vertices))
         if poly is not None:
-            if poly.area >= _DEGENERATE_OUTLINE_RATIO * pad_poly.area:
+            if poly.area >= _DEGENERATE_OUTLINE_RATIO * pad_body.area:
                 return poly
             # Degenerate outline (e.g. pin-marker Fab dots): fall through
-            # to the pad bounding box, skipping the segment-bbox fallback
+            # to the pad-copper hull, skipping the segment-bbox fallback
             # whose extents are the same drafting debris.
             degenerate_outline = True
 
@@ -633,61 +636,78 @@ def _footprint_courtyard_polygon(
             if poly is not None:
                 return poly
 
-    return pad_poly
+    return pad_body
 
 
 # Ratio below which a closed courtyard outline is drafting debris (pin
 # markers, not a body): a real courtyard encloses the pads, so anything
-# under half the pad-bbox area cannot be one.
+# under half the pad-copper hull area cannot be one.
 _DEGENERATE_OUTLINE_RATIO = 0.5
 
 
-def _pad_bbox_polygon(
+def _pad_body_polygon(
     fp: Footprint,
     pad_positions: Optional[np.ndarray] = None,
     pad_indices: Optional[List[int]] = None,
     margin_mm: float = 0.1,
 ) -> Polygon:
-    """Pad bounding box (+ margin) in board coordinates, posed when possible."""
-    if pad_positions is not None and pad_indices:
-        xs = pad_positions[pad_indices, 0]
-        ys = pad_positions[pad_indices, 1]
-        min_x, max_x = float(xs.min()), float(xs.max())
-        min_y, max_y = float(ys.min()), float(ys.max())
-    elif fp.pads:
-        xs = [p.position.x_mm for p in fp.pads]
-        ys = [p.position.y_mm for p in fp.pads]
-        min_x, max_x = min(xs), max(xs)
-        min_y, max_y = min(ys), max(ys)
-    else:
+    """Convex hull around all pad copper (+ margin), posed when possible.
+
+    The hull follows pad shapes and rotations (via
+    :func:`pad_copper_polygon`), so diagonal parts get a rotated body
+    instead of an axis-aligned box. In posed mode the file-pose hull ring
+    is re-fit through the pad centers like a courtyard outline; a lone pad
+    (no rigid rotation observable) translates without spinning.
+    """
+    if not fp.pads:
         return Polygon([
             (fp.x_mm - 0.5, fp.y_mm - 0.5),
             (fp.x_mm + 0.5, fp.y_mm - 0.5),
             (fp.x_mm + 0.5, fp.y_mm + 0.5),
             (fp.x_mm - 0.5, fp.y_mm + 0.5),
         ])
-    margin = margin_mm
-    return Polygon([
-        (min_x - margin, min_y - margin),
-        (max_x + margin, min_y - margin),
-        (max_x + margin, max_y + margin),
-        (min_x - margin, max_y + margin),
-    ])
+    copper = unary_union([pad_copper_polygon(p) for p in fp.pads])
+    body = copper.convex_hull.buffer(margin_mm, resolution=8)
+    if not isinstance(body, Polygon) or body.is_empty:
+        # Degenerate copper (coincident points): AABB of the union.
+        minx, miny, maxx, maxy = copper.bounds
+        body = Polygon([
+            (minx - margin_mm, miny - margin_mm),
+            (maxx + margin_mm, miny - margin_mm),
+            (maxx + margin_mm, maxy + margin_mm),
+            (minx - margin_mm, maxy + margin_mm),
+        ])
+    if pad_positions is not None and pad_indices:
+        ring = _pose_ring(list(body.exterior.coords), fp, pad_positions, pad_indices)
+        try:
+            posed = Polygon(ring)
+            if posed.is_valid and posed.area > 0:
+                return posed
+        except Exception:
+            pass
+    return body
 
 
 def courtyard_is_degenerate(fp: Footprint) -> bool:
     """Whether a footprint's declared outline is drafting debris, not a body.
 
-    File-pose comparison of the polygonized courtyard against the pad bbox:
-    True when a closed outline exists but covers less than
-    :data:`_DEGENERATE_OUTLINE_RATIO` of the pad-bbox area (e.g. Fab layers
+    File-pose comparison of the polygonized courtyard against the pad-copper
+    hull: True when a closed outline exists but covers less than
+    :data:`_DEGENERATE_OUTLINE_RATIO` of the hull area (e.g. Fab layers
     carrying only pin-marker dots). Empty/missing outlines are honest
-    pad-bbox fallbacks, not degenerate.
+    pad-hull fallbacks, not degenerate.
     """
     outline = _courtyard_outline_polygon(fp.courtyard)
     if outline is None or outline.is_empty:
         return False
-    pad_poly = _pad_bbox_polygon(fp)
+    pad_poly = _pad_body_polygon(fp)
+    if pad_poly.is_empty or pad_poly.area <= 0:
+        return False
+    return outline.area < _DEGENERATE_OUTLINE_RATIO * pad_poly.area
+    outline = _courtyard_outline_polygon(fp.courtyard)
+    if outline is None or outline.is_empty:
+        return False
+    pad_poly = _pad_body_polygon(fp)
     if pad_poly.is_empty or pad_poly.area <= 0:
         return False
     return outline.area < _DEGENERATE_OUTLINE_RATIO * pad_poly.area

@@ -503,6 +503,11 @@ def _run_region_simulation(
                     "pad_idx": np.array([], dtype=int),
                     "orig_pos": np.array([], dtype=np.float64)}
         outline = _courtyard_outline_polygon(_fp.courtyard)
+        if outline is not None and courtyard_is_degenerate(_fp):
+            # Drafting debris, not a body (pin-marker dots): fall through
+            # to the pad-copper hull so dynamics, legality, and the viewer
+            # agree on the same body.
+            outline = None
         if outline is not None:
             body = {
                 "kind": "courtyard",
@@ -519,7 +524,22 @@ def _run_region_simulation(
                 "layer": _fp.layer,
             }
         elif _fp.pads:
-            body = {"kind": "bbox", "empty": False, "layer": _fp.layer}
+            # No outline at all: pad-copper hull (rotated with the part),
+            # not an axis-aligned center box.
+            hull = _footprint_courtyard_polygon(_fp)
+            try:
+                verts = np.array(hull.exterior.coords, dtype=np.float64)
+            except Exception:
+                verts = np.empty((0, 2), dtype=np.float64)
+            if len(verts) >= 3:
+                body = {
+                    "kind": "courtyard",
+                    "empty": False,
+                    "verts": verts,
+                    "layer": _fp.layer,
+                }
+            else:
+                body = {"kind": "bbox", "empty": False, "layer": _fp.layer}
         else:
             _cx, _cy = _fp.x_mm, _fp.y_mm
             body = {

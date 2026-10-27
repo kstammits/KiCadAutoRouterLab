@@ -104,8 +104,10 @@ def test_dots_outline_is_degenerate():
     fp = _dots_chip()
     assert courtyard_is_degenerate(fp)
     poly = _footprint_courtyard_polygon(fp)
-    # Pad-center bbox (pads at x=±1, y=0) + 0.1 margin: 2.2 x 0.2.
-    assert poly.area == pytest.approx(2.2 * 0.2, rel=1e-9)
+    # Convex hull of the two 1x1 copper squares (x=±1) + 0.1 margin band:
+    # 3.2 x 1.2 rect minus rounded corners, bounds grown by the margin.
+    assert tuple(round(v, 9) for v in poly.bounds) == (-1.6, -0.6, 1.6, 0.6)
+    assert poly.area == pytest.approx(3.2 * 1.2 - 0.04 * (4 - math.pi), rel=0.02)
 
 
 def test_honest_outline_passes_gate():
@@ -122,14 +124,96 @@ def test_degenerate_bodies_surfaces_in_proposal():
     assert "U1" in prop.degenerate_bodies
 
 
-def test_mass_floored_by_pad_bbox():
+def test_mass_floored_by_pad_hull():
     dots = courtyard_bbox_area_m2(_dots_chip())
-    # Dots span x -2.1..2.1, y 2.7..2.9; pads span more: max() takes pads.
+    # Hull of the two 1x1 copper squares: 3.0 mm^2, rotation-invariant.
+    assert dots == pytest.approx(3.0 * 1e-6, rel=1e-9)
     honest = courtyard_bbox_area_m2(make_fp(
         "U2", "uuid-u2", 0.0, 0.0, ("N1", "N2"),
         layer="F.Cu", hw=3.0, hh=2.0, pad_dx=1.0))
     assert honest == pytest.approx(6.0 * 4.0 * 1e-6, rel=1e-9)
-    assert dots >= (2.0 * 1.0 + 0.2) * (1.0 + 0.2) * 1e-6
+
+
+def test_mass_invariant_under_rotation():
+    """Mass depends on copper size, never on placement angle."""
+    from kicad_autorouter.board_model import Pad, apply_deltas
+
+    def _fp():
+        pads = tuple(
+            Pad(number=str(k + 1), net_name=f"N{k}", position=Point(x, 0.0),
+                size_mm=(2.0, 1.0), shape="rect", angle_deg=0.0,
+                pad_type="smd", drill_mm=0.0, layers=("F.Cu",))
+            for k, x in enumerate((-1.5, 1.5))
+        )
+        return Footprint(
+            ref="R1", footprint_id="test:R", layer="F.Cu",
+            x_mm=0.0, y_mm=0.0, angle_deg=0.0, pads=pads,
+            courtyard=(), locked=False, uuid="uuid-r1",
+            ghost=False, ghost_attractions=(),
+        )
+
+    fp = _fp()
+    # Two 2x1 pads at x=±1.5: hull spans 5.0 x 1.0.
+    assert courtyard_bbox_area_m2(fp) == pytest.approx(5.0 * 1e-6, rel=1e-9)
+    turned = next(
+        f for f in apply_deltas(_board(fp), {"uuid-r1": (0.0, 0.0, 45.0)}).footprints
+        if f.uuid == "uuid-r1"
+    )
+    assert turned.angle_deg == pytest.approx(45.0)
+    assert courtyard_bbox_area_m2(turned) == pytest.approx(
+        courtyard_bbox_area_m2(fp), rel=1e-9)
+
+
+def test_diagonal_part_body_follows_pads():
+    """D1-analog: SOD123-style part at 117°, dots outline, pads diagonal.
+
+    The hull body must contain both pad coppers and sit rotated (tighter
+    than the axis-aligned sprawl), and must track a 90° placement rotation.
+    """
+    import numpy as np
+
+    from kicad_autorouter.board_model import Pad, apply_deltas
+    from kicad_autorouter.placement.contact import pad_copper_polygon
+    from kicad_autorouter.placement.model import _collect_pad_nodes
+
+    pads = tuple(
+        Pad(number=n, net_name=net, position=Point(x, y),
+            size_mm=(1.4, 1.4), shape="rect", angle_deg=117.0,
+            pad_type="smd", drill_mm=0.0, layers=("F.Cu",))
+        for n, net, x, y in (("A", "N1", -0.9, -1.7), ("C", "N2", 0.9, 1.7))
+    )
+    fp = Footprint(
+        ref="D1", footprint_id="test:SOD123", layer="F.Cu",
+        x_mm=0.0, y_mm=0.0, angle_deg=117.0, pads=pads,
+        courtyard=_dots_courtyard(), locked=False, uuid="uuid-d1",
+        ghost=False, ghost_attractions=(),
+    )
+    assert courtyard_is_degenerate(fp)
+    body = _footprint_courtyard_polygon(fp)
+    for p in pads:
+        assert body.covers(pad_copper_polygon(p)), "body must contain pad copper"
+    # The old axis-aligned center box missed copper entirely; the hull's
+    # long axis follows the diagonal pad line (~62°).
+    mrr = body.minimum_rotated_rectangle
+    ring = list(mrr.exterior.coords)
+    edges = [(ring[i], ring[i + 1]) for i in range(4)]
+    lens = [math.dist(a, b) for a, b in edges]
+    a, b = edges[lens.index(max(lens))]
+    ang = math.degrees(math.atan2(b[1] - a[1], b[0] - a[0])) % 180.0
+    assert min(abs(ang - 62.1), abs(ang - 152.1)) < 5.0
+
+    model = _board(fp)
+    # 90° placement rotation: the body tracks it (bounds swap).
+    moved = apply_deltas(model, {"uuid-d1": (0.0, 0.0, 90.0)})
+    pads2, _, uuid_to_idx2, _, _ = _collect_pad_nodes(moved)
+    pos2 = np.array([(p.position.x_mm, p.position.y_mm) for p in pads2])
+    mfp = next(f for f in moved.footprints if f.uuid == "uuid-d1")
+    turned = _footprint_courtyard_polygon(
+        mfp, pad_positions=pos2, pad_indices=uuid_to_idx2["uuid-d1"])
+    a = body.bounds
+    b = turned.bounds
+    assert (b[2] - b[0]) == pytest.approx(a[3] - a[1], rel=0.05)
+    assert (b[3] - b[1]) == pytest.approx(a[2] - a[0], rel=0.05)
 
 
 def test_no_net_pads_are_nodes():
