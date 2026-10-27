@@ -17,10 +17,22 @@ from ..board_model import BoardModel, Footprint, Pad, is_ground_net, is_power_ne
 def _collect_pad_nodes(
     model: BoardModel,
 ) -> Tuple[List[Pad], List[int], Dict[str, List[int]], Dict[int, int], List[bool]]:
-    """Collect all pads with net connections from both real and ghost footprints.
+    """Collect all pads (netted and unconnected) from real and ghost footprints.
+
+    Unconnected copper (mounting pins on netted parts) joins as a node
+    too — for geometry only: it anchors the rigid fit and the courtyard
+    re-fit, but carries no Coulomb charge (see ForceContext.pad_charged)
+    and no attraction edges, so it collides by contact without dragging
+    or repelling neighbors at range. Excluding it degrades the Kabsch fit for
+    parts whose netted pads are clustered or collinear — e.g. pots whose
+    wide-stance mounting pins are the only well-conditioned anchors — and
+    desyncs the courtyard re-fit from the footprint pads. Footprints with
+    only unconnected pads (mounting holes) stay exactly as before: with
+    no electrical participation they hold their filed positions instead
+    of gaining repulsion from nothing.
 
     Returns:
-        - pads: list of Pad objects with net_name
+        - pads: list of Pad objects (net_name None for unconnected copper)
         - pad_to_fp_idx: list mapping pad index -> footprint index (negative for ghost footprints)
         - fp_uuid_to_pad_indices: dict mapping footprint UUID -> list of global pad indices
         - global_pad_idx_to_local: dict mapping global pad index -> local pad index within footprint
@@ -36,10 +48,12 @@ def _collect_pad_nodes(
     for fp_idx, fp in enumerate(model.footprints):
         if not fp.uuid:
             continue
+        if not any(pad.net_name for pad in fp.pads):
+            # No electrical participation (mounting holes): hold position
+            # exactly as before instead of gaining repulsion from nothing.
+            continue
         fp_pad_indices = []
         for local_pad_idx, pad in enumerate(fp.pads):
-            if pad.net_name is None:
-                continue
             global_pad_idx = len(pads)
             fp_pad_indices.append(global_pad_idx)
             global_pad_idx_to_local[global_pad_idx] = local_pad_idx
@@ -49,7 +63,9 @@ def _collect_pad_nodes(
         if fp_pad_indices:
             fp_uuid_to_pad_indices[fp.uuid] = fp_pad_indices
 
-    # Ghost footprints (negative indices: -(ghost_idx + 1))
+    # Ghost footprints (negative indices: -(ghost_idx + 1)). Ghost pads
+    # are anchors, not copper: keep the historical netted-only membership
+    # so attractor/rail geometry never gains Coulomb repulsion.
     for ghost_idx, fp in enumerate(model.ghost_footprints):
         if not fp.uuid:
             continue
@@ -92,18 +108,21 @@ def _find_decap_pad_indices(
         fp_to_rows.setdefault(fp_idx, []).append(i)
     decap: Set[int] = set()
     for fp_idx, rows in fp_to_rows.items():
-        if len(rows) != 2:
+        # Count netted pads only: an unconnected shield/mount pin must not
+        # disqualify an otherwise exact 2-pin power+ground decap.
+        netted = [i for i in rows if pads[i].net_name]
+        if len(netted) != 2:
             continue
         ref = fp_ref_by_idx.get(fp_idx, "")
         if not ref.upper().startswith("C"):
             continue
-        nets = [pads[i].net_name for i in rows]
+        nets = [pads[i].net_name for i in netted]
         sides = sorted(
             "power" if is_power_net_effective(n, extra_power) else ("ground" if is_ground_net(n) else "signal")
             for n in nets
         )
         if sides == ["ground", "power"]:
-            decap.update(rows)
+            decap.update(netted)
     return decap
 
 

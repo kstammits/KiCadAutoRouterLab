@@ -73,12 +73,32 @@ def footprint_mass_kg(
 
 
 def courtyard_bbox_area_m2(footprint) -> float:
-    """Bounding-box area of a footprint's courtyard segments, in m²."""
+    """Bounding-box area of a footprint's courtyard segments, in m².
+
+    Floored by the pad-copper bounding box: files whose courtyard is
+    drafting debris (e.g. pin-marker dots with no body outline) report a
+    smaller box than the pads themselves, which would drop the area mass
+    fallback to the floor and leave the part hyper-mobile. A real
+    courtyard always encloses the pads, so the max is exact for honest
+    files and a sane body-scale fallback for degenerate ones.
+    """
     try:
         xs = [p.x_mm for seg in (footprint.courtyard or ()) for p in seg]
         ys = [p.y_mm for seg in (footprint.courtyard or ()) for p in seg]
     except (TypeError, AttributeError):
-        return 0.0
+        xs, ys = [], []
+    try:
+        pads = list(getattr(footprint, "pads", None) or ())
+    except (TypeError, AttributeError):
+        pads = []
+    for p in pads:
+        try:
+            w, h = float(p.size_mm[0]), float(p.size_mm[1])
+            cx, cy = float(p.position.x_mm), float(p.position.y_mm)
+        except (TypeError, ValueError, AttributeError):
+            continue
+        xs.extend((cx - w / 2.0, cx + w / 2.0))
+        ys.extend((cy - h / 2.0, cy + h / 2.0))
     if not xs or not ys:
         return 0.0
     return max(max(xs) - min(xs), 0.0) * max(max(ys) - min(ys), 0.0) * 1e-6

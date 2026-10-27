@@ -26,6 +26,7 @@ from .contact import (
     _contact_weights,
     _courtyard_outline_polygon,
     _footprint_courtyard_polygon,
+    courtyard_is_degenerate,
 )
 from .force import ForceContext, _compute_total_force, _overlap_depth_mm
 from .model import (
@@ -120,6 +121,11 @@ class PlacementProposal:
     max_pair_overlap_mm2: float = 0.0
     max_wall_penetration_mm: float = 0.0
     exempt_pairs: Tuple[Tuple[str, str], ...] = ()
+    # Refs whose declared courtyard outline is drafting debris (e.g. Fab
+    # layers carrying only pin-marker dots): collision, mass, and the SVG
+    # all fall back to the pad bounding box for these parts. Surfaced so a
+    # bad library footprint is visible instead of silently body-less.
+    degenerate_bodies: Tuple[str, ...] = ()
     # Debug instrumentation (only populated when params.debug is True).
     # Keys: "per_iteration" (list of per-iteration snapshots), "depen"
     # (before/after overlap + steps applied for the depenetration pass).
@@ -652,6 +658,9 @@ def _run_region_simulation(
         region_polygons=region_polygons,
         fp_uuid_to_region=fp_uuid_to_region,
         cy_cache=cy_cache,
+        pad_charged=np.array(
+            [p.net_name is not None for p in region_pads], dtype=bool
+        ),
     )
 
     # SI integrator state: per-pad velocities (m/s) and adaptive timestep (s).
@@ -1240,6 +1249,10 @@ def run_placement(
             max_pair_overlap_mm2=legality.max_pair_overlap_mm2,
             max_wall_penetration_mm=legality.max_wall_penetration_mm,
             exempt_pairs=legality.exempt_pairs,
+            degenerate_bodies=tuple(sorted(
+                fp.ref for fp in model.footprints
+                if fp.ref and courtyard_is_degenerate(fp)
+            )),
             debug_trace=all_dbg,
         )
 
@@ -1303,9 +1316,13 @@ def run_placement(
         wall_violations=legality.wall_violations,
         max_pair_overlap_mm2=legality.max_pair_overlap_mm2,
         max_wall_penetration_mm=legality.max_wall_penetration_mm,
-        exempt_pairs=legality.exempt_pairs,
-        debug_trace=region_dbg,
-    )
+            exempt_pairs=legality.exempt_pairs,
+            degenerate_bodies=tuple(sorted(
+                fp.ref for fp in model.footprints
+                if fp.ref and courtyard_is_degenerate(fp)
+            )),
+            debug_trace=region_dbg,
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -560,10 +560,15 @@ def _footprint_courtyard_polygon(
 ) -> Polygon:
     """Build a shapely Polygon from footprint's courtyard segments.
 
-    Closed/repaired courtyards use their true outline. A non-empty courtyard
-    that still cannot close falls back to the bounding box of its declared
-    segments (plus the same 0.1mm margin as the pad fallback). Only footprints
-    with no courtyard at all fall back to the pad bounding box.
+    Closed/repaired courtyards use their true outline — unless the outline
+    is degenerate: drafting that cannot contain the pads (e.g. pin-marker
+    Fab dots with no body outline) is discarded in favor of the pad bounding
+    box. The gate compares outline area against the pad-bbox area (a real
+    courtyard encloses the pads, so a smaller outline is drafting debris,
+    never a tighter courtyard). A non-empty courtyard that still cannot
+    close falls back to the bounding box of its declared segments (plus the
+    same 0.1mm margin as the pad fallback). Only footprints with no
+    courtyard at all fall back to the pad bounding box.
     """
 
     def _get_courtyard_vertices() -> list:
@@ -591,6 +596,9 @@ def _footprint_courtyard_polygon(
         orig_pad_pos = _get_original_pad_positions()
         curr_pad_pos = pad_positions[pad_indices]
         if len(orig_pad_pos) != len(curr_pad_pos) or len(orig_pad_pos) == 0:
+            # Node set must mirror the footprint pads (unconnected copper is
+            # a node too) for the rigid re-fit; on mismatch keep file
+            # coordinates rather than fitting the wrong cloud.
             return vertices
         return _transform_vertices(vertices, orig_pad_pos, curr_pad_pos)
 
@@ -606,18 +614,41 @@ def _footprint_courtyard_polygon(
         return None
 
     courtyard_vertices = _get_courtyard_vertices()
+    pad_poly = _pad_bbox_polygon(fp, pad_positions, pad_indices)
+    degenerate_outline = False
     if courtyard_vertices:
         poly = _as_polygon(_pose_vertices(courtyard_vertices))
         if poly is not None:
-            return poly
+            if poly.area >= _DEGENERATE_OUTLINE_RATIO * pad_poly.area:
+                return poly
+            # Degenerate outline (e.g. pin-marker Fab dots): fall through
+            # to the pad bounding box, skipping the segment-bbox fallback
+            # whose extents are the same drafting debris.
+            degenerate_outline = True
 
-    if fp.courtyard:
+    if fp.courtyard and not degenerate_outline:
         fallback = _courtyard_segment_bbox_polygon(fp.courtyard)
         if fallback is not None:
             poly = _as_polygon(_pose_vertices(list(fallback.exterior.coords)))
             if poly is not None:
                 return poly
 
+    return pad_poly
+
+
+# Ratio below which a closed courtyard outline is drafting debris (pin
+# markers, not a body): a real courtyard encloses the pads, so anything
+# under half the pad-bbox area cannot be one.
+_DEGENERATE_OUTLINE_RATIO = 0.5
+
+
+def _pad_bbox_polygon(
+    fp: Footprint,
+    pad_positions: Optional[np.ndarray] = None,
+    pad_indices: Optional[List[int]] = None,
+    margin_mm: float = 0.1,
+) -> Polygon:
+    """Pad bounding box (+ margin) in board coordinates, posed when possible."""
     if pad_positions is not None and pad_indices:
         xs = pad_positions[pad_indices, 0]
         ys = pad_positions[pad_indices, 1]
@@ -635,13 +666,31 @@ def _footprint_courtyard_polygon(
             (fp.x_mm + 0.5, fp.y_mm + 0.5),
             (fp.x_mm - 0.5, fp.y_mm + 0.5),
         ])
-    margin = 0.1
+    margin = margin_mm
     return Polygon([
         (min_x - margin, min_y - margin),
         (max_x + margin, min_y - margin),
         (max_x + margin, max_y + margin),
         (min_x - margin, max_y + margin),
     ])
+
+
+def courtyard_is_degenerate(fp: Footprint) -> bool:
+    """Whether a footprint's declared outline is drafting debris, not a body.
+
+    File-pose comparison of the polygonized courtyard against the pad bbox:
+    True when a closed outline exists but covers less than
+    :data:`_DEGENERATE_OUTLINE_RATIO` of the pad-bbox area (e.g. Fab layers
+    carrying only pin-marker dots). Empty/missing outlines are honest
+    pad-bbox fallbacks, not degenerate.
+    """
+    outline = _courtyard_outline_polygon(fp.courtyard)
+    if outline is None or outline.is_empty:
+        return False
+    pad_poly = _pad_bbox_polygon(fp)
+    if pad_poly.is_empty or pad_poly.area <= 0:
+        return False
+    return outline.area < _DEGENERATE_OUTLINE_RATIO * pad_poly.area
 
 
 # ---------------------------------------------------------------------------

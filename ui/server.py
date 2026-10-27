@@ -1245,6 +1245,7 @@ def proposal_to_json(proposal, include_frames=True) -> dict:
         "max_pair_overlap_mm2": r5(getattr(proposal, "max_pair_overlap_mm2", 0.0)),
         "max_wall_penetration_mm": r5(getattr(proposal, "max_wall_penetration_mm", 0.0)),
         "exempt_pairs": getattr(proposal, "exempt_pairs", []),
+        "degenerate_bodies": list(getattr(proposal, "degenerate_bodies", ())),
     }
     frames = getattr(proposal, "frames", None) or []
     if include_frames and frames:

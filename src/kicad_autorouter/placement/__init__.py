@@ -16,6 +16,7 @@ from .contact import (
     _courtyard_outline_polygon,
     _footprint_courtyard_polygon,
     _wall_mag,
+    courtyard_is_degenerate,
 )
 from .runner import PlacementProposal, _run_region_simulation, _thin_frames, run_placement
 from .model import (
@@ -51,6 +52,7 @@ __all__ = [
     "_courtyard_outline_polygon",
     "_find_decap_pad_indices",
     "_footprint_courtyard_polygon",
+    "courtyard_is_degenerate",
     "_rigid_pose_vertices",
     "_run_region_simulation",
     "_thin_frames",

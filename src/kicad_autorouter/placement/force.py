@@ -70,6 +70,7 @@ class ForceContext:
         region_polygons: Optional[List] = None,
         fp_uuid_to_region: Optional[Dict[str, int]] = None,
         cy_cache: Optional[Dict[str, dict]] = None,
+        pad_charged: Optional[np.ndarray] = None,
     ):
         self.fp_uuids = fp_uuids
         self.fp_local_to_rows = fp_local_to_rows
@@ -87,6 +88,12 @@ class ForceContext:
         self.region_polygons: List = region_polygons or []
         self.fp_uuid_to_region: Dict[str, int] = fp_uuid_to_region or {}
         self.cy_cache: Dict[str, dict] = cy_cache or {}
+        # Per-node Coulomb participation (netted pads only). Unconnected
+        # copper (mounting pins, holes) joins the node set for geometry —
+        # rigid fit, courtyard re-fit, force spreading — but carries no
+        # charge: it collides by contact, never by long-range repulsion.
+        # None (default) charges every node (backward compatible).
+        self.pad_charged: Optional[np.ndarray] = pad_charged
         # Last applied contact normal per footprint pair, keyed by
         # (min, max) local indices. The winner's fresh normal is mixed
         # with the prior step's so near-tie winner switches (body vs pin,
@@ -148,6 +155,11 @@ def _compute_total_force(
     np.fill_diagonal(force_mag, 0.0)
     if same_fp_mask is not None:
         force_mag[same_fp_mask] = 0.0  # No repulsion between pads of same footprint
+    if ctx is not None and getattr(ctx, "pad_charged", None) is not None:
+        charged = np.asarray(getattr(ctx, "pad_charged"), dtype=bool)
+        if charged.shape == (n_pads,):
+            force_mag[~charged, :] = 0.0
+            force_mag[:, ~charged] = 0.0
     force_vec = diff * (force_mag[:, :, None] / dist[:, :, None])
     repulsion = np.sum(force_vec, axis=1)
 
