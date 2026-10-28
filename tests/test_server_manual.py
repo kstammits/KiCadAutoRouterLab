@@ -16,6 +16,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "ui"))
 
 import server  # noqa: E402
+import server_state  # noqa: E402 (nudge clock lives here; see below)
 
 
 @pytest.fixture(autouse=True)
@@ -118,7 +119,7 @@ def test_nudge_burst_coalesces_into_one_undo(monkeypatch):
     """Holding an arrow key: N rapid nudges share one undo entry, and one
     undo reverts the whole burst (history isn't flushed with micro-steps)."""
     now = [1000.0]
-    monkeypatch.setattr(server.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(server_state.time, "monotonic", lambda: now[0])
     httpd, base = _client()
     try:
         _load(base)
@@ -144,7 +145,7 @@ def test_nudge_burst_coalesces_into_one_undo(monkeypatch):
 def test_nudge_burst_breaks_on_pause_or_reselect(monkeypatch):
     """Window expiry or a changed selection starts a new undo entry."""
     now = [1000.0]
-    monkeypatch.setattr(server.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(server_state.time, "monotonic", lambda: now[0])
     httpd, base = _client()
     try:
         _load(base)
@@ -171,7 +172,7 @@ def test_nudge_burst_breaks_on_pause_or_reselect(monkeypatch):
 def test_ghost_move_burst_coalesces(monkeypatch):
     """Ghost-panel stepper bursts share one undo entry like nudges."""
     now = [2000.0]
-    monkeypatch.setattr(server.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(server_state.time, "monotonic", lambda: now[0])
     httpd, base = _client()
     try:
         _load(base)

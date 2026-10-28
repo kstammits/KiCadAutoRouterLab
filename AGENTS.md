@@ -14,7 +14,9 @@ browser workflow UI. Works on real boards, DRC-validated.
     smoothing, corridor
   - top-level: `board_model.py`, `io.py`, `sexpr.py`, `drc.py`,
     `validate.py`, `ghost.py`, `mass.py`, `svg_render.py`, `pipeline.py`
-- `ui/server.py` — stdlib-HTTP API + state; `ui/index.html` +
+- `ui/server.py` — stdlib-HTTP API + dispatch (re-exports `server_state` /
+  `server_jobs`); `ui/server_state.py` (BoardState + STATE), `ui/server_jobs.py`
+  (routing-job + DRC workers); `ui/index.html` +
   `ui/app-*.js` (frontend, one domain file per panel + `app.js` entry;
   load order in `index.html`, shared globals, no modules) + `ui/style.css`;
   `ui/docs.html` — docs viewer.
