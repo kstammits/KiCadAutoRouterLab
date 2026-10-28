@@ -631,6 +631,12 @@ function zoomToSelection() {
     x0 = Math.min(x0, b.x); y0 = Math.min(y0, b.y);
     x1 = Math.max(x1, b.x + b.width); y1 = Math.max(y1, b.y + b.height);
   }
+  frameBox(x0, y0, x1, y1);
+}
+
+// Frame a board-mm bbox in the viewer: padded to the viewport aspect so
+// nothing distorts, with a floor so single points don't zoom to absurdity.
+function frameBox(x0, y0, x1, y1) {
   const aspect = (viewport.clientWidth && viewport.clientHeight)
     ? viewport.clientWidth / viewport.clientHeight : 1;
   const pad = 1.6, minSize = 10; // mm: breathing room, floor for tiny parts
@@ -639,6 +645,29 @@ function zoomToSelection() {
   if (h < (y1 - y0) * pad) { h = (y1 - y0) * pad; w = h * aspect; }
   viewBox = [(x0 + x1) / 2 - w / 2, (y0 + y1) / 2 - h / 2, w, h];
   applyViewBox();
+}
+
+// Zoom the viewer to the selected nets' terminals (union over selection).
+// Terminals are model pad positions: known before routing and after.
+// Best-effort and silent — zoom must never nag on a fetch hiccup.
+async function zoomToNets() {
+  if (!viewport?.querySelector("svg") || selectedNets.size === 0) return;
+  try {
+    const all = await Promise.all([...selectedNets].map(n =>
+      apiJson(`/api/nets/terminals?net=${encodeURIComponent(n)}`).catch(() => null)));
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    let n = 0;
+    for (const r of all) {
+      for (const t of (r?.terminals || [])) {
+        if (t.x_mm == null || t.y_mm == null) continue;
+        x0 = Math.min(x0, t.x_mm); y0 = Math.min(y0, t.y_mm);
+        x1 = Math.max(x1, t.x_mm); y1 = Math.max(y1, t.y_mm);
+        n++;
+      }
+    }
+    if (!n) return;
+    frameBox(x0, y0, x1, y1);
+  } catch (e) { /* silent */ }
 }
 
 let costGridDebug = null;
@@ -2863,6 +2892,7 @@ function renderNetsTable(nets) {
         selectedNets.delete(net);
       }
       syncNetRowSelection();
+      zoomToNets();
     });
   });
   
@@ -2918,6 +2948,7 @@ function renderNetsTable(nets) {
         selectedNets.add(net);
       }
       syncNetRowSelection();
+      zoomToNets();
     });
   });
   

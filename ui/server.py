@@ -1711,6 +1711,32 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps({"ok": True, "nets": nets_data}).encode(), "application/json")
             return
 
+        # GET /api/nets/terminals?net=<name> - pad coordinates of one
+        # net's terminals (board mm). Pure model data: no routing grid
+        # needed, so it works before routing and after. Powers the
+        # nets-table select-to-zoom (client unions across selected nets).
+        if parsed.path == "/api/nets/terminals":
+            model, _, _, _, _, _ = STATE.snapshot
+            if model is None:
+                self._send(404, b"no board loaded", "text/plain")
+                return
+            net_name = (qs.get("net", [""])[0] or "")
+            if net_name not in model.nets:
+                self._send(404, f"unknown net: {net_name}".encode(), "text/plain")
+                return
+            terms = []
+            for fp in model.footprints:
+                for pad in fp.pads:
+                    if pad.net_name == net_name:
+                        terms.append({"x_mm": pad.position.x_mm,
+                                      "y_mm": pad.position.y_mm,
+                                      "ref": fp.ref, "pad": pad.number})
+            self._send(200, json.dumps({"ok": True, "net": net_name,
+                                        "count": len(terms),
+                                        "terminals": terms}).encode(),
+                       "application/json")
+            return
+
         # GET /api/nets/inlets - inlet anchors for impedance screening.
         if parsed.path == "/api/nets/inlets":
             inlets = STATE.get_inlets()
