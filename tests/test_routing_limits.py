@@ -160,7 +160,7 @@ def test_per_net_budget_zero_disables():
 def test_per_net_budget_generous_leaves_normal_nets_alone():
     model = _ladder(2)
     params = RoutingParams(run_drc=False, stitch_gnd_vias=False)
-    assert params.max_expansions_per_net == 8_000_000
+    assert params.max_expansions_per_net == 4_000_000
     result, _, _ = route_nets(model, ["BIG"], set(), params=params)
     assert result.nets_routed == 1
 

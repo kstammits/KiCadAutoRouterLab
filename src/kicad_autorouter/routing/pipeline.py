@@ -77,11 +77,14 @@ class RoutingParams:
     net_widths: Dict[str, float] = field(default_factory=dict)  # Explicit per-net trace widths (override)
     heuristic_weight: float = 3.0     # Weighted-A* greediness (lower respects penalties)
     max_expansions: int = 2_000_000   # A* node-expansion cap per search (fail fast, don't hang)
-    max_expansions_per_net: int = 8_000_000  # Fail-fast cap on total
+    max_expansions_per_net: int = 4_000_000  # Fail-fast cap on total
     # expansions across one net's pair-searches (0 = no cap). Bounds the
-    # ~n-1 capped searches × window retries that make dense multi-terminal
+    # ~n-1 capped A* searches × window retries that make dense multi-terminal
     # nets burn tens of millions of expansions; failing nets report the
-    # budget in their failure reason instead of hanging the job.
+    # budget in their failure reason instead of hanging the job. Sized so
+    # one budget-burn stays under ~100s even at the worst observed rate
+    # (~20ms/kexp on large boards); healthy nets route far below this
+    # (DCCF 20-net batch: 1.3M total).
     max_terminals_per_net: int = 32  # Fail-fast cap on net size (grid
     # terminals); larger nets fail with an explicit reason instead of
     # burning hours of Steiner pair-searches. 0 = no cap.
@@ -1022,6 +1025,11 @@ def route_nets(
                     )
                 else:
                     ripup.record_failure(net_name, "no path found")
+                if budget_hit:
+                    # Budget exhaustion is deterministic on an unchanged
+                    # grid: the next attempt would burn the same budget for
+                    # the same outcome, so stop retrying and fail the net.
+                    break
         if not success:
             nets_failed += 1
         return success

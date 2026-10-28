@@ -145,6 +145,9 @@
       <label class="chk"><input type="checkbox" id="overlay-toggle" checked> Show proposal</label>
       <label class="chk"><input type="checkbox" id="forces-toggle" checked> forces</label>
       <label class="chk" id="cost-grid-label" hidden><input type="checkbox" id="cost-grid-toggle"> Cost grid</label>
+      <select id="cost-grid-net" hidden title="Per-net fanout halo overlay (soft/hard rings + terminal seals)">
+        <option value="">occupancy only</option>
+      </select>
       <span id="forces-legend" class="chip" style="font-size:0.6rem; display:inline-flex; gap:0.5rem; align-items:center;">
         <span><i style="display:inline-block; width:1.2rem; border-top:2px solid #22d3ee;"></i> repulsion</span>
         <span><i style="display:inline-block; width:1.2rem; border-top:2px solid #a3e635;"></i> attraction</span>
@@ -254,6 +257,7 @@
             <button id="gnd-islands-btn" title="Analyze GND pour continuity (islands per layer)">GND Islands</button>
             <button id="impedance-btn" title="Inlet-anchored DC-resistance screening for GND + power nets (report only)">Impedance</button>
             <span id="route-diag"></span>
+            <span id="route-est" title="Work estimate for this batch"></span>
           </div>
           <div id="gnd-islands-results" style="font-size:.72rem;padding:.2rem .7rem;" hidden></div>
           <details class="route-section" id="impedance-details">

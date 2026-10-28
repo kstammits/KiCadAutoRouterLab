@@ -42,8 +42,16 @@ from kicad_autorouter.placement import (
     PlacementProposal,
     run_placement,
 )
-from kicad_autorouter.routing.pipeline import RoutingParams, route_nets
+from kicad_autorouter.routing.pipeline import (
+    RoutingParams,
+    _terminals_for_net,
+    resolve_clearance,
+    resolve_track_width,
+    route_nets,
+)
 from kicad_autorouter.routing.grid import create_grid_from_model
+from kicad_autorouter.routing.obstacles import build_fanout_cost
+from kicad_autorouter.routing.router import SECONDARY_BLOCKED
 from kicad_autorouter.routing.impedance import (
     BRIDGE_DEFAULT_MOHM,
     DEFAULT_GND_MAX_MOHM,
@@ -1219,6 +1227,56 @@ def _cost_grid_to_debug(cost_grid: np.ndarray, routing_grid) -> dict:
     }
 
 
+def _secondary_to_debug(secondary: np.ndarray, routing_grid, terminals) -> dict:
+    """Banded per-net secondary (fanout halo) grid for SVG overlay.
+
+    Raw int16 values (up to THT_EXCLUSION 10000) would need linear scaling
+    that hides everything below the max, so band the block-max instead:
+    0 = free, 1 = soft (outer halo / pour severance, 1..499),
+    2 = inner halo (500..999), 3 = hard ring (>= SECONDARY_BLOCKED).
+    Terminals are reported in downsampled cell coords (same pixel space as
+    the raster) with their raw own-cell value + sealed flag.
+    """
+    _, H, W = secondary.shape
+    max_dim = 200
+    scale = max(H // max_dim, W // max_dim, 1)
+    h_ds, w_ds = H // scale, W // scale
+
+    layers = []
+    for l in range(secondary.shape[0]):
+        if scale > 1:
+            ds = np.zeros((h_ds, w_ds), dtype=np.int16)
+            for r in range(h_ds):
+                for c in range(w_ds):
+                    ds[r, c] = np.max(
+                        secondary[l, r * scale:min((r + 1) * scale, H),
+                                  c * scale:min((c + 1) * scale, W)])
+        else:
+            ds = secondary[l][:, :]
+        band = np.zeros_like(ds, dtype=np.int8)
+        band[(ds > 0) & (ds < 500)] = 1
+        band[(ds >= 500) & (ds < SECONDARY_BLOCKED)] = 2
+        band[ds >= SECONDARY_BLOCKED] = 3
+        layers.append({
+            "layer": routing_grid.layers[l] if l < len(routing_grid.layers) else f"layer_{l}",
+            "data": band.tolist(),
+            "height": int(band.shape[0]),
+            "width": int(band.shape[1]),
+            "scale": scale,
+        })
+
+    terms = []
+    for i, (c, r, lyr) in enumerate(terminals):
+        raw = int(secondary[lyr, r, c]) if (
+            0 <= lyr < secondary.shape[0] and 0 <= r < H and 0 <= c < W) else -1
+        terms.append({"idx": i, "dc": c // scale, "dr": r // scale,
+                      "layer": int(lyr), "own_cell": raw,
+                      "sealed": bool(raw >= SECONDARY_BLOCKED)})
+    return {"bands": {0: "free", 1: "soft", 2: "inner", 3: "hard"},
+            "blocked_at": SECONDARY_BLOCKED,
+            "layers": layers, "terminals": terms}
+
+
 def proposal_to_json(proposal, include_frames=True) -> dict:
     def r5(x):
         return round(x, 5) if isinstance(x, float) else x
@@ -1681,7 +1739,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps({"ok": True, "params": params.to_dict()}).encode(), "application/json")
             return
 
-        # GET /api/routing/debug/cost-grid - return cost grid for visualization
+        # GET /api/routing/debug/cost-grid - return cost grid for visualization.
+        # ?net=<name> also builds that net's per-net secondary (fanout halo)
+        # banded for overlay + its terminal cells (own-cell value/sealed flag).
         if parsed.path == "/api/routing/debug/cost-grid":
             model, _, _, _, _, _ = STATE.snapshot
             if model is None:
@@ -1691,6 +1751,25 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(404, b"no cost grid available (run routing first)", "text/plain")
                 return
             payload = _cost_grid_to_debug(STATE.cost_grid, STATE.routing_grid)
+            net_name = (qs.get("net", [""])[0] or "")
+            if net_name:
+                if net_name not in model.nets:
+                    self._send(404, f"unknown net: {net_name}".encode(), "text/plain")
+                    return
+                try:
+                    params = load_routing_params()
+                    width = resolve_track_width(model, params, net_name, ())
+                    clear = resolve_clearance(model, params, net_name)
+                    secondary = build_fanout_cost(
+                        model, STATE.routing_grid, net_name,
+                        clearance_mm=clear, track_half_mm=width / 2.0)
+                    terminals = _terminals_for_net(model, STATE.routing_grid, net_name)
+                except Exception as exc:
+                    self._send(500, f"secondary build failed: {exc}".encode(), "text/plain")
+                    return
+                payload["net"] = net_name
+                payload["secondary"] = _secondary_to_debug(
+                    secondary, STATE.routing_grid, terminals)
             self._send(200, json.dumps(payload).encode(), "application/json")
             return
         

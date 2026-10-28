@@ -3,13 +3,13 @@
 Beads-2m findings, reproduced synthetically (no 1.4MB fixture):
 
 - Some chips carry no real outline: the Fab layer holds only pin-marker
-  dots. The fallback chain used to prefer those dots (0.17mm^2 bodies, no
-  wall repulsion, invisible in the viewer). The outline gate now falls back
-  to the pad bounding box and the run proposal names the offenders.
+  dots. The outline gate falls back to the pad-copper hull and the run
+  proposal names the offenders. Coverage gaps (partial outlines, pins
+  outside a closed courtyard) keep their drawn body — reporting only.
 - Pots with no-net mounting pins wandered on long runs: unconnected pads
   were excluded from pad nodes, leaving a collinear netted subset that
-  degenerates the Kabsch rigid fit. All copper is a node now (ghosts
-  excepted); attraction still keys on net_name.
+  degenerates the Kabsch rigid fit. Mounted copper joins as geometry-only
+  nodes (no Coulomb charge); attraction still keys on net_name.
 
 Markers: unit
 """
@@ -214,6 +214,111 @@ def test_diagonal_part_body_follows_pads():
     b = turned.bounds
     assert (b[2] - b[0]) == pytest.approx(a[3] - a[1], rel=0.05)
     assert (b[3] - b[1]) == pytest.approx(a[2] - a[0], rel=0.05)
+
+
+def test_partial_outline_stands_but_reports():
+    """IC1-analog: two disjoint diagonal strokes, diagonal pad row.
+
+    The drawn segment bbox stands as the body (drawn geometry is not
+    reshaped), but the ref is reported: the box neither matches the pins'
+    diagonal nor contains them.
+    """
+    segs = (
+        (Point(-1.0, -1.0), Point(0.5, 1.5)),
+        (Point(1.5, -0.5), Point(2.5, -2.0)),
+    )
+    pads = tuple(
+        Pad(number=n, net_name=net, position=Point(x, y),
+            size_mm=(0.4, 1.0), shape="rect", angle_deg=45.0,
+            pad_type="smd", drill_mm=0.0, layers=("F.Cu",))
+        for n, net, x, y in (("1", "N1", -1.5, -1.5), ("2", "N2", 2.0, 2.5))
+    )
+    fp = Footprint(
+        ref="IC1", footprint_id="test:MSOP", layer="F.Cu",
+        x_mm=0.0, y_mm=0.0, angle_deg=45.0, pads=pads,
+        courtyard=segs, locked=False, uuid="uuid-ic1",
+        ghost=False, ghost_attractions=(),
+    )
+    assert courtyard_is_degenerate(fp)
+    body = _footprint_courtyard_polygon(fp)
+    # Drawn box stands: hull of the two strokes, no pad ears added.
+    assert body.bounds == pytest.approx((-1.1, -2.1, 2.6, 1.6))
+
+
+def test_pins_outside_closed_outline_stands_but_reports():
+    """R23-analog: closed outline missing a pin row.
+
+    The closed body stands (drawn geometry is not reshaped — protruding
+    THT pins already collide as extenders), but the ref is reported so the
+    library drawing gets fixed at the source.
+    """
+    pads = tuple(
+        Pad(number=n, net_name=net, position=Point(x, y),
+            size_mm=(1.9, 1.9), shape="rect", angle_deg=0.0,
+            pad_type="thru_hole", drill_mm=1.0, layers=("*.Cu", "*.Mask"))
+        for n, net, x, y in (("1", "S1", 0.0, 0.0), ("2", "S2", -2.0, -2.0))
+    ) + (
+        Pad(number="M", net_name=None, position=Point(8.0, 8.0),
+            size_mm=(2.5, 2.5), shape="oval", angle_deg=0.0,
+            pad_type="thru_hole", drill_mm=1.2, layers=("*.Cu", "*.Mask")),
+    )
+    fp = Footprint(
+        ref="R23", footprint_id="test:POT", layer="F.Cu",
+        x_mm=0.0, y_mm=0.0, angle_deg=0.0, pads=pads,
+        courtyard=make_rect_courtyard(0.0, 0.0, 5.0, 5.0),
+        locked=False, uuid="uuid-r23",
+        ghost=False, ghost_attractions=(),
+    )
+    assert courtyard_is_degenerate(fp)
+    body = _footprint_courtyard_polygon(fp)
+    assert body.area == pytest.approx(10.0 * 10.0, rel=1e-9)
+
+
+def test_deliberate_approximation_stands_unreported():
+    """Disc-cap analog: drawn circle slightly smaller than the pads.
+
+    Pads at x=±0.8 (copper to ±1.3) against a r=1 circle: 0.6mm^2 of
+    copper outside the drawing stays under the 1mm^2 bar, so the outline
+    stands and the ref is not reported. (Multi-mm^2 overhangs like R23's
+    missing pin row are reported — see above.)
+    """
+    import math as _math
+
+    segs = []
+    for i in range(8):
+        a1 = 2 * _math.pi * i / 8
+        a2 = 2 * _math.pi * (i + 1) / 8
+        segs.append((Point(_math.cos(a1), _math.sin(a1)),
+                     Point(_math.cos(a2), _math.sin(a2))))
+    pads = tuple(
+        Pad(number=n, net_name=net, position=Point(x, 0.0),
+            size_mm=(1.0, 1.0), shape="rect", angle_deg=0.0,
+            pad_type="smd", drill_mm=0.0, layers=("F.Cu",))
+        for n, net, x in (("1", "N1", -0.8), ("2", "N2", 0.8))
+    )
+    fp = Footprint(
+        ref="C1", footprint_id="test:DISC", layer="F.Cu",
+        x_mm=0.0, y_mm=0.0, angle_deg=0.0, pads=pads,
+        courtyard=tuple(segs), locked=False, uuid="uuid-c1",
+        ghost=False, ghost_attractions=(),
+    )
+    assert not courtyard_is_degenerate(fp)
+    body = _footprint_courtyard_polygon(fp)
+    # 8-seg octagon, area 2*sqrt(2) — the drawing stands as drawn.
+    assert body.area == pytest.approx(2 * _math.sqrt(2), rel=0.02)
+
+
+def test_padless_footprint_never_degenerate():
+    """Mounting-hole-style footprints with no pads cannot be degenerate."""
+    fp = Footprint(
+        ref="MH1", footprint_id="test:MOUNT", layer="F.Cu",
+        x_mm=0.0, y_mm=0.0, angle_deg=0.0, pads=(),
+        courtyard=(), locked=False, uuid="uuid-mh1",
+        ghost=False, ghost_attractions=(),
+    )
+    assert not courtyard_is_degenerate(fp)
+    body = _footprint_courtyard_polygon(fp)
+    assert body.area == pytest.approx(1.0)
 
 
 def test_no_net_pads_are_nodes():

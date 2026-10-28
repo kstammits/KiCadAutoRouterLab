@@ -586,14 +586,19 @@ def _footprint_courtyard_polygon(
     """Build a shapely Polygon from footprint's courtyard segments.
 
     Closed/repaired courtyards use their true outline — unless the outline
-    is degenerate: drafting that cannot contain the pads (e.g. pin-marker
-    Fab dots with no body outline) is discarded in favor of the pad-copper
-    hull. The gate compares outline area against the hull area (a real
-    courtyard encloses the pads, so a smaller outline is drafting debris,
-    never a tighter courtyard). A non-empty courtyard that still cannot
-    close falls back to the bounding box of its declared segments (plus
-    the same 0.1mm margin as the pad fallback). Only footprints with no
-    courtyard at all fall back to the pad hull.
+    is drafting debris: polygonized area under half the pad-copper hull
+    (pin-marker Fab dots with no body outline) is discarded in favor of
+    the pad hull. A non-empty courtyard that still cannot close falls back
+    to the bounding box of its declared segments (plus the same 0.1mm
+    margin as the pad fallback), with the same debris gate. Only
+    footprints with no courtyard at all fall back to the pad hull.
+
+    Coverage gaps (a closed outline that leaves pins hanging out, or a
+    partial outline that misses pads) do NOT rebuild the body: drawn
+    geometry stands for physics, protruding THT pins already collide as
+    extenders, and :func:`courtyard_is_degenerate` reports the ref so a
+    bad library footprint gets fixed at the source instead of silently
+    reshaped.
     """
 
     def _get_courtyard_vertices() -> list:
@@ -616,24 +621,27 @@ def _footprint_courtyard_polygon(
             pass
         return None
 
-    courtyard_vertices = _get_courtyard_vertices()
     pad_body = _pad_body_polygon(fp, pad_positions, pad_indices)
-    degenerate_outline = False
+    pad_hull = _pad_copper_hull(fp)
+    hull_area = pad_hull.area if not pad_hull.is_empty else 0.0
+    courtyard_vertices = _get_courtyard_vertices()
     if courtyard_vertices:
         poly = _as_polygon(_pose_vertices(courtyard_vertices))
-        if poly is not None:
-            if poly.area >= _DEGENERATE_OUTLINE_RATIO * pad_body.area:
-                return poly
-            # Degenerate outline (e.g. pin-marker Fab dots): fall through
-            # to the pad-copper hull, skipping the segment-bbox fallback
-            # whose extents are the same drafting debris.
-            degenerate_outline = True
+        if poly is not None and poly.area >= _DEGENERATE_OUTLINE_RATIO * hull_area:
+            return poly
+        # Debris outline (e.g. pin-marker Fab dots): fall through to the
+        # pad-copper hull, skipping the segment-bbox fallback whose
+        # extents are the same drafting debris.
 
-    if fp.courtyard and not degenerate_outline:
+    if fp.courtyard:
         fallback = _courtyard_segment_bbox_polygon(fp.courtyard)
         if fallback is not None:
             poly = _as_polygon(_pose_vertices(list(fallback.exterior.coords)))
-            if poly is not None:
+            # Gate on the RAW segment extents (margin stripped): the
+            # fallback's own +0.1mm band would otherwise inflate debris
+            # past the bar.
+            raw = _segment_extents_area(fp.courtyard)
+            if poly is not None and raw >= _DEGENERATE_OUTLINE_RATIO * hull_area:
                 return poly
 
     return pad_body
@@ -643,6 +651,58 @@ def _footprint_courtyard_polygon(
 # markers, not a body): a real courtyard encloses the pads, so anything
 # under half the pad-copper hull area cannot be one.
 _DEGENERATE_OUTLINE_RATIO = 0.5
+
+# Pad-copper area (mm^2) allowed outside the drawn body before the ref
+# is reported as a bad library drawing. Same 1mm^2 bar as the DCCF
+# overlap audit: sub-mm slivers are polygonize noise everywhere in this
+# codebase. Reporting only — the body still uses the drawing (protruding
+# THT pins already collide as extenders).
+_CONTAIN_TOL_MM2 = 1.0
+
+
+def _uncovered_area(container: Polygon, hull: Polygon) -> float:
+    """Pad-copper hull area lying outside the drawn body (mm^2)."""
+    try:
+        if container.is_empty or hull.is_empty:
+            return float(hull.area)
+        return float(hull.difference(container).area)
+    except Exception:
+        return float(hull.area)
+
+
+def _segment_extents_area(segments) -> float:
+    """Raw (unmargined) bounding-box area of courtyard segments."""
+    try:
+        xs = [p.x_mm for seg in (segments or ()) for p in seg]
+        ys = [p.y_mm for seg in (segments or ()) for p in seg]
+    except (TypeError, AttributeError):
+        return 0.0
+    if not xs or not ys:
+        return 0.0
+    return max(max(xs) - min(xs), 0.0) * max(max(ys) - min(ys), 0.0)
+
+
+def _pad_copper_hull(fp: Footprint) -> Polygon:
+    """Convex hull around all pad copper in file coordinates (no margin).
+
+    The unmargined extent used for coverage comparisons: margin is
+    clearance, not copper, and must not count as "outside the drawing".
+    Padless footprints yield an empty polygon (the point-box fallback
+    lives in :func:`_pad_body_polygon`, not here).
+    """
+    if not fp.pads:
+        return Polygon()
+    try:
+        copper = unary_union([pad_copper_polygon(p) for p in fp.pads])
+        hull = copper.convex_hull
+        if isinstance(hull, Polygon) and not hull.is_empty:
+            return hull
+        minx, miny, maxx, maxy = copper.bounds
+        return Polygon([
+            (minx, miny), (maxx, miny), (maxx, maxy), (minx, maxy),
+        ])
+    except Exception:
+        return Polygon()
 
 
 def _pad_body_polygon(
@@ -666,10 +726,10 @@ def _pad_body_polygon(
             (fp.x_mm + 0.5, fp.y_mm + 0.5),
             (fp.x_mm - 0.5, fp.y_mm + 0.5),
         ])
-    copper = unary_union([pad_copper_polygon(p) for p in fp.pads])
-    body = copper.convex_hull.buffer(margin_mm, resolution=8)
+    body = _pad_copper_hull(fp).buffer(margin_mm, resolution=8)
     if not isinstance(body, Polygon) or body.is_empty:
         # Degenerate copper (coincident points): AABB of the union.
+        copper = unary_union([pad_copper_polygon(p) for p in fp.pads])
         minx, miny, maxx, maxy = copper.bounds
         body = Polygon([
             (minx - margin_mm, miny - margin_mm),
@@ -692,25 +752,28 @@ def courtyard_is_degenerate(fp: Footprint) -> bool:
     """Whether a footprint's declared outline is drafting debris, not a body.
 
     File-pose comparison of the polygonized courtyard against the pad-copper
-    hull: True when a closed outline exists but covers less than
-    :data:`_DEGENERATE_OUTLINE_RATIO` of the hull area (e.g. Fab layers
-    carrying only pin-marker dots). Empty/missing outlines are honest
-    pad-hull fallbacks, not degenerate.
+    hull of pad copper: True when a closed outline exists but covers less
+    than :data:`_DEGENERATE_OUTLINE_RATIO` of the hull area (e.g. Fab
+    layers carrying only pin-marker dots) or leaves pad copper hanging
+    out (partial outline, courtyard missing a pin row). Comparisons use
+    the unmargined hull — margin is clearance, not copper. Empty/missing
+    outlines are honest pad-hull fallbacks, not degenerate.
     """
+    pad_hull = _pad_copper_hull(fp)
+    if pad_hull.is_empty or pad_hull.area <= 0:
+        return False
     outline = _courtyard_outline_polygon(fp.courtyard)
-    if outline is None or outline.is_empty:
-        return False
-    pad_poly = _pad_body_polygon(fp)
-    if pad_poly.is_empty or pad_poly.area <= 0:
-        return False
-    return outline.area < _DEGENERATE_OUTLINE_RATIO * pad_poly.area
-    outline = _courtyard_outline_polygon(fp.courtyard)
-    if outline is None or outline.is_empty:
-        return False
-    pad_poly = _pad_body_polygon(fp)
-    if pad_poly.is_empty or pad_poly.area <= 0:
-        return False
-    return outline.area < _DEGENERATE_OUTLINE_RATIO * pad_poly.area
+    if outline is not None and not outline.is_empty:
+        if outline.area < _DEGENERATE_OUTLINE_RATIO * pad_hull.area:
+            return True
+        return _uncovered_area(outline, pad_hull) > _CONTAIN_TOL_MM2
+    if fp.courtyard:
+        if _segment_extents_area(fp.courtyard) < _DEGENERATE_OUTLINE_RATIO * pad_hull.area:
+            return True
+        fallback = _courtyard_segment_bbox_polygon(fp.courtyard)
+        if fallback is not None and not fallback.is_empty:
+            return _uncovered_area(fallback, pad_hull) > _CONTAIN_TOL_MM2
+    return False
 
 
 # ---------------------------------------------------------------------------

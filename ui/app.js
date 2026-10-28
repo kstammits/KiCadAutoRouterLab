@@ -600,6 +600,47 @@ function fitToView() {
   }
 }
 
+// Zoom the viewer to the current footprint selection (union bbox, padded
+// to the viewport aspect so nothing distorts). Geometry comes from the
+// SVG groups; footprints hidden by layer visibility (zero bbox) fall back
+// to their board position with a default window. No-op when nothing is
+// selected or no SVG is loaded — deselect never yanks the camera.
+function zoomToSelection() {
+  const svg = viewport?.querySelector("svg");
+  if (!svg || selectedUuids.size === 0) return;
+  const boxes = [];
+  for (const uuid of selectedUuids) {
+    let pushed = false;
+    const g = svg.querySelector(`[data-fp-uuid="${CSS.escape(uuid)}"]`);
+    if (g) {
+      try {
+        const b = g.getBBox();
+        if (b.width > 0 && b.height > 0) { boxes.push(b); pushed = true; }
+      } catch (e) { /* fall through to position fallback */ }
+    }
+    if (!pushed) {
+      const fp = allFootprints.find(f => f.uuid === uuid);
+      if (fp && fp.x_mm != null && fp.y_mm != null) {
+        boxes.push({ x: fp.x_mm - 2, y: fp.y_mm - 2, width: 4, height: 4 });
+      }
+    }
+  }
+  if (!boxes.length) return;
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const b of boxes) {
+    x0 = Math.min(x0, b.x); y0 = Math.min(y0, b.y);
+    x1 = Math.max(x1, b.x + b.width); y1 = Math.max(y1, b.y + b.height);
+  }
+  const aspect = (viewport.clientWidth && viewport.clientHeight)
+    ? viewport.clientWidth / viewport.clientHeight : 1;
+  const pad = 1.6, minSize = 10; // mm: breathing room, floor for tiny parts
+  let w = Math.max((x1 - x0) * pad, minSize);
+  let h = w / aspect;
+  if (h < (y1 - y0) * pad) { h = (y1 - y0) * pad; w = h * aspect; }
+  viewBox = [(x0 + x1) / 2 - w / 2, (y0 + y1) / 2 - h / 2, w, h];
+  applyViewBox();
+}
+
 let costGridDebug = null;
 let costGridOverlay = false;
 
@@ -608,22 +649,53 @@ function showCostGridDebug(debug) {
   // Static checkbox in the top bar (hidden until debug data arrives).
   const label = el("cost-grid-label");
   if (label) label.hidden = false;
+  const netSel = el("cost-grid-net");
+  if (netSel) {
+    netSel.hidden = false;
+    const cur = netSel.value;
+    const names = (lastNetsByName && lastNetsByName.size)
+      ? [...lastNetsByName.keys()].filter(Boolean).sort() : [];
+    const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    netSel.innerHTML = `<option value="">occupancy only</option>` +
+      names.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join("");
+    if (names.includes(cur)) netSel.value = cur;
+    else if (debug && debug.net) netSel.value = debug.net;
+  }
   renderCostGridOverlay();
+}
+
+async function fetchCostGridNet(net) {
+  const q = net ? `?net=${encodeURIComponent(net)}` : "";
+  try {
+    costGridDebug = await apiJson(`/api/routing/debug/cost-grid${q}`);
+  } catch (err) {
+    toast(`cost grid fetch failed: ${err.message}`);
+    return;
+  }
+  renderCostGridOverlay();
+}
+
+el("cost-grid-net")?.addEventListener("change", e => {
+  costGridOverlay = el("cost-grid-toggle")?.checked ?? false;
+  if (!costGridOverlay) return;
+  fetchCostGridNet(e.target.value);
+});
+
+function clearCostGridOverlay() {
+  // Both the raster image and the terminal-marker group share this class.
+  viewport?.querySelectorAll(".cost-grid-overlay").forEach(n => n.remove());
 }
 
 function renderCostGridOverlay() {
   if (!viewport) return;
   if (!costGridDebug || !costGridOverlay) {
-    // Remove existing overlay
-    const existing = viewport.querySelector(".cost-grid-overlay");
-    if (existing) existing.remove();
+    clearCostGridOverlay();
     return;
   }
-  
-  // Remove existing overlay
-  const existing = viewport.querySelector(".cost-grid-overlay");
-  if (existing) existing.remove();
-  
+
+  clearCostGridOverlay();
+
   const svg = viewport?.querySelector("svg");
   if (!svg) return;
   
@@ -640,6 +712,8 @@ function renderCostGridOverlay() {
   // Rasterize the downsampled grid to a canvas (same palette as the old
   // server PNG: 25=gray COURTYARD, 35=teal POUR, 50=yellow HIGH_COST,
   // 80=orange EDGE_KEEPOUT, 100+=red BLOCKED, else transparent).
+  // Per-net secondary bands paint on top: 1=yellow soft halo, 2=orange
+  // inner halo, 3=magenta hard ring.
   const gw = fcuLayer.width, gh = fcuLayer.height;
   const grid = fcuLayer.data;
   const canvas = document.createElement("canvas");
@@ -659,6 +733,22 @@ function renderCostGridOverlay() {
       else if (v === 50) { px[o] = 255; px[o + 1] = 255; px[o + 2] = 0; px[o + 3] = 180; }
       else if (v === 80) { px[o] = 255; px[o + 1] = 165; px[o + 2] = 0; px[o + 3] = 200; }
       else if (v >= 100) { px[o] = 255; px[o + 1] = 0; px[o + 2] = 0; px[o + 3] = 220; }
+    }
+  }
+  const sec = costGridDebug.secondary;
+  const secLayer = sec?.layers?.find(l => l.layer === "F.Cu");
+  if (secLayer) {
+    for (let r = 0; r < gh; r++) {
+      const row = secLayer.data[r];
+      if (!row) continue;
+      for (let c = 0; c < gw; c++) {
+        const b = row[c];
+        if (b <= 0) continue;
+        const o = (r * gw + c) * 4;
+        if (b === 1) { px[o] = 255; px[o + 1] = 235; px[o + 2] = 59; px[o + 3] = 150; }
+        else if (b === 2) { px[o] = 255; px[o + 1] = 140; px[o + 2] = 0; px[o + 3] = 170; }
+        else if (b >= 3) { px[o] = 255; px[o + 1] = 0; px[o + 2] = 255; px[o + 3] = 200; }
+      }
     }
   }
   ctx.putImageData(imgData, 0, 0);
@@ -694,6 +784,34 @@ function renderCostGridOverlay() {
   img.setAttribute("preserveAspectRatio", "none");
   img.setAttribute("href", canvas.toDataURL("image/png"));
   svg.appendChild(img);
+
+  // Terminal seals: full-resolution terminal cells would vanish in the
+  // downsampled raster, so draw them as vector circles in the same pixel
+  // space (green = open, red = sealed shut). F.Cu-layer terminals only,
+  // matching the raster panel.
+  if (sec?.terminals?.length && secLayer) {
+    const fcuIdx = sec.layers.findIndex(l => l.layer === "F.Cu");
+    const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    g.classList.add("cost-grid-overlay", "overlay-none");
+    const cellPx = widthPx / gw;
+    for (const t of sec.terminals) {
+      if (t.layer !== fcuIdx) continue;
+      const cx = xPx + ((t.dc + 0.5) / gw) * widthPx;
+      const cy = (yPx - heightPx) + ((t.dr + 0.5) / gh) * heightPx;
+      const cEl = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+      cEl.setAttribute("cx", cx);
+      cEl.setAttribute("cy", cy);
+      cEl.setAttribute("r", Math.max(3, cellPx * 1.5));
+      cEl.setAttribute("fill", "none");
+      cEl.setAttribute("stroke", t.sealed ? "#ff2222" : "#22ff44");
+      cEl.setAttribute("stroke-width", "2");
+      const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
+      title.textContent = `term ${t.idx}: own-cell ${t.own_cell}${t.sealed ? " SEALED" : ""}`;
+      cEl.appendChild(title);
+      g.appendChild(cEl);
+    }
+    svg.appendChild(g);
+  }
 }
 
 async function fetchAndInjectSVG(version) {
@@ -1080,6 +1198,13 @@ zonesFillToggle.addEventListener("change", async () => {
 
 el("cost-grid-toggle")?.addEventListener("change", e => {
   costGridOverlay = e.target.checked;
+  if (costGridOverlay) {
+    const net = el("cost-grid-net")?.value || "";
+    if (net && (!costGridDebug?.secondary || costGridDebug?.net !== net)) {
+      fetchCostGridNet(net);
+      return;
+    }
+  }
   renderCostGridOverlay();
 });
 
@@ -1625,6 +1750,7 @@ function renderFootprintTable() {
       updateFootprintVisuals();
       updateSelectionUI();
       renderFootprintTable(); // Re-render to update row highlighting
+      zoomToSelection();
     });
   });
   
@@ -1641,9 +1767,9 @@ function renderFootprintTable() {
       
       if (e.shiftKey) {
         // Range select not implemented yet - just toggle
-        toggleSelect(uuid).then(() => renderFootprintTable());
+        toggleSelect(uuid).then(() => { renderFootprintTable(); zoomToSelection(); });
       } else if (e.ctrlKey || e.metaKey) {
-        toggleSelect(uuid).then(() => renderFootprintTable());
+        toggleSelect(uuid).then(() => { renderFootprintTable(); zoomToSelection(); });
       } else {
         selectedUuids.clear();
         selectedUuids.add(uuid);
@@ -1655,6 +1781,7 @@ function renderFootprintTable() {
         updateFootprintVisuals();
         updateSelectionUI();
         renderFootprintTable();
+        zoomToSelection();
       }
     });
   });
@@ -3021,6 +3148,18 @@ function fmtExpansions(e) {
   return `${e} expansions`;
 }
 
+// Compact expansions for the live status line ("15.5M/4M").
+function fmtExpShort(e) {
+  e = Number(e) || 0;
+  if (e >= 1e6) return `${(e / 1e6).toFixed(1)}M`;
+  if (e >= 1e3) return `${Math.round(e / 1e3)}k`;
+  return `${e}`;
+}
+
+// Must match RoutingParams.max_expansions_per_net default (pipeline.py);
+// the Route panel has no knob for it, so the status meter falls back here.
+const ROUTE_EXP_CAP_FALLBACK = 4_000_000;
+
 // Per-net server cap: the job keeps searching for quality, but a single
 // net never blocks the batch forever — on cap it is cancelled server-side
 // (partial routes kept) and recorded as a failure.
@@ -3060,8 +3199,9 @@ async function cancelRoutingJob(jobId) {
   }
 }
 
-async function pollRoutingJob(jobId, net, idx, total, diag, progress, estNote, t0) {
+async function pollRoutingJob(jobId, net, idx, total, diag, progress, estNote, t0, expCap, estSec) {
   const elapsed = () => `${Math.round((performance.now() - t0) / 1000)}s`;
+  const cap = Number(expCap) > 0 ? Number(expCap) : 0;
   const deadline = performance.now() + ROUTE_JOB_CAP_S * 1000;
   for (;;) {
     if (routeCancelRequested) {
@@ -3079,7 +3219,14 @@ async function pollRoutingJob(jobId, net, idx, total, diag, progress, estNote, t
     const frac = (p.pairs_total > 0) ? (p.pairs_done / p.pairs_total) : 0;
     progress.value = (idx + Math.min(1, frac)) / total;
     const pairTxt = p.pairs_total > 0 ? `pair ${Math.min(p.pairs_total, p.pairs_done + 1)}/${p.pairs_total}` : "starting";
-    diag.textContent = `net ${idx + 1}/${total} (${net}) — ${pairTxt} · ${fmtExpansions(p.expansions)} · ${elapsed()} — ${estNote}`;
+    // Live line stays compact: the static estimate lives in #route-est;
+    // full detail is one hover away. Budget meter answers "not fail-fast?"
+    // at a glance (cap burn, not hang).
+    const overEst = Number(estSec) > 0 && (performance.now() - t0) / 1000 > Number(estSec) * 1.5;
+    const burning = cap > 0 && (p.expansions || 0) > 0.8 * cap;
+    const flags = (overEst ? " ⚠ over est" : "") + (burning ? " ⚠ budget" : "");
+    diag.textContent = `net ${idx + 1}/${total} (${net}) · ${pairTxt} · ${fmtExpShort(p.expansions)}/${fmtExpShort(cap)} · ${elapsed()}${flags}`;
+    diag.title = `${pairTxt} · ${fmtExpansions(p.expansions)} of ${fmtExpansions(cap)} budget · elapsed ${elapsed()} — ${estNote}`;
     if (job.state === "done") return { result: job.result, userCancelled: false };
     if (job.state === "failed") {
       const err = new Error(job.error || "routing job failed");
@@ -3131,11 +3278,19 @@ async function routeSelectedNets() {
   await saveRoutingParams();
   const params = readRoutingParams();
   const est = estimateRoutingWork(nets);
+  const expCap = Number(params.max_expansions_per_net) > 0
+    ? Number(params.max_expansions_per_net) : ROUTE_EXP_CAP_FALLBACK;
   const stitchNote = params.stitch_gnd_vias
     ? " + GND stitch (bench: +3s tube111-scale, +17s DCCF-scale)" : "";
   const estNote = `~${est.pairs} pair-searches across ${nets.length} net${nets.length > 1 ? "s" : ""}` +
     ` (est. up to ≈${Math.round(est.seconds)}s${stitchNote})` +
     (est.worst.pairs > 100 ? ` — worst: ${est.worst.net} (~${est.worst.pairs}; expect minutes)` : "");
+  // Static estimate, written once: the live line only carries numbers.
+  const routeEst = el("route-est");
+  if (routeEst) {
+    routeEst.textContent = `est. ~${est.pairs} pair-searches · typical ≈${Math.round(est.seconds)}s${stitchNote} · budget ${fmtExpShort(expCap)}/net`;
+    routeEst.title = estNote;
+  }
 
   setRouteBusy(true);
   progress.hidden = false;
@@ -3153,14 +3308,15 @@ async function routeSelectedNets() {
   for (let i = 0; i < nets.length; i++) {
     if (routeCancelRequested) break;
     const net = nets[i];
-    diag.textContent = `net ${i + 1}/${nets.length} (${net}) — starting — ${elapsed()} — ${estNote}`;
+    diag.textContent = `net ${i + 1}/${nets.length} (${net}) — starting — ${elapsed()}`;
+    diag.title = estNote;
     progress.value = i / nets.length;
 
     let jobId = null;
     try {
       jobId = await startRoutingJob(net, params);
       routeCurrentJobId = jobId;
-      const { result: r, userCancelled, timedOut } = await pollRoutingJob(jobId, net, i, nets.length, diag, progress, estNote, t0);
+      const { result: r, userCancelled, timedOut } = await pollRoutingJob(jobId, net, i, nets.length, diag, progress, estNote, t0, expCap, est.seconds);
       routeCurrentJobId = null;
       if (userCancelled) break;
       if (timedOut) {
@@ -3225,6 +3381,8 @@ async function routeSelectedNets() {
     totals, failures, doneCount, netCount: nets.length, lastBoardVersion,
     elapsedTxt: elapsed(), cancelled: routeCancelRequested,
   });
+  diag.title = diag.textContent;
+  if (routeEst) routeEst.textContent = `done in ${elapsed()} (est ≈${Math.round(est.seconds)}s) · ${est.pairs} pair-searches`;
 
   setRouteBusy(false);
   cancelBtn.hidden = true;
