@@ -210,3 +210,40 @@ function updateNetSelectionUI() {
     ripBtn.textContent = count > 0 ? `Rip Selected (${count})` : "Rip Selected Nets";
   }
 }
+
+// Bulk table wiring (lived after diagnostics; moved home).
+
+// Select all checkbox in nets table (in-place: full list stays rendered)
+on("nets-select-all", "change", e => {
+  const rows = document.querySelectorAll("#nets-tbody tr");
+  if (e.target.checked) {
+    rows.forEach(tr => {
+      const net = tr.dataset.net;
+      if (net) selectedNets.add(net);
+    });
+  } else {
+    rows.forEach(tr => {
+      const net = tr.dataset.net;
+      if (net) selectedNets.delete(net);
+    });
+  }
+  syncNetRowSelection();
+});
+
+// Protect all checkbox
+on("nets-protect-all", "change", async e => {
+  const rows = document.querySelectorAll("#nets-tbody tr");
+  for (const tr of rows) {
+    const net = tr.dataset.net;
+    const cb = tr.querySelector(".net-protect-cb");
+    if (cb && cb.checked !== e.target.checked) {
+      cb.checked = e.target.checked;
+      try {
+        await postJSON("/api/nets/protected", { net, protected: e.target.checked });
+      } catch (err) {
+        toast(`protect toggle failed: ${err.message}`);
+      }
+    }
+  }
+  await fetchNets();
+});
