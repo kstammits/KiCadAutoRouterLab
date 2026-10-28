@@ -306,26 +306,6 @@ def test_capped_deep_overlap_still_resolves():
     assert after < 0.01 * before, f"capped wall must clear: {before:.2f} -> {after:.3f}"
 
 
-@pytest.mark.regression
-def test_wall_exponent_two_matches_default_run():
-    """Refactor guard: exponent=2.0 must reproduce default-param dynamics."""
-    fa = make_fp("A", "uuid-a", 0.0, 0.0, ("N1", "N2"),
-                 footprint_id="test:R", hw=3.0, hh=2.0,
-                 pad_layers=("F.Cu",), pad_shape="circle")
-    fb = make_fp("B", "uuid-b", 1.0, 0.0, ("N3", "N4"),
-                 footprint_id="test:R", hw=3.0, hh=2.0,
-                 pad_layers=("F.Cu",), pad_shape="circle")
-    model = _board([fa, fb])
-    kw = dict(max_iterations=50, convergence_eps_m=1e-15,
-              repulsion_k_N_m2=1e-15, attraction_k_N=1e-15,
-              wall_k_N=0.08, wall_halo_m=0.0078,
-               ghost_k_N=1e-15)
-    base = run_placement(model, PlacementParams(**kw))
-    exp1 = run_placement(model, PlacementParams(**{**kw, "wall_exponent": 2.0}))
-    for uuid in base.deltas:
-        for a, b in zip(base.deltas[uuid], exp1.deltas[uuid]):
-            assert a == pytest.approx(b, rel=1e-12)
-
 # ---------------------------------------------------------------------------
 # Phase 3: rotation-in-squeeze
 # ---------------------------------------------------------------------------

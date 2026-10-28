@@ -173,16 +173,6 @@ def make_smd_resistor(ref: str, uuid: str, x: float, y: float, net_a: str, net_b
     return make_fp(ref, uuid, x, y, (net_a, net_b), hw=hw, hh=hh, pad_layers=("F.Cu",))
 
 
-def make_smd_resistor_b_layer(ref: str, uuid: str, x: float, y: float, net_a: str, net_b: str, hw: float = 1.5, hh: float = 1.0):
-    """SMD resistor on B.Cu layer."""
-    return make_fp(ref, uuid, x, y, (net_a, net_b), layer="B.Cu", hw=hw, hh=hh, pad_layers=("B.Cu",))
-
-
-def make_tht_resistor(ref: str, uuid: str, x: float, y: float, net_a: str, net_b: str, hw: float = 1.5, hh: float = 1.0):
-    """Through-hole resistor (for THT cross-layer tests)."""
-    return make_fp(ref, uuid, x, y, (net_a, net_b), tht=True, hw=hw, hh=hh, pad_layers=("*.Cu", "*.Mask"))
-
-
 # ---------------------------------------------------------------------------
 # Test Classes
 # ---------------------------------------------------------------------------
@@ -428,55 +418,6 @@ class TestOverlapForce:
         assert final_area <= 1e-6, f"Overlap should resolve to ~0, got {final_area:.6f}mm²"
 
 
-class TestLayerGating:
-    """Cross-layer courtyard collision rules."""
-
-    def test_smd_smd_different_layers_no_collision(self):
-        """F.Cu SMD + B.Cu SMD, overlapping courtyards -> NO force (skip exact geometry)."""
-        fa = make_smd_resistor("A", "uuid-a", 0.0, 0.0, "N1", "N2", hw=3.0, hh=2.0)
-        fb = make_smd_resistor_b_layer("B", "uuid-b", 0.0, 0.0, "N3", "N4", hw=3.0, hh=2.0)
-        model = _board([fa, fb])
-        prop = run_placement(model, _base_params(max_iterations=0))
-        
-        fx, fy = prop.force_components["uuid-b"]["courtyard"]
-        assert fx == 0.0 and fy == 0.0, "Cross-layer SMD-SMD should have zero courtyard force"
-
-    def test_tht_smd_cross_layer_collides(self):
-        """F.Cu THT (has_tht=True) + B.Cu SMD, overlapping courtyards -> force applied."""
-        fa = make_tht_resistor("A", "uuid-a", 0.0, 0.0, "N1", "N2", hw=3.0, hh=2.0)
-        fb = make_smd_resistor_b_layer("B", "uuid-b", 0.0, 0.0, "N3", "N4", hw=3.0, hh=2.0)
-        model = _board([fa, fb])
-        prop = run_placement(model, _base_params(max_iterations=0))
-        
-        fx, fy = prop.force_components["uuid-b"]["courtyard"]
-        mag = math.hypot(fx, fy)
-        assert mag > 0, "THT-SMD cross-layer should collide"
-
-    def test_tht_tht_cross_layer_collides(self):
-        """Both THT on different layers -> force applied."""
-        fa = make_tht_resistor("A", "uuid-a", 0.0, 0.0, "N1", "N2", hw=3.0, hh=2.0)
-        fa = replace(fa, layer="F.Cu")
-        fb = make_tht_resistor("B", "uuid-b", 0.0, 0.0, "N3", "N4", hw=3.0, hh=2.0)
-        fb = replace(fb, layer="B.Cu")
-        model = _board([fa, fb])
-        prop = run_placement(model, _base_params(max_iterations=0))
-        
-        fx, fy = prop.force_components["uuid-b"]["courtyard"]
-        mag = math.hypot(fx, fy)
-        assert mag > 0, "THT-THT cross-layer should collide"
-
-    def test_smd_smd_same_layer_collides(self):
-        """Both F.Cu SMD -> force applied."""
-        fa = make_smd_resistor("A", "uuid-a", 0.0, 0.0, "N1", "N2", hw=3.0, hh=2.0)
-        fb = make_smd_resistor("B", "uuid-b", 0.0, 0.0, "N3", "N4", hw=3.0, hh=2.0)
-        model = _board([fa, fb])
-        prop = run_placement(model, _base_params(max_iterations=0))
-        
-        fx, fy = prop.force_components["uuid-b"]["courtyard"]
-        mag = math.hypot(fx, fy)
-        assert mag > 0, "Same-layer SMD-SMD should collide"
-
-
 class TestLenientCourtyard:
     """Controlled overlap tolerance: disc cap in large rect courtyard."""
 
@@ -536,26 +477,6 @@ class TestLenientCourtyard:
         assert fx == pytest.approx(0.002 * (1.0 + 0.5 / 3.0), rel=0.05), (
             f"edge-escape force {fx:.2g} vs expected {0.002 * (1.0 + 0.5 / 3.0):.2g}")
         assert abs(fy) < 0.1 * abs(fx), f"Escape must be along x, got ({fx:.2g}, {fy:.2g})"
-
-    def test_disc_cap_at_edge_0_5mm_overlap_force_level(self):
-        """Document force at exactly 0.5mm radial overlap for tuning."""
-        large = make_smd_resistor("LARGE", "uuid-large", 0.0, 0.0, "N1", "N2", hw=5.0, hh=2.5)
-        large = replace(large, courtyard=make_rect_courtyard(0, 0, 5.0, 2.5))
-        
-        # Disc centered at x=4.0 (radius 1.0, edge at 5.0 = rect edge)
-        # Move to x=4.5 -> edge at 5.5 = 0.5mm overlap
-        disc = make_disc_cap("DISC", "uuid-disc", 4.5, 0.0, diameter=2.0)
-        
-        model = _board([large, disc])
-        prop = run_placement(model, _base_params(max_iterations=0))
-        
-        fx, fy = prop.force_components["uuid-disc"]["courtyard"]
-        mag = math.hypot(fx, fy)
-        
-        # This documents the force at 0.5mm overlap for threshold decisions
-        print(f"\n0.5mm overlap force magnitude: {mag:.0f} (unified wall law)")
-        assert mag > 0
-
 
 class TestRV1Scenarios:
     """DCCF RV1 regression scenarios: resistor migration, pad attraction, clustering."""

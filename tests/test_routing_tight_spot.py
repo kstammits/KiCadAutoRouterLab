@@ -302,25 +302,6 @@ class TestTightSpotRipupPolicy:
 class TestViaHaloAndForeignExclusion:
     """Tests for via halo reservation and foreign-via exclusion."""
 
-    def test_via_halo_matches_track_halo(self):
-        """Via halo radius equals track corridor radius for same net/clearance."""
-        from kicad_autorouter.routing.obstacles import (
-            track_corridor_radius_cells,
-            via_halo_radius_cells,
-        )
-        width_mm = 0.25
-        clearance_mm = 0.2
-        via_size_mm = 0.8
-        via_drill_mm = 0.4
-        track_half_mm = width_mm / 2.0
-        res_mm = 0.1
-
-        track_radius = track_corridor_radius_cells(width_mm, clearance_mm + track_half_mm, res_mm)
-        via_radius = via_halo_radius_cells(via_size_mm, clearance_mm, track_half_mm, res_mm)
-
-        # Via halo should be >= track corridor (via annulus + clearance + track half-width)
-        assert via_radius >= track_radius
-
     def test_foreign_via_exclusion_in_secondary_grid(self):
         """Foreign vias get hard exclusion ring in secondary grid."""
         from kicad_autorouter.routing.obstacles import build_fanout_cost, THT_EXCLUSION

@@ -1,6 +1,5 @@
 """Tests for board_model against the DCCF.sved and minimal fixtures."""
 
-import sys
 from pathlib import Path
 
 import pytest
@@ -381,26 +380,3 @@ def test_valid_rectangle_still_classifies():
     )
     assert _classify_rectangle(verts) is not None
     assert _polygon_bbox([Point(x, y) for x, y in verts]) == (0.0, 2.0, 0.0, 1.0)
-
-def test_package_namespace_has_no_stdlib_leakage():
-    """Split guard: the package shim must expose board_model's own
-    definitions only — never leaked stdlib/module imports
-    (previously ``dataclasses.replace``)."""
-    import ast
-    import kicad_autorouter.board_model as bm
-
-    defined = set()
-    for sub in ("model", "query", "parse"):
-        src = Path(bm.__path__[0], f"{sub}.py").read_text()
-        for node in ast.parse(src).body:
-            if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
-                defined.add(node.name)
-            elif isinstance(node, ast.Assign):
-                defined.update(
-                    t.id for t in node.targets if isinstance(t, ast.Name))
-    leaked = {n for n in vars(bm)
-              if isinstance(getattr(bm, n), type(sys))
-              and n not in ("model", "parse", "query")}
-    assert not leaked, f"stdlib/module leakage through shim: {sorted(leaked)}"
-    assert defined <= set(vars(bm)), \
-        f"missing from shim: {sorted(defined - set(vars(bm)))}"

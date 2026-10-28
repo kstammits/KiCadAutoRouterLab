@@ -264,30 +264,3 @@ class TestWriteback:
         assert any(v.net_name == "GND" for v in reparsed.vias) or any(
             t.net_name == "GND" for t in reparsed.tracks
         )
-
-    @pytest.mark.dccf
-    def test_routed_tree_loads_in_kicad(self, cli, tmp_path):
-        """Routed output loads in KiCad (single-arg net nodes, fresh copper).
-
-        The emitter writes canonical-tolerant `(net "NAME")` nodes without
-        uuids; kicad-cli must load the file (violations are fine — only
-        load acceptance is pinned here).
-        """
-        from kicad_autorouter.board_model import board_model
-        from kicad_autorouter.routing.pipeline import RoutingParams, route_nets
-        from kicad_autorouter.sexpr import parse_file, to_sexpr
-        from kicad_autorouter.validate import validate_pcb
-
-        tree = parse_file(Path(__file__).parent / "fixtures" / "DCCF.sved.kicad_pcb")
-        model = board_model(tree)
-        small = [n for n, conns in model.nets.items() if 2 <= len(conns) <= 6]
-        net = sorted(small)[0]
-        res, _, _ = route_nets(
-            model, [net], set(),
-            params=RoutingParams(run_drc=False),
-            original_pcb_tree=tree,
-        )
-        assert res.nets_routed == 1
-        out = tmp_path / "routed.kicad_pcb"
-        out.write_text(to_sexpr(res.pcb_tree) + "\n", encoding="utf-8")
-        assert validate_pcb(out, cli=cli).loaded

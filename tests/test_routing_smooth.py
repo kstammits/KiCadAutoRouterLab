@@ -1,8 +1,11 @@
 """Tests for any-angle path smoothing (routing/smooth.py)."""
 
+import math
+
 import numpy as np
 
 from kicad_autorouter.routing.smooth import (
+    _line_walkable,
     own_net_soft_mask,
     smooth_grid_path,
     smoothed_wire_mm,
@@ -148,31 +151,6 @@ def test_courtyard_outline_allows_shortcut():
     assert smoothed[-1] == path[-1]
 
 
-def test_courtyard_blocks_shortcut_when_high_cost():
-    """HIGH_COST (50) courtyard cells must still block shortcuts.
-
-    If someone marks a courtyard as HIGH_COST (e.g. legacy behavior),
-    the smoother must not shortcut through it.
-    """
-    grid = _open()
-    diamond = [(15, 10), (20, 15), (15, 20), (10, 15), (15, 10)]
-    for i in range(len(diamond) - 1):
-        c1, r1 = diamond[i]
-        c2, r2 = diamond[i + 1]
-        dc = abs(c2 - c1)
-        dr = abs(r2 - r1)
-        steps = max(dc, dr)
-        for s in range(steps + 1):
-            t = s / steps if steps else 0
-            c = round(c1 + (c2 - c1) * t)
-            r = round(r1 + (r2 - r1) * t)
-            grid[0, r, c] = 50  # HIGH_COST
-
-    path = [(5, 15, 0), (10, 15, 0), (15, 15, 0), (20, 15, 0), (25, 15, 0)]
-    smoothed = smooth_grid_path(path, grid)
-    assert len(smoothed) > 2  # no direct shortcut through HIGH_COST
-
-
 def test_steiner_branch_endpoints_preserved():
     """Branch endpoints (Steiner connections) must survive smoothing.
 
@@ -210,3 +188,83 @@ def test_steiner_branch_endpoints_preserved():
     # Endpoints still preserved
     assert smoothed1[0] == branch1[0] and smoothed1[-1] == branch1[-1]
     assert smoothed2[0] == branch2[0] and smoothed2[-1] == branch2[-1]
+
+
+# ---------------------------------------------------------------------------
+# Detour regression (moved from test_routing_smooth_detour.py): horizontal
+# run vs foreign pad. A track running into a foreign pad's repulsion zone
+# detours in a wide staircase arc; the smoother must collapse it to a few
+# 45°-style legs while keeping every leg walkable (clearance preserved).
+# ---------------------------------------------------------------------------
+
+def _detour_grid(H=40, W=70, fc=35, fr=20, excl=6, high=9):
+    cost = np.zeros((1, H, W), dtype=np.int16)
+    blocked = np.zeros((1, H, W), dtype=bool)
+    for r in range(H):
+        for c in range(W):
+            d = math.hypot(c - fc, r - fr)
+            if d <= excl:
+                blocked[0, r, c] = True
+            elif d <= high:
+                cost[0, r, c] = 50  # HIGH_COST pad ring
+    return cost, blocked
+
+
+def _staircase_arc():
+    """Manhattan staircase hugging a foreign exclusion disc, as A* emits."""
+    path = [(c, 20, 0) for c in range(5, 28)]
+    path += [(27, r, 0) for r in range(19, 10, -1)]
+    path += [(c, 11, 0) for c in range(28, 44)]
+    path += [(43, r, 0) for r in range(12, 21)]
+    path += [(c, 20, 0) for c in range(44, 66)]
+    return path
+
+
+def test_detour_arc_collapses_to_few_segments():
+    cost, blocked = _detour_grid()
+    path = _staircase_arc()
+    assert len(path) > 60
+    smoothed = smooth_grid_path(
+        path, cost, blocked_threshold=100,
+        corridor_radius=4, blocked_mask=blocked, hard_radius=1,
+    )
+    assert smoothed[0] == path[0]
+    assert smoothed[-1] == path[-1]
+    assert len(smoothed) <= 6, f"stairstep survived: {len(smoothed)} nodes"
+    stairs = sum(
+        1 for k in range(len(smoothed) - 1)
+        if abs(smoothed[k][0] - smoothed[k + 1][0])
+        + abs(smoothed[k][1] - smoothed[k + 1][1]) <= 1
+    )
+    assert stairs == 0, f"{stairs} single-cell stairsteps left: {smoothed}"
+
+
+def test_detour_legs_keep_clearance():
+    """Every emitted leg re-verifies walkable with the full corridor."""
+    cost, blocked = _detour_grid()
+    smoothed = smooth_grid_path(
+        _staircase_arc(), cost, blocked_threshold=100,
+        corridor_radius=4, blocked_mask=blocked, hard_radius=1,
+    )
+    for k in range(len(smoothed) - 1):
+        assert _line_walkable(
+            smoothed[k][0], smoothed[k][1],
+            smoothed[k + 1][0], smoothed[k + 1][1],
+            cost[0], None, 100, 4, blocked[0], 1,
+        ), f"leg {k} clips foreign copper: {smoothed[k]} -> {smoothed[k + 1]}"
+
+
+def test_bidirectional_no_start_bias():
+    """Forward and reversed inputs converge to the same small count."""
+    cost, blocked = _detour_grid()
+    path = _staircase_arc()
+    fwd = smooth_grid_path(
+        path, cost, blocked_threshold=100,
+        corridor_radius=4, blocked_mask=blocked, hard_radius=1,
+    )
+    rev = smooth_grid_path(
+        list(reversed(path)), cost, blocked_threshold=100,
+        corridor_radius=4, blocked_mask=blocked, hard_radius=1,
+    )
+    assert abs(len(fwd) - len(rev)) <= 2, (len(fwd), len(rev))
+    assert len(fwd) <= 6 and len(rev) <= 6

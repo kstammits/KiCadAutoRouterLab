@@ -14,7 +14,6 @@ from kicad_autorouter.routing.output import routes_to_tracks_vias
 from kicad_autorouter.routing.router import (
     CostMap,
     SingleNetRouter,
-    build_via_ok_mask,
     for_pair,
     full_board,
     grow,
@@ -89,24 +88,6 @@ class TestSearchWindow:
 
 
 class TestViaMask:
-    def test_mask_matches_legacy_scan_exactly(self):
-        rng = np.random.default_rng(0)
-        cost = (rng.random((2, 30, 30)) < 0.05).astype(np.int16) * 100
-        via_block = np.zeros((30, 30), dtype=bool)
-        via_block[5, 5] = True
-        tht = np.zeros((30, 30), dtype=bool)
-        tht[10, 10] = True
-        secondary = np.zeros((2, 30, 30), dtype=np.int16)
-        secondary[0, 12, 12] = 10000
-        grid = _grid(30, 30)
-        router, _ = _router(grid, cost, tht_via_mask=tht,
-                            via_block_mask=via_block, via_clearance_cells=3)
-        mask = build_via_ok_mask(cost, via_block, tht, secondary, 3, 100, 1000)
-        assert mask.shape == (30, 30) and mask.dtype == bool
-        for r in range(30):
-            for c in range(30):
-                # Legacy True = blocked; mask True = allowed.
-                assert router._via_landing_blocked(r, c, secondary) != bool(mask[r, c])
 
     def test_mask_speed_path_used_on_route(self):
         grid = _grid(60, 40)

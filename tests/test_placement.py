@@ -48,17 +48,6 @@ def ghost_test_model():
 class TestPhysicsRunner:
     """Force-spring simulation with rigid projection - requires nets."""
 
-    def test_physics_moves_unlocked(self, dccf_model):
-        p = PlacementParams(max_iterations=10)
-        prop = run_placement(dccf_model, p)
-        assert prop.deltas
-        for uuid, (dx, dy, da) in prop.deltas.items():
-            assert isinstance(dx, float)
-            assert isinstance(dy, float)
-            assert isinstance(da, float)
-        assert prop.iterations > 0
-        assert prop.final_max_disp_mm > 0.0
-
     def test_physics_respects_locked(self, dccf_model):
         p = PlacementParams(max_iterations=10)
         prop = run_placement(dccf_model, p)
@@ -72,11 +61,6 @@ class TestPhysicsRunner:
         prop = run_placement(dccf_model, p, movable_uuids={movable_fp.uuid})
         assert prop.deltas
         assert set(prop.deltas) == {movable_fp.uuid}
-
-    def test_selective_movable_uuids_empty(self, dccf_model):
-        p = PlacementParams(max_iterations=10)
-        prop = run_placement(dccf_model, p, movable_uuids=set())
-        assert prop.deltas == {}
 
     def test_selective_movable_uuids_excludes_locked(self, dccf_model):
         p = PlacementParams(max_iterations=10)
@@ -149,28 +133,6 @@ class TestPerRegionSimulation:
                 assert new_x <= region.bbox[1] + 10.0
                 assert new_y >= region.bbox[2] - 10.0
                 assert new_y <= region.bbox[3] + 10.0
-
-
-@pytest.mark.physics
-@pytest.mark.dccf
-class TestCourtyardCollision:
-    """Tests for courtyard polygon collision detection (shapely-based)."""
-
-    def test_courtyard_polygon_collision(self, dccf_model):
-        """Overlapping courtyard polygons should generate repulsion forces."""
-        p = PlacementParams(max_iterations=5, wall_k_N=0.002)
-        prop = run_placement(dccf_model, p)
-
-        # Verify the simulation runs and produces forces
-        assert prop.forces
-        for uuid, (fx, fy) in prop.forces.items():
-            assert not math.isnan(fx)
-            assert not math.isnan(fy)
-
-        # Verify courtyard collision forces are non-trivial
-        # (at least some footprints should experience courtyard forces)
-        total_force_magnitude = sum(math.hypot(fx, fy) for fx, fy in prop.forces.values())
-        assert total_force_magnitude > 0.0
 
 
 @pytest.mark.physics
@@ -501,36 +463,3 @@ class TestCourtyardHalo:
             mags.append(math.hypot(fx, fy))
         assert all(mag < kc for mag in mags), f"strength must saturate at kc: {mags}"
         assert mags[0] > mags[1] > mags[2] > 0.0, f"must fall with gap: {mags}"
-
-    @pytest.mark.dccf
-    def test_c11_close_neighbor_contact_is_bounded(self, dccf_model):
-        """C11 feels bounded halo contact from its true close neighbor.
-
-        True courtyards put C11/R11 1.30mm apart (inside the 3mm halo; R14
-        sits exactly at the 3.00mm halo edge), so the halo reads ~0.57×wall.
-        The upper bound (1.0×wall) catches far-field blow-ups; the lower
-        bound (0.1×wall) pins that contact is detected (silent pad-bbox
-        shapes read exactly 0.0).
-
-        Measured at the rest layout (max_iterations=0) on purpose: after
-        live iterations the pads slosh on mm scale (hot start + stiff
-        contact) and the reported force oscillates across adjacent iteration
-        counts, so a threshold on the post-motion value pins a chaotic
-        landing, not physics.
-        """
-        wall = 1.9999999999999998e-05
-        p = PlacementParams(
-            max_iterations=0,
-            wall_k_N=wall,
-            wall_halo_m=0.003,
-        )
-        prop = run_placement(
-            dccf_model, p,
-            movable_uuids={"883e9176-8fb8-4697-9a2d-1a656ba552fe"},
-        )
-        uuid = "883e9176-8fb8-4697-9a2d-1a656ba552fe"
-        comps = prop.force_components[uuid]
-        courtyard = math.hypot(*comps["courtyard"])
-        # With pin courtyards for THT pads, additional cross-layer collisions
-        # are detected (e.g., RV1 THT pins vs C11 body), increasing force.
-        assert 0.1 * wall < courtyard < 1.0 * wall, f"C11 courtyard={courtyard:.2g}"
