@@ -31,7 +31,9 @@ function renderLayerToggles(copperLayers) {
   if (!layerTogglesEl) return;
   const prev = layerToggleState();
   const current = layerToggleInputs().map(i => i.dataset.layer);
-  if (current.length === layers.length && current.every((l, i) => l === layers[i]) && el("layer-solo-all")) return;
+  // Optional element (created below on first render): direct lookup so the
+  // shared el() helper does not log a "missing" warning on a fresh board.
+  if (current.length === layers.length && current.every((l, i) => l === layers[i]) && document.getElementById("layer-solo-all")) return;
   layerTogglesEl.innerHTML = "";
   for (const layer of layers) {
     const label = document.createElement("label");
@@ -81,7 +83,9 @@ function toggleSoloLayer(layer) {
 // Copper legend mirroring svg_render.py: F red solid, B green "3 2", inners
 // cycle teal/violet/amber/blue with dashes "5 2 / 2 2 / 7 2 2 2 / 4 1".
 function renderLayerLegend(layers) {
-  let legend = el("layer-legend");
+  // Optional element (created here on first render): direct lookup to avoid
+  // a "missing" warning from the shared el() helper on a fresh board.
+  let legend = document.getElementById("layer-legend");
   if (!legend) {
     legend = document.createElement("span");
     legend.id = "layer-legend";
@@ -110,6 +114,7 @@ const fitBtn = el("fit-btn");
 
 let lastVersion = 0;
 let viewBox = null; // [minX, minY, width, height]
+let initialViewBox = null; // native board viewBox from the last injected SVG
 let isPanning = false;
 let panStart = null;
 
@@ -128,7 +133,8 @@ function boardSrc(version) {
 function updateZoomInfo() {
   if (!viewBox) { zoomInfo.textContent = "100%"; return; }
   // viewBox width relative to initial width (100% = initial fit)
-  const pct = Math.round((1 / viewBox[2]) * viewport.clientWidth * 100);
+  const ref = initialViewBox?.[2] ?? viewBox[2];
+  const pct = Math.round((ref / viewBox[2]) * 100);
   zoomInfo.textContent = `${pct}%`;
 }
 
@@ -144,15 +150,13 @@ function applyViewBox() {
 
 function fitToView() {
   const svg = viewport?.querySelector("svg");
-  if (!svg) return;
-  // Read the original viewBox from the SVG
-  const vbAttr = svg.getAttribute("viewBox");
-  if (!vbAttr) return;
-  const vb = vbAttr.split(" ").map(Number);
-  if (vb.length === 4) {
-    viewBox = [...vb];
-    applyViewBox();
-  }
+  if (!svg || !initialViewBox) return;
+  // Restore the native board viewBox captured at inject time. Reading it
+  // back from the SVG attribute does not work: applyViewBox() overwrites
+  // that attribute on every zoom/pan, so it holds the zoomed box, not the
+  // original — Fit would re-apply the current view and appear dead.
+  viewBox = [...initialViewBox];
+  applyViewBox();
 }
 
 // Zoom the viewer to the current footprint selection (union bbox, padded
@@ -433,12 +437,16 @@ async function fetchAndInjectSVG(version) {
   if (svg && motion.frames.length) {
     svg.querySelectorAll('g[class^="forces-"]').forEach(el => el.remove());
   }
-  if (svg && viewBox === null) {
+  if (svg) {
+    // Every injected SVG carries the native board viewBox: capture it before
+    // applyViewBox() overwrites the attribute with the (possibly zoomed)
+    // live viewBox. This is what Fit restores.
     const vbAttr = svg.getAttribute("viewBox");
     if (vbAttr) {
       const vb = vbAttr.split(" ").map(Number);
-      if (vb.length === 4) {
-        viewBox = [...vb];
+      if (vb.length === 4 && vb.every(Number.isFinite)) {
+        initialViewBox = [...vb];
+        if (viewBox === null) viewBox = [...vb];
       }
     }
   }

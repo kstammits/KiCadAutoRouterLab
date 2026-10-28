@@ -24,6 +24,7 @@ from kicad_autorouter.mass import courtyard_bbox_area_m2
 from kicad_autorouter.placement import PlacementParams, run_placement
 from kicad_autorouter.placement.contact import (
     _footprint_courtyard_polygon,
+    _pad_copper_hull,
     courtyard_is_degenerate,
 )
 from kicad_autorouter.placement.model import (
@@ -104,10 +105,35 @@ def test_dots_outline_is_degenerate():
     fp = _dots_chip()
     assert courtyard_is_degenerate(fp)
     poly = _footprint_courtyard_polygon(fp)
-    # Convex hull of the two 1x1 copper squares (x=±1) + 0.1 margin band:
-    # 3.2 x 1.2 rect minus rounded corners, bounds grown by the margin.
-    assert tuple(round(v, 9) for v in poly.bounds) == (-1.6, -0.6, 1.6, 0.6)
-    assert poly.area == pytest.approx(3.2 * 1.2 - 0.04 * (4 - math.pi), rel=0.02)
+    # Convex hull of the two 1x1 copper squares (x=±1) + margin band
+    # (0.1 margin + 0.05 simplify budget): 3.3 x 1.3 rect minus rounded
+    # corners, bounds grown by the band.
+    assert tuple(round(v, 9) for v in poly.bounds) == (-1.65, -0.65, 1.65, 0.65)
+    assert poly.area == pytest.approx(3.3 * 1.3 - 0.0225 * (4 - math.pi), rel=0.02)
+
+
+def test_two_round_pin_hull_stays_compact():
+    """JP3-analog: two round THT pins with no courtyard.
+
+    The margined convex-hull stadium must stay a coarse ring instead of
+    ~130 tessellated arc segments, while still covering copper + 0.1mm.
+    """
+    pads = tuple(
+        Pad(number=n, net_name=net, position=Point(x, 0.0),
+            size_mm=(1.8796, 1.8796), shape="circle", angle_deg=0.0,
+            pad_type="thru_hole", drill_mm=1.016, layers=("*.Cu", "*.Mask"))
+        for n, net, x in (("1", "N1", 0.0), ("2", "N2", 2.54))
+    )
+    fp = Footprint(
+        ref="JP3", footprint_id="test:1X02", layer="B.Cu",
+        x_mm=0.0, y_mm=0.0, angle_deg=0.0, pads=pads,
+        courtyard=(), locked=False, uuid="uuid-jp3",
+        ghost=False, ghost_attractions=(),
+    )
+    body = _footprint_courtyard_polygon(fp)
+    assert body.is_valid and not body.is_empty
+    assert len(list(body.exterior.coords)) <= 32
+    assert body.covers(_pad_copper_hull(fp).buffer(0.1, resolution=4))
 
 
 def test_honest_outline_passes_gate():

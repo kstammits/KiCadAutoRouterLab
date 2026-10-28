@@ -705,6 +705,15 @@ def _pad_copper_hull(fp: Footprint) -> Polygon:
         return Polygon()
 
 
+# Arc-vertex budget for the pad-copper hull body: round-pin stadiums
+# (e.g. a two-pin header) tessellate each semicircular end into dozens of
+# segments at buffer resolution 8. Buffering slightly wide
+# (margin + tol) and simplifying back by tol halves the vertex count while
+# the result provably still covers copper + margin.
+_HULL_BUFFER_RESOLUTION = 4
+_HULL_SIMPLIFY_TOL_MM = 0.05
+
+
 def _pad_body_polygon(
     fp: Footprint,
     pad_positions: Optional[np.ndarray] = None,
@@ -715,9 +724,12 @@ def _pad_body_polygon(
 
     The hull follows pad shapes and rotations (via
     :func:`pad_copper_polygon`), so diagonal parts get a rotated body
-    instead of an axis-aligned box. In posed mode the file-pose hull ring
-    is re-fit through the pad centers like a courtyard outline; a lone pad
-    (no rigid rotation observable) translates without spinning.
+    instead of an axis-aligned box. The margined ring is simplified with
+    a tolerance funded by a matching extra buffer band, so the final body
+    still covers copper + ``margin_mm`` with roughly half the arc
+    vertices. In posed mode the file-pose hull ring is re-fit through the
+    pad centers like a courtyard outline; a lone pad (no rigid rotation
+    observable) translates without spinning.
     """
     if not fp.pads:
         return Polygon([
@@ -726,7 +738,24 @@ def _pad_body_polygon(
             (fp.x_mm + 0.5, fp.y_mm + 0.5),
             (fp.x_mm - 0.5, fp.y_mm + 0.5),
         ])
-    body = _pad_copper_hull(fp).buffer(margin_mm, resolution=8)
+    copper_hull = _pad_copper_hull(fp)
+    body = copper_hull.buffer(
+        margin_mm + _HULL_SIMPLIFY_TOL_MM, resolution=_HULL_BUFFER_RESOLUTION
+    )
+    if isinstance(body, Polygon) and not body.is_empty:
+        try:
+            simple = body.simplify(_HULL_SIMPLIFY_TOL_MM, preserve_topology=True)
+            need = copper_hull.buffer(margin_mm, resolution=_HULL_BUFFER_RESOLUTION)
+            if (
+                isinstance(simple, Polygon)
+                and simple.is_valid
+                and not simple.is_empty
+                and simple.area > 0
+                and simple.covers(need)
+            ):
+                body = simple
+        except Exception:
+            pass
     if not isinstance(body, Polygon) or body.is_empty:
         # Degenerate copper (coincident points): AABB of the union.
         copper = unary_union([pad_copper_polygon(p) for p in fp.pads])

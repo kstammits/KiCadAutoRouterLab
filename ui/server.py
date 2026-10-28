@@ -462,12 +462,31 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/placement/frames":
             proposal = STATE.current_proposal
             if proposal is None:
-                self._send(404, b"no proposal", "text/plain")
+                # Poll-friendly empty payload (not a 404): the client polls
+                # this on every status tick, and a missing proposal simply
+                # means no motion is loaded yet.
+                body = json.dumps({
+                    "ok": True,
+                    "iterations": 0,
+                    "frame_stride": 1,
+                    "frame_count": 0,
+                    "frames": [],
+                    "force_frames": [],
+                }).encode()
+                self._send(200, body, "application/json")
                 return
             frames = getattr(proposal, "frames", None) or []
             force_frames = getattr(proposal, "force_frames", None) or []
             if not frames:
-                self._send(404, b"no frames (re-run with record_frames)", "text/plain")
+                body = json.dumps({
+                    "ok": True,
+                    "iterations": proposal.iterations,
+                    "frame_stride": getattr(proposal, "frame_stride", 1),
+                    "frame_count": 0,
+                    "frames": [],
+                    "force_frames": force_frames,
+                }).encode()
+                self._send(200, body, "application/json")
                 return
             body = json.dumps({
                 "ok": True,

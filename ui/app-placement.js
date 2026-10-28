@@ -71,6 +71,7 @@ async function poll() {
     lastVersion = 0;
     (viewport?.querySelectorAll("svg") ?? []).forEach(elm => elm.remove());
     viewBox = null;
+    initialViewBox = null;
   }
 }
 
@@ -1434,7 +1435,11 @@ async function loadMotionFrames(silent) {
       return;
     }
     const data = await res.json();
-    if (!data.frames || !data.frames.length) { resetMotionState(); return; }
+    if (!data.frames || !data.frames.length) {
+      if (!silent) diagEl.textContent = "no motion frames — Step to record a trajectory";
+      resetMotionState();
+      return;
+    }
     // Rotation pivots: committed footprint centers.
     // Force anchors: courtyard centroid in ABSOLUTE board coords (same space
     // as footprint children, so the group translate+rotate carries vectors).
