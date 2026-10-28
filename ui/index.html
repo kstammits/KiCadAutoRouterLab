@@ -133,42 +133,52 @@
   <main class="main-content">
     <div class="top-bar">
       <input type="file" id="load-input" accept=".kicad_pcb,.kicad_sch" multiple hidden>
-      <button id="load-btn">Load PCB…</button>
-      <span id="board-name" style="flex:1; text-align:center;">no board loaded</span>
-      <span id="conn-badge" class="chip" hidden style="color:#f87171; border-color:#f87171;">● disconnected — server unreachable</span>
-      <span id="board-sch" class="chip" hidden>pcb only</span>
-      <span id="mode-switch" title="Board mode: routing defaults + 2-layer export collapse">
-        <button id="mode-2l" class="tab-btn" title="Two-layer mode (outer copper only; export collapses, prior behavior)">2-layer</button><button id="mode-4l" class="tab-btn" title="Four-layer mode (outer routing + inner planes via stubs; inners preserved)">4-layer</button>
+      <span class="top-group top-group-file">
+        <button id="load-btn">Load PCB…</button>
+        <span id="board-name">no board loaded</span>
+        <span id="conn-badge" class="chip" hidden style="color:#f87171; border-color:#f87171;">● disconnected — server unreachable</span>
+        <span id="board-sch" class="chip" hidden>pcb only</span>
       </span>
-      <span id="mode-warn" class="chip" hidden style="color:#fbbf24; border-color:#fbbf24;">⚠ mode</span>
-      <span id="app-version" class="chip" style="margin-left:0.5rem; font-size:0.6rem;">v?</span>
-      <label class="chk"><input type="checkbox" id="overlay-toggle" checked> Show proposal</label>
-      <label class="chk"><input type="checkbox" id="forces-toggle" checked> forces</label>
-      <label class="chk" id="cost-grid-label" hidden><input type="checkbox" id="cost-grid-toggle"> Cost grid</label>
-      <select id="cost-grid-net" hidden title="Per-net fanout halo overlay (soft/hard rings + terminal seals)">
-        <option value="">occupancy only</option>
-      </select>
-      <span id="forces-legend" class="chip" style="font-size:0.6rem; display:inline-flex; gap:0.5rem; align-items:center;">
-        <span><i style="display:inline-block; width:1.2rem; border-top:2px solid #22d3ee;"></i> repulsion</span>
-        <span><i style="display:inline-block; width:1.2rem; border-top:2px solid #a3e635;"></i> attraction</span>
-        <span><i style="display:inline-block; width:1.2rem; border-top:2px solid #f472b6;"></i> courtyard+wall</span>
-        <span><i style="display:inline-block; width:1.2rem; border-top:2px dotted #c4b5fd;"></i> ghost</span>
-        <span><i style="display:inline-block; width:1.2rem; border-top:2px solid #eab308;"></i> tangential</span>
+      <span class="top-group">
+        <span id="mode-switch" title="Board mode: routing defaults + 2-layer export collapse">
+          <button id="mode-2l" class="tab-btn" title="Two-layer mode (outer copper only; export collapses, prior behavior)">2-layer</button><button id="mode-4l" class="tab-btn" title="Four-layer mode (outer routing + inner planes via stubs; inners preserved)">4-layer</button>
+        </span>
+        <span id="mode-warn" class="chip" hidden style="color:#fbbf24; border-color:#fbbf24;">⚠ mode</span>
+        <span id="app-version" class="chip" style="font-size:0.6rem;">v?</span>
       </span>
-      <label class="chk"><input type="checkbox" id="drc-toggle"> DRC</label>
-      <button id="drc-run-btn" title="Run kicad-cli DRC on the current board">Run DRC</button>
-      <span class="zoom-info" id="drc-info"></span>
-      <span id="layer-toggles" title="Copper layer visibility (from the board stackup)">
+      <span class="top-group">
+        <label class="chk"><input type="checkbox" id="overlay-toggle" checked> Show proposal</label>
+        <label class="chk"><input type="checkbox" id="forces-toggle" checked> forces</label>
+        <label class="chk" id="cost-grid-label" hidden><input type="checkbox" id="cost-grid-toggle"> Cost grid</label>
+        <select id="cost-grid-net" hidden title="Per-net fanout halo overlay (soft/hard rings + terminal seals)">
+          <option value="">occupancy only</option>
+        </select>
+        <span id="forces-legend" class="chip" style="font-size:0.6rem; display:inline-flex; gap:0.5rem; align-items:center;">
+          <span><i style="display:inline-block; width:1.2rem; border-top:2px solid #22d3ee;"></i> repulsion</span>
+          <span><i style="display:inline-block; width:1.2rem; border-top:2px solid #a3e635;"></i> attraction</span>
+          <span><i style="display:inline-block; width:1.2rem; border-top:2px solid #f472b6;"></i> courtyard+wall</span>
+          <span><i style="display:inline-block; width:1.2rem; border-top:2px dotted #c4b5fd;"></i> ghost</span>
+          <span><i style="display:inline-block; width:1.2rem; border-top:2px solid #eab308;"></i> tangential</span>
+        </span>
+        <label class="chk" title="Show poured-zone outlines and fills"><input type="checkbox" id="zones-toggle" checked> Zones</label>
+        <label class="chk" title="Show KiCad's cached zone fills (stale after edits; use --refill-zones to refresh)"><input type="checkbox" id="zones-fill-toggle"> Zone fills (cached)</label>
+      </span>
+      <span class="top-group">
+        <label class="chk"><input type="checkbox" id="drc-toggle"> DRC</label>
+        <button id="drc-run-btn" title="Run kicad-cli DRC on the current board">Run DRC</button>
+        <span class="zoom-info" id="drc-info"></span>
+      </span>
+      <span class="top-group" id="layer-toggles" title="Copper layer visibility (from the board stackup)">
         <label class="chk"><input type="checkbox" data-layer="F.Cu" checked> F.Cu</label>
         <label class="chk"><input type="checkbox" data-layer="B.Cu" checked> B.Cu</label>
       </span>
-      <label class="chk" title="Show poured-zone outlines and fills"><input type="checkbox" id="zones-toggle" checked> Zones</label>
-      <label class="chk" title="Show KiCad's cached zone fills (stale after edits; use --refill-zones to refresh)"><input type="checkbox" id="zones-fill-toggle"> Zone fills (cached)</label>
-      <span class="zoom-info" id="zoom-info">100%</span>
-      <button id="fit-btn" title="Fit board to view">Fit</button>
-      <button id="download-btn" title="Download modified PCB" hidden>Download</button>
-      <button id="undo-btn" title="Undo last accept" disabled>Undo</button>
-      <button id="reset-btn" title="Reset to original board" hidden>Reset</button>
+      <span class="top-group">
+        <span class="zoom-info" id="zoom-info">100%</span>
+        <button id="fit-btn" title="Fit board to view">Fit</button>
+        <button id="download-btn" title="Download modified PCB" hidden>Download</button>
+        <button id="undo-btn" title="Undo last accept" disabled>Undo</button>
+        <button id="reset-btn" title="Reset to original board" hidden>Reset</button>
+      </span>
     </div>
 
     <!-- Board viewport - takes remaining space -->
