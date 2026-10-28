@@ -138,6 +138,13 @@ Counts are additive (`fanout_vias_added` / `fanout_tracks_added`).
   size. Carve along existing seams (region simulation vs merge, job
   handlers vs state, parse vs query helpers) with behavior-neutral moves,
   suite green per split.
+- **`ui/app.js` stays monolithic** (deliberate, 2026-10-28): no JS test
+  harness exists, so a split buys navigation only, at the cost of blame
+  churn + load-order failure modes. Revisit only when (a) a second regular
+  contributor lands, (b) one domain passes ~1500 lines, or (c) a
+  cross-domain regression is caused by file organization. Domain map +
+  ownership contract live in the file header; `./scripts/check_js.sh`
+  (`node --check`) is the CI floor.
 - **Aesthetic row-alignment regime**: third placement pass that refines
   eligible parts into straight rows (axis snap on position + coarse angle
   quantization for opted-in refs), scored so legality still dominates —

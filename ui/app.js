@@ -1,3 +1,24 @@
+// app.js domain map (single-file UI, deliberately unsplit — see triggers).
+// Domains live in commented blocks; each owns the globals listed, everyone
+// else only reads them:
+//   core       el/on, apiFetch/apiJson/postJSON/jobUrl, toast, viewport,
+//              resizers (this file, top)
+//   viewer     viewBox, applyViewBox/fitToView/frameBox, svgEl, layer toggles,
+//              all SVG overlays (cost grid, DRC, forces, islands)
+//   placement  allFootprints, selectedUuids/pinnedUuids, lastVersion,
+//              footprint table, ghosts, motion player, run/accept/undo
+//   nets       selectedNets, lastNetsByName, nets table, power/protect toggles
+//   routing    ROUTE_* caps, jobs, routeDiag/routeEst, routing params panel
+//   diagnostics  GND islands, impedance, bridges (read selection + viewer only)
+//   docs       rendered-docs viewer (standalone)
+// Load order is declaration order in index.html <script> tags (single tag
+// today). Cross-domain calls are fine (zoomToNets -> frameBox); new globals
+// must be added to the owning domain's list here.
+// Do NOT split this file until a trigger fires: (a) a second regular
+// contributor and routine app.js merge conflicts, (b) one domain >1500
+// lines, or (c) a cross-domain regression caused by file organization.
+// Rationale: no JS test harness exists, so a split buys navigation only,
+// at the cost of blame churn + load-order failure modes.
 // Fail-safe DOM helpers: a missing/renamed id warns instead of throwing at
 // load and killing the whole script (script runs after the DOM, end of body).
 function el(id) {

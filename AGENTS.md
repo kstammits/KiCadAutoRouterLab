@@ -39,6 +39,8 @@ browser workflow UI. Works on real boards, DRC-validated.
 - Docs: `./scripts/regen_docs.sh` (figures + `ui/manual.html` + rendered
   primer); add `--pdf` for the PDF. `.venv/bin/python scripts/gen_manual.py`
   alone rebuilds just the manual.
+- JS syntax: `./scripts/check_js.sh` (`node --check ui/app.js`; warns and
+  passes when node is absent).
 - Markers: `unit params physics cli server regression minimal dccf`
   (see `[tool.pytest.ini_options]`). Always use `.venv/bin/python` —
   system `python` lacks project deps (`scipy`, `shapely`, …) and fails at
