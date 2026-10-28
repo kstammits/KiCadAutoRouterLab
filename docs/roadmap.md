@@ -134,10 +134,13 @@ Counts are additive (`fanout_vias_added` / `fanout_tracks_added`).
 ## Future work
 
 - **Split large modules**: `routing/pipeline.py`, `placement/runner.py`,
-  `ui/server.py`, and `board_model.py` have grown past comfortable review
-  size. Carve along existing seams (region simulation vs merge, job
-  handlers vs state, parse vs query helpers) with behavior-neutral moves,
-  suite green per split.
+  and `ui/server.py` have grown past comfortable review size. Carve along
+  existing seams (region simulation vs merge, job handlers vs state) with
+  behavior-neutral moves, suite green per split. Landed:
+  `routing/params.py` (config + validation + width/clearance),
+  `ui/debug_grids.py` (cost/secondary payloads + unit tests),
+  `board_model/` package (`model`/`query`/`parse` + re-export shim) —
+  all via leaf-first moves with import-surface checks.
 - **`ui/app.js` stays monolithic** (deliberate, 2026-10-28): no JS test
   harness exists, so a split buys navigation only, at the cost of blame
   churn + load-order failure modes. Revisit only when (a) a second regular
