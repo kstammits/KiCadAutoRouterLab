@@ -1,21 +1,9 @@
-// app.js — entry point: shared element cache, panel tabs, shortcuts, boot.
+// app.js — entry point: panel tabs, section prefs, shortcuts, boot.
+// (Shared element handles live in app-core.js so panels never hit them cold.)
 // Panel domains live in app-*.js (load order in index.html); this file runs
 // last among app scripts and kicks off loading (loadAppVersion, loadParams,
 // poll). Cross-file calls are fine; keep top-level names unique across files
 // (byte-scan before each extraction).
-
-const diagEl = el("diag");
-// Hot-button/diag lookups cached once (script runs after the DOM, as above).
-const undoBtn = el("undo-btn");
-const stepSelectedBtn = el("step-selected-btn");
-const acceptBtn = el("accept-btn");
-const routeDiag = el("route-diag");
-const ghostDiag = el("ghost-diag");
-const docsSelect = el("docs-select");
-const bridgesDiag = el("bridges-diag");
-const inletsDiag = el("inlets-diag");
-
-
 
 // Collapsed route sections persist across reloads like other display-only
 // prefs (layer visibility, overlay toggles). State keys are UI-only.

@@ -17,6 +17,20 @@ function on(id, evt, fn, opts) {
   return n;
 }
 
+// Shared element handles: cached once, read by every panel. They live
+// here (first script) so no panel file can hit them uninitialized.
+
+const diagEl = el("diag");
+// Hot-button/diag lookups cached once (script runs after the DOM, as above).
+const undoBtn = el("undo-btn");
+const stepSelectedBtn = el("step-selected-btn");
+const acceptBtn = el("accept-btn");
+const routeDiag = el("route-diag");
+const ghostDiag = el("ghost-diag");
+const docsSelect = el("docs-select");
+const bridgesDiag = el("bridges-diag");
+const inletsDiag = el("inlets-diag");
+
 // Side panel collapse/expand
 const sidePanel = el("side-panel");
 const sidePanelToggle = el("side-panel-toggle");
@@ -153,6 +167,13 @@ async function postJSON(path, body) {
 
 function jobUrl(id, suffix = "") {
   return `/api/routing/jobs/${encodeURIComponent(id)}${suffix}`;
+}
+
+async function getInlets() {
+  return apiJson("/api/nets/inlets");
+}
+async function setInlets(body) {
+  return postJSON("/api/nets/inlets", body);
 }
 
 // ---- SVG overlay + diagnostics-toggle scaffolds ----

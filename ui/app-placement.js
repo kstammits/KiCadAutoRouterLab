@@ -21,12 +21,6 @@ function setRouteBusy(on) {
 
 // Inlet/bridge state lives in one endpoint; read-modify-write callers
 // share these so the URL and parse appear once.
-async function getInlets() {
-  return apiJson("/api/nets/inlets");
-}
-async function setInlets(body) {
-  return postJSON("/api/nets/inlets", body);
-}
 
 async function poll() {
   let st;
