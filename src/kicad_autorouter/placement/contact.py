@@ -11,7 +11,6 @@ never centroid-to-centroid.
 from __future__ import annotations
 
 import math
-import warnings
 from typing import Optional, Tuple
 
 import numpy as np
@@ -136,9 +135,11 @@ def _classify_approx_rectangle(poly: Polygon) -> Optional[dict]:
     rectangle area.
     """
     try:
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", category=RuntimeWarning)
-            min_rect = poly.minimum_rotated_rectangle
+        if poly.is_empty or poly.area <= 0:
+            return None
+        if len(list(poly.exterior.coords)) < 4:
+            return None
+        min_rect = poly.minimum_rotated_rectangle
         if min_rect.is_empty or min_rect.area <= 0:
             return None
         area_ratio = poly.area / min_rect.area
@@ -740,12 +741,12 @@ def _pad_body_polygon(
         ])
     copper_hull = _pad_copper_hull(fp)
     body = copper_hull.buffer(
-        margin_mm + _HULL_SIMPLIFY_TOL_MM, resolution=_HULL_BUFFER_RESOLUTION
+        margin_mm + _HULL_SIMPLIFY_TOL_MM, quad_segs=_HULL_BUFFER_RESOLUTION
     )
     if isinstance(body, Polygon) and not body.is_empty:
         try:
             simple = body.simplify(_HULL_SIMPLIFY_TOL_MM, preserve_topology=True)
-            need = copper_hull.buffer(margin_mm, resolution=_HULL_BUFFER_RESOLUTION)
+            need = copper_hull.buffer(margin_mm, quad_segs=_HULL_BUFFER_RESOLUTION)
             if (
                 isinstance(simple, Polygon)
                 and simple.is_valid

@@ -133,7 +133,7 @@ def test_two_round_pin_hull_stays_compact():
     body = _footprint_courtyard_polygon(fp)
     assert body.is_valid and not body.is_empty
     assert len(list(body.exterior.coords)) <= 32
-    assert body.covers(_pad_copper_hull(fp).buffer(0.1, resolution=4))
+    assert body.covers(_pad_copper_hull(fp).buffer(0.1, quad_segs=4))
 
 
 def test_honest_outline_passes_gate():
