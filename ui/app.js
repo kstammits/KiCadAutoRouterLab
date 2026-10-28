@@ -22,14 +22,17 @@ for (const id of ["impedance-details", "bridges-details"]) {
 
 const routingPanel = el("routing-panel");
 const placementPanel = el("placement-panel");
+const tidyPanel = el("tidy-panel");
 const docsPanel = el("docs-panel");
 
 function setActivePanel(which) {
   placementPanel.hidden = which !== "place";
   routingPanel.hidden = which !== "route";
+  tidyPanel.hidden = which !== "tidy";
   docsPanel.hidden = which !== "docs";
   el("place-tab-btn")?.classList.toggle("active", which === "place");
   el("route-tab-btn")?.classList.toggle("active", which === "route");
+  el("tidy-tab-btn")?.classList.toggle("active", which === "tidy");
   el("docs-tab-btn")?.classList.toggle("active", which === "docs");
 }
 
@@ -42,6 +45,11 @@ on("route-tab-btn", "click", () => {
   setActivePanel("route");
   fetchNets();
   loadRoutingParams();
+});
+
+on("tidy-tab-btn", "click", () => {
+  setActivePanel("tidy");
+  loadTidyParams();
 });
 
 on("docs-tab-btn", "click", () => {

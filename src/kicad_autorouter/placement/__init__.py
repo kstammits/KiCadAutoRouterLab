@@ -33,6 +33,7 @@ from .params import (
 )
 from .rigid import _clamp_rigid_step, _rigid_pose_vertices
 from .legality import LegalityReport, check_legality
+from .refine import refine_placement
 
 __all__ = [
     "PlacementParams",
@@ -40,6 +41,7 @@ __all__ = [
     "run_placement",
     "LegalityReport",
     "check_legality",
+    "refine_placement",
     # Backward-compat re-exports (import from submodules in new code):
     "FRAME_ANGLE_DECIMALS",
     "FRAME_XY_DECIMALS",

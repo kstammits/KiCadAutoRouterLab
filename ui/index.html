@@ -208,6 +208,7 @@
       <div class="panel-tabs">
         <button id="place-tab-btn" class="tab-btn active" title="Placement panel">Place</button>
         <button id="route-tab-btn" class="tab-btn" title="Routing panel">Route</button>
+        <button id="tidy-tab-btn" class="tab-btn" title="Tidy panel">Tidy</button>
         <button id="docs-tab-btn" class="tab-btn" title="Docs panel">Docs</button>
         <button id="side-panel-toggle" class="panel-toggle" title="Collapse panel">◀</button>
       </div>
@@ -331,6 +332,17 @@
           </div>
         </div>
 
+        <!-- Tidy panel -->
+        <div id="tidy-panel" hidden>
+          <div class="bar">
+            <span class="num">Tidy</span>
+            <button id="tidy-run-btn" class="primary" title="Geometric neat pass: align angles to neighbors + equalize gaps (legality-gated, merges into the Place proposal)">Run Tidy</button>
+            <span id="tidy-diag"></span>
+            <span class="zoom-info" title="Tidy merges into the current Place proposal; review and Accept there">merges into Place proposal → Accept there</span>
+          </div>
+          <div class="params" id="tidy-params-grid"></div>
+        </div>
+
         <!-- Docs panel -->
         <div id="docs-panel" hidden>
           <div class="bar">
@@ -354,6 +366,7 @@
 <script src="app-routing.js"></script>
 <script src="app-diagnostics.js"></script>
 <script src="app-placement.js"></script>
+<script src="app-tidy.js"></script>
 <script src="app.js"></script>
 <script src="app-docs.js"></script>
 </body>

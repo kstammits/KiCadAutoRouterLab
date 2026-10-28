@@ -40,6 +40,8 @@ from kicad_autorouter.io import (
 from kicad_autorouter.placement import (
     PlacementParams,
     PlacementProposal,
+    check_legality,
+    refine_placement,
     run_placement,
 )
 from kicad_autorouter.routing.pipeline import (
@@ -2016,6 +2018,114 @@ class Handler(BaseHTTPRequestHandler):
                 "max_pair_overlap_mm2": getattr(proposal, "max_pair_overlap_mm2", 0.0),
                 "max_wall_penetration_mm": getattr(proposal, "max_wall_penetration_mm", 0.0),
                 "exempt_pairs": getattr(proposal, "exempt_pairs", []),
+            }
+            self._send(200, json.dumps(payload).encode(), "application/json")
+            return
+        if parsed.path == "/api/placement/refine":
+            import time as _time
+            model, _, _, _, _, _ = STATE.snapshot
+            if model is None:
+                self._send(404, b"no board loaded", "text/plain")
+                return
+            length = int(self.headers.get("Content-Length") or 0)
+            body_data = self.rfile.read(length) if length > 0 else b"{}"
+            try:
+                req = json.loads(body_data.decode("utf-8"))
+            except json.JSONDecodeError:
+                self._send(400, b"invalid JSON", "text/plain")
+                return
+            if not isinstance(req, dict):
+                self._send(400, b"params must be an object", "text/plain")
+                return
+            movable_uuids = req.get("movable_uuids")
+            if isinstance(movable_uuids, list):
+                movable_uuids = set(movable_uuids)
+            elif movable_uuids is not None:
+                self._send(400, b"movable_uuids must be a list", "text/plain")
+                return
+            saved = load_params()
+            strength = req.get("strength", saved.refine_strength)
+            radius_m = req.get("radius_m", saved.refine_radius_m)
+            try:
+                strength = float(strength)
+                radius_m = float(radius_m)
+            except (TypeError, ValueError):
+                self._send(400, b"strength/radius_m must be numbers", "text/plain")
+                return
+            if not (0.0 <= strength <= 1.0):
+                self._send(400, b"strength must be in [0.0, 1.0]", "text/plain")
+                return
+            if not radius_m > 0:
+                self._send(400, b"radius_m must be > 0", "text/plain")
+                return
+            if movable_uuids is None:
+                movable_uuids = {
+                    fp.uuid for fp in model.footprints
+                    if fp.uuid and not fp.locked and fp.uuid not in STATE.get_pinned_uuids()
+                }
+            else:
+                pinned = STATE.get_pinned_uuids()
+                movable_uuids = {u for u in movable_uuids if u not in pinned}
+            base = STATE.current_proposal
+            base_deltas = dict(base.deltas) if base is not None else {}
+            start = _time.perf_counter()
+            try:
+                extra = refine_placement(
+                    model, base_deltas,
+                    strength=strength,
+                    radius_mm=radius_m * 1000.0,
+                    movable_uuids=movable_uuids,
+                    overlap_tolerance_mm2=saved.overlap_tolerance_mm2,
+                    wall_tolerance_mm=saved.wall_tolerance_mm,
+                )
+            except Exception as exc:
+                import traceback
+                traceback.print_exc()
+                self._send(500, f"refine failed: {exc}".encode(), "text/plain")
+                return
+            merged = dict(base_deltas)
+            merged.update(extra)
+            legality = check_legality(
+                model, merged,
+                overlap_tolerance_mm2=saved.overlap_tolerance_mm2,
+                wall_tolerance_mm=saved.wall_tolerance_mm,
+            )
+            params_dict = saved.to_dict()
+            params_dict["refine_strength"] = strength
+            params_dict["refine_radius_m"] = radius_m
+            proposal = PlacementProposal(
+                deltas=merged,
+                iterations=getattr(base, "iterations", 0) if base is not None else 0,
+                final_max_disp_mm=max(
+                    ((float(v[0]) ** 2 + float(v[1]) ** 2) ** 0.5 for v in merged.values()),
+                    default=0.0,
+                ),
+                elapsed_s=_time.perf_counter() - start,
+                params=params_dict,
+                forces=dict(getattr(base, "forces", {}) or {}),
+                force_components=dict(getattr(base, "force_components", {}) or {}),
+                stop_reason="refined",
+                residual_max_force_N=float(getattr(base, "residual_max_force_N", 0.0) or 0.0),
+                legality_is_legal=legality.is_legal,
+                overlapping_pairs=legality.overlapping_pairs,
+                wall_violations=legality.wall_violations,
+                max_pair_overlap_mm2=legality.max_pair_overlap_mm2,
+                max_wall_penetration_mm=legality.max_wall_penetration_mm,
+                exempt_pairs=legality.exempt_pairs,
+            )
+            version = STATE.set_proposal(proposal)
+            payload = {
+                "ok": True,
+                "moved": len(merged),
+                "refined": len(extra),
+                "version": version,
+                "stop_reason": "refined",
+                "legality_is_legal": legality.is_legal,
+                "overlapping_pairs": list(legality.overlapping_pairs),
+                "wall_violations": list(legality.wall_violations),
+                "max_pair_overlap_mm2": legality.max_pair_overlap_mm2,
+                "max_wall_penetration_mm": legality.max_wall_penetration_mm,
+                "exempt_pairs": list(legality.exempt_pairs),
             }
             self._send(200, json.dumps(payload).encode(), "application/json")
             return
