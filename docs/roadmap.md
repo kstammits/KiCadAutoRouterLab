@@ -141,13 +141,14 @@ Counts are additive (`fanout_vias_added` / `fanout_tracks_added`).
   `ui/debug_grids.py` (cost/secondary payloads + unit tests),
   `board_model/` package (`model`/`query`/`parse` + re-export shim) —
   all via leaf-first moves with import-surface checks.
-- **`ui/app.js` stays monolithic** (deliberate, 2026-10-28): no JS test
-  harness exists, so a split buys navigation only, at the cost of blame
-  churn + load-order failure modes. Revisit only when (a) a second regular
-  contributor lands, (b) one domain passes ~1500 lines, or (c) a
-  cross-domain regression is caused by file organization. Domain map +
-  ownership contract live in the file header; `./scripts/check_js.sh`
-  (`node --check`) is the CI floor.
+- **UI split landed** (2026-10-28): `app.js` (4187 lines, over the 4000
+  budget) is now one domain file per panel — `app-core/viewer/params/nets/
+  routing/diagnostics/placement/docs.js` + a 140-line `app.js` entry point
+  (element cache, tabs, shortcuts, boot). Verbatim moves, zero import-site
+  churn (classic scripts share globals), no-duplicate-names byte-scan per
+  commit, `./scripts/check_js.sh` (`node --check`) green throughout. The
+  4000-line rule now holds for every file; revisit only if a domain file
+  itself approaches the budget.
 - **Aesthetic row-alignment regime**: third placement pass that refines
   eligible parts into straight rows (axis snap on position + coarse angle
   quantization for opted-in refs), scored so legality still dominates —

@@ -1,5 +1,12 @@
 // app-params.js — placement settings panel, presets, URL presets.
 // Needs core (el/api/toast) at load; placement reads params at runtime.
+//
+// Calibrated behavior knobs get main-panel sliders; power/decap/ghost and
+// the convergence threshold live under Advanced. Everything else
+// (repulsion, solver internals, mass fallbacks) stays API-only at
+// calibrated defaults — POST /api/placement/params merges, so hidden keys
+// in placement.json survive GUI saves.
+// Ranges cover both Cluster (scattered starts) and Legalize (placed boards) regimes.
 
 const PARAM_DEFS = [
   { key: "attraction_k_N", label: "Attraction k (N)", min: 1e-4, max: 2e-1, step: 1e-4, log: true },

@@ -4,13 +4,6 @@
 // poll). Cross-file calls are fine; keep top-level names unique across files
 // (byte-scan before each extraction).
 
-// Calibrated behavior knobs get main-panel sliders; power/decap/ghost and
-// the convergence threshold live under Advanced. Everything else
-// (repulsion, solver internals, mass fallbacks) stays API-only at
-// calibrated defaults — POST /api/placement/params merges, so hidden keys
-// in placement.json survive GUI saves.
-// Ranges cover both Cluster (scattered starts) and Legalize (placed boards) regimes.
-
 const diagEl = el("diag");
 // Hot-button/diag lookups cached once (script runs after the DOM, as above).
 const undoBtn = el("undo-btn");

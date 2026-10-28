@@ -14,8 +14,10 @@ browser workflow UI. Works on real boards, DRC-validated.
     smoothing, corridor
   - top-level: `board_model.py`, `io.py`, `sexpr.py`, `drc.py`,
     `validate.py`, `ghost.py`, `mass.py`, `svg_render.py`, `pipeline.py`
-- `ui/server.py` — stdlib-HTTP API + state; `ui/index.html` + `ui/app.js`
-  (all frontend JS) + `ui/style.css`; `ui/docs.html` — docs viewer.
+- `ui/server.py` — stdlib-HTTP API + state; `ui/index.html` +
+  `ui/app-*.js` (frontend, one domain file per panel + `app.js` entry;
+  load order in `index.html`, shared globals, no modules) + `ui/style.css`;
+  `ui/docs.html` — docs viewer.
 - `tests/fixtures/` — `tube111.*` (105 parts, 73 nets, reference board),
   `DCCF.sved.*` (audio board, split rails), `minimal.*` (4 parts, no nets),
   plus `ghost_test.*`, `minimal_placed.*`, and `placement_parity_golden.json`.
@@ -39,8 +41,8 @@ browser workflow UI. Works on real boards, DRC-validated.
 - Docs: `./scripts/regen_docs.sh` (figures + `ui/manual.html` + rendered
   primer); add `--pdf` for the PDF. `.venv/bin/python scripts/gen_manual.py`
   alone rebuilds just the manual.
-- JS syntax: `./scripts/check_js.sh` (`node --check ui/app.js`; warns and
-  passes when node is absent).
+- JS syntax: `./scripts/check_js.sh` (`node --check` all `ui/app-*.js`;
+  warns and passes when node is absent).
 - Markers: `unit params physics cli server regression minimal dccf`
   (see `[tool.pytest.ini_options]`). Always use `.venv/bin/python` —
   system `python` lacks project deps (`scipy`, `shapely`, …) and fails at
