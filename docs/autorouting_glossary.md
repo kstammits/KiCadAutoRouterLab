@@ -340,10 +340,14 @@ Key facts that shape the algorithm choice:
   Previously they were skipped, allowing tracks to route through them.
 - **Unconnected-net handling**: nets named `unconnected-*` (KiCad's placeholder for
   explicitly unconnected pins) are also treated as no-net for steering purposes.
-- **Foreign SMD exclusion**: SMD pads of other nets now mark `THT_EXCLUSION` (10000)
-  in the secondary grid — a hard block that prevents via landings and track centers
-  on their solder/fanout area. Primary grid still uses `HIGH_COST` (50) for soft
-  steering; secondary grid uses hard exclusion for precise fanout control.
+- **Foreign SMD halos**: foreign SMD pads stamp oriented capsules (stadium
+  along the pad major axis; round pads degenerate to discs), in three
+  tiers — hard `THT_EXCLUSION` (10000) on actual copper only, steep toll
+  `FANOUT_HALO_STEEP` (800, passable below `SECONDARY_BLOCKED` 1000) over
+  the clearance + track-half margin, soft `FANOUT_HALO_OUTER` (100) beyond.
+  A* can squeeze a tight thread at high cost but never touch foreign
+  copper. Primary grid still uses `HIGH_COST` (50) for soft steering;
+  elongated slots no longer cast length-sized spherical shadows.
 - **Conservative track half**: primary grid pad marking (`_mark_pad`) now uses
   `conservative_track_half_mm=0.125` (1/8 mm) to ensure tracks stay clear of pad
   edges even at coarser grid resolutions.

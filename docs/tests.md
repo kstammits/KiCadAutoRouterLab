@@ -1,7 +1,7 @@
 # Tests
 
 Per-file intent, size, and overlap. Generated HTML reports stay untracked.
-Full suite: 506 collected, 505 passed + 1 skipped, zero warnings.
+Full suite: 536 collected, 535 passed + 1 skipped, zero warnings.
 
 ## Markers (`pyproject.toml`)
 
@@ -38,7 +38,7 @@ default heavy fixture (12+ files); deselect via `-m "not dccf"` + `--ignore` or
 | `test_padless_graphical` | 5 | Padless art: no physics, no SVG, no `/api/footprints` |
 | `test_motion_roundtrip` | 3 | Player `translate·rotate` vs `apply_deltas` + SVG frame bytes |
 
-## Routing (92 tests)
+## Routing (107 tests)
 
 | File | n | Intent |
 |------|---|--------|
@@ -46,6 +46,7 @@ default heavy fixture (12+ files); deselect via `-m "not dccf"` + `--ignore` or
 | `test_routing_search` | 13 | Windowed search, via mask, Kruskal pair ordering (all synthetic, fast) |
 | `test_routing_grid` | 6 | Grid from Edge.Cuts + board↔grid transforms, DCCF two-region cover |
 | `test_routing_obstacles` | 9 | Cost-grid primitives: pads/keepouts as blocked/high-cost |
+| `test_routing_capsule` | 15 | Capsule-exact pad stamps: spine geometry, rect inflation, slot coverage, halo tiers, VIN unsealed |
 | `test_routing_crossing` | 1 | X-nets must cross via layer hop (2 vias, structural) |
 | `test_routing_chunked` | 1 | N one-net calls == one N-net call (UI progress contract, DCCF ~10s) |
 | `test_routing_smooth` | 14 | Any-angle smoother: shortcut/clearance properties + staircase-arc detour regression |
@@ -91,7 +92,7 @@ default heavy fixture (12+ files); deselect via `-m "not dccf"` + `--ignore` or
 | `test_run_autoroute` | 3 | Headless `scripts/run_autoroute.py` (`cli`, `minimal`) |
 | `test_strategy` | 6 | Mode inference, presets, overlay, warning helper |
 | `test_params_validation` | 7 | PlacementParams + RoutingParams fail-fast |
-| `test_debug_grids` | 4 | `ui.debug_grids` numpy→dict payloads (pure unit) |
+| `test_debug_grids` | 7 | `ui.debug_grids` numpy→dict payloads incl. PNG raster transport (pure unit) |
 
 ## Cull candidates (overlap, not yet removed)
 

@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "ui"))
 
 from debug_grids import (  # noqa: E402
     _cost_grid_to_debug,
+    _encode_paletted_png,
     _secondary_to_debug,
 )
 
@@ -85,3 +86,54 @@ def test_secondary_terminals_seal_flags_and_ds_coords():
     assert terms[2]["sealed"] is False
     assert terms[3]["own_cell"] == -1
     assert terms[3]["sealed"] is False
+
+
+def _decode_png_size(blob: bytes):
+    import struct
+    assert blob[:8] == b"\x89PNG\r\n\x1a\n"
+    w, h = struct.unpack(">II", blob[16:24])
+    return w, h
+
+
+def test_cost_png_full_res_and_palette_exact():
+    import base64
+    grid = _grid()
+    cost = np.zeros((2, 32, 48), dtype=np.int16)
+    cost[0, 3, 4] = 25
+    cost[0, 5, 6] = 100
+    out = _cost_grid_to_debug(cost, grid)
+    layer = out["layers"][0]
+    assert layer["png_scale"] == 1
+    blob = base64.b64decode(layer["png_b64"])
+    assert _decode_png_size(blob) == (48, 32)
+    assert out["full_resolution_mm"] == pytest.approx(0.1)
+
+
+def test_cost_png_unknown_value_rounds_hotter():
+    import base64
+    import struct
+    import zlib
+    grid = _grid()
+    cost = np.zeros((1, 4, 4), dtype=np.int16)
+    cost[0, 0, 0] = 45  # not in the engine's value set
+    out = _cost_grid_to_debug(cost, grid)
+    blob = base64.b64decode(out["layers"][0]["png_b64"])
+    # Walk chunks to IDAT, decompress, read the palette index at (0,0):
+    # 45 must round up to the high-cost slot (index 3), never hide cost.
+    pos = 8
+    raw = b""
+    while pos < len(blob):
+        (length,) = struct.unpack(">I", blob[pos:pos + 4])
+        tag = blob[pos + 4:pos + 8]
+        if tag == b"IDAT":
+            raw += blob[pos + 8:pos + 8 + length]
+        pos += 12 + length
+    rows = zlib.decompress(raw)
+    assert rows[1] == 3  # filter byte 0, then index 3 at (0,0)
+
+
+def test_secondary_terminals_carry_full_res_coords():
+    grid = _grid(layers=("F.Cu",), h=400, w=400)
+    sec = np.zeros((1, 400, 400), dtype=np.int16)
+    out = _secondary_to_debug(sec, grid, [(200, 100, 0)])
+    assert (out["terminals"][0]["fc"], out["terminals"][0]["fr"]) == (200, 100)

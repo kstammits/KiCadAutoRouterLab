@@ -113,6 +113,17 @@
   .board-viewport svg { display:block; width:100%; height:100%; }
   .board-viewport.panning { cursor:grabbing; }
   .board-viewport.selecting { cursor:crosshair; }
+  /* Floating cost-grid legend: pinned to the viewport corner (HTML, so it
+     survives pan/zoom), pointer-transparent, shown only with the overlay. */
+  #cost-legend { position:absolute; right:.6rem; bottom:.6rem; z-index:5;
+    pointer-events:none; background:rgba(11,14,18,.88);
+    border:1px solid #3a4a5a; border-radius:6px; padding:.35rem .5rem;
+    font-size:.62rem; color:#9fb0c0; display:flex; flex-direction:column;
+    gap:.15rem; max-width:min(92%, 34rem); }
+  #cost-legend .cost-legend-row { display:flex; gap:.5rem; align-items:center; flex-wrap:wrap; }
+  #cost-legend .cost-legend-head { color:#5b6b7a; text-transform:uppercase;
+    letter-spacing:.05em; font-size:.58rem; }
+  #cost-legend .cost-probe { color:#d7e0e9; font-variant-numeric:tabular-nums; }
   .zoom-info { font-size:.65rem; color:#7d8b99; font-variant-numeric:tabular-nums; }
 
   /* Right side panel for Place/Route controls (pull-out drawer) */
@@ -192,8 +203,13 @@
   .chk { display:flex; gap:.3rem; align-items:center; font-size:.7rem; color:#9fb0c0; }
   #diag { margin-left:auto; color:#7d8b99; font-size:.65rem; min-width:200px; }
   /* Route status: own wrapped row below the buttons (never pushes them),
-     small tabular figures, ellipsis + native tooltip for the full text. */
-  #route-diag, #route-est { flex:1 1 100%; min-width:0; color:#7d8b99;
+     small tabular figures. The diag wraps to the full failure text —
+     a truncated error message is useless — while the estimate stays a
+     compact single line with a native tooltip for the full text. */
+  #route-diag { flex:1 1 100%; min-width:0; color:#7d8b99;
+    font-size:.62rem; font-variant-numeric:tabular-nums; white-space:normal;
+    overflow-wrap:anywhere; }
+  #route-est { flex:1 1 100%; min-width:0; color:#7d8b99;
     font-size:.62rem; font-variant-numeric:tabular-nums; white-space:nowrap;
     overflow:hidden; text-overflow:ellipsis; }
   

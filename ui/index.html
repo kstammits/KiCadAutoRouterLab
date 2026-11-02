@@ -177,6 +177,9 @@
         <span class="zoom-info" id="zoom-info">100%</span>
         <button id="fit-btn" title="Fit board to view">Fit</button>
         <button id="download-btn" title="Download modified PCB" hidden>Download</button>
+        <button id="ctx-save-btn" title="Save whole GUI context (board + params + attempt overlays) to one JSON file for review">Save ctx</button>
+        <button id="ctx-load-btn" title="Load a saved context file (review only — re-route to rebuild). No board needed first.">Load ctx</button>
+        <input type="file" id="ctx-load-input" accept="application/json,.json" hidden>
         <button id="undo-btn" title="Undo last accept" disabled>Undo</button>
         <button id="reset-btn" title="Reset to original board" hidden>Reset</button>
       </span>
@@ -365,6 +368,7 @@
 <script src="app-params.js"></script>
 <script src="app-nets.js"></script>
 <script src="app-routing.js"></script>
+<script src="app-context.js"></script>
 <script src="app-diagnostics.js"></script>
 <script src="app-placement.js"></script>
 <script src="app-tidy.js"></script>

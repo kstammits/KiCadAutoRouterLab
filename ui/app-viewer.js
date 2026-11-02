@@ -294,9 +294,169 @@ el("cost-grid-net")?.addEventListener("change", e => {
 });
 
 function clearCostGridOverlay() {
-  // Both the raster image and the terminal-marker group share this class.
+  // Raster images, terminal markers, and the floating legend share this
+  // class (the legend div is HTML, not SVG — the selector still matches).
   viewport?.querySelectorAll(".cost-grid-overlay").forEach(n => n.remove());
+  document.getElementById("cost-legend")?.remove();
 }
+
+// Display palette, mirroring COST_PALETTE / SECONDARY_PALETTE in
+// ui/debug_grids.py (change both together). Single source for the canvas
+// fallback painter and the floating legend below.
+const COST_LEVELS = [
+  { v: 0, name: "free", css: "rgba(0,0,0,0)" },
+  { v: 25, name: "courtyard", css: "rgba(140,140,140,0.55)" },
+  { v: 35, name: "pour", css: "rgba(46,168,122,0.55)" },
+  { v: 50, name: "high-cost", css: "rgba(255,255,0,0.71)" },
+  { v: 80, name: "edge-keepout", css: "rgba(255,165,0,0.78)" },
+  { v: 100, name: "blocked ≥100", css: "rgba(255,0,0,0.86)" },
+];
+const SECONDARY_LEVELS = [
+  { v: 1, name: "soft halo", css: "rgba(255,235,59,0.59)" },
+  { v: 2, name: "inner halo", css: "rgba(255,140,0,0.67)" },
+  { v: 3, name: "hard ring", css: "rgba(255,0,255,0.78)" },
+];
+
+function costLevelName(v) {
+  if (v <= 0) return "free";
+  for (const lv of COST_LEVELS) if (v <= lv.v) return lv.name;
+  return "blocked ≥100";
+}
+
+// Board-mm geometry of one PNG raster layer. New payloads carry png_*
+// (near-full grid resolution); old bundles only have the downsampled
+// data grid, whose resolution_mm already includes its scale.
+function costPngGeom(layer, originMm, fullResMm) {
+  const cellMm = fullResMm * (layer.png_scale || 1);
+  return {
+    cellMm,
+    xMm: originMm[0],
+    yMm: originMm[1],
+    wMm: layer.png_width * cellMm,
+    hMm: layer.png_height * cellMm,
+  };
+}
+
+function costFallbackGeom(layer, originMm, payloadResMm) {
+  return {
+    cellMm: payloadResMm,
+    xMm: originMm[0],
+    yMm: originMm[1],
+    wMm: layer.width * payloadResMm,
+    hMm: layer.height * payloadResMm,
+  };
+}
+
+function appendCostImage(svg, href, geom) {
+  const img = document.createElementNS("http://www.w3.org/2000/svg", "image");
+  img.classList.add("cost-grid-overlay");
+  img.style.pointerEvents = "none";
+  img.style.opacity = "0.5";
+  // Crisp cells under zoom: the raster is a grid, and bilinear smoothing
+  // would imply precision it doesn't have.
+  img.style.imageRendering = "pixelated";
+  img.setAttribute("x", geom.xMm);
+  img.setAttribute("y", geom.yMm);
+  img.setAttribute("width", geom.wMm);
+  img.setAttribute("height", geom.hMm);
+  img.setAttribute("preserveAspectRatio", "none");
+  img.setAttribute("href", href);
+  svg.appendChild(img);
+}
+
+// Canvas fallback for payloads without png_b64 (bundles saved before the
+// PNG transport). Paints the downsampled data grid with COST_LEVELS.
+function paintCostCanvas(grid, gw, gh, secGrid) {
+  const canvas = document.createElement("canvas");
+  canvas.width = gw;
+  canvas.height = gh;
+  const ctx = canvas.getContext("2d");
+  const imgData = ctx.createImageData(gw, gh);
+  const px = imgData.data;
+  const put = (o, v) => {
+    if (v <= 0) return;
+    const lv = COST_LEVELS.find(l => v <= l.v) || COST_LEVELS[COST_LEVELS.length - 1];
+    const m = lv.css.match(/rgba?\((\d+),(\d+),(\d+)(?:,([\d.]+))?\)/);
+    px[o] = +m[1]; px[o + 1] = +m[2]; px[o + 2] = +m[3];
+    px[o + 3] = Math.round((m[4] === undefined ? 1 : +m[4]) * 255);
+  };
+  for (let r = 0; r < gh; r++) {
+    const row = grid[r];
+    for (let c = 0; c < gw; c++) put((r * gw + c) * 4, row[c]);
+  }
+  if (secGrid) {
+    const bandCss = { 1: SECONDARY_LEVELS[0].css, 2: SECONDARY_LEVELS[1].css, 3: SECONDARY_LEVELS[2].css };
+    for (let r = 0; r < gh; r++) {
+      const row = secGrid[r];
+      if (!row) continue;
+      for (let c = 0; c < gw; c++) {
+        const css = bandCss[row[c] >= 3 ? 3 : row[c]];
+        if (!css) continue;
+        const m = css.match(/rgba?\((\d+),(\d+),(\d+)(?:,([\d.]+))?\)/);
+        const o = (r * gw + c) * 4;
+        px[o] = +m[1]; px[o + 1] = +m[2]; px[o + 2] = +m[3];
+        px[o + 3] = Math.round((m[4] === undefined ? 1 : +m[4]) * 255);
+      }
+    }
+  }
+  ctx.putImageData(imgData, 0, 0);
+  return canvas.toDataURL("image/png");
+}
+
+function renderCostLegend(hasSecondary) {
+  document.getElementById("cost-legend")?.remove();
+  const box = document.createElement("div");
+  box.id = "cost-legend";
+  box.className = "cost-grid-overlay";
+  const sw = css => `<i style="display:inline-block;width:1.1rem;border-top:3px solid ${css};"></i>`;
+  const primary = COST_LEVELS.filter(l => l.v > 0)
+    .map(l => `<span title="cost ${l.v}">${sw(l.css)} ${l.name}</span>`).join("");
+  const secondary = hasSecondary
+    ? `<div class="cost-legend-row"><span class="cost-legend-head">halo</span>${SECONDARY_LEVELS.map(l => `<span>${sw(l.css)} ${l.name}</span>`).join("")}</div>`
+      + `<div class="cost-legend-row"><span class="cost-legend-head">term</span>`
+      + `<span>${sw("#22ff44")} open</span><span>${sw("#ff2222")} sealed</span></div>`
+    : "";
+  box.innerHTML = `<div class="cost-legend-row"><span class="cost-legend-head">cost</span>${primary}</div>`
+    + secondary + `<div class="cost-legend-row cost-probe" id="cost-probe">hover board for cell value</div>`;
+  viewport?.appendChild(box);
+}
+
+// Hover probe: cursor → board-mm (via the SVG transform, robust under
+// pan/zoom) → coarse probe cell → exact raw value readout in the legend.
+// The coarse data grid is the probe source; the PNG is display-only.
+function probeCostCell(clientX, clientY) {
+  const probe = document.getElementById("cost-probe");
+  const svg = viewport?.querySelector("svg");
+  const layer = costGridDebug?.layers.find(l => l.layer === "F.Cu");
+  if (!probe || !svg || !layer?.data) return;
+  const pt = new DOMPoint(clientX, clientY).matrixTransform(
+    svg.getScreenCTM().inverse());
+  const cellMm = costGridDebug.resolution_mm;
+  const c = Math.floor((pt.x - costGridDebug.origin_mm[0]) / cellMm);
+  const r = Math.floor((pt.y - costGridDebug.origin_mm[1]) / cellMm);
+  if (r < 0 || c < 0 || r >= layer.height || c >= layer.width) {
+    probe.textContent = "off grid";
+    return;
+  }
+  const v = layer.data[r][c];
+  let bandTxt = "";
+  const sec = costGridDebug.secondary?.layers?.find(l => l.layer === "F.Cu");
+  if (sec?.data?.[r]?.[c] !== undefined && layer.scale === sec.scale) {
+    const b = sec.data[r][c];
+    const names = { 0: "free", 1: "soft", 2: "inner", 3: "hard" };
+    bandTxt = ` · halo ${names[b] ?? b}`;
+  }
+  probe.textContent = `cost ${v} (${costLevelName(v)})${bandTxt}`;
+}
+
+viewport?.addEventListener("mousemove", e => {
+  if (!costGridOverlay || !costGridDebug) return;
+  probeCostCell(e.clientX, e.clientY);
+});
+viewport?.addEventListener("mouseleave", () => {
+  const probe = document.getElementById("cost-probe");
+  if (probe) probe.textContent = "hover board for cell value";
+});
 
 function renderCostGridOverlay() {
   if (!viewport) return;
@@ -309,113 +469,64 @@ function renderCostGridOverlay() {
 
   const svg = viewport?.querySelector("svg");
   if (!svg) return;
-  
-  // Get SVG viewBox for coordinate mapping
-  const vbAttr = svg.getAttribute("viewBox");
-  if (!vbAttr) return;
-  const [vbx, vby, vbw, vbh] = vbAttr.split(" ").map(Number);
-  
-  // Use F.Cu layer data for the overlay (already downsampled to
-  // max 200x200 by /api/routing/debug/cost-grid — no server PNG round-trip).
+
+  // Use F.Cu layer data for the overlay. New payloads carry a near-full
+  // resolution PNG per layer (png_b64); old bundles only have the
+  // downsampled data grid and fall back to canvas painting.
   const fcuLayer = costGridDebug.layers.find(l => l.layer === "F.Cu");
   if (!fcuLayer) return;
+  // SVG user units are board mm — the same space as footprints, terminal
+  // dots, and partial-copper overlays. Grid row 0 sits at min-y
+  // (see board_to_grid), matching the raster top.
+  const fullResMm = costGridDebug.full_resolution_mm
+    ?? (costGridDebug.resolution_mm / (fcuLayer.scale || 1));
+  const ox = costGridDebug.origin_mm[0], oy = costGridDebug.origin_mm[1];
 
-  // Rasterize the downsampled grid to a canvas (same palette as the old
-  // server PNG: 25=gray COURTYARD, 35=teal POUR, 50=yellow HIGH_COST,
-  // 80=orange EDGE_KEEPOUT, 100+=red BLOCKED, else transparent).
-  // Per-net secondary bands paint on top: 1=yellow soft halo, 2=orange
-  // inner halo, 3=magenta hard ring.
-  const gw = fcuLayer.width, gh = fcuLayer.height;
-  const grid = fcuLayer.data;
-  const canvas = document.createElement("canvas");
-  canvas.width = gw;
-  canvas.height = gh;
-  const ctx = canvas.getContext("2d");
-  const imgData = ctx.createImageData(gw, gh);
-  const px = imgData.data;
-  for (let r = 0; r < gh; r++) {
-    const row = grid[r];
-    for (let c = 0; c < gw; c++) {
-      const v = row[c];
-      if (v <= 0) continue;
-      const o = (r * gw + c) * 4;
-      if (v === 25) { px[o] = 140; px[o + 1] = 140; px[o + 2] = 140; px[o + 3] = 140; }
-      else if (v === 35) { px[o] = 46; px[o + 1] = 168; px[o + 2] = 122; px[o + 3] = 140; }
-      else if (v === 50) { px[o] = 255; px[o + 1] = 255; px[o + 2] = 0; px[o + 3] = 180; }
-      else if (v === 80) { px[o] = 255; px[o + 1] = 165; px[o + 2] = 0; px[o + 3] = 200; }
-      else if (v >= 100) { px[o] = 255; px[o + 1] = 0; px[o + 2] = 0; px[o + 3] = 220; }
-    }
-  }
   const sec = costGridDebug.secondary;
   const secLayer = sec?.layers?.find(l => l.layer === "F.Cu");
-  if (secLayer) {
-    for (let r = 0; r < gh; r++) {
-      const row = secLayer.data[r];
-      if (!row) continue;
-      for (let c = 0; c < gw; c++) {
-        const b = row[c];
-        if (b <= 0) continue;
-        const o = (r * gw + c) * 4;
-        if (b === 1) { px[o] = 255; px[o + 1] = 235; px[o + 2] = 59; px[o + 3] = 150; }
-        else if (b === 2) { px[o] = 255; px[o + 1] = 140; px[o + 2] = 0; px[o + 3] = 170; }
-        else if (b >= 3) { px[o] = 255; px[o + 1] = 0; px[o + 2] = 255; px[o + 3] = 200; }
-      }
+  if (fcuLayer.png_b64) {
+    const geom = costPngGeom(fcuLayer, costGridDebug.origin_mm, fullResMm);
+    appendCostImage(svg, `data:image/png;base64,${fcuLayer.png_b64}`, geom);
+    if (secLayer?.png_b64) {
+      const sgeom = costPngGeom(secLayer, costGridDebug.origin_mm, fullResMm);
+      appendCostImage(svg, `data:image/png;base64,${secLayer.png_b64}`, sgeom);
     }
+  } else {
+    // Legacy payload: paint the downsampled data grid to a canvas.
+    const gw = fcuLayer.width, gh = fcuLayer.height;
+    const href = paintCostCanvas(fcuLayer.data, gw, gh,
+      (secLayer && fcuLayer.scale === secLayer.scale) ? secLayer.data : null);
+    const geom = costFallbackGeom(fcuLayer, costGridDebug.origin_mm,
+      costGridDebug.resolution_mm);
+    appendCostImage(svg, href, geom);
   }
-  ctx.putImageData(imgData, 0, 0);
 
-  // Create image element for the overlay
-  const img = document.createElementNS("http://www.w3.org/2000/svg", "image");
-  img.classList.add("cost-grid-overlay");
-  img.style.pointerEvents = "none";
-  img.style.opacity = "0.5";
-
-  // Map cost grid bounds to board coordinates
-  const originX = costGridDebug.origin_mm[0];
-  const originY = costGridDebug.origin_mm[1];
-  const resolutionMm = costGridDebug.resolution_mm;
-  const scale = fcuLayer.scale;
-  const gridWidthMm = fcuLayer.width * scale * resolutionMm;
-  const gridHeightMm = fcuLayer.height * scale * resolutionMm;
-
-  // Position in board mm coordinates
-  const xMm = originX;
-  const yMm = originY + gridHeightMm; // Bottom of grid in board coords
-
-  // Map to SVG coordinates (viewport units)
-  const xPx = ((xMm - vbx) / vbw) * viewport.clientWidth;
-  const yPx = ((vby + vbh - yMm) / vbh) * viewport.clientHeight;
-  const widthPx = (gridWidthMm / vbw) * viewport.clientWidth;
-  const heightPx = (gridHeightMm / vbh) * viewport.clientHeight;
-
-  img.setAttribute("x", xPx);
-  img.setAttribute("y", yPx - heightPx);
-  img.setAttribute("width", widthPx);
-  img.setAttribute("height", heightPx);
-  img.setAttribute("preserveAspectRatio", "none");
-  img.setAttribute("href", canvas.toDataURL("image/png"));
-  svg.appendChild(img);
-
-  // Terminal seals: full-resolution terminal cells would vanish in the
-  // downsampled raster, so draw them as vector circles in the same pixel
-  // space (green = open, red = sealed shut). F.Cu-layer terminals only,
-  // matching the raster panel.
+  // Terminal seals: vector circles (green = open, red = sealed shut).
+  // F.Cu-layer terminals only, matching the raster panel. New payloads
+  // carry full-resolution cell coords (fc/fr); legacy uses downsampled
+  // coords, identical to grid_to_board either way.
   if (sec?.terminals?.length && secLayer) {
     const fcuIdx = sec.layers.findIndex(l => l.layer === "F.Cu");
     const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
     g.classList.add("cost-grid-overlay", "overlay-none");
-    const cellPx = widthPx / gw;
     for (const t of sec.terminals) {
       if (t.layer !== fcuIdx) continue;
-      const cx = xPx + ((t.dc + 0.5) / gw) * widthPx;
-      const cy = (yPx - heightPx) + ((t.dr + 0.5) / gh) * heightPx;
+      let cx, cy;
+      if (t.fc !== undefined && t.fr !== undefined) {
+        cx = ox + (t.fc + 0.5) * fullResMm;
+        cy = oy + (t.fr + 0.5) * fullResMm;
+      } else {
+        const cellMm = costGridDebug.resolution_mm;
+        cx = ox + (t.dc + 0.5) * cellMm;
+        cy = oy + (t.dr + 0.5) * cellMm;
+      }
       const cEl = document.createElementNS("http://www.w3.org/2000/svg", "circle");
       cEl.setAttribute("cx", cx);
       cEl.setAttribute("cy", cy);
-      cEl.setAttribute("r", Math.max(3, cellPx * 1.5));
+      cEl.setAttribute("r", 0.6);
       cEl.setAttribute("fill", "none");
       cEl.setAttribute("stroke", t.sealed ? "#ff2222" : "#22ff44");
-      cEl.setAttribute("stroke-width", "2");
+      cEl.setAttribute("stroke-width", "0.25");
       const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
       title.textContent = `term ${t.idx}: own-cell ${t.own_cell}${t.sealed ? " SEALED" : ""}`;
       cEl.appendChild(title);
@@ -423,6 +534,7 @@ function renderCostGridOverlay() {
     }
     svg.appendChild(g);
   }
+  renderCostLegend(!!secLayer);
 }
 
 async function fetchAndInjectSVG(version) {

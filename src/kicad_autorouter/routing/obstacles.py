@@ -48,6 +48,13 @@ FANOUT_HALO_OUTER = 100  # one further clearance-width ring beyond inner
 # so its terminals still connect and hop for free.
 THT_EXCLUSION = 10000  # >= router.SECONDARY_BLOCKED, fits int16
 
+# Steep-but-passable toll for the clearance margin around foreign pads.
+# The hard core (THT_EXCLUSION) covers actual copper only; the
+# clearance + track-half band pays this instead of blocking, so A* may
+# squeeze through a tight thread when no alternative exists. Must stay
+# below router.SECONDARY_BLOCKED (1000) — enforced by test.
+FANOUT_HALO_STEEP = 800
+
 
 def build_occupancy_grid(
     model,
@@ -130,12 +137,12 @@ def build_fanout_cost(
 ) -> np.ndarray:
     """Build the per-net secondary (fanout) cost grid for ``current_net``.
 
-    Returns a ``(n_layers, H, W)`` int16 grid of soft-shoulder halos over
-    every *other* net's pads: ``FANOUT_HALO_INNER`` within pad extent +
-    clearance + half track width, ``FANOUT_HALO_OUTER`` for one further
-    clearance-width ring plus ``extra_margin_mm`` of steering push. The
-    current net's own pads are excluded so its terminals can still escape.
-    All other cells are 0.
+    Returns a ``(n_layers, H, W)`` int16 grid of graded halos over
+    every *other* net's pads: ``THT_EXCLUSION`` on actual copper only,
+    ``FANOUT_HALO_STEEP`` over the clearance + half-track margin,
+    ``FANOUT_HALO_OUTER`` for one further clearance-width ring plus
+    ``extra_margin_mm`` of steering push. The current net's own pads are
+    excluded so its terminals can still escape. All other cells are 0.
 
     ``extra_margin_mm`` is steering-only (never DRC): it widens the soft
     outer shoulder without touching the hard inner ring, so dense escapes
@@ -143,12 +150,22 @@ def build_fanout_cost(
     berth around foreign copper.
 
     Soft halos are added to the entry cost (never to blockage), so they
-    steer around foreign copper without ever trapping a route. The one
-    exception is foreign through-hole pads: their inner disc carries
-    ``THT_EXCLUSION`` (impassable at ``router.SECONDARY_BLOCKED``), because
-    a plated hole with leads plus track width plus manufacturing tolerance
-    must be kept clear, not merely tolled. Own-net exclusion still applies,
-    so the owner connects and hops for free.
+    steer around foreign copper without ever trapping a route. The
+    clearance margin pays a steep toll (``FANOUT_HALO_STEEP``, passable
+    below ``router.SECONDARY_BLOCKED``) instead of blocking, so A* may
+    squeeze through a tight thread when no alternative exists. Only
+    actual copper carries ``THT_EXCLUSION`` (impassable): foreign tracks
+    can never touch another net's copper, but they may graze its
+    clearance halo at high cost (DRC remains the acceptance check).
+    Own-net exclusion still applies, so the owner connects and hops
+    for free.
+
+    Geometry follows the copper: ovals stamp oriented capsules (spine
+    along the major axis per ``pad.angle_deg``), rect-family pads stamp
+    the halo-inflated rect as a polygon (bounding-box exact), round pads
+    degenerate to discs — long slots no longer cast spherical shadows
+    sized by their length, and square pins no longer balloon into
+    capsules.
     """
     n_layers = len(grid.layers)
     H, W = grid.height_cells, grid.width_cells
@@ -160,40 +177,36 @@ def build_fanout_cost(
     outer_extra = pad_halo_radius_cells(0.0, clearance_mm, 0.0, res_mm)
     if extra_margin_mm > 0:
         outer_extra += max(0, int(math.ceil(extra_margin_mm / res_mm)))
+    outer_extra_mm = outer_extra * res_mm
     for fp in model.footprints:
         for pad in fp.pads:
             if pad.net_name == current_net:
                 continue
-            col, row = board_to_grid(grid, pad.position.x_mm, pad.position.y_mm)
             if pad.is_through_hole:
                 layers = tuple(range(n_layers))
             else:
                 idx = grid.layer_to_idx.get(fp.layer)
                 layers = (idx,) if idx is not None else ()
-            inner = pad_halo_radius_cells(
-                _pad_half_extent_mm(pad), clearance_mm, track_half_mm, res_mm
-            )
+            # Oriented pad stamps (capsules for ovals, inflated rects for
+            # the rect family, discs for round/unknown pads). Three tiers
+            # (max semantics, so stamp order is irrelevant): hard core on
+            # actual copper only, steep-but-passable toll over the
+            # clearance + track-half margin, soft shoulder beyond that.
+            margin_mm = clearance_mm + track_half_mm
+            outer_mm = margin_mm + outer_extra_mm
             for layer_idx in layers:
                 if layer_idx >= n_layers:
                     continue
-                _mark_circular_zone(
-                    secondary[layer_idx], row, col, inner + outer_extra,
-                    FANOUT_HALO_OUTER,
+                layer = secondary[layer_idx]
+                _stamp_pad_zone(
+                    layer, grid, pad, outer_mm, FANOUT_HALO_OUTER
                 )
-                if pad.is_through_hole:
-                    # Hard ring: foreign copper keeps clear of the hole,
-                    # annulus, track width and tolerance (own net excluded
-                    # above, so its escape + free hop are unaffected).
-                    _mark_circular_zone(
-                        secondary[layer_idx], row, col, inner, THT_EXCLUSION
-                    )
-                else:
-                    # SMD pads: hard exclusion ring (pad copper + clearance + track half-width)
-                    # so foreign tracks keep DRC distance. The inner radius already
-                    # covers the full keepout zone.
-                    _mark_circular_zone(
-                        secondary[layer_idx], row, col, inner, THT_EXCLUSION
-                    )
+                _stamp_pad_zone(
+                    layer, grid, pad, margin_mm, FANOUT_HALO_STEEP
+                )
+                _stamp_pad_zone(
+                    layer, grid, pad, 0.0, THT_EXCLUSION
+                )
 
     # Foreign vias: hard exclusion ring (like foreign THT pads)
     for via in model.vias:
@@ -399,6 +412,164 @@ def disc_cells(row: int, col: int, radius: int, H: int, W: int):
             yield r, c
 
 
+_RECT_PAD_FAMILY = ("rect", "roundrect", "chamfered", "trapezoid", "custom")
+
+
+def _pad_spine_mm(pad: Pad) -> Tuple[float, float, float, float, float]:
+    """Copper center-line segment + minor half-extent of a pad, board mm.
+
+    Returns ``(x1, y1, x2, y2, minor_half_mm)``. Rotation uses
+    ``pad.angle_deg`` with the board-geometry sign convention R(-angle) —
+    same as ``_to_board`` and ``pad_copper_polygon`` (verified against
+    pcbnew; R(+angle) mirrors copper against its own pad row).
+
+    Only meaningful for ``oval``/``circle`` (exact stadium spine, half
+    length ``major-minor``; degenerates to a point for round pads) and
+    unknown shapes (zero-length segment with ``minor = max/2`` — the prior
+    conservative disc). Rect-family pads inflate via
+    :func:`_pad_rect_corners_mm` instead: a full-length capsule would
+    balloon past the pad ends, and a shortened one would clip the top
+    edge near the corners — the inflated rect is bounding-box exact
+    with negligible corner overcover.
+    """
+    cx, cy = pad.position.x_mm, pad.position.y_mm
+    try:
+        w, h = float(pad.size_mm[0]), float(pad.size_mm[1])
+    except (TypeError, ValueError, IndexError):
+        return cx, cy, cx, cy, 0.0
+    ang = math.radians(-float(pad.angle_deg or 0.0))
+    ca, sa = math.cos(ang), math.sin(ang)
+    if w >= h:
+        ax, ay = ca, sa
+        major, minor = w / 2.0, h / 2.0
+    else:
+        ax, ay = -sa, ca
+        major, minor = h / 2.0, w / 2.0
+    shape = (getattr(pad, "shape", "") or "").lower()
+    if shape in _RECT_PAD_FAMILY:
+        return cx, cy, cx, cy, minor
+    if shape in ("oval", "circle"):
+        seg_half = major - minor
+        return (cx - ax * seg_half, cy - ay * seg_half,
+                cx + ax * seg_half, cy + ay * seg_half, minor)
+    return cx, cy, cx, cy, major
+
+
+def _pad_rect_corners_mm(pad: Pad, halo_mm: float) -> list:
+    """Four inflated corners ``[(x, y)] * 4`` of a rect-family pad, board mm.
+
+    The copper rect (half extents ``w/2``, ``h/2`` about the pad position,
+    rotated R(-angle) like :func:`_pad_spine_mm`) grown by ``halo_mm`` on
+    every side, head-to-tail ring order for :func:`_fill_polygon`.
+    Bounding-box exact vs ``rect ⊕ disc(halo)``; the square corners
+    overcover only the tiny corner squares outside the true rounded
+    corners (conservative, never short). ``roundrect`` cutouts and
+    chamfers/trapezoids sit inside the rect, hence stay covered.
+    """
+    cx, cy = pad.position.x_mm, pad.position.y_mm
+    try:
+        w, h = float(pad.size_mm[0]), float(pad.size_mm[1])
+    except (TypeError, ValueError, IndexError):
+        w, h = 0.0, 0.0
+    ang = math.radians(-float(getattr(pad, "angle_deg", 0.0) or 0.0))
+    ca, sa = math.cos(ang), math.sin(ang)
+    hw, hh = w / 2.0 + halo_mm, h / 2.0 + halo_mm
+
+    def rot(sx: float, sy: float) -> tuple:
+        return (cx + sx * ca - sy * sa, cy + sx * sa + sy * ca)
+
+    return [rot(-hw, -hh), rot(hw, -hh), rot(hw, hh), rot(-hw, hh)]
+
+
+def _stamp_rect_zone(layer_grid: np.ndarray, grid, pad: Pad,
+                     halo_mm: float, value: int) -> None:
+    """Max-stamp a rect-family pad's inflated rect (board-mm polygon fill)."""
+    res = grid.resolution_mm
+    ox, oy = grid.origin_mm
+    if res <= 0:
+        return
+    floats = [((y - oy) / res, (x - ox) / res)
+              for (x, y) in _pad_rect_corners_mm(pad, halo_mm)]
+    # _fill_polygon takes integer cells: round each corner outward from
+    # the centroid (conservative by <1 cell, ring order preserved).
+    cr = sum(p[0] for p in floats) / len(floats)
+    cc = sum(p[1] for p in floats) / len(floats)
+    points = [
+        (math.floor(r) if r <= cr else math.ceil(r),
+         math.floor(c) if c <= cc else math.ceil(c))
+        for (r, c) in floats
+    ]
+    _fill_polygon(layer_grid, points, value)
+
+
+def _stamp_pad_zone(layer_grid: np.ndarray, grid, pad: Pad,
+                    halo_mm: float, value: int) -> None:
+    """Max-stamp one halo tier of a pad, dispatching on shape family.
+
+    Rect family inflates the copper rect as a polygon (bounding-box
+    exact); everything else stamps a capsule around the copper spine
+    (:func:`_pad_spine_mm`) with radius ``minor_half + halo``. ``halo_mm``
+    is the margin beyond copper (0 for the hard core tier).
+    """
+    shape = (getattr(pad, "shape", "") or "").lower()
+    if shape in _RECT_PAD_FAMILY:
+        _stamp_rect_zone(layer_grid, grid, pad, halo_mm, value)
+        return
+    x1, y1, x2, y2, minor_half = _pad_spine_mm(pad)
+    _stamp_capsule_zone(layer_grid, grid, x1, y1, x2, y2,
+                        minor_half + halo_mm, value)
+
+
+def _stamp_capsule_zone(
+    layer_grid: np.ndarray,
+    grid,
+    x1_mm: float,
+    y1_mm: float,
+    x2_mm: float,
+    y2_mm: float,
+    radius_mm: float,
+    value: int,
+) -> None:
+    """Max-stamp cells whose center lies within ``radius_mm`` of a segment.
+
+    Board-mm twin of :func:`_mark_circular_zone` for oriented pads: the
+    segment is the copper center-line (:func:`_pad_spine_mm`), the radius
+    the minor half-extent plus halo. Degenerate (zero-length) segments
+    stamp discs. Vectorized over the segment's cell bbox.
+    """
+    H, W = layer_grid.shape
+    res = grid.resolution_mm
+    ox, oy = grid.origin_mm
+    if res <= 0:
+        col, row = board_to_grid(grid, (x1_mm + x2_mm) / 2.0, (y1_mm + y2_mm) / 2.0)
+        if 0 <= row < H and 0 <= col < W:
+            layer_grid[row, col] = max(layer_grid[row, col], value)
+        return
+    if radius_mm < 0:
+        return
+    slack = radius_mm + res
+    c_lo = max(0, int(math.floor((min(x1_mm, x2_mm) - slack - ox) / res)))
+    c_hi = min(W - 1, int(math.ceil((max(x1_mm, x2_mm) + slack - ox) / res)))
+    r_lo = max(0, int(math.floor((min(y1_mm, y2_mm) - slack - oy) / res)))
+    r_hi = min(H - 1, int(math.ceil((max(y1_mm, y2_mm) + slack - oy) / res)))
+    if c_lo > c_hi or r_lo > r_hi:
+        return
+    cc, rr = np.meshgrid(np.arange(c_lo, c_hi + 1), np.arange(r_lo, r_hi + 1))
+    xs = ox + (cc + 0.5) * res
+    ys = oy + (rr + 0.5) * res
+    dx, dy = x2_mm - x1_mm, y2_mm - y1_mm
+    seg2 = dx * dx + dy * dy
+    if seg2 <= 0:
+        dist2 = (xs - x1_mm) ** 2 + (ys - y1_mm) ** 2
+    else:
+        t = np.clip(((xs - x1_mm) * dx + (ys - y1_mm) * dy) / seg2, 0.0, 1.0)
+        dist2 = (xs - (x1_mm + t * dx)) ** 2 + (ys - (y1_mm + t * dy)) ** 2
+    hit = dist2 <= radius_mm * radius_mm
+    if np.any(hit):
+        sub = layer_grid[r_lo:r_hi + 1, c_lo:c_hi + 1]
+        sub[hit] = np.maximum(sub[hit], value)
+
+
 @njit(cache=True)
 def _stamp_discs_nb(
     mask: np.ndarray,
@@ -484,9 +655,6 @@ def _mark_pad(
     NPTH (np_thru_hole) and no-net mounting holes get the board hole
     clearance (0.25 mm) instead of the trace clearance.
     """
-    x_mm, y_mm = pad.position.x_mm, pad.position.y_mm
-    col, row = board_to_grid(grid, x_mm, y_mm)
-
     # Determine which layers this pad occupies: through-hole spans every
     # grid layer; SMD lives on its footprint layer (skipped when that layer
     # is not routed, e.g. an inner-layer footprint on the outer-only grid).
@@ -511,15 +679,16 @@ def _mark_pad(
             clearance = hole_clearance_cells
 
     # Widen the ring to cover the pad copper itself (+ track half width).
+    # Shape-dispatched like the secondary halos: inflated rects for the
+    # rect family, capsules for ovals, discs for round/unknown pads.
     res_mm = grid.resolution_mm
-    extra_cells = int(math.ceil(
-        (_pad_half_extent_mm(pad) + track_half_mm) / res_mm
-    )) if res_mm > 0 else 0
-    radius = max(1, clearance + extra_cells)
+    halo_mm = clearance * res_mm + track_half_mm
 
     for layer_idx in pad_layers:
         if layer_idx < cost_grid.shape[0]:
-            _mark_circular_zone(cost_grid[layer_idx], row, col, radius, HIGH_COST)
+            _stamp_pad_zone(
+                cost_grid[layer_idx], grid, pad, halo_mm, HIGH_COST
+            )
 
 
 def _mark_track(cost_grid: np.ndarray, grid, track, clearance_mm: float = 0.2):

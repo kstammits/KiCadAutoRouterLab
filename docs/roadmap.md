@@ -53,9 +53,11 @@ Open work only. Completed changes belong in git history, not here.
   and the tight Q2 neighborhood. Landed: no-net halos, `unconnected-*`
   handling, foreign-SMD hard exclusion, conservative track half. Remaining
   suspects: the own-cell secondary toll and narrow inter-pad gaps.
-  Corridor guidance misses: the fine-grid walkable Q1–Q2 thread is sealed
-  by ANY-blocked-supercell coarsening (no corridor at 4x or 2x); needs a
-  thread-preserving finder or push-and-shove.
+  Corridor guidance now finds the Q1–Q2 thread (capsule-exact halos
+  survive ANY-blocked-supercell coarsening at 4x/2x); full VIN routes in
+  ~9 s / 611k expansions (was 0/4 at 4M-budget fail), DRC 11 → 16
+  (+4 zone-pour artifacts of the pre-existing class, +1× 24 µm pad
+  graze at 0.176 vs 0.2 mm — copper untouchable, zero shorts).
   2026-10-26 benchmarks: full-VIN tight-spot 0/4 (was 4/4 on 10-21;
   own-cell secondary 500 → 10000 after the foreign-SMD hard exclusion);
   one DCCF power net now fails at ~4M expansions / 25 s (was routed,
