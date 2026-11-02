@@ -1,0 +1,272 @@
+{
+  "budget": 100000,
+  "retries": 2,
+  "spot_facts": {
+    "DCCF_VIN": {
+      "net": "VIN",
+      "terminals": 3,
+      "terminal": [
+        1383,
+        1376,
+        0
+      ],
+      "own_cell_secondary": 10000,
+      "own_cell_via_blocked": true
+    },
+    "tube111_+12V": {
+      "net": "+12V",
+      "terminals": 21,
+      "terminal": [
+        646,
+        438,
+        1
+      ],
+      "own_cell_secondary": 10000,
+      "own_cell_via_blocked": true
+    },
+    "tube111_-12V": {
+      "net": "-12V",
+      "terminals": 17,
+      "terminal": [
+        596,
+        399,
+        1
+      ],
+      "own_cell_secondary": 10000,
+      "own_cell_via_blocked": true
+    },
+    "tube111_C2Output": {
+      "net": "C2Output",
+      "terminals": 3,
+      "terminal": [
+        943,
+        970,
+        1
+      ],
+      "own_cell_secondary": 10000,
+      "own_cell_via_blocked": true
+    },
+    "tube111_C2OutCV": {
+      "net": "C2OutCV",
+      "terminals": 3,
+      "terminal": [
+        992,
+        957,
+        1
+      ],
+      "own_cell_secondary": 10000,
+      "own_cell_via_blocked": true
+    },
+    "tube111_C2OutCVLED": {
+      "net": "C2OutCVLED",
+      "terminals": 4,
+      "terminal": [
+        992,
+        970,
+        1
+      ],
+      "own_cell_secondary": 10000,
+      "own_cell_via_blocked": true
+    },
+    "tube111_grid_cv": {
+      "net": "grid_cv",
+      "terminals": 4,
+      "terminal": [
+        596,
+        438,
+        1
+      ],
+      "own_cell_secondary": 10000,
+      "own_cell_via_blocked": true
+    },
+    "tube111_Net-(R31-Pad1)": {
+      "net": "Net-(R31-Pad1)",
+      "terminals": 3,
+      "terminal": [
+        947,
+        802,
+        1
+      ],
+      "own_cell_secondary": 10000,
+      "own_cell_via_blocked": true
+    }
+  },
+  "cases": [
+    {
+      "case": "DCCF_pair-control(C6-Q1)",
+      "config": "w=3.0 halo=1.0",
+      "pairs": 2,
+      "success": true,
+      "expansions": 43427,
+      "time_s": 0.839,
+      "cost": 2410.0,
+      "path_len": 191,
+      "exp_per_s": 51741.2
+    },
+    {
+      "case": "DCCF_pair-tight(Q1-Q2)",
+      "config": "w=3.0 halo=1.0",
+      "pairs": 2,
+      "success": false,
+      "expansions": 300003,
+      "time_s": 2.252,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 133238.4
+    },
+    {
+      "case": "tube111_+12V_control",
+      "config": "w=3.0 halo=1.0",
+      "pairs": 2,
+      "success": true,
+      "expansions": 139347,
+      "time_s": 0.912,
+      "cost": 9152.0,
+      "path_len": 814,
+      "exp_per_s": 152863.5
+    },
+    {
+      "case": "tube111_+12V_tight",
+      "config": "w=3.0 halo=1.0",
+      "pairs": 2,
+      "success": false,
+      "expansions": 3,
+      "time_s": 0.205,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 14.6
+    },
+    {
+      "case": "tube111_-12V_control",
+      "config": "w=3.0 halo=1.0",
+      "pairs": 2,
+      "success": true,
+      "expansions": 17554,
+      "time_s": 0.278,
+      "cost": 2988.0,
+      "path_len": 241,
+      "exp_per_s": 63226.0
+    },
+    {
+      "case": "tube111_-12V_tight",
+      "config": "w=3.0 halo=1.0",
+      "pairs": 2,
+      "success": false,
+      "expansions": 3,
+      "time_s": 0.202,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 14.8
+    },
+    {
+      "case": "tube111_C2Output_control",
+      "config": "w=3.0 halo=1.0",
+      "pairs": 2,
+      "success": true,
+      "expansions": 8864,
+      "time_s": 0.197,
+      "cost": 1073.0,
+      "path_len": 75,
+      "exp_per_s": 44899.6
+    },
+    {
+      "case": "tube111_C2Output_tight",
+      "config": "w=3.0 halo=1.0",
+      "pairs": 2,
+      "success": false,
+      "expansions": 3,
+      "time_s": 0.165,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 18.2
+    },
+    {
+      "case": "tube111_C2OutCV_control",
+      "config": "w=3.0 halo=1.0",
+      "pairs": 2,
+      "success": true,
+      "expansions": 13585,
+      "time_s": 0.229,
+      "cost": 1509.0,
+      "path_len": 111,
+      "exp_per_s": 59357.8
+    },
+    {
+      "case": "tube111_C2OutCV_tight",
+      "config": "w=3.0 halo=1.0",
+      "pairs": 2,
+      "success": false,
+      "expansions": 3,
+      "time_s": 0.192,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 15.6
+    },
+    {
+      "case": "tube111_C2OutCVLED_control",
+      "config": "w=3.0 halo=1.0",
+      "pairs": 2,
+      "success": true,
+      "expansions": 102595,
+      "time_s": 0.779,
+      "cost": 2715.0,
+      "path_len": 217,
+      "exp_per_s": 131645.7
+    },
+    {
+      "case": "tube111_C2OutCVLED_tight",
+      "config": "w=3.0 halo=1.0",
+      "pairs": 2,
+      "success": false,
+      "expansions": 3,
+      "time_s": 0.178,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 16.9
+    },
+    {
+      "case": "tube111_grid_cv_control",
+      "config": "w=3.0 halo=1.0",
+      "pairs": 2,
+      "success": true,
+      "expansions": 818,
+      "time_s": 0.169,
+      "cost": 525.0,
+      "path_len": 26,
+      "exp_per_s": 4829.3
+    },
+    {
+      "case": "tube111_grid_cv_tight",
+      "config": "w=3.0 halo=1.0",
+      "pairs": 2,
+      "success": false,
+      "expansions": 3,
+      "time_s": 0.175,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 17.2
+    },
+    {
+      "case": "tube111_Net-(R31-Pad1)_control",
+      "config": "w=3.0 halo=1.0",
+      "pairs": 2,
+      "success": true,
+      "expansions": 1047,
+      "time_s": 0.167,
+      "cost": 546.0,
+      "path_len": 27,
+      "exp_per_s": 6271.9
+    },
+    {
+      "case": "tube111_Net-(R31-Pad1)_tight",
+      "config": "w=3.0 halo=1.0",
+      "pairs": 2,
+      "success": false,
+      "expansions": 3,
+      "time_s": 0.166,
+      "cost": 0.0,
+      "path_len": 0,
+      "exp_per_s": 18.1
+    }
+  ]
+}

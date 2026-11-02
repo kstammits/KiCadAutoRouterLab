@@ -165,6 +165,18 @@ def _run_routing_job(job_id: str) -> None:
         "expansions": result.expansions,
         "timings": result.timings,
         "failed_reasons": result.failed_reasons,
+        "partial_tracks": [
+            {"start": list(t.start), "end": list(t.end),
+             "width_mm": t.width_mm, "layer": t.layer,
+             "net_name": t.net_name}
+            for t in result.partial_tracks
+        ],
+        "partial_vias": [
+            {"position": list(v.position), "size_mm": v.size_mm,
+             "drill_mm": v.drill_mm, "layers": list(v.layers),
+             "net_name": v.net_name}
+            for v in result.partial_vias
+        ],
         "version": version,
     }
     if job.get("mode_warning"):

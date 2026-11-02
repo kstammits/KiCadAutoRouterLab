@@ -1,9 +1,11 @@
-"""Fail-fast guard for massive nets (max_terminals_per_net).
+"""Terminal-count tripwire (max_terminals_per_net) + piecemeal auto-split.
 
 Single-flight Steiner routing scales ~n-1 capped A* searches per net, so
 a 66-terminal plane burns ~86M expansions / ~9 min and still fails. Nets
-over the cap fail immediately with an explicit reason instead of hanging
-the job; planes belong to copper pours + the GND stitcher.
+over the cap auto-split into overlapping terminal chunks
+(piecemeal_chunk_terminals) routed sequentially; with chunking disabled
+(piecemeal_chunk_terminals=0) they fail immediately with an explicit
+reason instead of hanging the job.
 """
 
 import time
@@ -49,9 +51,23 @@ def _ladder(n_pads: int, net: str = "BIG") -> BoardModel:
     )
 
 
-def test_massive_net_fails_fast():
+def test_massive_net_routes_piecemeal():
     model = _ladder(40)
     params = RoutingParams(run_drc=False, stitch_gnd_vias=False)
+    assert params.max_terminals_per_net == 16
+    t0 = time.perf_counter()
+    result, _, _ = route_nets(model, ["BIG"], set(), params=params)
+    elapsed = time.perf_counter() - t0
+    assert result.nets_routed == 1
+    assert result.nets_failed == 0
+    assert result.expansions > 0
+    assert elapsed < 120, f"chunked route took {elapsed:.1f}s"
+
+
+def test_massive_net_fail_fast_when_chunking_disabled():
+    model = _ladder(40)
+    params = RoutingParams(run_drc=False, stitch_gnd_vias=False,
+                           piecemeal_chunk_terminals=0)
     t0 = time.perf_counter()
     result, _, _ = route_nets(model, ["BIG"], set(), params=params)
     elapsed = time.perf_counter() - t0
@@ -73,11 +89,21 @@ def test_cap_boundary_and_opt_out():
                              max_terminals_per_net=3),
     )
     assert "max_terminals_per_net" not in res.failed_reasons.get("BIG", "")
-    # Over the cap: guard fires.
+    # Over the cap with chunking on: auto-split (a 4-terminal net fits
+    # one chunk and routes whole) — no guard string.
     res, _, _ = route_nets(
         _ladder(4), ["BIG"], set(),
         params=RoutingParams(run_drc=False, stitch_gnd_vias=False,
                              max_terminals_per_net=3),
+    )
+    assert res.nets_routed == 1
+    assert "max_terminals_per_net" not in res.failed_reasons.get("BIG", "")
+    # Over the cap with chunking off: guard fires (prior behavior).
+    res, _, _ = route_nets(
+        _ladder(4), ["BIG"], set(),
+        params=RoutingParams(run_drc=False, stitch_gnd_vias=False,
+                             max_terminals_per_net=3,
+                             piecemeal_chunk_terminals=0),
     )
     assert res.nets_failed == 1
     assert "max_terminals_per_net" in res.failed_reasons["BIG"]
@@ -90,11 +116,15 @@ def test_cap_boundary_and_opt_out():
     assert "max_terminals_per_net" not in res.failed_reasons.get("BIG", "")
 
 
-def test_params_round_trip_cap():
-    params = RoutingParams(max_terminals_per_net=7)
-    assert RoutingParams.from_dict(params.to_dict()).max_terminals_per_net == 7
+def test_params_round_trip_terminal_caps():
+    params = RoutingParams(max_terminals_per_net=7, piecemeal_chunk_terminals=5)
+    rt = RoutingParams.from_dict(params.to_dict())
+    assert rt.max_terminals_per_net == 7
+    assert rt.piecemeal_chunk_terminals == 5
     with pytest.raises(ValueError):
         RoutingParams.from_dict({"max_terminals_per_net": -1})
+    with pytest.raises(ValueError):
+        RoutingParams.from_dict({"piecemeal_chunk_terminals": -1})
 
 
 def _walled_board() -> BoardModel:
@@ -175,20 +205,30 @@ def test_per_net_budget_round_trip():
 
 
 @pytest.mark.dccf
-def test_dccf_gnd_fails_fast():
+def test_dccf_gnd_chunks_with_bounded_budget():
+    """Over-cap GND auto-splits; per-chunk budgets bound total work."""
+    import math
+
     model = board_model(parse_file(DCCF_PCB))
     assert len(model.nets["GND"]) == 66
-    t0 = time.perf_counter()
-    result, _, _ = route_nets(
-        model, ["GND"], set(),
-        params=RoutingParams(run_drc=False, stitch_gnd_vias=False,
-                             max_attempts_per_net=1),
+    params = RoutingParams(run_drc=False, stitch_gnd_vias=False,
+                           max_attempts_per_net=1,
+                           max_expansions_per_net=500_000)
+    size = params.piecemeal_chunk_terminals
+    n_chunks = (
+        1 if len(model.nets["GND"]) <= size
+        else math.ceil((len(model.nets["GND"]) - size) / (size - 1)) + 1
     )
+    t0 = time.perf_counter()
+    result, _, _ = route_nets(model, ["GND"], set(), params=params)
     elapsed = time.perf_counter() - t0
-    assert result.nets_routed == 0
-    assert result.nets_failed == 1
-    assert "max_terminals_per_net" in result.failed_reasons["GND"]
-    assert elapsed < 60, f"GND guard must fail fast, took {elapsed:.1f}s"
+    # Either every chunk routes, or the failure names the failed chunk.
+    if result.nets_failed:
+        assert "chunk" in result.failed_reasons["GND"]
+    else:
+        assert result.nets_routed == 1
+    assert result.expansions <= n_chunks * params.max_expansions_per_net
+    assert elapsed < 300, f"chunked GND took {elapsed:.1f}s"
 
 
 @pytest.mark.dccf

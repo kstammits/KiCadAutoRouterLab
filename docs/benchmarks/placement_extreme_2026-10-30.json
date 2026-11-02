@@ -1,0 +1,150 @@
+{
+  "fixed": [
+    {
+      "board": "synthetic_128fp",
+      "footprints": 128,
+      "pads": 512,
+      "budget": 20,
+      "iters": 20,
+      "total_s": 1.1,
+      "ms_per_iter": 55.025,
+      "ru_before": 37257216,
+      "ru_after": 99844096
+    },
+    {
+      "board": "synthetic_256fp",
+      "footprints": 256,
+      "pads": 1024,
+      "budget": 20,
+      "iters": 20,
+      "total_s": 2.507,
+      "ms_per_iter": 125.338,
+      "ru_before": 100548608,
+      "ru_after": 254050304
+    },
+    {
+      "board": "synthetic_64fp_x2ppf",
+      "footprints": 64,
+      "pads": 128,
+      "budget": 20,
+      "iters": 20,
+      "total_s": 0.435,
+      "ms_per_iter": 21.737,
+      "ru_before": 254050304,
+      "ru_after": 254050304
+    },
+    {
+      "board": "synthetic_64fp_x8ppf",
+      "footprints": 64,
+      "pads": 512,
+      "budget": 20,
+      "iters": 20,
+      "total_s": 0.697,
+      "ms_per_iter": 34.862,
+      "ru_before": 254050304,
+      "ru_after": 254066688
+    },
+    {
+      "board": "synthetic_64fp_x16ppf",
+      "footprints": 64,
+      "pads": 1024,
+      "budget": 20,
+      "iters": 20,
+      "total_s": 1.471,
+      "ms_per_iter": 73.56,
+      "ru_before": 254066688,
+      "ru_after": 262995968
+    },
+    {
+      "board": "synthetic_64fp_x32ppf",
+      "footprints": 64,
+      "pads": 2048,
+      "budget": 20,
+      "iters": 20,
+      "total_s": 4.163,
+      "ms_per_iter": 208.127,
+      "ru_before": 263356416,
+      "ru_after": 567066624
+    },
+    {
+      "board": "synthetic_64fp_pitch12",
+      "footprints": 64,
+      "pads": 256,
+      "budget": 20,
+      "iters": 20,
+      "total_s": 0.496,
+      "ms_per_iter": 24.81,
+      "ru_before": 567066624,
+      "ru_after": 567066624
+    },
+    {
+      "board": "synthetic_64fp_pitch8",
+      "footprints": 64,
+      "pads": 256,
+      "budget": 20,
+      "iters": 20,
+      "total_s": 0.541,
+      "ms_per_iter": 27.043,
+      "ru_before": 567066624,
+      "ru_after": 567066624
+    },
+    {
+      "board": "synthetic_64fp_pitch6",
+      "footprints": 64,
+      "pads": 256,
+      "budget": 20,
+      "iters": 20,
+      "total_s": 0.796,
+      "ms_per_iter": 39.819,
+      "ru_before": 567066624,
+      "ru_after": 567689216
+    }
+  ],
+  "conv": [
+    {
+      "board": "synthetic_16fp",
+      "iters": 1000,
+      "stop": "budget",
+      "total_s": 2.269,
+      "moved": 16
+    },
+    {
+      "board": "synthetic_32fp",
+      "iters": 1000,
+      "stop": "budget",
+      "total_s": 5.543,
+      "moved": 32
+    },
+    {
+      "board": "synthetic_64fp",
+      "iters": 1000,
+      "stop": "budget",
+      "total_s": 13.976,
+      "moved": 64
+    },
+    {
+      "board": "synthetic_128fp",
+      "iters": 1000,
+      "stop": "budget",
+      "total_s": 34.974,
+      "moved": 128
+    },
+    {
+      "board": "synthetic_256fp",
+      "iters": 1000,
+      "stop": "budget",
+      "total_s": 91.014,
+      "moved": 256
+    }
+  ],
+  "provenance": {
+    "date": "2026-10-30",
+    "driver": "/tmp/placement_extreme.py (throwaway, 20-iter fixed budget + default-params converge)",
+    "note": "pitch12 inline rebuild reads 24.81 vs committed 18.755 for same geometry: ~30pct run-to-run variance under desktop load; treat ms/iter as +-30pct"
+  },
+  "fits": {
+    "ladder_a_pads2": "-5.8e-5 (degenerate: small-N overhead regime vs large-N fps2 regime, single quadratic is the wrong model)",
+    "pad_sweep_fp64_a": "4.4e-5 const=23.1",
+    "reading": "per-doubling 64->128->256: 2.9x then 2.3x => N^1.2-1.5 in this window; fps2 term dominates; pads term isolated only in fixed-fp sweep"
+  }
+}

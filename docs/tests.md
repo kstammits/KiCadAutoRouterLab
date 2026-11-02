@@ -51,7 +51,8 @@ default heavy fixture (12+ files); deselect via `-m "not dccf"` + `--ignore` or
 | `test_routing_smooth` | 14 | Any-angle smoother: shortcut/clearance properties + staircase-arc detour regression |
 | `test_routing_tight_spot` | 12 | Cramped DCCF VIN + synthetic tight spots |
 | `test_routing_tht_free_via` | 10 | THT hole as free via (R6 pattern) |
-| `test_routing_limits` | 9 | Fail-fast on massive nets (`max_terminals_per_net`) |
+| `test_routing_limits` | 9 | Piecemeal tripwire (`max_terminals_per_net` 16) + chunk opt-out |
+| `test_routing_piecemeal` | 8 | Chunk split/merge/coverage + 17/21-terminal rail sizes + failed-net partial copper |
 | `test_routing_pour` | 8 | Pours passable-at-toll, severance steers |
 | `test_track_ripup` | 7 | `commit_placement` + `rip_up_nets` |
 

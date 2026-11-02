@@ -706,14 +706,18 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(404, f"unknown net: {net_name}".encode(), "text/plain")
                 return
             terms = []
+            multi = len(model.board_regions) > 1
             for fp in model.footprints:
+                region = model.footprint_region.get(fp.uuid, -1) if multi else 0
                 for pad in fp.pads:
                     if pad.net_name == net_name:
                         terms.append({"x_mm": pad.position.x_mm,
                                       "y_mm": pad.position.y_mm,
-                                      "ref": fp.ref, "pad": pad.number})
+                                      "ref": fp.ref, "pad": pad.number,
+                                      "region": region})
             self._send(200, json.dumps({"ok": True, "net": net_name,
                                         "count": len(terms),
+                                        "multi_region": multi,
                                         "terminals": terms}).encode(),
                        "application/json")
             return
@@ -1967,6 +1971,18 @@ class Handler(BaseHTTPRequestHandler):
                 "expansions": result.expansions,
                 "timings": result.timings,
                 "failed_reasons": result.failed_reasons,
+                "partial_tracks": [
+                    {"start": list(t.start), "end": list(t.end),
+                     "width_mm": t.width_mm, "layer": t.layer,
+                     "net_name": t.net_name}
+                    for t in result.partial_tracks
+                ],
+                "partial_vias": [
+                    {"position": list(v.position), "size_mm": v.size_mm,
+                     "drill_mm": v.drill_mm, "layers": list(v.layers),
+                     "net_name": v.net_name}
+                    for v in result.partial_vias
+                ],
                 "mode_warning": mode_info["warning"],
                 "version": version,
             }

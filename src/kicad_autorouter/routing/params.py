@@ -44,9 +44,15 @@ class RoutingParams:
     # one budget-burn stays under ~100s even at the worst observed rate
     # (~20ms/kexp on large boards); healthy nets route far below this
     # (DCCF 20-net batch: 1.3M total).
-    max_terminals_per_net: int = 32  # Fail-fast cap on net size (grid
-    # terminals); larger nets fail with an explicit reason instead of
-    # burning hours of Steiner pair-searches. 0 = no cap.
+    max_terminals_per_net: int = 16  # Piecemeal tripwire on net size
+    # (grid terminals); larger nets auto-split into terminal chunks
+    # (see piecemeal_chunk_terminals) instead of burning hours of
+    # Steiner pair-searches in a single flight. 0 = no cap (route whole,
+    # no chunking).
+    piecemeal_chunk_terminals: int = 12  # Terminals per piecemeal chunk
+    # for nets over max_terminals_per_net (consecutive chunks overlap by
+    # one terminal so sub-trees join). 0 disables chunking: over-cap nets
+    # fail fast with an explicit reason (prior behavior).
     stitch_gnd_vias: bool = True      # Auto-repair GND pour continuity after routing
     strip_gnd_blockers: bool = True  # Evict GND vias/tracks upfront (rebuildable via stitcher);
     # GND-only exception to protected_nets: signal/power copper is never
@@ -95,6 +101,7 @@ class RoutingParams:
             "max_expansions": self.max_expansions,
             "max_expansions_per_net": self.max_expansions_per_net,
             "max_terminals_per_net": self.max_terminals_per_net,
+            "piecemeal_chunk_terminals": self.piecemeal_chunk_terminals,
             "stitch_gnd_vias": self.stitch_gnd_vias,
             "strip_gnd_blockers": self.strip_gnd_blockers,
             "stitch_vias_max": self.stitch_vias_max,
@@ -122,6 +129,7 @@ class RoutingParams:
             "via_drill_mm", "max_attempts_per_net", "run_drc", "debug",
             "net_widths", "heuristic_weight", "max_expansions",
             "max_expansions_per_net", "max_terminals_per_net",
+            "piecemeal_chunk_terminals",
             "stitch_gnd_vias", "strip_gnd_blockers", "stitch_vias_max", "stitch_bridges_max",
             "stitch_bridge_max_mm", "stitch_bridge_width_mm", "pour_severance_weight", "fanout_margin_mm",
             "window_margin_cells", "window_growth", "window_retries",
@@ -163,7 +171,8 @@ def _validate_routing_params(params: "RoutingParams") -> None:
     ):
         raise ValueError("grid_resolution_mm must be a positive finite number")
     for name in (
-        "max_attempts_per_net", "max_expansions", "max_expansions_per_net", "max_terminals_per_net", "stitch_vias_max",
+        "max_attempts_per_net", "max_expansions", "max_expansions_per_net", "max_terminals_per_net",
+        "piecemeal_chunk_terminals", "stitch_vias_max",
         "stitch_bridges_max", "fanout_plane_vias_max", "window_margin_cells", "window_retries",
     ):
         value = getattr(params, name)

@@ -4,11 +4,32 @@ Open work only. Completed changes belong in git history, not here.
 
 ## Placement
 
-- **DCCF long-budget regrowth**: `wall_k_N` 0.08 → 0.1 clears the RV1/U1
-  wedge at the 200-iteration audit (sweep `wall_hardening_2026-10-26.json`:
-  same-k DCCF cells drop 9–10 pairs / ~36–68 mm² to 1–2 pairs / ~8–12 mm²),
-  but 1000-iteration runs regrow C10/U2 (~1.8 → 6.1 mm²). Needs anchor-side
-  or budget-aware work.
+- **DCCF long-budget regrowth**: `wall_k_N` 0.08 → 0.1 (plus p=2.0) has
+  landed in the engine defaults (sweep `wall_hardening_2026-10-26.json`:
+  same-k DCCF cells drop 9–10 pairs / ~36–68 mm² to 1–2 pairs / ~8–12 mm²).
+  The C10/U2 regrowth (~1.8 → 6.1 mm²) no longer reproduces — C10/U2 reads
+  0.0 at 200 and 1000 iters under both halos. Dense re-probe at honest
+  defaults (`scripts/plot_regrowth_forces.py`,
+  `docs/figures/fig_regrow_wall_sweep.png` +
+  `fig_r11u2_force_balance.png`): k ≥ 0.10 holds 1000-iter runs clean
+  (8.2 mm², fixture D5/Q2 only; stable across 900/1000/1100 budgets),
+  while k < 0.10 is a chaotic zone (12–30 mm², R11/U2 driver, 900–1100
+  spreads overlap — a threshold region, not a cliff). Repulsion is
+  load-bearing: the sweep script's neutered 1e-15 regime grows R11/U2
+  0 → 11.4 plus RV1/U2 and C19/U4, while engine-default 2e-9 holds clean
+  and 10x (2e-8) is slightly worse (12.3) — Coulomb keeps the pileup off,
+  but over-stiffening churns elsewhere. Halo 4 mm is near-optimal: mean
+  wall force per part falls as halo widens, areas show no improving trend
+  past 4 mm, and halo ≥ 5 mm grows the RV1/U1 wedge (→ ~4.7 mm² at 6 mm).
+  Geometry transects show U2 truly wedged: both R11-side and locked-RV1-side
+  wall ramps cross flat ~0.05–0.06 N attraction, with overlap ending just
+  past each crossing. All DCCF runs still end `budget` with multi-newton
+  residuals — the 200-iter audit samples mid-churn. Next: gate any
+  `wall_k_N` move on the dense-k 1000-iter pair set at defaults plus
+  press-probe theory match and magnet-clustering parity, or go targeted
+  (one-sided edges on the U2 cluster); also rescale the sweep script's
+  `base_kw` repulsion to the engine default so future sweeps are not
+  confounded by the neutering.
 - **Halo reach recalibration**: Legalize uses 4 mm while Cluster and the
   engine default remain 6 mm. A full sweep is still needed before changing
   either global default.
@@ -40,20 +61,31 @@ Open work only. Completed changes belong in git history, not here.
   one DCCF power net now fails at ~4M expansions / 25 s (was routed,
   951k / 9 s);   routing GND (66 terminals) as a signal net burned ~86M
   expansions / ~9 min and failed with the whole grid tolled and corridor
-  never triggering. Landed: `max_terminals_per_net` fail-fast guard in
-  `route_nets` (default 32, `0` = no cap) with an explicit failure reason.
-  Remaining: piecemeal strategy for massive power nets (subnet selection
-  routed against existing copper, per Future work below) instead of
-  all-or-nothing single flight.
-  Follow-up: tube111 +12V (21 terminals, under the cap) also hangs —
-  >280 s with and without corridor, while the whole Oct-21 7-net row took
-  ~8 s. The static grid is healthy (tolled 0.00, blocked ~0.16), so this
-  is a search-dynamics regression for wide multi-terminal nets, not a
-  blocked board; suspects are the Oct 23–25 fanout hardening, impedance
-  screening, fill-only pours, and foreign hard exclusion. Keep the cap at
-  32 (it only trips on plane-scale nets) and fix the search rather than
-  lowering it; publish no new corridor JSON until power rows finish in
-  reasonable time again.
+  never triggering.   Landed: `max_terminals_per_net` tripwire in `route_nets` (default 16,
+  `0` = no cap) with auto-split into `piecemeal_chunk_terminals` chunks
+  (default 12, `0` = fail fast as before) and an explicit per-chunk failure
+  reason. GND-66 chunks in ~9 s bounded (chunk 2 hits per-chunk budget)
+  instead of the 86M-expansion / 9-min hang. Remaining: the maze itself —
+  sealed tight clusters (own-cell secondary 10000, ANY-blocked supercell
+  sealing) still defeat every chunk granularity; needs a thread-preserving
+  finder or push-and-shove (R10) rather than smaller chunks.
+  Follow-up: tube111 +12V (21 terminals) also hangs — >280 s with and
+  without corridor, while the whole Oct-21 7-net row took ~8 s. The static
+  grid is healthy (tolled 0.00, blocked ~0.16), so this is a search-dynamics
+  regression for wide multi-terminal nets, not a blocked board; suspects
+  are the Oct 23–25 fanout hardening, impedance screening, fill-only pours,
+  and foreign hard exclusion. Landed 2026-10-31: piecemeal auto-split —
+  the tripwire is now 16 terminals (uniform across net classes; no GND
+  special case — without a pour GND is just another big net) with
+  `piecemeal_chunk_terminals` 12, kept copper walkable + a valid A* goal
+  plus a trunk connector between bands. Chunk-1 of +12V still burns its
+  4M budget in ~23 s at any granularity (12/8/6): bounded and localized
+  instead of a 280 s+ hang, but the maze itself is unmoved — the sealed
+  tight cluster needs the search-side fixes below. Failed nets now return
+  their routed chunks as display-only partial copper (orange overlay, never
+  written back) with per-chunk reasons in the route diag, so the stuck
+  region is reviewable alongside the debug cost grid. Publish no new
+  corridor JSON until power rows finish in reasonable time again.
   Quantified 2026-10-26: softening all hard secondary rings to toll level
   restores +12V in 8.2 s / 1.29M expansions (Oct-21 parity), but DRC on
   that board jumps 174 → 481 violations (+229 clearance) — Oct-21-era
@@ -157,10 +189,11 @@ Counts are additive (`fanout_vias_added` / `fanout_tracks_added`).
   part facing an SMD on the opposite layer — through-hole pins occupy both
   sides, so opposite-side overlap may undercount. Needs a fixture pair +
   legality case.
-- **Partial rip-up/reroute of massive nets (PWR)**: today a net routes
-  whole. Scope subnet selection (by footprint set, region rect, or
-  failed-segment list), route only that subset against existing copper as
-  obstacle, splice into the tree. Keeps big-rail iteration cheap.
+- **Partial rip-up/reroute of massive nets (PWR)**: count-chunk
+  piecemeal landed (spatial bands, kept-copper join, trunk connector).
+  Remaining: subnet selection by footprint set / region rect (chunk
+  composition is row-major only), and true partial re-route (today a
+  failed net keeps nothing; splice keeps only full passes).
 
 ## Documentation
 

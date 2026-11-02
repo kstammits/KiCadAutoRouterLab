@@ -1,0 +1,154 @@
+{
+  "provenance": {
+    "date": "2026-10-30",
+    "driver": "/tmp/routing_extreme2.py (throwaway, route_nets 500k cap, attempts=1, stitch/drc off)",
+    "machine_caveat": "desktop under load (loadavg 3-7); tube111_all60 rerun exceeded 45min vs 200s run-1: congested-tail runtime is highly variable; tight_spots full and benchmark_routing standard both exceeded 40-60min caps without writing (scripts save only at end) -> power-net-heavy suites no longer finish in reasonable time"
+  },
+  "window_partial": {
+    "DCCF_5n_wm16_corr_on": {
+      "routed": 5,
+      "failed": 0,
+      "expansions": 33541,
+      "astar_s": 2.719,
+      "wall_s": 7.82,
+      "corridor_tried": 0,
+      "corridor_used": 0
+    },
+    "note": "sweep aborted by environment after first cell; corridor never triggered on easy nets (consistent with corridor_2026-10-21: guidance matters only on hard nets)"
+  },
+  "cases": [
+    {
+      "board": "DCCF_half22",
+      "nets_requested": 22,
+      "nets_routed": 22,
+      "nets_failed": 0,
+      "expansions": 1441717,
+      "total_s": 22.966,
+      "astar_s": 18.752,
+      "wall_s": 23.46,
+      "s_per_net": 1.044,
+      "res": 0.1,
+      "failed": {}
+    },
+    {
+      "board": "DCCF_all44",
+      "nets_requested": 44,
+      "nets_routed": 44,
+      "nets_failed": 0,
+      "expansions": 3233635,
+      "total_s": 45.384,
+      "astar_s": 38.861,
+      "wall_s": 46.112,
+      "s_per_net": 1.031,
+      "res": 0.1,
+      "failed": {}
+    },
+    {
+      "board": "tube111_half30",
+      "nets_requested": 30,
+      "nets_routed": 28,
+      "nets_failed": 2,
+      "expansions": 1953571,
+      "total_s": 17.516,
+      "astar_s": 15.218,
+      "wall_s": 18.193,
+      "s_per_net": 0.584,
+      "res": 0.1,
+      "failed": {
+        "Net-(R29-Pad1)": "no path found",
+        "Net-(R30-Pad1)": "no path found"
+      }
+    },
+    {
+      "board": "tube111_all60",
+      "nets_requested": 60,
+      "nets_routed": 42,
+      "nets_failed": 18,
+      "expansions": 34544243,
+      "total_s": 199.526,
+      "astar_s": 195.901,
+      "wall_s": 200.215,
+      "s_per_net": 3.325,
+      "res": 0.1,
+      "note": "run-1 2026-10-30; rerun exceeded 45min without finishing (high variance on congested tail)",
+      "failed": {
+        "Net-(R29-Pad1)": "no path found",
+        "Net-(R30-Pad1)": "no path found",
+        "incv_curr": "no path found",
+        "outcv_curr": "no path found",
+        "C2InCV": "no path found",
+        "C2OutCV": "no path found",
+        "C2Output": "no path found",
+        "C2TubeIn": "no path found",
+        "Net-(D3-Pad2)": "no path found",
+        "Net-(R10-Pad1)": "no path found",
+        "Net-(R16-Pad1)": "no path found",
+        "Net-(R28-Pad1)": "no path found",
+        "Net-(R31-Pad1)": "no path found",
+        "Net-(R32-Pad1)": "no path found",
+        "Net-(R40-Pad1)": "no path found",
+        "C2InCVLED": "no path found",
+        "C2OutCVLED": "no path found",
+        "grid_cv": "no path found"
+      }
+    },
+    {
+      "board": "DCCF_10n_res0.2",
+      "nets_requested": 10,
+      "nets_routed": 10,
+      "nets_failed": 0,
+      "expansions": 234700,
+      "total_s": 2.52,
+      "astar_s": 1.564,
+      "wall_s": 3.019,
+      "s_per_net": 0.252,
+      "res": 0.2,
+      "failed": {}
+    },
+    {
+      "board": "DCCF_10n_res0.15",
+      "nets_requested": 10,
+      "nets_routed": 10,
+      "nets_failed": 0,
+      "expansions": 357747,
+      "total_s": 4.571,
+      "astar_s": 2.921,
+      "wall_s": 5.1,
+      "s_per_net": 0.457,
+      "res": 0.15,
+      "failed": {}
+    },
+    {
+      "board": "DCCF_10n_res0.07",
+      "nets_requested": 10,
+      "error": "routing grid too large: 3355x2915x2 (19.6M cells) at 0.07mm resolution (limit 12M). Use a coarser grid_resolution_mm (e.g. 0.1mm) or a smaller margin_mm.",
+      "res": 0.07
+    },
+    {
+      "board": "DCCF_sig5_then_VIN",
+      "nets_requested": 6,
+      "nets_routed": 5,
+      "nets_failed": 1,
+      "expansions": 4056632,
+      "total_s": 30.101,
+      "wall_s": 30.573,
+      "res": 0.1,
+      "failed": {
+        "VIN": "expansion budget exhausted (4000000 >= max_expansions_per_net=4000000): no DRC-clean path found within budget \u2014 try a narrower track width, fewer terminals per run (piecemeal), or a coarser grid"
+      }
+    },
+    {
+      "board": "DCCF_VIN_then_sig5",
+      "nets_requested": 6,
+      "nets_routed": 5,
+      "nets_failed": 1,
+      "expansions": 4056632,
+      "total_s": 30.039,
+      "wall_s": 30.568,
+      "res": 0.1,
+      "failed": {
+        "VIN": "expansion budget exhausted (4000000 >= max_expansions_per_net=4000000): no DRC-clean path found within budget \u2014 try a narrower track width, fewer terminals per run (piecemeal), or a coarser grid"
+      }
+    }
+  ]
+}

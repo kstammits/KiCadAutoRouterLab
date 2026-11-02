@@ -208,7 +208,26 @@ function frameBox(x0, y0, x1, y1) {
 
 // Zoom the viewer to the selected nets' terminals (union over selection).
 // Terminals are model pad positions: known before routing and after.
+// On multi-region (panel) boards each pad also carries its region, painted
+// as a color-coded dot overlay so a net spanning boards (e.g. tube111
+// +12V) reads as two groups needing an assembly bridge — never one track.
 // Best-effort and silent — zoom must never nag on a fetch hiccup.
+const REGION_COLORS = ["#4fc3f7", "#ffd54f", "#ba68c8", "#81c784", "#ff8a65", "#9ccc65"];
+let terminalsOverlayData = [];
+function renderTerminalsOverlay() {
+  makeSvgOverlay("terminals-overlay", terminalsOverlayData.length > 0, terminalsOverlayData, g => {
+    for (const t of terminalsOverlayData) {
+      const color = REGION_COLORS[(t.region ?? 0) % REGION_COLORS.length];
+      const dot = svgEl("circle", {
+        cx: t.x_mm, cy: t.y_mm, r: 0.6,
+        fill: color, "fill-opacity": "0.85", stroke: "#111",
+        "stroke-width": "0.15",
+      });
+      dot.appendChild(svgTitle(`${t.net} ${t.ref}.${t.pad} — region ${t.region}`));
+      g.appendChild(dot);
+    }
+  });
+}
 async function zoomToNets() {
   if (!viewport?.querySelector("svg") || selectedNets.size === 0) return;
   try {
@@ -216,14 +235,18 @@ async function zoomToNets() {
       apiJson(`/api/nets/terminals?net=${encodeURIComponent(n)}`).catch(() => null)));
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
     let n = 0;
+    const dots = [];
     for (const r of all) {
       for (const t of (r?.terminals || [])) {
         if (t.x_mm == null || t.y_mm == null) continue;
         x0 = Math.min(x0, t.x_mm); y0 = Math.min(y0, t.y_mm);
         x1 = Math.max(x1, t.x_mm); y1 = Math.max(y1, t.y_mm);
         n++;
+        if (r?.multi_region) dots.push({ ...t, net: r.net });
       }
     }
+    terminalsOverlayData = dots;
+    renderTerminalsOverlay();
     if (!n) return;
     frameBox(x0, y0, x1, y1);
   } catch (e) { /* silent */ }
@@ -454,5 +477,6 @@ async function fetchAndInjectSVG(version) {
   applyLayerVisibility();
   highlightSelectedNets();
   renderGndIslandsOverlay();
+  renderTerminalsOverlay();
   if (motion.frames.length) applyMotionFrame(motion.idx);
 }

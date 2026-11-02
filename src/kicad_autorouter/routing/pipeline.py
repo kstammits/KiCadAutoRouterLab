@@ -28,10 +28,12 @@ from .output import routes_to_tracks_vias, apply_routes_to_tree
 from .output import Track as OutputTrack, Via as OutputVia
 from .smooth import own_net_soft_mask, smooth_grid_path, smoothed_wire_mm
 from .router import SECONDARY_BLOCKED
+from .router import RouteResult as NetRouteResult
 from .power import identify_power_nets
 from .grid import RoutingGrid, board_to_grid, grid_to_board
 from .pour import pour_corridors, pour_net_names, severance_cost
 from .stitch import plan_stitches
+from .stitch import _region_masks as _board_region_masks
 from .obstacles import BLOCKED, bresenham_cells, build_fanout_cost, build_via_block_mask, drill_radius_cells, stamp_discs, stamp_square, tht_drill_cells, track_corridor_radius_cells, via_halo_radius_cells
 
 
@@ -58,6 +60,8 @@ class RoutingResult:
     fanout_vias_added: int = 0  # Plane-tap stubs (four-layer strategy; additive, never folded into vias_added inputs)
     fanout_tracks_added: int = 0  # Stub tracks accompanying plane-tap vias
     failed_reasons: Dict[str, str] = field(default_factory=dict)  # net -> explicit failure reason
+    partial_tracks: Tuple = ()  # Display-only copper from failed nets' routed chunks (never written back)
+    partial_vias: Tuple = ()  # Display-only vias from failed nets' routed chunks (never written back)
 
 
 # Re-export: canonical home is routing.params (config + validation +
@@ -142,6 +146,45 @@ def _terminals_for_net(
         layer_idx = grid.layer_to_idx.get(fp.layer, 0)
         terminals.append((col, row, layer_idx))
     return terminals
+
+
+def _group_terminals_by_region(
+    model: BoardModel,
+    grid: RoutingGrid,
+    net_name: str,
+    allowed_layers: Optional[Collection[str]] = None,
+) -> List[Tuple[int, List[Tuple[int, int, int]]]]:
+    """Grid terminals grouped by board region (panel-aware routing).
+
+    Each group routes independently inside its own region — copper must
+    never cross the inter-panel gap. Bridge / header mates are assembly
+    joints: each side just routes up to its local pads, so no cross-gap
+    portal is needed in the router. Single-file boards (no
+    ``board_regions``) return one group, preserving prior behavior.
+    Pads outside every polygon (region -1) form their own unconstrained
+    group.
+    """
+    grouped: Dict[int, List[Tuple[int, int, int]]] = {}
+    for conn in model.nets.get(net_name, []):
+        fp = model.by_ref.get(conn.ref)
+        if not fp:
+            continue
+        pad = next((p for p in fp.pads if p.number == conn.pad_number), None)
+        if not pad:
+            continue
+        if allowed_layers is not None and fp.layer not in allowed_layers:
+            continue
+        col, row = board_to_grid(grid, pad.position.x_mm, pad.position.y_mm)
+        layer_idx = grid.layer_to_idx.get(fp.layer, 0)
+        if model.board_regions:
+            region_idx = model.footprint_region.get(fp.uuid, -1)
+        else:
+            region_idx = 0
+        grouped.setdefault(region_idx, []).append((col, row, layer_idx))
+    # Deterministic region order; net (model) order inside each group so a
+    # single-region board routes exactly as before. Piecemeal chunking
+    # sorts its own copy row-major (adjacent bands).
+    return [(region_idx, grouped[region_idx]) for region_idx in sorted(grouped)]
 
 
 def _width_cells(width_mm: float, resolution_mm: float) -> int:
@@ -307,6 +350,122 @@ def _apply_route_to_grid(
                 for _l, _r, _c in ((l1, r1, c1), (l2, r2, c2)):
                     if 0 <= _l < n_layers and 0 <= _r < H and 0 <= _c < W:
                         stamp_square(cost_grid[_l], _r, _c, via_radius, BLOCKED)
+
+
+def _chunk_terminals(
+    terminals: List[Tuple[int, int, int]], size: int
+) -> List[List[Tuple[int, int, int]]]:
+    """Split terminals into disjoint chunks of at most ``size``.
+
+    Later chunks route against earlier chunks' stamped copper, which stays
+    walkable and is a valid search goal, so sub-trees join at kept copper
+    instead of a shared terminal. A trailing singleton merges into the
+    previous chunk (a chunk must connect at least a pair); values < 2
+    route whole.
+    """
+    if size < 2 or len(terminals) <= size:
+        return [list(terminals)]
+    chunks = [list(terminals[i:i + size]) for i in range(0, len(terminals), size)]
+    if len(chunks) > 1 and len(chunks[-1]) < 2:
+        chunks[-2].extend(chunks[-1])
+        chunks.pop()
+    return chunks
+
+
+def _merge_chunk_results(results: List[NetRouteResult]) -> NetRouteResult:
+    """Concatenate per-chunk routes into one net result (piecemeal splice).
+
+    Branches concatenate (geometry consumers already iterate branches);
+    wire/via/cost/expansions/corridor stats sum. The union path dedupes
+    in first-seen order, matching single-flight shape.
+    """
+    branches: List[Tuple[int, int, int]] = []
+    for r in results:
+        branches.extend(_branch_paths(r))
+    seen = set()
+    union: List[Tuple[int, int, int]] = []
+    for b in branches:
+        for cell in b:
+            if cell not in seen:
+                seen.add(cell)
+                union.append(cell)
+    return NetRouteResult(
+        path=union,
+        wire_mm=sum(r.wire_mm for r in results),
+        via_count=sum(r.via_count for r in results),
+        cost=sum(r.cost for r in results),
+        success=True,
+        expansions=sum(r.expansions for r in results),
+        corridor_tried=sum(r.corridor_tried for r in results),
+        corridor_found=sum(r.corridor_found for r in results),
+        corridor_used=sum(r.corridor_used for r in results),
+        corridor_cells=sum(r.corridor_cells for r in results),
+        branches=tuple(tuple(b) for b in branches),
+        debug_attempts=tuple(a for r in results for a in r.debug_attempts),
+    )
+
+
+def _branch_cells(result) -> List[Tuple[int, int, int]]:
+    """Dense raster cells of every branch (centerline + via landings).
+
+    Smoothed branches are waypoint polylines — sparse points, not copper.
+    Rasterizing the same way ``_apply_route_to_grid`` stamps gives the
+    actual cells for join targets and connectivity checks.
+    """
+    cells: List[Tuple[int, int, int]] = []
+    for branch in _branch_paths(result):
+        if len(branch) == 1:
+            cells.append(tuple(branch[0]))
+        for i in range(len(branch) - 1):
+            c1, r1, l1 = branch[i]
+            c2, r2, l2 = branch[i + 1]
+            if l1 == l2:
+                cells.extend((c, r, l1) for c, r in bresenham_cells(c1, r1, c2, r2))
+            else:
+                cells.append((c1, r1, l1))
+                cells.append((c2, r2, l2))
+    return cells
+
+
+def _check_chunk_coverage(
+    terminals: List[Tuple[int, int, int]], merged: NetRouteResult
+) -> Optional[str]:
+    """Merged copper must connect every terminal (BFS over branch cells)."""
+    cells = set(_branch_cells(merged))
+    missing = sum(1 for t in terminals if tuple(t) not in cells)
+    if missing:
+        return (
+            f"piecemeal splice disconnected: {missing} terminal(s) "
+            f"outside routed copper"
+        )
+    # Reachability: 8-neighbourhood steps plus layer vias, from the first
+    # terminal through merged cells only. Membership alone is not enough —
+    # disjoint sub-trees each cover their own terminals. 8-connectivity
+    # (not 4) because Bresenham waypoint chords step diagonally.
+    seen = {tuple(terminals[0])}
+    stack = [tuple(terminals[0])]
+    while stack:
+        c, r, l = stack.pop()
+        for dc in (-1, 0, 1):
+            for dr in (-1, 0, 1):
+                if dc == 0 and dr == 0:
+                    continue
+                nb = (c + dc, r + dr, l)
+                if nb in cells and nb not in seen:
+                    seen.add(nb)
+                    stack.append(nb)
+        for nl in (l - 1, l + 1):
+            nb = (c, r, nl)
+            if nb in cells and nb not in seen:
+                seen.add(nb)
+                stack.append(nb)
+    unreachable = sum(1 for t in terminals if tuple(t) not in seen)
+    if unreachable:
+        return (
+            f"piecemeal splice disconnected: {unreachable} terminal(s) "
+            f"unreachable in routed copper"
+        )
+    return None
 
 
 def _mark_line_blocked(layer_grid: np.ndarray, r1: int, c1: int, r2: int, c2: int, radius: int = 0) -> None:
@@ -600,6 +759,7 @@ def route_nets(
     
     # Track results
     all_results = {}
+    partial_results: Dict[str, NetRouteResult] = {}
     ripup = RipUpManager(max_attempts=params.max_attempts_per_net)
     nets_routed = 0
     nets_failed = 0
@@ -698,21 +858,51 @@ def route_nets(
         )
         if len(terminals) < 2:
             return False
-        if params.max_terminals_per_net > 0 and len(terminals) > params.max_terminals_per_net:
-            # Heuristic guard: Steiner pair-searches scale ~n-1 capped A*
-            # runs per net, so massive planes burn tens of millions of
-            # expansions and still fail. Fail fast with an actionable
-            # reason instead of hanging the job.
-            ripup.record_failure(
-                net_name,
-                f"{len(terminals)} terminals exceeds max_terminals_per_net="
-                f"{params.max_terminals_per_net} (massive nets do not route "
-                f"in a single flight — split into smaller subsets, or rely "
-                f"on copper pours + GND stitching for planes)",
-            )
-            nets_failed += 1
+        # Panel-aware split: group terminals by board region so each board
+        # routes independently. Same-net pads on different panels (e.g.
+        # tube111 +12V in regions 1+2) must never share copper across the
+        # inter-panel gap — assembly bridges join them, and each side only
+        # needs a local route up to its own header pads.
+        region_groups = _group_terminals_by_region(
+            model, routing_grid, net_name, params.allowed_layers
+        )
+        multi_region = len(region_groups) > 1
+        region_masks: List = []
+        if multi_region and model.board_regions:
+            try:
+                region_masks = _board_region_masks(model, routing_grid)
+            except Exception:
+                region_masks = []
+        # Piecemeal chunking applies within each region group (adjacent
+        # row-major bands), never across regions.
+        grouped_chunks: List[Tuple[int, List[List[Tuple[int, int, int]]]]] = []
+        for region_idx, group_terms in region_groups:
+            if len(group_terms) < 2:
+                continue  # single-pad region: nothing to connect locally
+            if params.max_terminals_per_net > 0 and len(group_terms) > params.max_terminals_per_net:
+                if params.piecemeal_chunk_terminals >= 2:
+                    ordered = sorted(group_terms, key=lambda t: (t[1], t[0]))
+                    grouped_chunks.append(
+                        (region_idx, _chunk_terminals(ordered, params.piecemeal_chunk_terminals))
+                    )
+                else:
+                    ripup.record_failure(
+                        net_name,
+                        f"{len(group_terms)} terminals exceeds max_terminals_per_net="
+                        f"{params.max_terminals_per_net} (massive nets do not route "
+                        f"in a single flight — split into smaller subsets, enable "
+                        f"piecemeal_chunk_terminals, or rely on copper pours + "
+                        f"GND stitching for planes)",
+                    )
+                    nets_failed += 1
+                    return False
+            else:
+                grouped_chunks.append((region_idx, [group_terms]))
+        if not grouped_chunks:
             return False
-        pairs_total = len(terminals) * (len(terminals) - 1) // 2
+        pairs_total = sum(
+            len(c) * (len(c) - 1) // 2 for _, chunks in grouped_chunks for c in chunks
+        )
         _report(net_name, 0, pairs_total, expansions_total)
         width_mm = resolve_track_width(model, params, net_name, extra_power_nets)
         width_map[net_name] = width_mm
@@ -758,73 +948,188 @@ def route_nets(
             model, routing_grid, net_name,
             clearance_mm=clearance_mm, track_half_mm=width_mm / 2.0,
         )
-        # Hard exclusion the smoother must respect: foreign-THT rings.
-        # Own pads read 0 by construction, so terminals stay reachable.
-        blocked_mask = secondary >= SECONDARY_BLOCKED
-        success = False
-        budget_hit = False
-        while ripup.can_retry(net_name):
-            if should_cancel is not None and should_cancel():
-                raise RoutingCancelled(f"cancelled before attempt for {net_name}")
+        # Per-region confinement: copy the base secondary and mark every
+        # cell outside the group's region BLOCKED, so A*, corridor
+        # guidance, and the smoother can never wander across the
+        # inter-panel gap. Region -1 (outside all polygons) stays
+        # unconstrained, preserving single-board behavior.
+        def _secondary_for_region(region_idx: int, term_set=None):
+            if (
+                not multi_region
+                or region_idx < 0
+                or region_idx >= len(region_masks)
+            ):
+                return secondary, secondary >= SECONDARY_BLOCKED
+            mask = region_masks[region_idx]
+            confined = secondary.copy()
+            confined[:, ~mask] = SECONDARY_BLOCKED
+            if term_set:
+                # Terminals stay enterable: the region raster can clip a
+                # pad cell at the polygon edge, and the secondary has no
+                # goal exemption by design — so restore this group's own
+                # terminal cells to their unmasked values.
+                for (c, r, l) in term_set:
+                    if (0 <= l < confined.shape[0]
+                            and 0 <= r < confined.shape[1]
+                            and 0 <= c < confined.shape[2]):
+                        confined[l, r, c] = secondary[l, r, c]
+            return confined, confined >= SECONDARY_BLOCKED
 
-            def _pair_cb(done: int, total: int, exp: int, _net: str = net_name) -> None:
-                _report(_net, done, total, expansions_total + exp)
+        success = False
+        fatal = False
+        region_results: List[NetRouteResult] = []
+
+        def _fly(term_set, done_base: int, pairs_grand: int,
+                 tag: str, seed, region_secondary, region_blocked_mask) -> tuple:
+            """Route+smooth+stamp one terminal set within its region.
+
+            Returns (result|None, fail_kind|None) with fail_kind "budget"
+            on deterministic budget exhaustion, "open" otherwise.
+            """
+            nonlocal expansions_total
+
+            def _pair_cb(done: int, total: int, exp: int) -> None:
+                _report(net_name, done_base + done, pairs_grand,
+                        expansions_total + exp)
 
             t_astar = time.perf_counter()
-            result = router.route(
-                terminals, secondary,
+            res = router.route(
+                list(term_set), region_secondary,
                 progress_cb=_pair_cb if progress_cb is not None else None,
                 should_cancel=should_cancel,
+                seed_cells=seed,
             )
             timings["astar_s"] = timings.get("astar_s", 0.0) + (time.perf_counter() - t_astar)
-            expansions_total += result.expansions
-            if (params.max_expansions_per_net > 0
-                    and result.expansions >= params.max_expansions_per_net):
-                budget_hit = True
-            if params.debug and result.debug_attempts:
-                timings[f"debug_attempts_{net_name}"] = [
-                    dict(a) for a in result.debug_attempts
+            expansions_total += res.expansions
+            if params.debug and res.debug_attempts:
+                key = f"debug_attempts_{net_name}"
+                timings[key] = timings.get(key, []) + [
+                    dict(a) for a in res.debug_attempts
                 ]
-            _report(net_name, pairs_total, pairs_total, expansions_total)
-            if result.success:
+            chunk_pairs = len(term_set) * (len(term_set) - 1) // 2
+            _report(net_name, done_base + chunk_pairs, pairs_grand, expansions_total)
+            if res.success:
                 t_smooth = time.perf_counter()
-                pinned = {(c, r) for c, r, _ in terminals}
-                result = _smooth_result(
-                    result, cost_grid, routing_grid, corridor,
+                pinned = {(c, r) for c, r, _ in term_set}
+                res = _smooth_result(
+                    res, cost_grid, routing_grid, corridor,
                     pinned=pinned, soft_mask=soft_mask,
                     clearance_radius=clearance_radius,
-                    blocked_mask=blocked_mask,
+                    blocked_mask=region_blocked_mask,
                     angle_step_rad=math.pi / 18,
                 )
                 timings["smooth_s"] = timings.get("smooth_s", 0.0) + (time.perf_counter() - t_smooth)
                 _apply_route_to_grid(
-                    result, cost_grid, routing_grid, corridor,
+                    res, cost_grid, routing_grid, corridor,
                     extra_radius=clearance_radius,
                     via_clearance_cells=router.via_clearance_cells,
                 )
-                ripup.record_success(net_name, result.path)
-                all_results[net_name] = result
+                return res, None
+            if (params.max_expansions_per_net > 0
+                    and res.expansions >= params.max_expansions_per_net):
+                reason = (
+                    f"{tag}expansion budget exhausted ({res.expansions} >= "
+                    f"max_expansions_per_net={params.max_expansions_per_net}): "
+                    f"no DRC-clean path found within budget — try a narrower "
+                    f"track width, smaller piecemeal chunks, or a "
+                    f"coarser grid"
+                )
+                return None, ("budget", reason)
+            return None, ("open", f"{tag}no path found")
+
+        routed_regions: Set[int] = set()
+        # Per-group routed chunks persist across attempts so a retry reruns
+        # only the failed chunk onward (prior copper stays stamped as both
+        # obstacle and join target) — same resume rule as single-region.
+        group_progress: Dict[int, List[NetRouteResult]] = {}
+        while not fatal and not success and ripup.can_retry(net_name):
+            if should_cancel is not None and should_cancel():
+                raise RoutingCancelled(f"cancelled before attempt for {net_name}")
+            # Resume after already-routed chunks: recompute progress so a
+            # retry continues where the previous attempt stopped.
+            done_base = sum(
+                len(c) * (len(c) - 1) // 2
+                for ri, chunks in grouped_chunks
+                for c in chunks[:len(group_progress.get(ri, []))]
+            )
+            # Route each region group independently; seeds stay within the
+            # same region so kept copper never pulls a search across the gap.
+            for region_idx, chunks in grouped_chunks:
+                # Skip groups already routed in a previous attempt.
+                if region_idx in routed_regions:
+                    continue
+                n_chunks = len(chunks)
+                chunk_results = group_progress.setdefault(region_idx, [])
+                group_ok = True
+                for ci in range(len(chunk_results), n_chunks):
+                    chunk = chunks[ci]
+                    region_tag = f"region {region_idx} " if multi_region else ""
+                    chunk_tag = f"chunk {ci + 1}/{n_chunks}: " if n_chunks > 1 else ""
+                    tag = f"{region_tag}{chunk_tag}"
+                    seed = ([cell for r in chunk_results
+                             for cell in _branch_cells(r)] or None)
+                    region_secondary, region_blocked = _secondary_for_region(
+                        region_idx, chunk
+                    )
+                    result, failure = _fly(chunk, done_base, pairs_total, tag, seed,
+                                           region_secondary, region_blocked)
+                    if failure is None:
+                        assert result is not None
+                        chunk_results.append(result)
+                        done_base += len(chunk) * (len(chunk) - 1) // 2
+                        continue
+                    kind, reason = failure
+                    ripup.record_failure(net_name, reason)
+                    group_ok = False
+                    if kind == "budget":
+                        # Budget exhaustion is deterministic on an unchanged
+                        # grid: the next attempt would burn the same budget
+                        # for the same outcome, so stop retrying and fail.
+                        fatal = True
+                    break
+                if not group_ok:
+                    break
+                merged = (
+                    _merge_chunk_results(chunk_results)
+                    if len(chunk_results) > 1 else chunk_results[0]
+                )
+                problem = (
+                    _check_chunk_coverage(chunks[0] if len(chunks) == 1 else
+                                          [t for c in chunks for t in c], merged)
+                    if n_chunks > 1 else None
+                )
+                if problem is not None:
+                    if multi_region:
+                        problem = f"region {region_idx}: {problem}"
+                    ripup.record_failure(net_name, problem)
+                    fatal = True
+                    break
+                region_results.append(merged)
+                routed_regions.add(region_idx)
+            else:
+                merged_all = _merge_chunk_results(region_results)
+                if multi_region:
+                    timings[f"partitioned_{net_name}"] = (
+                        f"routed per-region "
+                        f"{sorted(r for r, _ in grouped_chunks)}; join via assembly bridge"
+                    )
+                ripup.record_success(net_name, merged_all.path)
+                all_results[net_name] = merged_all
                 nets_routed += 1
                 success = True
-                break
-            else:
-                if budget_hit:
-                    ripup.record_failure(
-                        net_name,
-                        f"expansion budget exhausted ({result.expansions} >= "
-                        f"max_expansions_per_net={params.max_expansions_per_net}): "
-                        f"no DRC-clean path found within budget — try a narrower "
-                        f"track width, fewer terminals per run (piecemeal), or a "
-                        f"coarser grid",
-                    )
-                else:
-                    ripup.record_failure(net_name, "no path found")
-                if budget_hit:
-                    # Budget exhaustion is deterministic on an unchanged
-                    # grid: the next attempt would burn the same budget for
-                    # the same outcome, so stop retrying and fail the net.
-                    break
         if not success:
+            # Keep successfully routed region groups/chunks for failure
+            # review (display only — never written back). Matches the
+            # single-region rule: any routed chunk of a chunked group is
+            # kept; single-chunk groups have nothing partial (all-or-nothing).
+            keep = list(region_results)
+            for ri, chunks in grouped_chunks:
+                if len(chunks) > 1 and ri not in routed_regions:
+                    prog = group_progress.get(ri, [])
+                    if prog:
+                        keep.append(_merge_chunk_results(prog))
+            if keep:
+                partial_results[net_name] = _merge_chunk_results(keep)
             nets_failed += 1
         return success
 
@@ -869,6 +1174,7 @@ def route_nets(
     )
     # 10. Convert all results to tracks/vias (per-net resolved widths;
     # own-THT hops reuse the barrel: no Via emitted there)
+    tht_sites = _tht_sites_by_net(model, routing_grid)
     tracks, vias = routes_to_tracks_vias(
         all_results,
         routing_grid,
@@ -877,7 +1183,20 @@ def route_nets(
         power_width_mm=params.power_width_mm,
         via_size_mm=params.via_size_mm,
         via_drill_mm=params.via_drill_mm,
-        tht_sites=_tht_sites_by_net(model, routing_grid),
+        tht_sites=tht_sites,
+        extra_power=extra_power_nets,
+    )
+    # Display-only copper from failed nets' routed chunks (review in the
+    # viewer overlay; excluded from writeback, stitching, and DRC).
+    partial_tracks, partial_vias = routes_to_tracks_vias(
+        partial_results,
+        routing_grid,
+        net_class_widths=width_map,
+        default_width_mm=params.track_width_mm,
+        power_width_mm=params.power_width_mm,
+        via_size_mm=params.via_size_mm,
+        via_drill_mm=params.via_drill_mm,
+        tht_sites=tht_sites,
         extra_power=extra_power_nets,
     )
     # 10a. Plane-tap stubs (four-layer strategy): additive, never folded
@@ -985,6 +1304,8 @@ def route_nets(
         fanout_vias_added=len(plane_vias),
         fanout_tracks_added=len(plane_tracks),
         failed_reasons=dict(ripup.net_failures),
+        partial_tracks=tuple(partial_tracks),
+        partial_vias=tuple(partial_vias),
     ), cost_grid, routing_grid
 
 

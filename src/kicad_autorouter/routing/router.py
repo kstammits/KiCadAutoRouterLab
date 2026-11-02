@@ -157,6 +157,7 @@ class SingleNetRouter:
         secondary: Optional[np.ndarray] = None,  # per-net fanout halo, same shape as cost_grid
         progress_cb=None,  # fn(pairs_done, pairs_total, expansions) — best-effort
         should_cancel=None,  # fn() -> bool — checked between pairs + inside A*
+        seed_cells: Optional[List[Tuple[int, int, int]]] = None,  # kept same-net copper to join
     ) -> RouteResult:
         """Route a net connecting all terminals.
 
@@ -168,6 +169,11 @@ class SingleNetRouter:
         and via landings (foreign-THT exclusion rings). The routed net's
         own pads are excluded at build time, so its terminals stay
         reachable.
+
+        ``seed_cells`` is kept same-net copper from prior piecemeal chunks:
+        searches may walk through it (not an obstacle) and terminate on it
+        (joining the kept tree). Pair unions then distinguish terminal-tree
+        joins from kept-tree joins via a synthetic SEED node.
 
         ``progress_cb``/``should_cancel`` are optional job hooks: cancel is
         honored between pair-searches (raising :class:`RoutingCancelled`)
@@ -283,6 +289,7 @@ class SingleNetRouter:
                     allow_mask=allow_mask,
                     heuristic_weight=weight_override,
                     goal_mask=goal_mask,
+                    passable=seed_mask,
                     expansion_allowance=allowance,
                 )
                 dt_attempt = time.perf_counter() - t_attempt
@@ -351,6 +358,19 @@ class SingleNetRouter:
             pair_cstats.append(cstats)
             return result.success, result.path, result.cost
 
+        # Piecemeal seed: kept same-net copper from prior chunks. The
+        # seed is walkable (passed to A* as ``passable``) and a valid goal,
+        # so later chunks attach to the kept tree; unions distinguish
+        # terminal-tree joins from kept-tree joins via a synthetic SEED node.
+        SEED = n
+        seed_set = set(map(tuple, seed_cells)) if seed_cells else None
+        seed_mask = None
+        if seed_set:
+            seed_mask = np.zeros((self.n_layers, self.H, self.W), dtype=bool)
+            for (c, r, l) in seed_set:
+                if 0 <= l < self.n_layers and 0 <= r < self.H and 0 <= c < self.W:
+                    seed_mask[l, r, c] = True
+
         # Component state for Steiner connections
         class UnionFindLocal:
             """Disjoint-set with path compression for Kruskal assembly."""
@@ -388,7 +408,7 @@ class SingleNetRouter:
             return mask
 
         # Custom Kruskal loop with Steiner support
-        uf = UnionFindLocal(len(terminals))
+        uf = UnionFindLocal(n + (1 if seed_set else 0))
         mst_edges: List[Tuple[int, int]] = []
         path_matrix: Dict[Tuple[int, int], List[Tuple[int, int, int]]] = {}
         cost_matrix: Dict[Tuple[int, int], float] = {}
@@ -404,36 +424,94 @@ class SingleNetRouter:
             searches += 1
 
             # Build goal mask from j's component (if it has existing branches)
+            # plus kept copper: searches terminate on either, joining the
+            # new tree to the kept one wherever they touch.
             comp_j = uf.find(j)
             goal_mask = build_goal_mask(comp_j)
+            if seed_mask is not None:
+                goal_mask = seed_mask if goal_mask is None else (goal_mask | seed_mask)
 
             success, path, cost = _search_pair(i, j, goal_mask)
             if success:
-                uf.union(i, j)
-                new_root = uf.find(i)
+                end = tuple(path[-1]) if path else None
+                # Fresh root: comp_j may be stale (j's component can merge
+                # between pairs, popping its old entry).
+                j_cells = component_branches.get(uf.find(j))
+                if end is not None and (
+                    end == tuple(terminals[j])
+                    or (j_cells is not None and end in j_cells)
+                ):
+                    uf.union(i, j)
+                if seed_set is not None and end in seed_set:
+                    uf.union(i, SEED)
                 mst_edges.append((i, j))
                 path_matrix[(i, j)] = path_matrix[(j, i)] = path
                 cost_matrix[(i, j)] = cost_matrix[(j, i)] = cost
 
-                # Merge branch cells into the new component
-                path_cells = set(path)
-                old_root_i = uf.find(i)  # after union, this is the new root
-                old_root_j = uf.find(j)  # same as old_root_i after union
-
-                # Merge branch cells from both components
+                # Merge branch cells of every joined component (generic:
+                # correct for terminal-terminal, terminal-seed, and
+                # terminal-terminal+seed joins alike).
+                new_root = uf.find(i)
                 merged_cells = set()
-                for root in (old_root_i, old_root_j):
-                    if root in component_branches:
-                        merged_cells.update(component_branches[root])
-                        del component_branches[root]
-                merged_cells.update(path_cells)
+                for root in list(component_branches.keys()):
+                    if uf.find(root) == new_root:
+                        merged_cells.update(component_branches.pop(root))
+                merged_cells.update(path)
                 component_branches[new_root] = merged_cells
 
-        connected = uf.components == 1
-        if not connected:
+        connected = all(uf.find(i) == uf.find(0) for i in range(n))
+        seed_touched = (
+            seed_set is not None
+            and any(uf.find(i) == uf.find(SEED) for i in range(n))
+        )
+        extra_branches: List[Tuple[list, float]] = []
+        if seed_set is not None and connected and not seed_touched:
+            # One trunk search from the new tree to kept copper: start at
+            # the terminal nearest kept copper, walk out along own branches
+            # (walkable) and terminate on kept copper (goal). Without this,
+            # adjacent chunks that route cleanly side-by-side never join.
+            def _manhattan(a, b):
+                return abs(a[0] - b[0]) + abs(a[1] - b[1]) + abs(a[2] - b[2])
+
+            start_t = tuple(min(
+                terminals,
+                key=lambda t: min(_manhattan(tuple(t), s) for s in seed_set),
+            ))
+            goal_s = min(seed_set, key=lambda s: _manhattan(start_t, s))
+            branch_mask = np.zeros((self.n_layers, self.H, self.W), dtype=bool)
+            for cells in component_branches.values():
+                for (c, r, l) in cells:
+                    if 0 <= l < self.n_layers and 0 <= r < self.H and 0 <= c < self.W:
+                        branch_mask[l, r, c] = True
+            walkable = branch_mask | seed_mask
+            if self.max_expansions_per_net > 0:
+                trunk_allowance: Optional[int] = max(
+                    0, self.max_expansions_per_net - expansions_total)
+            else:
+                trunk_allowance = None
+            trunk = self._a_star(
+                start_t, tuple(goal_s), secondary,
+                progress_cb=None,
+                should_cancel=should_cancel,
+                window=None,
+                via_ok=via_ok,
+                allow_mask=None,
+                heuristic_weight=1.0,
+                goal_mask=seed_mask,
+                passable=walkable,
+                expansion_allowance=trunk_allowance,
+            )
+            expansions_total += trunk.expansions
+            _report()
+            if trunk.success and trunk.path:
+                extra_branches.append((list(trunk.path), trunk.cost))
+                for i in range(n):
+                    uf.union(i, SEED)
+                seed_touched = True
+        if not connected or (seed_set is not None and not seed_touched):
             return RouteResult([], 0.0, 0, 0.0, False, expansions_total,
                                debug_attempts=tuple(attempt_log))
-        if not mst_edges:
+        if not mst_edges and not extra_branches:
             return RouteResult([], 0.0, 0, 0.0, False, expansions_total)
 
         # Branch model: keep each MST edge path separate.
@@ -442,15 +520,17 @@ class SingleNetRouter:
         total_wire = 0.0
         total_vias = 0
 
-        for i, j in mst_edges:
-            edge_path = path_matrix.get((i, j))
+        edge_items = (
+            [(path_matrix[(i, j)], cost_matrix[(i, j)]) for i, j in mst_edges]
+            + extra_branches
+        )
+        for edge_path, edge_cost in edge_items:
             if not edge_path:
                 return RouteResult([], 0.0, 0, 0.0, False, expansions_total)
 
             branches.append(list(edge_path))
 
             # Use the A* cost for this edge (includes free via handling)
-            edge_cost = cost_matrix[(i, j)]
             total_cost += edge_cost
 
             # Count wire length and vias for reporting
@@ -618,6 +698,7 @@ class SingleNetRouter:
         allow_mask: Optional[np.ndarray] = None,  # corridor restriction (H, W); None = anywhere
         heuristic_weight: Optional[float] = None,  # override CostMap weight for this search
         goal_mask: Optional[np.ndarray] = None,  # (n_layers, H, W) bool: any True cell is a valid goal
+        passable: Optional[np.ndarray] = None,  # (n_layers, H, W) bool: kept same-net copper — walkable + valid goal
         expansion_allowance: Optional[int] = None,  # stop this search after this many pops (net budget remainder; None = no cap)
     ) -> RouteResult:
         """A* search on 3D grid with via transitions.
@@ -626,6 +707,10 @@ class SingleNetRouter:
         search terminates when ANY cell in the mask is expanded, not just the
         single ``goal`` cell. The path is reconstructed to the actual goal cell
         reached. The heuristic still uses the original ``goal`` for guidance.
+
+        ``passable`` marks kept same-net copper (piecemeal): those cells are
+        enterable despite BLOCKED stamps and also terminate the search, so
+        later chunks walk out along and attach to earlier copper.
         """
         sc, sr, sl = start
         gc, gr, gl = goal
@@ -651,7 +736,9 @@ class SingleNetRouter:
         def heuristic(c, r, l):
             return (abs(c - gc) + abs(r - gr) + abs(l - gl)) * self.cost_map.base_cost * hw
 
-        # Quick goal_mask check for start cell
+        # Quick goal_mask check for start cell (passable alone does not
+        # trivially succeed: connector searches start on kept copper and
+        # must still walk out to a goal).
         if goal_mask is not None and goal_mask[sl, sr, sc]:
             return RouteResult([start], 0.0, 0, 0.0, True)
 
@@ -695,6 +782,8 @@ class SingleNetRouter:
                         pass
 
             # Goal check: if goal_mask provided, any cell in mask is a valid goal
+            # (callers OR kept-copper joins into the mask; ``passable`` only
+            # controls movement, never termination).
             if goal_mask is not None and goal_mask[l, r, c]:
                 # Reconstruct path to this goal cell
                 path = [(c, r, l)]
@@ -723,9 +812,11 @@ class SingleNetRouter:
                     continue
                 if allow_mask is not None and not allow_mask[nr, nc]:
                     continue
-                if self._is_blocked(nr, nc, l):
+                if self._is_blocked(nr, nc, l) and not (
+                        passable is not None and passable[l, nr, nc]):
                     continue
-                if self._secondary_blocked(secondary, nr, nc, l):
+                if self._secondary_blocked(secondary, nr, nc, l) and not (
+                        passable is not None and passable[l, nr, nc]):
                     continue
                 cell_cost = self._cell_cost(nr, nc, l) + self._secondary_at(secondary, nr, nc, l)
                 ng = g + cell_cost
@@ -741,20 +832,26 @@ class SingleNetRouter:
                     # Check same cell on other layer
                     if allow_mask is not None and not allow_mask[r, c]:
                         continue
-                    if self._is_blocked(r, c, nl):
+                    if self._is_blocked(r, c, nl) and not (
+                            passable is not None and passable[nl, r, c]):
                         continue
-                    if self._secondary_blocked(secondary, r, c, nl):
+                    if self._secondary_blocked(secondary, r, c, nl) and not (
+                            passable is not None and passable[nl, r, c]):
                         continue
+                    # Landing on kept same-net copper is always legal (the
+                    # trunk joins it), so via-block and halo checks are
+                    # waived for passable targets only.
+                    target_kept = passable is not None and passable[nl, r, c]
                     # Via cost: free at THT pad locations; forbidden inside
                     # SMD pad solder/fanout areas (THT wins ties).
                     if self.tht_via_mask[r, c]:
                         cell_cost = 0
-                    elif self.via_block_mask[r, c]:
+                    elif self.via_block_mask[r, c] and not target_kept:
                         continue
                     elif via_ok is not None:
                         # Precomputed clearance halo (same disc semantics as
                         # _via_landing_blocked, evaluated once per net).
-                        if not via_ok[r, c]:
+                        if not via_ok[r, c] and not target_kept:
                             continue
                         cell_cost = self._via_cost_cells
                     else:

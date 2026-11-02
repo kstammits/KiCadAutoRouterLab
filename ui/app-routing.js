@@ -42,7 +42,8 @@ function renderRoutingParams(params, modeOwned = [], modePreset = {}) {
     { key: "via_cost_mm", label: "Via Cost (mm)", min: 1, max: 20, step: 0.5, default: 5 },
     { key: "pour_severance_weight", label: "Pour Severance Weight (0 disables)", min: 0, max: 200, step: 5, default: 30 },
     { key: "grid_resolution_mm", label: "Grid Resolution (mm) — 0.05 is 4x cells, may be rejected on large boards", min: 0.05, max: 0.5, step: 0.05, default: 0.1 },
-    { key: "max_terminals_per_net", label: "Max terminals per net (0 = no cap; larger nets fail fast)", min: 0, max: 128, step: 1, default: 32 },
+    { key: "max_terminals_per_net", label: "Max terminals per net (0 = no cap; larger nets auto-split into chunks)", min: 0, max: 128, step: 1, default: 16 },
+    { key: "piecemeal_chunk_terminals", label: "Piecemeal chunk size (0 = disable chunking; over-cap nets fail fast)", min: 0, max: 32, step: 1, default: 12 },
   ];
   
   // Option flags share one full-width row below the sliders (not one
@@ -154,8 +155,9 @@ let routeCurrentJobId = null;
 
 // Pre-flight cost estimate: pairwise A* searches per net = k*(k-1)/2 over
 // pad counts (upper bound on terminals), plus a wall-time fit. Shown before
-// the run so a 66-pad GND never surprises: it fails fast via
-// max_terminals_per_net instead of burning hours of Steiner searches.
+// the run so a 66-pad GND never surprises: it auto-splits into chunks via
+// max_terminals_per_net / piecemeal_chunk_terminals instead of burning
+// hours of single-flight Steiner searches (chunking off = fail fast).
 // Time fit from docs/benchmarks/routing_2026-10-26.json: first net pays
 // ~2-2.6s fixed (occupancy+grids+via_ok), then ~1s/net (DCCF
 // 1/2/5/10 nets: 2.6/3.3/5.3/11.6s; tube111 1/2: 1.3/1.6s). GND stitching
@@ -284,6 +286,36 @@ async function pollRoutingJob(jobId, net, idx, total, diag, progress, estNote, t
 }
 
 // Pure string builder for the route-batch summary line.
+// Display-only copper from failed nets' routed chunks (piecemeal): orange
+// dashed overlay, never committed to the board or the save. Cleared on the
+// next route run; board refreshes wipe SVG overlays, so this re-renders
+// after the batch's final refresh.
+let partialCopperData = [];
+function renderPartialCopperOverlay() {
+  makeSvgOverlay("partial-copper-overlay", partialCopperData.length > 0, partialCopperData, g => {
+    for (const item of partialCopperData) {
+      for (const t of item.tracks || []) {
+        const line = svgEl("line", {
+          x1: t.start[0], y1: t.start[1], x2: t.end[0], y2: t.end[1],
+          stroke: OVERLAY_COLORS.attention, "stroke-width": Math.max(t.width_mm, 0.15),
+          "stroke-dasharray": "1 0.6", "stroke-opacity": "0.9", fill: "none",
+        });
+        line.appendChild(svgTitle(`${item.net} partial chunk copper (not saved — review only)`));
+        g.appendChild(line);
+      }
+      for (const v of item.vias || []) {
+        const dot = svgEl("circle", {
+          cx: v.position[0], cy: v.position[1], r: Math.max(v.size_mm / 2, 0.4),
+          fill: "none", stroke: OVERLAY_COLORS.attention, "stroke-width": "0.2",
+          "stroke-dasharray": "0.5 0.4",
+        });
+        dot.appendChild(svgTitle(`${item.net} partial via (not saved)`));
+        g.appendChild(dot);
+      }
+    }
+  });
+}
+
 function formatTotalsDiag({ totals, failures, doneCount, netCount, lastBoardVersion, elapsedTxt, cancelled }) {
   const kept = `v${lastBoardVersion} — ${totals.tracks} tracks, ${totals.vias} vias, ` +
     `${totals.routed} routed, ${totals.failed} failed (${elapsedTxt} · ${fmtExpansions(totals.expansions)}` +
@@ -330,6 +362,8 @@ async function routeSelectedNets() {
   progress.value = 0;
   if (cancelBtn) cancelBtn.hidden = false;
   routeCancelRequested = false;
+  partialCopperData = [];
+  renderPartialCopperOverlay();
 
   const totals = { tracks: 0, vias: 0, routed: 0, failed: 0, expansions: 0, astarS: 0 };
   const failures = [];
@@ -381,6 +415,13 @@ async function routeSelectedNets() {
         totals.gndBefore = r.gnd_islands_before;
         totals.gndAfter = r.gnd_islands_after;
       }
+      for (const [n, reason] of Object.entries(r.failed_reasons || {})) {
+        const pCount = (r.partial_tracks || []).filter(t => t.net_name === n).length;
+        failures.push(`${n}: ${reason}${pCount ? ` — ${pCount} partial tracks shown in orange (not saved)` : ""}`);
+      }
+      if ((r.partial_tracks || []).length || (r.partial_vias || []).length) {
+        partialCopperData.push({ net, tracks: r.partial_tracks || [], vias: r.partial_vias || [] });
+      }
       if (r.debug) showCostGridDebug(r.debug);
       // Incremental refresh: show each net's copper as it lands.
       if (r.version) {
@@ -409,6 +450,10 @@ async function routeSelectedNets() {
 
   // Re-fetch nets to update track/via counts.
   await fetchNets();
+  // Board refreshes wipe SVG overlays; re-render partials last so failed
+  // nets stay reviewable (cost grid + per-net secondary stay available via
+  // the Debug checkbox and /api/routing/debug/cost-grid?net=).
+  renderPartialCopperOverlay();
 
   diag.textContent = formatTotalsDiag({
     totals, failures, doneCount, netCount: nets.length, lastBoardVersion,
@@ -440,6 +485,8 @@ async function ripSelectedNets() {
     const r = await postJSON("/api/routing/ripup", { net_names: nets });
     const ripped = r.ripped || {};
     const names = Object.keys(ripped);
+    partialCopperData = [];
+    renderPartialCopperOverlay();
     const txt = names.length
       ? names.map(n => `${n}: ${ripped[n].tracks || 0} tracks/${ripped[n].vias || 0} vias`).join(", ")
       : "no copper removed";

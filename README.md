@@ -183,6 +183,56 @@ Regenerate the manual, figures, and rendered primer with `./scripts/regen_docs.s
 
 ---
 
+## Expected Runtime Performance
+
+Indicative wall-clock numbers on a desktop machine (load-dependent, ±30%).
+Raw data: `docs/benchmarks/` (`placement` / `routing` / `stitch_pour` /
+`tight_spots` / `corridor` dated JSONs, newest per family).
+
+| Task | Board / scale | Typical time |
+|------|---------------|--------------|
+| Placement **Step** (5 iters) | tube111 (105 parts) | < 1 s |
+| Placement **Run** to budget (1000 iters) | tube111 / DCCF (~100 parts) | ~25–35 s |
+| Placement Run to budget | 256-part synthetic | ~90 s (~125 ms/iter) |
+| Route one easy signal net | either reference board | ~0.5–1 s |
+| Route full signal set, healthy board | DCCF, 44 nets, 0.1 mm grid | ~45 s (~1 s/net, linear) |
+| Route full signal set, congested board | tube111, 60 nets | ~3–4 min, ~1/3 of nets fail |
+| One failed hard net (e.g. DCCF VIN) | hits per-net expansion cap | ~30 s, then reported as failed |
+| GND stitch + pour repair | either reference board | ~1–3 s |
+| Coarser grid (0.2 mm vs 0.1 mm) | DCCF 10-net sample | ~4× faster (2.5 s vs ~10 s) |
+
+Growth rules of thumb:
+
+- **Placement** costs ~N^1.2–1.5 per iteration in the 64–256 part window
+  (footprint-pair term dominates; pad count matters less), and
+  to-convergence runs typically spend the full iteration budget — so
+  estimate total cost as per-iteration cost × iterations.
+- **Routing** is ~1 s/net while the board is healthy, then degrades
+  superlinearly on congested tails (tube111's last 30 nets cost 10× the
+  first 30 and mostly fail). Route easy nets first; hard power nets are
+  cheaper retried piecemeal than all-at-once.
+- **Grid resolution** finer than 0.1 mm rarely pays: 0.07 mm trips the
+  12M-cell guard on DCCF-sized boards. Prefer 0.15–0.2 mm for scouting,
+  0.1 mm for final.
+
+### Example user stories
+
+- **Lunch-break tweak**: "I moved a connector on my 100-part board and need
+  to re-route 3 nets." Select the nets → Route Selected → done in
+  ~5 s, DRC-clean.
+- **Evening full route**: "Route all 44 signal nets on the DCCF audio
+  board." One batch run, ~45 s, all routed; stitching repairs the pour in
+  ~2 s; run DRC and export.
+- **Congested board triage**: "Route everything on tube111." ~3–4 min,
+  ~40/60 nets route; the 18 failures are all reported with reasons
+  (`no path found` on tight clusters). Route the failures in small subsets
+  or widen clearances, rather than re-running the whole board.
+- **Placement exploration**: "Nudge 4 parts around a locked connector."
+  Step a few times (< 1 s total), watch the ghost preview, Accept. Full
+  100-part Run takes ~30 s — use it sparingly, Step often.
+
+---
+
 ## License
 
 GPL-3.0-or-later. See [`LICENSE`](LICENSE).
