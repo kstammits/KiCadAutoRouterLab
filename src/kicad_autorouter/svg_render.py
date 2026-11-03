@@ -368,15 +368,25 @@ def _footprint_courtyard_svg(
         extras = ' stroke-width="0.1" stroke-dasharray="4 2" opacity="0.8"'
     elif is_selected:
         stroke = FP_SELECTED_COLOR
-        extras = ' stroke-width="0.2" opacity="0.8"'
+        extras = ' stroke-width="0.3" opacity="0.95"'
     elif is_movable:
-        stroke = FP_SELECTED_COLOR
-        extras = ' stroke-width="0.15" opacity="0.6"'
+        stroke = FP_DEFAULT_COLOR
+        extras = ' stroke-width="0.1" opacity="0.45"'
     else:
         stroke = FP_DEFAULT_COLOR
         extras = ' stroke-width="0.1" opacity="0.8"'
+    edges = list(_courtyard_edges(fp))
     lines = []
-    for (x1, y1), (x2, y2) in _courtyard_edges(fp):
+    if is_selected:
+        # Halo under-stroke so the selection reads at fit-zoom on dense
+        # boards. Courtyard lines only — pads keep their net colors.
+        for (x1, y1), (x2, y2) in edges:
+            lines.append(
+                f'<line class="sel-halo" x1="{_fmt(x1)}" y1="{_fmt(y1)}" '
+                f'x2="{_fmt(x2)}" y2="{_fmt(y2)}" '
+                f'stroke="{stroke}" stroke-width="0.8" opacity="0.3"/>'
+            )
+    for (x1, y1), (x2, y2) in edges:
         lines.append(
             f'<line x1="{_fmt(x1)}" y1="{_fmt(y1)}" '
             f'x2="{_fmt(x2)}" y2="{_fmt(y2)}" '

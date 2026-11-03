@@ -63,6 +63,9 @@ class RoutingParams:
     stitch_bridge_width_mm: float = 0.3  # Bridge track width (narrower than
     # power_width_mm: bridges squeeze through tight pour gaps, so a thin
     # width avoids clearance violations there.
+    stitch_min_island_mm2: float = 2.0  # Unfed pour islands below this area
+    # are ignored (never stitched, never counted unjoined): a via joining
+    # a part-less sliver to the pour connects nothing.
     pour_severance_weight: float = 30.0  # Soft cost for tracks severing a pour (0 disables)
     fanout_margin_mm: float = 0.0  # Extra steering push around foreign pads (soft outer halo + smoother corridor + reservation); 0 = DRC clearance only
     window_margin_cells: int = 32  # Initial A* bbox dilation around a pair (cells)
@@ -108,6 +111,7 @@ class RoutingParams:
             "stitch_bridges_max": self.stitch_bridges_max,
             "stitch_bridge_max_mm": self.stitch_bridge_max_mm,
             "stitch_bridge_width_mm": self.stitch_bridge_width_mm,
+            "stitch_min_island_mm2": self.stitch_min_island_mm2,
             "pour_severance_weight": self.pour_severance_weight,
             "fanout_margin_mm": self.fanout_margin_mm,
             "window_margin_cells": self.window_margin_cells,
@@ -131,7 +135,7 @@ class RoutingParams:
             "max_expansions_per_net", "max_terminals_per_net",
             "piecemeal_chunk_terminals",
             "stitch_gnd_vias", "strip_gnd_blockers", "stitch_vias_max", "stitch_bridges_max",
-            "stitch_bridge_max_mm", "stitch_bridge_width_mm", "pour_severance_weight", "fanout_margin_mm",
+            "stitch_bridge_max_mm", "stitch_bridge_width_mm", "stitch_min_island_mm2", "pour_severance_weight", "fanout_margin_mm",
             "window_margin_cells", "window_growth", "window_retries",
             "corridor", "refill_zones", "allowed_layers",
             "fanout_planes", "fanout_plane_vias_max",
@@ -152,7 +156,7 @@ def _validate_routing_params(params: "RoutingParams") -> None:
     nonneg = (
         "margin_mm", "via_cost_mm", "track_width_mm", "power_width_mm",
         "clearance_mm", "via_size_mm", "via_drill_mm", "heuristic_weight",
-        "stitch_bridge_max_mm", "stitch_bridge_width_mm",
+        "stitch_bridge_max_mm", "stitch_bridge_width_mm", "stitch_min_island_mm2",
         "pour_severance_weight", "fanout_margin_mm",
     )
     for name in nonneg:

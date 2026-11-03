@@ -62,12 +62,13 @@ function netRowHtml(net, idx) {
       : `<button type="button" class="pwr-toggle" aria-pressed="false" aria-label="Mark ${safeName} as power" title="${pwrTitle}">&#9889;</button>`);
   const width = (net.width_mm ?? "") === "" ? "" : Number(net.width_mm).toFixed(2);
   const decaps = Array.isArray(net.decap_refs) ? net.decap_refs : [];
+  const links = (net.decap_links && typeof net.decap_links === "object") ? net.decap_links : {};
   const decap = decaps.length
-    ? `<span class="decap-badge" title="Decoupling caps: ${escapeHtml(decaps.join(", "))}">◉×${decaps.length}</span>`
+    ? `<span class="decap-badge" title="Decoupling caps: ${escapeHtml(decaps.map(r => (links[r] ? `${r}\u2192${links[r]}` : r)).join(", "))}">◉×${decaps.length}</span>`
     : "";
   return `
     <tr class="${selectedNets.has(net.name) ? 'net-selected-row' : ''}" data-net="${safeName}" style="--net-color: ${color};">
-      <td class="net-col-select"><input type="checkbox" class="net-col-select" ${selectedNets.has(net.name) ? 'checked' : ''} data-net="${safeName}"></td>
+      <td class="net-col-select"><input type="checkbox" class="net-col-select" ${selectedNets.has(net.name) ? 'checked' : ''} data-net="${safeName}" title="Select ${safeName} for routing" aria-label="Select ${safeName} for routing"></td>
       <td class="net-col-name">
         <span class="net-swatch" style="background: ${color};"></span>
         ${netName}${pwr}
@@ -229,6 +230,36 @@ on("nets-select-all", "change", e => {
   }
   syncNetRowSelection();
 });
+
+// Select nets that are not yet done: 2+ pads, no tracks/vias committed,
+// not protected. Failed and never-routed nets both have zero committed
+// copper (partials are display-only), so one filter covers "remaining".
+function selectUnroutedNets() {
+  if (!lastNetsByName || lastNetsByName.size === 0) {
+    toast("no nets loaded yet");
+    return;
+  }
+  const rows = [...lastNetsByName.values()];
+  const unrouted = rows
+    .filter(n => (n.pad_count || 0) >= 2
+      && ((n.track_count || 0) + (n.via_count || 0)) === 0
+      && !n.protected)
+    .map(n => n.name);
+  const skippedProtected = rows
+    .filter(n => (n.pad_count || 0) >= 2
+      && ((n.track_count || 0) + (n.via_count || 0)) === 0
+      && n.protected).length;
+  selectedNets = new Set(unrouted);
+  syncNetRowSelection();
+  toast(unrouted.length
+    ? `selected ${unrouted.length} unrouted net${unrouted.length > 1 ? "s" : ""}` +
+      (skippedProtected ? ` (skipped ${skippedProtected} protected)` : "")
+    : "no unrouted nets found",
+    unrouted.length > 0);
+}
+
+// Protect all checkbox
+on("select-unrouted-btn", "click", selectUnroutedNets);
 
 // Protect all checkbox
 on("nets-protect-all", "change", async e => {

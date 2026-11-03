@@ -28,10 +28,15 @@ F_attr = k_attr · w_edge · û(src→dst)   k_attr in N, w_edge dimensionless
 ```
 No Hooke length term. `w_edge` carries the fanout/decap/power weighting.
 
-Decap-incident edges are **one-sided**: the decap receives the attraction,
-the non-decap endpoint does not (`edge_sides` in `force.py`). This keeps a
-large part from being dragged onto its decoupling cap when a rail pulls the
-cap toward the part; decap–decap edges stay symmetric.
+Global decap-incident rail edges are **one-sided** at the unboosted
+fanout-scaled rate: the decap receives the attraction, the non-decap
+endpoint does not (`edge_sides` in `force.py`). This keeps a large part
+from being dragged onto its decoupling cap when a rail pulls the cap
+toward the part; decap–decap edges stay symmetric. Small caps
+additionally gain symmetric supplemental decap-chip links (one per
+shared net to the nearest `U*` within 15 mm, weight `decap_link`;
+distant caps and bulk electrolytics stay global-only), so the chip
+rotates toward its cap and the link overpowers rail fanout.
 
 ### Courtyard collision (walls)
 One law in signed separation `s` (meters) along the pair normal
@@ -201,7 +206,7 @@ mean. `stall_window=0` disables.
 | `mass_density_kg_m2` | kg/m² | 3.0 | fallback mass slope |
 | `mass_floor_kg` | kg | 1e-9 | minimum part mass |
 | `power_attraction_scale` | — | 1.0 | power-rail attraction trim |
-| `decap_boost` | — | 4.0 | decap-edge multiplier |
+| `decap_link` | — | 4.0 | local decap-chip link weight (globals never boosted) |
 | `overlap_tolerance_mm2` | mm² | 0.1 | legality threshold |
 | `wall_tolerance_mm` | mm | 0.1 | board-wall legality threshold |
 

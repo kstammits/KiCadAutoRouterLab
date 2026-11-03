@@ -14,13 +14,19 @@ import pytest
 
 from pathlib import Path
 
-from kicad_autorouter.board_model import BoardRegion, Point
+from dataclasses import replace
+
+from kicad_autorouter.board_model import BoardRegion, Footprint, Point
 from kicad_autorouter.routing.grid import board_to_grid, create_grid_from_model
 from kicad_autorouter.routing.pour import pour_islands
-from kicad_autorouter.routing.stitch import _foreign_mask, plan_stitches
+from kicad_autorouter.routing.stitch import (
+    _foreign_mask,
+    _verify_stitch_via,
+    plan_stitches,
+)
 
 from .test_pour import _board, _rect_zone, _track
-from .helpers import make_fp
+from .helpers import make_fp, make_rect_courtyard, make_tht_pad
 
 
 @pytest.fixture(scope="module")
@@ -165,6 +171,112 @@ class TestBridgeTracks:
         plan = plan_stitches(model, grid, max_bridges=0)
         assert plan.tracks == []
         assert plan.islands_after == 2  # joined network + unjoined group
+
+
+def _borehole_fp(ref, uuid, x, y, drill_mm=3.0):
+    """Mounting borehole: net-less through hole (no copper net)."""
+    pad = replace(
+        make_tht_pad("1", None, drill_mm=drill_mm,
+                     size_mm=(drill_mm, drill_mm)),
+        position=Point(x, y),
+    )
+    return Footprint(
+        ref=ref, footprint_id="Test:MountingHole", layer="F.Cu",
+        x_mm=x, y_mm=y, angle_deg=0.0, pads=(pad,),
+        courtyard=make_rect_courtyard(x, y, drill_mm, drill_mm),
+        locked=False, uuid=uuid, ghost=False, ghost_attractions=(),
+    )
+
+
+@pytest.mark.unit
+class TestVerifyStitchVia:
+    def test_rejects_site_near_netless_borehole(self):
+        # J3-style: 3mm mounting borehole; a GND stitch via 1.9mm from its
+        # center is 0.21mm hole-edge to drill-edge (< 0.25 hole clearance).
+        model = _board(
+            fps=[_borehole_fp("H1", "uuid-h1", 10.0, 10.0)],
+            zones=[_rect_zone("z1", "GND", ("F.Cu", "B.Cu"))],
+        )
+        grid = create_grid_from_model(model)
+        assert not _verify_stitch_via(
+            model, grid, "GND", 10.0 + 1.25, 10.0 + 1.45,
+            0.8, 0.4, ("F.Cu", "B.Cu"), 0.2,
+        )
+        assert _verify_stitch_via(
+            model, grid, "GND", 20.0, 20.0,
+            0.8, 0.4, ("F.Cu", "B.Cu"), 0.2,
+        )
+
+    def test_hole_clearance_applies_same_net(self):
+        model = _board(
+            fps=[make_fp("U1", "uuid-u1", 10.0, 10.0, ("GND", "GND"), tht=True)],
+            zones=[_rect_zone("z1", "GND", ("F.Cu", "B.Cu"))],
+        )
+        grid = create_grid_from_model(model)
+        # Via drill inside a same-net pad's drill + hole clearance: holes
+        # must never merge, regardless of net.
+        assert not _verify_stitch_via(
+            model, grid, "GND", 10.0 + 1.0, 10.0,
+            0.8, 0.4, ("F.Cu", "B.Cu"), 0.2,
+        )
+
+    def test_rejects_site_near_foreign_track(self):
+        model = _board(
+            zones=[_rect_zone("z1", "GND", ("F.Cu", "B.Cu"))],
+            tracks=[_track(10.0, 0.0, 10.0, 30.0, "SIG",
+                           layer="F.Cu", width=0.5)],
+        )
+        grid = create_grid_from_model(model)
+        # 0.5mm from a 0.5-wide foreign spine: inside
+        # 0.4 (annulus) + 0.2 (clearance) + 0.25 (half width).
+        assert not _verify_stitch_via(
+            model, grid, "GND", 10.5, 15.0,
+            0.8, 0.4, ("F.Cu", "B.Cu"), 0.2,
+        )
+        assert _verify_stitch_via(
+            model, grid, "GND", 25.0, 15.0,
+            0.8, 0.4, ("F.Cu", "B.Cu"), 0.2,
+        )
+
+
+@pytest.mark.unit
+class TestTinySliverSkipped:
+    def _boxed_sliver(self):
+        # Closed 2.5mm foreign box on F.Cu carves a ~1mm^2 GND pocket with
+        # no pad or via inside: unfed and below the 2mm^2 default.
+        x0, y0, s = 20.0, 15.0, 2.5
+        box = [
+            _track(x0, y0, x0 + s, y0, "SIG", width=0.5),
+            _track(x0 + s, y0, x0 + s, y0 + s, "SIG", width=0.5),
+            _track(x0 + s, y0 + s, x0, y0 + s, "SIG", width=0.5),
+            _track(x0, y0 + s, x0, y0, "SIG", width=0.5),
+        ]
+        return _board(
+            zones=[_rect_zone("z1", "GND", ("F.Cu", "B.Cu"))],
+            tracks=box,
+        ), (x0, y0, s)
+
+    def test_sliver_gets_no_via(self):
+        from kicad_autorouter.routing.pour import pour_islands
+        model, (x0, y0, s) = self._boxed_sliver()
+        grid = create_grid_from_model(model)
+        assert len(pour_islands(model, grid, "GND")["F.Cu"]) >= 2
+        plan = plan_stitches(model, grid)
+        for via in plan.vias:
+            assert not (x0 - 1.0 <= via.position.x_mm <= x0 + s + 1.0
+                        and y0 - 1.0 <= via.position.y_mm <= y0 + s + 1.0), (
+                f"stitch via in part-less sliver: {via.position}")
+        assert plan.islands_after == 1
+
+    def test_sliver_stitched_when_threshold_zero(self):
+        # min_island_mm2=0 restores the old behavior: the pocket is joined,
+        # proving the filter (not geometry) skips it by default.
+        model, (x0, y0, s) = self._boxed_sliver()
+        grid = create_grid_from_model(model)
+        plan = plan_stitches(model, grid, min_island_mm2=0.0)
+        assert any(x0 - 1.0 <= v.position.x_mm <= x0 + s + 1.0
+                   and y0 - 1.0 <= v.position.y_mm <= y0 + s + 1.0
+                   for v in plan.vias), "expected the pocket to be stitched"
 
 
 @pytest.mark.unit

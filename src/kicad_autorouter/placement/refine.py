@@ -65,6 +65,18 @@ def _median(values: List[float]) -> float:
     return (s[n // 2 - 1] + s[n // 2]) / 2.0
 
 
+def _empty_report(reason: str) -> Dict[str, object]:
+    return {
+        "reason": reason,
+        "considered": 0,
+        "no_neighbors": [],
+        "rolled_back": [],
+        "kept": [],
+        "base_illegal": False,
+        "base_overlaps": 0,
+    }
+
+
 def refine_placement(
     model: BoardModel,
     base_deltas: Dict[str, Tuple[float, float, float]],
@@ -80,36 +92,71 @@ def refine_placement(
     Returns {uuid: (dx_mm, dy_mm, dangle_deg)} deltas *relative to the model
     as passed in* (i.e. composable: apply on top of ``base_deltas``). Parts
     with no meaningful change are omitted. Never raises for empty input.
+    See :func:`refine_placement_with_report` for the why-nothing-moved
+    breakdown.
+    """
+    deltas, _ = refine_placement_with_report(
+        model, base_deltas,
+        strength=strength,
+        radius_mm=radius_mm,
+        movable_uuids=movable_uuids,
+        overlap_tolerance_mm2=overlap_tolerance_mm2,
+        wall_tolerance_mm=wall_tolerance_mm,
+    )
+    return deltas
+
+
+def refine_placement_with_report(
+    model: BoardModel,
+    base_deltas: Dict[str, Tuple[float, float, float]],
+    *,
+    strength: float,
+    radius_mm: float,
+    movable_uuids: Optional[Set[str]] = None,
+    overlap_tolerance_mm2: float = 0.1,
+    wall_tolerance_mm: float = 0.1,
+) -> Tuple[Dict[str, Tuple[float, float, float]], Dict[str, object]]:
+    """Same as :func:`refine_placement` plus a report dict.
+
+    Report keys: ``reason`` ("ok"/"off"/"empty"), ``considered`` (movable
+    parts posed), ``no_neighbors`` (movable uuids with nobody to align
+    to), ``rolled_back`` (uuids dropped by the legality gate),
+    ``kept`` (uuids in the returned deltas), ``base_illegal`` (the base
+    deltas were already illegal, so nothing could be kept).
     """
     if not math.isfinite(strength) or strength <= 0.0:
-        return {}
+        return {}, _empty_report("off")
     strength = min(1.0, float(strength))
     if not math.isfinite(radius_mm) or radius_mm <= 0.0:
-        return {}
+        return {}, _empty_report("empty")
 
     from ..board_model import apply_deltas
     from .legality import _collect_posed_polygons, check_legality
 
     # Movable set: unlocked, unpinned handled by caller via movable_uuids.
+    # Only these receive deltas; every real (non-ghost) part counts as
+    # alignment/spacing context, including unselected and pinned parts.
+    # Ghosts are fixed walls, never alignment references.
     movable: Set[str] = set()
-    locked_or_ghost: Set[str] = set()
+    locked: Set[str] = set()
     for fp in model.footprints:
         if not fp.uuid:
             continue
         if fp.locked:
-            locked_or_ghost.add(fp.uuid)
+            locked.add(fp.uuid)
             continue
         if movable_uuids is not None and fp.uuid not in movable_uuids:
             continue
         movable.add(fp.uuid)
-    for fp in model.ghost_footprints:
-        if fp.uuid:
-            locked_or_ghost.add(fp.uuid)
     if not movable:
-        return {}
+        return {}, _empty_report("empty")
 
     posed = apply_deltas(model, dict(base_deltas))
     polys, _, _, moved = _collect_posed_polygons(posed, {})
+
+    ghost_uuids: Set[str] = {
+        fp.uuid for fp in moved.ghost_footprints if fp.uuid
+    }
 
     # Posed lookup: uuid -> (x, y, angle, layer, region).
     info: Dict[str, Tuple[float, float, float, str, int]] = {}
@@ -141,8 +188,12 @@ def refine_placement(
         if uuid in info:
             cents[uuid] = (info[uuid][0], info[uuid][1])
 
-    # Neighbor graph over movable + anchors, same region + same layer.
-    uuids_sorted = sorted(set(movable) | (set(locked_or_ghost) & set(info)))
+    # Neighbor graph: every real part is alignment/spacing context
+    # (movable, unselected, pinned, locked); ghosts are fixed walls and
+    # never alignment references. Only `movable` receives deltas.
+    # Same region + same layer, as before.
+    context = sorted(u for u in info if u not in ghost_uuids)
+    uuids_sorted = context
     neighbors: Dict[str, List[str]] = {}
     for ua in sorted(movable):
         if ua not in info or ua not in cents:
@@ -163,6 +214,11 @@ def refine_placement(
                 scored.append((d, ub))
         scored.sort(key=lambda t: (t[0], t[1]))
         neighbors[ua] = [u for _, u in scored[:_REFINE_NEIGHBOR_K]]
+
+    no_neighbors: List[str] = sorted(
+        ua for ua in movable
+        if ua in info and not neighbors.get(ua)
+    )
 
     # Pad counts to skip single-pad rotation.
     pad_counts: Dict[str, int] = {}
@@ -272,34 +328,69 @@ def refine_placement(
             continue
         candidate[ua] = (dx, dy, da)
 
-    if not candidate:
-        return {}
+    def _report(kept: Dict[str, Tuple[float, float, float]],
+                rolled: List[str],
+                base_illegal: bool,
+                base_overlaps: int = 0) -> Dict[str, object]:
+        return {
+            "reason": "ok",
+            "considered": sum(1 for u in movable if u in info),
+            "no_neighbors": list(no_neighbors),
+            "rolled_back": list(rolled),
+            "kept": sorted(kept),
+            "base_illegal": base_illegal,
+            "base_overlaps": base_overlaps,
+        }
 
-    # Legality gate: roll back worst offenders until legal (or empty).
+    if not candidate:
+        return {}, _report({}, [], False)
+
+    # Baseline: touches already on the board are not Tidy's business.
+    # The gate below only blocks moves that add NEW damage, so Tidy can
+    # line parts up on a messy board and simply leaves old touches alone.
+    base_leg = check_legality(
+        model, dict(base_deltas),
+        overlap_tolerance_mm2=overlap_tolerance_mm2,
+        wall_tolerance_mm=wall_tolerance_mm,
+    )
+    base_pairs = {
+        tuple(sorted((a, b))) for a, b, _ in base_leg.overlapping_pairs
+    }
+    base_walls = {u for u, _ in base_leg.wall_violations}
+    base_illegal = not base_leg.is_legal
+    base_n = len(base_leg.overlapping_pairs) + len(base_leg.wall_violations)
+
+    def _new_damage(rep) -> Tuple[list, list]:
+        new_p = [
+            t for t in rep.overlapping_pairs
+            if tuple(sorted((t[0], t[1]))) not in base_pairs
+        ]
+        new_w = [t for t in rep.wall_violations if t[0] not in base_walls]
+        return new_p, new_w
+
+    # Legality gate: roll back only moves that add fresh damage.
     merged = dict(base_deltas)
     merged.update(candidate)
-    report = check_legality(
+    merged_leg = check_legality(
         model, merged,
         overlap_tolerance_mm2=overlap_tolerance_mm2,
         wall_tolerance_mm=wall_tolerance_mm,
     )
-    if report.is_legal:
-        return candidate
+    new_p, new_w = _new_damage(merged_leg)
+    if not new_p and not new_w:
+        return candidate, _report(candidate, [], base_illegal, base_n)
 
     # Greedy rollback: drop the candidate part involved in the worst
-    # overlap / wall violation first, re-check, repeat.
+    # NEW damage first, re-check, repeat. Pre-existing touches never put
+    # a part on this list.
     bad_order: List[str] = []
     seen: Set[str] = set()
-    for a, b, _area in sorted(
-        report.overlapping_pairs, key=lambda t: -t[2]
-    ):
+    for a, b, _area in sorted(new_p, key=lambda t: -t[2]):
         for u in (a, b):
             if u in candidate and u not in seen:
                 seen.add(u)
                 bad_order.append(u)
-    for u, _d in sorted(
-        report.wall_violations, key=lambda t: -t[1]
-    ):
+    for u, _d in sorted(new_w, key=lambda t: -t[1]):
         if u in candidate and u not in seen:
             seen.add(u)
             bad_order.append(u)
@@ -308,19 +399,22 @@ def refine_placement(
             bad_order.append(u)
 
     current = dict(candidate)
+    dropped: List[str] = []
     for u in bad_order:
         if u not in current:
             continue
         trial = {k: v for k, v in current.items() if k != u}
         merged_trial = dict(base_deltas)
         merged_trial.update(trial)
-        rep = check_legality(
+        rep_t = check_legality(
             model, merged_trial,
             overlap_tolerance_mm2=overlap_tolerance_mm2,
             wall_tolerance_mm=wall_tolerance_mm,
         )
-        if rep.is_legal:
-            return trial
+        np_t, nw_t = _new_damage(rep_t)
+        if not np_t and not nw_t:
+            dropped.append(u)
+            return trial, _report(trial, dropped, base_illegal, base_n)
         current = trial
-        report = rep
-    return {}
+        dropped.append(u)
+    return {}, _report({}, dropped, base_illegal, base_n)

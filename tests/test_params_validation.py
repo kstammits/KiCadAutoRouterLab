@@ -27,7 +27,7 @@ def test_contact_tangent_gamma_rejects_nonfinite():
 @pytest.mark.unit
 @pytest.mark.params
 def test_numeric_fields_reject_nonfinite():
-    for key in ("wall_exponent", "power_attraction_scale", "decap_boost", "wall_k_N"):
+    for key in ("wall_exponent", "power_attraction_scale", "decap_link", "wall_k_N"):
         with pytest.raises(ValueError):
             PlacementParams.from_dict({key: float("nan")})
     assert math.isfinite(PlacementParams.from_dict({}).wall_exponent)
@@ -65,6 +65,9 @@ def test_from_dict_rejects_bad_numerics():
         ("clearance_mm", "wide"),
         ("heuristic_weight", -3.0),
         ("window_growth", 0.0),
+        ("stitch_min_island_mm2", -1.0),
+        ("stitch_min_island_mm2", float("nan")),
+        ("stitch_min_island_mm2", "2.0"),
     ):
         with pytest.raises(ValueError, match=key.split("_")[0]):
             RoutingParams.from_dict({key: bad})

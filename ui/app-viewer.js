@@ -42,6 +42,7 @@ function renderLayerToggles(copperLayers) {
     const input = document.createElement("input");
     input.type = "checkbox";
     input.dataset.layer = layer;
+    input.title = label.title;
     input.checked = prev.has(layer) ? prev.get(layer) : true;
     input.addEventListener("change", applyLayerVisibility);
     label.appendChild(input);
@@ -590,5 +591,10 @@ async function fetchAndInjectSVG(version) {
   highlightSelectedNets();
   renderGndIslandsOverlay();
   renderTerminalsOverlay();
+  // Re-apply footprint selection classes on the fresh nodes: every inject
+  // path gets highlights by construction instead of relying on callers.
+  if (typeof updateFootprintVisuals === "function") {
+    try { updateFootprintVisuals(); } catch { /* paint is best-effort */ }
+  }
   if (motion.frames.length) applyMotionFrame(motion.idx);
 }

@@ -9,11 +9,11 @@ function setConnected(ok) {
   }
 }
 
-// Route/rip buttons share one busy state: all three disable, the two
+// Route/rip buttons share one busy state: all four disable, the two
 // route buttons show the spinner. (ripSelectedNets manages ripBtn's own
 // spinner; route tails rely on updateNetSelectionUI for final enable.)
 function setRouteBusy(on) {
-  const btns = ["route-selected-btn", "route-all-btn", "rip-selected-btn"]
+  const btns = ["route-selected-btn", "route-all-btn", "select-unrouted-btn", "rip-selected-btn"]
     .map(id => el(id));
   for (const b of btns) if (b) b.disabled = on;
   for (const b of btns.slice(0, 2)) if (b) b.classList.toggle("loading", on);
@@ -48,6 +48,7 @@ async function poll() {
     updateModeUI(st);
     if (st.version !== lastVersion) {
       lastVersion = st.version;
+      if (st.selection_version !== undefined) lastSelectionVersion = st.selection_version;
       if (motion.playing) pauseMotion();
       resetMotionState();
       // Island analysis is board-version specific: drop the overlay and
@@ -59,6 +60,14 @@ async function poll() {
       await fetchAndInjectSVG(st.version);
       await loadSelectionState();
       await loadMotionFrames(true);
+    } else if (st.selection_version !== undefined
+        && st.selection_version !== lastSelectionVersion
+        && inFlightSelection === 0) {
+      // Selection/pin changed elsewhere (another tab): light sync only.
+      // Never re-injects the SVG here — selection highlight is client-side
+      // class toggles (updateFootprintVisuals), so this stays cheap.
+      lastSelectionVersion = st.selection_version;
+      await loadSelectionLight();
     }
   } else {
     if (sidePanel) sidePanel.hidden = true;
@@ -347,18 +356,9 @@ window.addEventListener("mouseup", e => {
           }
         });
         
-        // Update server
-        selectedUuids.forEach(uuid => {
-          fetch("/api/placement/select", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ uuid })
-          });
-        });
-        
-        updateFootprintVisuals();
-        updateSelectionUI();
-        renderFootprintTable();
+        // Single bulk replace (the old code toggled each uuid, which
+        // could *deselect* already-selected parts server-side).
+        replaceSelectionBulk([...selectedUuids]);
       }
     }
     
@@ -379,9 +379,14 @@ window.addEventListener("mouseup", e => {
 fitBtn.addEventListener("click", fitToView);
 
 // --- Selection state ---
+// selectedUuids is the single source of truth on the client (optimistic).
+// fp.selected / fp.pinned in the allFootprints cache are stamped to match
+// after every local change or server sync — renderers read the Sets.
 let selectedUuids = new Set();
 let pinnedUuids = new Set();
 let selectedGhostUuid = null; // Ghost selected for move/delete (never in selectedUuids)
+let lastSelectionVersion = 0; // Server selection_version (view state, not board version)
+let inFlightSelection = 0; // Optimistic POSTs in flight (poll skips light-sync while > 0)
 
 function updateSelectionUI() {
   const selToolbar = el("sel-toolbar");
@@ -443,16 +448,82 @@ function updateFootprintVisuals() {
   });
 }
 
+// Mirror selectedUuids/pinnedUuids into the rendered table rows + header in
+// place. Never rebuilds tbody (unlike renderFootprintTable), so the clicked
+// checkbox keeps its native instant check and filter/sort/focus survive.
+function syncFpRowSelection() {
+  document.querySelectorAll("#fp-tbody tr").forEach(tr => {
+    const uuid = tr.dataset.uuid;
+    if (!uuid) return;
+    const on = selectedUuids.has(uuid);
+    const cb = tr.querySelector('input[type="checkbox"]');
+    if (cb && cb.checked !== on) cb.checked = on;
+    tr.classList.toggle("fp-selected-row", on || uuid === selectedGhostUuid);
+    const fp = allFootprints.find(f => f.uuid === uuid);
+    if (fp) {
+      fp.selected = on;
+      fp.pinned = pinnedUuids.has(uuid);
+      tr.classList.toggle("fp-pinned-row", !!fp.pinned);
+      tr.classList.toggle("fp-locked-row", !!fp.locked);
+      if (cb) cb.disabled = !!(fp.locked || fp.pinned || fp.ghost);
+      const badgeCell = tr.querySelector(".fp-col-state");
+      if (badgeCell) badgeCell.innerHTML = getStateBadge(fp);
+    }
+  });
+  syncSelectAll("fp-select-all", getFilteredFootprints(), fp => selectedUuids.has(fp.uuid));
+  updateSelectionUI();
+}
+
+// Cheap paint: in-place row sync + SVG highlight. Selection handlers use
+// this instead of renderFootprintTable() so the check paints immediately.
+function applySelectionUI() {
+  syncFpRowSelection();
+  updateFootprintVisuals();
+}
+
+// Zoom a frame after paint so getBBox layout work never blocks the check.
+function scheduleZoomToSelection() {
+  requestAnimationFrame(() => {
+    try { zoomToSelection(); } catch (e) { /* zoom is best-effort */ }
+  });
+}
+
+// Light selection sync for the poll loop (another tab changed selection):
+// no SVG re-inject, no footprint refetch — just adopt + repaint in place.
+async function loadSelectionLight() {
+  try {
+    const [pinData, selData] = await Promise.all([
+      apiJson("/api/placement/pinned"),
+      apiJson("/api/placement/selected"),
+    ]);
+    pinnedUuids = new Set(pinData.pinned || []);
+    selectedUuids = new Set(selData.selected || []);
+    for (const fp of allFootprints) {
+      fp.selected = selectedUuids.has(fp.uuid);
+      fp.pinned = pinnedUuids.has(fp.uuid);
+    }
+    applySelectionUI();
+  } catch {
+    // Silent: this runs in the poll loop, and explicit callers already
+    // reconcile — a toast every 2s would bury the real message.
+  }
+}
+
 async function togglePin(uuid) {
+  inFlightSelection++;
   try {
     const data = await postJSON("/api/placement/pin", { uuid });
     pinnedUuids = new Set(data.pinned || []);
+    if (data.selection_version !== undefined) lastSelectionVersion = data.selection_version;
     // If pinned, remove from selected
-    selectedUuids.delete(uuid);
-    updateFootprintVisuals();
-    updateSelectionUI();
+    if (pinnedUuids.has(uuid)) selectedUuids.delete(uuid);
+    const fp = allFootprints.find(f => f.uuid === uuid);
+    if (fp) { fp.pinned = pinnedUuids.has(uuid); fp.selected = selectedUuids.has(uuid); }
+    applySelectionUI();
   } catch (err) {
     toast(`pin failed: ${err.message}`);
+  } finally {
+    inFlightSelection--;
   }
 }
 
@@ -460,46 +531,83 @@ async function toggleSelect(uuid) {
   if (pinnedUuids.has(uuid)) return; // Can't select pinned
   const fp = allFootprints.find(f => f.uuid === uuid);
   if (fp && fp.ghost) return; // Ghosts use selectGhost, never placement selection
-  if (selectedUuids.has(uuid)) {
-    selectedUuids.delete(uuid);
-  } else {
-    selectedUuids.add(uuid);
-  }
+  if (fp && fp.locked) return;
+  const on = !selectedUuids.has(uuid);
+  if (on) selectedUuids.add(uuid);
+  else selectedUuids.delete(uuid);
+  if (fp) fp.selected = on;
+  applySelectionUI();
+  inFlightSelection++;
   try {
-    await fetch("/api/placement/select", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ uuid })
-    });
-    updateFootprintVisuals();
-    updateSelectionUI();
+    const data = await postJSON("/api/placement/select", { uuid, selected: on });
+    if (data.selection_version !== undefined) lastSelectionVersion = data.selection_version;
   } catch (err) {
-    toast(`select failed: ${err.message}`);
+    // Keep the optimistic highlight (server is reconciled below / on the
+    // next poll) — instant rollback is what made clicks look dead.
+    toast(`select failed (kept locally): ${err.message}`);
+    loadSelectionLight().catch(() => {});
+  } finally {
+    inFlightSelection--;
   }
 }
 
 async function selectAllUnlocked() {
+  inFlightSelection++;
   try {
     const data = await apiJson("/api/placement/select_all", { method: "POST" });
+    if (data.selection_version !== undefined) lastSelectionVersion = data.selection_version;
     selectedUuids = new Set(data.selected || []);
-    updateFootprintVisuals();
-    updateSelectionUI();
+    for (const fp of allFootprints) fp.selected = selectedUuids.has(fp.uuid);
+    applySelectionUI();
+    scheduleZoomToSelection();
   } catch (err) {
     toast(`select all failed: ${err.message}`);
+  } finally {
+    inFlightSelection--;
   }
 }
 
 async function clearSelection() {
+  const prev = new Set(selectedUuids);
+  const prevGhost = selectedGhostUuid;
   selectedUuids.clear();
   selectedGhostUuid = null;
+  for (const fp of allFootprints) fp.selected = false;
+  applySelectionUI();
+  updateGhostSelUI();
+  inFlightSelection++;
   try {
-    await fetch("/api/placement/clear_selection", { method: "POST" });
-    updateFootprintVisuals();
-    updateSelectionUI();
-    renderFootprintTable();
-    updateGhostSelUI();
+    const data = await apiJson("/api/placement/clear_selection", { method: "POST" });
+    if (data.selection_version !== undefined) lastSelectionVersion = data.selection_version;
   } catch (err) {
-    toast(`clear selection failed: ${err.message}`);
+    toast(`clear selection failed (kept locally): ${err.message}`);
+    loadSelectionLight().catch(() => {});
+  } finally {
+    inFlightSelection--;
+  }
+}
+
+// Replace the whole selection in one round-trip (single-select, bulk ops).
+async function replaceSelectionBulk(uuids, { zoom = false } = {}) {
+  const prev = new Set(selectedUuids);
+  selectedUuids = new Set(uuids);
+  for (const fp of allFootprints) fp.selected = selectedUuids.has(fp.uuid);
+  applySelectionUI();
+  if (zoom) scheduleZoomToSelection();
+  inFlightSelection++;
+  try {
+    const data = await postJSON("/api/placement/selection", { selected: [...selectedUuids] });
+    if (data.selection_version !== undefined) lastSelectionVersion = data.selection_version;
+    if (Array.isArray(data.selected)) {
+      selectedUuids = new Set(data.selected);
+      for (const fp of allFootprints) fp.selected = selectedUuids.has(fp.uuid);
+      applySelectionUI();
+    }
+  } catch (err) {
+    toast(`selection failed (kept locally): ${err.message}`);
+    loadSelectionLight().catch(() => {});
+  } finally {
+    inFlightSelection--;
   }
 }
 
@@ -524,13 +632,11 @@ viewport?.addEventListener("click", e => {
     } else if (e.altKey) {
       togglePin(uuid);
     } else {
-      // Single select: clear others, select this
+      // Single select: clear others, select this (server notified via bulk
+      // replace so SVG clicks stay in sync with Step/Run scope).
       if (!pinnedUuids.has(uuid)) {
         selectGhost(null); // switching back to parts clears ghost focus
-        selectedUuids.clear();
-        selectedUuids.add(uuid);
-        updateFootprintVisuals();
-        updateSelectionUI();
+        replaceSelectionBulk([uuid]);
       }
     }
     return;
@@ -587,7 +693,7 @@ function fpStateRank(fp) {
   if (fp.ghost) return 0;
   if (fp.locked) return 1;
   if (fp.pinned) return 2;
-  if (fp.selected) return 3;
+  if (selectedUuids.has(fp.uuid) || fp.selected) return 3;
   return 4;
 }
 
@@ -628,6 +734,13 @@ async function fetchFootprints() {
   try {
     const data = await apiJson("/api/footprints");
     allFootprints = data.footprints || [];
+    // selectedUuids/pinnedUuids are the truth after fetchPinned/fetchSelected;
+    // stamp the cache so renders stay coherent even if the server payload
+    // lags an in-flight optimistic change.
+    for (const fp of allFootprints) {
+      fp.selected = selectedUuids.has(fp.uuid);
+      if (pinnedUuids.has(fp.uuid)) fp.pinned = true;
+    }
     // Drop ghost focus when its ghost is gone (deleted/reset/undo).
     if (selectedGhostUuid && !allFootprints.some(fp => fp.uuid === selectedGhostUuid)) {
       selectedGhostUuid = null;
@@ -660,7 +773,7 @@ function matchesFilter(fp, filters) {
     if (filters.state === "movable" && (fp.locked || fp.pinned)) return false;
     if (filters.state === "locked" && !fp.locked) return false;
     if (filters.state === "pinned" && !fp.pinned) return false;
-    if (filters.state === "selected" && !fp.selected) return false;
+    if (filters.state === "selected" && !selectedUuids.has(fp.uuid) && !fp.selected) return false;
     if (filters.state === "ghost" && !fp.ghost) return false;
   }
   if (filters.ref) {
@@ -694,7 +807,7 @@ function getStateBadge(fp) {
   if (fp.ghost) return '<span class="state-badge state-ghost">Ghost</span>';
   if (fp.locked) return '<span class="state-badge state-locked">Locked</span>';
   if (fp.pinned) return '<span class="state-badge state-pinned">Pinned</span>';
-  if (fp.selected) return '<span class="state-badge state-selected">Selected</span>';
+  if (selectedUuids.has(fp.uuid) || fp.selected) return '<span class="state-badge state-selected">Selected</span>';
   if (illegalUuids.has(fp.uuid)) return '<span class="state-badge state-illegal">⚠ Illegal</span>';
   return '<span class="state-badge state-movable">Movable</span>';
 }
@@ -725,6 +838,7 @@ function fpRowHtml(fp) {
   const netsStr = escapeHtml(nets.slice(0, 3).join(", ") + (nets.length > 3 ? ` +${nets.length - 3}` : ""));
   const layerClass = fp.layer === "B" ? "B" : "F";
   const isGhostSel = fp.ghost && selectedGhostUuid === fp.uuid;
+  const isSel = selectedUuids.has(fp.uuid) || fp.selected;
   const isIllegal = illegalUuids.has(fp.uuid);
   const tooltip = escapeHtml(getLegalityTooltip(fp));
   const ref = escapeHtml(fp.ref);
@@ -732,8 +846,8 @@ function fpRowHtml(fp) {
   const uuid = escapeHtml(fp.uuid);
   const netsTitle = escapeHtml(nets.join(", "));
   return `
-    <tr class="${fp.selected || isGhostSel ? 'fp-selected-row' : ''} ${fp.locked ? 'fp-locked-row' : ''} ${fp.pinned ? 'fp-pinned-row' : ''} ${fp.ghost ? 'fp-ghost-row' : ''} ${isIllegal ? 'fp-illegal-row' : ''}" data-uuid="${uuid}" ${tooltip ? `title="${tooltip}"` : ''}>
-      <td class="fp-col-select"><input type="checkbox" ${fp.selected ? 'checked' : ''} ${fp.locked || fp.pinned || fp.ghost ? 'disabled' : ''} data-uuid="${uuid}"></td>
+    <tr class="${isSel || isGhostSel ? 'fp-selected-row' : ''} ${fp.locked ? 'fp-locked-row' : ''} ${fp.pinned ? 'fp-pinned-row' : ''} ${fp.ghost ? 'fp-ghost-row' : ''} ${isIllegal ? 'fp-illegal-row' : ''}" data-uuid="${uuid}" ${tooltip ? `title="${tooltip}"` : ''}>
+      <td class="fp-col-select"><input type="checkbox" ${isSel ? 'checked' : ''} ${fp.locked || fp.pinned || fp.ghost ? 'disabled' : ''} data-uuid="${uuid}" title="Select ${ref} for placement" aria-label="Select ${ref} for placement"></td>
       <td class="fp-col-ref" title="${ref}">${ref}</td>
       <td class="fp-col-footprint" title="${fpId}">${fpId}</td>
       <td class="fp-col-layer"><span class="fp-col-layer ${layerClass}">${escapeHtml(fp.layer)}</span></td>
@@ -750,28 +864,41 @@ function renderFootprintTable() {
   updateFpSortHeaders();
   tbody.innerHTML = filtered.map(fpRowHtml).join("");
   
-  // Add click handlers for checkboxes
+  // Checkbox toggles paint synchronously (native check), then sync in
+  // place + notify the server. No tbody rebuild here: the row is already
+  // correct, and a rebuild would wipe the just-painted check with stale
+  // cache state before first paint.
   tbody.querySelectorAll('input[type="checkbox"]').forEach(cb => {
-    cb.addEventListener("change", e => {
+    cb.addEventListener("change", async e => {
       const uuid = e.target.dataset.uuid;
-      if (e.target.checked) {
-        selectedUuids.add(uuid);
-      } else {
-        selectedUuids.delete(uuid);
-      }
-      // Update server
-      fetch("/api/placement/select", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ uuid })
-      });
+      const on = e.target.checked;
+      const fp = allFootprints.find(f => f.uuid === uuid);
+      if (fp && (fp.locked || fp.pinned || fp.ghost)) { e.target.checked = !on; return; }
+      if (on) selectedUuids.add(uuid);
+      else selectedUuids.delete(uuid);
+      if (fp) fp.selected = on;
+      // In-place row highlight + SVG highlight paint now; zoom next frame.
+      syncFpRowSelection();
       updateFootprintVisuals();
-      updateSelectionUI();
-      renderFootprintTable(); // Re-render to update row highlighting
-      zoomToSelection();
+      scheduleZoomToSelection();
+      inFlightSelection++;
+      try {
+        const data = await postJSON("/api/placement/select", { uuid, selected: on });
+        if (data.selection_version !== undefined) lastSelectionVersion = data.selection_version;
+      } catch (err) {
+        // Revert so UI and server agree.
+        if (on) selectedUuids.delete(uuid);
+        else selectedUuids.add(uuid);
+        if (fp) fp.selected = !on;
+        syncFpRowSelection();
+        updateFootprintVisuals();
+        toast(`select failed: ${err.message}`);
+      } finally {
+        inFlightSelection--;
+      }
     });
   });
-  
+
   // Add click handlers for rows (click row to select)
   tbody.querySelectorAll("tr").forEach(tr => {
     tr.addEventListener("click", e => {
@@ -782,30 +909,18 @@ function renderFootprintTable() {
       if (!fp) return;
       if (fp.ghost) { selectGhost(selectedGhostUuid === uuid ? null : uuid); return; }
       if (fp.locked || fp.pinned) return;
-      
-      if (e.shiftKey) {
-        // Range select not implemented yet - just toggle
-        toggleSelect(uuid).then(() => { renderFootprintTable(); zoomToSelection(); });
-      } else if (e.ctrlKey || e.metaKey) {
-        toggleSelect(uuid).then(() => { renderFootprintTable(); zoomToSelection(); });
+
+      if (e.shiftKey || e.ctrlKey || e.metaKey) {
+        // Additive toggle; highlight paints inside toggleSelect.
+        toggleSelect(uuid).then(() => { scheduleZoomToSelection(); });
       } else {
-        selectedUuids.clear();
-        selectedUuids.add(uuid);
-        fetch("/api/placement/select", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ uuid })
-        });
-        updateFootprintVisuals();
-        updateSelectionUI();
-        renderFootprintTable();
-        zoomToSelection();
+        replaceSelectionBulk([uuid], { zoom: true });
       }
     });
   });
-  
+
   // Update select all checkbox
-  syncSelectAll("fp-select-all", filtered, fp => fp.selected);
+  syncSelectAll("fp-select-all", filtered, fp => selectedUuids.has(fp.uuid));
   
   // Keep ghost target options + selected-ghost panel in sync with the cache.
   refreshGhostTargets();
@@ -857,24 +972,14 @@ document.querySelectorAll("#fp-table th.sortable").forEach(th => {
 // Sidebar buttons
 on("sidebar-select-visible", "click", () => {
   const filtered = getFilteredFootprints();
+  const next = new Set(selectedUuids);
   filtered.forEach(fp => {
     if (!fp.locked && !fp.pinned && !fp.ghost) {
-      selectedUuids.add(fp.uuid);
+      next.add(fp.uuid);
     }
   });
-  // Update server for each
-  filtered.forEach(fp => {
-    if (!fp.locked && !fp.pinned && !fp.ghost) {
-      fetch("/api/placement/select", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ uuid: fp.uuid })
-      });
-    }
-  });
-  updateFootprintVisuals();
-  updateSelectionUI();
-  renderFootprintTable();
+  // Single bulk replace (the old N×toggle could deselect server-side).
+  replaceSelectionBulk([...next]);
 });
 
 on("sidebar-clear-sel", "click", clearSelection);
@@ -891,31 +996,20 @@ on("sidebar-unpin-sel", "click", () => {
   toUnpin.forEach(uuid => togglePin(uuid));
 });
 
-// Select all checkbox in table header
+// Select all checkbox in table header (bulk replace, in-place repaint).
 on("fp-select-all", "change", e => {
   const filtered = getFilteredFootprints();
+  const next = new Set(selectedUuids);
   if (e.target.checked) {
     filtered.forEach(fp => {
       if (!fp.locked && !fp.pinned && !fp.ghost) {
-        selectedUuids.add(fp.uuid);
+        next.add(fp.uuid);
       }
     });
   } else {
-    filtered.forEach(fp => selectedUuids.delete(fp.uuid));
+    filtered.forEach(fp => next.delete(fp.uuid));
   }
-  // Update server
-  filtered.forEach(fp => {
-    if (!fp.locked && !fp.pinned && !fp.ghost) {
-      fetch("/api/placement/select", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ uuid: fp.uuid, selected: e.target.checked })
-      });
-    }
-  });
-  updateFootprintVisuals();
-  updateSelectionUI();
-  renderFootprintTable();
+  replaceSelectionBulk([...next]);
 });
 
 on("refresh-forces-btn", "click", refreshForces);

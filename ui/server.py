@@ -26,12 +26,18 @@ from kicad_autorouter.io import (
     collapse_to_two_layer,
     rip_up_nets,
 )
+from kicad_autorouter.mass import courtyard_bbox_area_m2
 from kicad_autorouter.placement import (
     PlacementParams,
     PlacementProposal,
     check_legality,
     refine_placement,
+    refine_placement_with_report,
     run_placement,
+)
+from kicad_autorouter.placement.model import (
+    _collect_pad_nodes,
+    _find_decap_chip_links,
 )
 from kicad_autorouter.routing.pipeline import (
     RoutingParams,
@@ -335,6 +341,7 @@ class Handler(BaseHTTPRequestHandler):
                     "loaded": model is not None,
                     "name": name,
                     "version": version,
+                    "selection_version": STATE.get_selection_version(),
                     "has_sch": has_sch,
                     "board_version": board_version,
                     "warning": version_warning,
@@ -644,7 +651,8 @@ class Handler(BaseHTTPRequestHandler):
             colors = net_colors(model, extra_power)
             # net -> decap refs using the same C*/power+ground rule as
             # placement + svg_render (computed from real footprints;
-            # user-marked power counts as power).
+            # user-marked power counts as power). decap_links maps
+            # decap ref -> nearest U* chip ref (None when unassigned).
             decap_by_net = {}
             for fp in model.footprints:
                 if not fp.uuid or not fp.pads:
@@ -661,6 +669,25 @@ class Handler(BaseHTTPRequestHandler):
                 if sides == ["ground", "power"]:
                     for n in nets:
                         decap_by_net.setdefault(n, []).append(fp.ref)
+            try:
+                _pads, _pad_to_fp, _, _, _ = _collect_pad_nodes(model)
+                _ref_by: dict = {}
+                for _i, _fi in enumerate(_pad_to_fp):
+                    if _fi >= 0 and _fi not in _ref_by:
+                        _ref_by[_fi] = model.footprints[_fi].ref
+                _areas = {}
+                for _fi, _fp in enumerate(model.footprints):
+                    try:
+                        _areas[_fi] = courtyard_bbox_area_m2(_fp)
+                    except (AttributeError, TypeError, ValueError):
+                        continue
+                _, decap_links = _find_decap_chip_links(
+                    _pads, _pad_to_fp, _ref_by,
+                    fp_area_m2_by_idx=_areas,
+                    extra_power=extra_power,
+                )
+            except (AttributeError, TypeError, ValueError):
+                decap_links = {}
             for net_name, conns in model.nets.items():
                 footprint_refs = set()
                 for conn in conns:
@@ -686,10 +713,17 @@ class Handler(BaseHTTPRequestHandler):
                     ), 3),
                     "color": colors.get(net_name, "#8a93a0"),
                     "decap_refs": sorted(decap_by_net.get(net_name, [])),
+                    "decap_links": {
+                        r: decap_links.get(r)
+                        for r in sorted(decap_by_net.get(net_name, []))
+                        if r in decap_links
+                    },
                 })
             # Sort: protected first, then by pad count descending
             nets_data.sort(key=lambda n: (not n["protected"], -n["pad_count"]))
-            self._send(200, json.dumps({"ok": True, "nets": nets_data}).encode(), "application/json")
+            self._send(200, json.dumps(
+                {"ok": True, "nets": nets_data, "decap_links": decap_links}
+            ).encode(), "application/json")
             return
 
         # GET /api/nets/terminals?net=<name> - pad coordinates of one
@@ -913,7 +947,16 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, b"not found", "text/plain")
             return
         ctype = _STATIC_MIME.get(full.suffix, "application/octet-stream")
-        self._send(200, full.read_bytes(), ctype)
+        body = full.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        # Never cache the UI: a restarted server with a cached page is a
+        # half-old client against a new server (or vice versa), which
+        # shows up as dead buttons and mystery ReferenceErrors.
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
 
     def do_POST(self):  # noqa: N802
         parsed = urlparse(self.path)
@@ -1153,7 +1196,7 @@ class Handler(BaseHTTPRequestHandler):
             base_deltas = dict(base.deltas) if base is not None else {}
             start = _time.perf_counter()
             try:
-                extra = refine_placement(
+                extra, tidy_report = refine_placement_with_report(
                     model, base_deltas,
                     strength=strength,
                     radius_mm=radius_m * 1000.0,
@@ -1203,6 +1246,7 @@ class Handler(BaseHTTPRequestHandler):
                 "refined": len(extra),
                 "version": version,
                 "stop_reason": "refined",
+                "tidy_report": tidy_report,
                 "legality_is_legal": legality.is_legal,
                 "overlapping_pairs": list(legality.overlapping_pairs),
                 "wall_violations": list(legality.wall_violations),
@@ -1509,9 +1553,10 @@ class Handler(BaseHTTPRequestHandler):
             if not uuid:
                 self._send(400, b"uuid required", "text/plain")
                 return
-            version = STATE.toggle_pinned(uuid)
+            sel_version = STATE.toggle_pinned(uuid)
             pinned = STATE.get_pinned_uuids()
-            self._send(200, json.dumps({"ok": True, "pinned": list(pinned), "version": version}).encode(), "application/json")
+            _, _, _, version, _, _ = STATE.snapshot
+            self._send(200, json.dumps({"ok": True, "pinned": list(pinned), "version": version, "selection_version": sel_version}).encode(), "application/json")
             return
         if parsed.path == "/api/placement/select":
             model, _, _, _, _, _ = STATE.snapshot
@@ -1529,22 +1574,53 @@ class Handler(BaseHTTPRequestHandler):
             if not uuid:
                 self._send(400, b"uuid required", "text/plain")
                 return
-            version = STATE.toggle_selected(uuid)
+            # Idempotent when the client sends its optimistic state;
+            # legacy toggle when omitted.
+            explicit = req.get("selected")
+            sel_version = STATE.toggle_selected(
+                uuid, selected=bool(explicit) if isinstance(explicit, bool) else None)
             selected = STATE.get_selected_uuids()
-            self._send(200, json.dumps({"ok": True, "selected": list(selected), "version": version}).encode(), "application/json")
+            _, _, _, version, _, _ = STATE.snapshot
+            self._send(200, json.dumps({"ok": True, "selected": list(selected), "version": version, "selection_version": sel_version}).encode(), "application/json")
+            return
+        if parsed.path == "/api/placement/selection":
+            # Bulk replace the whole selection set in one round-trip
+            # (single-select, select-visible, clear). Unknown/locked uuids
+            # are ignored server-side for robustness.
+            model, _, _, _, _, _ = STATE.snapshot
+            if model is None:
+                self._send(404, b"no board loaded", "text/plain")
+                return
+            length = int(self.headers.get("Content-Length") or 0)
+            body_data = self.rfile.read(length) if length > 0 else b"{}"
+            try:
+                req = json.loads(body_data.decode("utf-8"))
+            except json.JSONDecodeError:
+                self._send(400, b"invalid JSON", "text/plain")
+                return
+            uuids = req.get("selected", req.get("uuids", []))
+            if not isinstance(uuids, list):
+                self._send(400, b"selected must be a list", "text/plain")
+                return
+            sel_version = STATE.replace_selection(set(uuids))
+            selected = STATE.get_selected_uuids()
+            _, _, _, version, _, _ = STATE.snapshot
+            self._send(200, json.dumps({"ok": True, "selected": list(selected), "version": version, "selection_version": sel_version}).encode(), "application/json")
             return
         if parsed.path == "/api/placement/select_all":
             model, _, _, _, _, _ = STATE.snapshot
             if model is None:
                 self._send(404, b"no board loaded", "text/plain")
                 return
-            version = STATE.select_all_unlocked(model)
+            sel_version = STATE.select_all_unlocked(model)
             selected = STATE.get_selected_uuids()
-            self._send(200, json.dumps({"ok": True, "selected": list(selected), "version": version}).encode(), "application/json")
+            _, _, _, version, _, _ = STATE.snapshot
+            self._send(200, json.dumps({"ok": True, "selected": list(selected), "version": version, "selection_version": sel_version}).encode(), "application/json")
             return
         if parsed.path == "/api/placement/clear_selection":
-            version = STATE.clear_selection()
-            self._send(200, json.dumps({"ok": True, "version": version}).encode(), "application/json")
+            sel_version = STATE.clear_selection()
+            _, _, _, version, _, _ = STATE.snapshot
+            self._send(200, json.dumps({"ok": True, "version": version, "selection_version": sel_version}).encode(), "application/json")
             return
         if parsed.path == "/api/placement/pinned":
             pinned = STATE.get_pinned_uuids()

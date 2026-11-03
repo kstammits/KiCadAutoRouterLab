@@ -14,7 +14,7 @@ Usage:
 
 Figures (all PNG, committed under `docs/figures/`):
     fig_repulsion_vs_distance.png  Coulomb k/d^2 vs constant attraction + equilibrium
-    fig_attraction_fanout.png       signal / power /(fanout-1) / decap-boost weighting
+    fig_attraction_fanout.png       signal / power /(fanout-1) / local decap-chip link
     fig_wall_profile.png            unified wall law F=k*(1-s/h)^p, halo variants
     fig_wall_exponent.png           wall-law exponent F=k*(1-s/h)^p comparison
     fig_ghost_pullin.png            ghost pull-in vs per-spring weight ka
@@ -110,11 +110,11 @@ def fig_attraction_fanout(p: PlacementParams, out: pathlib.Path, dpi: int) -> pa
     fanouts = np.arange(2, 21)
     f_signal = np.full_like(fanouts, k_attr, dtype=float) * 1000  # mN
     f_power = k_attr * p.power_attraction_scale / (fanouts - 1) * 1000
-    f_decap = f_power * p.decap_boost
+    f_local = np.full_like(fanouts, k_attr * p.decap_link, dtype=float) * 1000
     fig, ax = plt.subplots(figsize=(10, 5))
     ax.plot(fanouts, f_signal, "o-", label="Signal (1.0)", color="#a3e635")
     ax.plot(fanouts, f_power, "s-", label="Power (1/(fanout-1))", color="#f59e0b")
-    ax.plot(fanouts, f_decap, "^-", label=f"Decap power edge (×{p.decap_boost:g})", color="#2dd4bf")
+    ax.plot(fanouts, f_local, "^-", label=f"Local decap-chip link ({p.decap_link:g})", color="#2dd4bf")
     ax.set_xlabel("Net fanout (number of pads on net)")
     ax.set_ylabel("Attraction force per edge (mN)")
     ax.set_title("Net Attraction Weighting by Fanout and Net Type")

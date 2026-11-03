@@ -126,5 +126,25 @@ loadParams().then(applyUrlPreset).catch(() => {});
   const _fl = el("forces-legend");
   if (_fl) _fl.style.display = el("forces-toggle")?.checked ? "inline-flex" : "none";
 }
-poll();
-setInterval(poll, 2000);
+// Boot self-check: if an earlier panel script failed to evaluate, its
+// globals are missing and blind calls below would die with a bare
+// "X is not defined". Name the dead panel instead.
+{
+  const need = ["poll", "applySelectionUI", "fetchNets", "renderFootprintTable"];
+  const missing = need.filter((n) => typeof window[n] === "undefined");
+  if (missing.length) {
+    showCompat(`panel failed to load (${missing.join(", ")} missing) — hard-refresh, check console`);
+  } else {
+    poll();
+    setInterval(poll, 2000);
+    // Capability probe: the server-synced selection endpoints arrived
+    // after the page did in some sessions. A 404 here means the page is
+    // newer than the running server — selection clicks would silently
+    // roll back, so say so up front.
+    fetch("/api/placement/selected").then((res) => {
+      if (res.status === 404) {
+        showCompat("page is newer than the running server — restart ui/server.py (selection won't stick)");
+      }
+    }).catch(() => { /* unreachable server: poll loop owns that message */ });
+  }
+}

@@ -231,6 +231,13 @@
   border-radius: 2px;
 }
   
+  /* Nets table scrolls horizontally inside its own container so the Route
+     action bar and params stay put. Without this the whole panel scrolls
+     sideways and the Width/Pwr/Decap/protect columns sit invisibly
+     off-screen at drawer widths. */
+  .nets-table-container { overflow-x: auto; max-width: 100%; }
+  #nets-table { border-collapse: collapse; font-size: .7rem; }
+
   /* Selection toolbar */
   .sel-toolbar { display:flex; gap:.4rem; align-items:center; padding:.35rem .7rem; border-top:1px solid #2a3540; font-size:.65rem; color:#9fb0c0; flex-wrap:wrap; background:#161c22; }
   .sel-toolbar button { padding:.15rem .45rem; font-size:.6rem; }
@@ -241,12 +248,13 @@
   /* Footprint states in SVG */
   .footprint.fp-locked line { stroke: #e06c75; stroke-dasharray: 2 2; }
   .footprint.fp-pinned line { stroke: #e0a458; stroke-dasharray: 4 2; }
-  .footprint.fp-selected line { stroke: #7ee0a0; stroke-width: 0.2; }
-  .footprint.fp-movable line { stroke: #4a8a4a; stroke-width: 0.15; opacity: 0.6; }
+  .footprint.fp-selected line { stroke: #7ee0a0; stroke-width: 0.3; }
+  .footprint.fp-selected line.sel-halo { stroke: #7ee0a0; stroke-width: 0.8; opacity: 0.3; }
+  .footprint.fp-movable line { stroke: #5b6b7a; stroke-width: 0.1; opacity: 0.45; }
   .footprint.fp-locked text { fill: #e06c75; }
   .footprint.fp-pinned text { fill: #e0a458; }
   .footprint.fp-selected text { fill: #7ee0a0; }
-  .footprint.fp-movable text { fill: #4a8a4a; }
+  .footprint.fp-movable text { fill: #8a93a0; }
 
   /* Motion force vectors — single source of truth for per-cause paint.
      Specificity (0,3,2) beats .footprint.fp-* line (0,2,1) above, so vectors
@@ -313,8 +321,9 @@
   /* Copper (track/via) click-to-select net */
   .track { pointer-events: stroke; cursor: pointer; }
   .via { cursor: pointer; }
-  .track.net-selected { filter: drop-shadow(0 0 1px #fff) brightness(1.4); }
-  .via.net-selected { filter: drop-shadow(0 0 1.5px #fff) brightness(1.4); }
+  .track.net-selected { stroke: #fff; filter: none; }
+  .via.net-selected { filter: none; }
+  .via.net-selected > circle:first-of-type { stroke: #fff; filter: none; }
   
   .drop { margin:1rem; border:1px dashed #3a4a5a; border-radius:8px; padding:2rem; text-align:center; color:#7d8b99; font-size:.8rem; }
   .file { color:#d7e0e9; }

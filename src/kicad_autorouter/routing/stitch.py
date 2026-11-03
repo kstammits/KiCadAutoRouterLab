@@ -288,6 +288,19 @@ def _cells_to_tracks(
     return tracks
 
 
+def _seg_dist_mm(
+    px: float, py: float, ax: float, ay: float, bx: float, by: float,
+) -> float:
+    """Plan-view distance from point P to segment AB (millimeters)."""
+    dx, dy = bx - ax, by - ay
+    seg_sq = dx * dx + dy * dy
+    if seg_sq <= 1e-18:
+        return math.hypot(px - ax, py - ay)
+    t = ((px - ax) * dx + (py - ay) * dy) / seg_sq
+    t = 0.0 if t < 0.0 else (1.0 if t > 1.0 else t)
+    return math.hypot(px - (ax + t * dx), py - (ay + t * dy))
+
+
 def _verify_stitch_via(
     model: BoardModel,
     grid: RoutingGrid,
@@ -303,9 +316,15 @@ def _verify_stitch_via(
     """Fast DRC-like check for a candidate stitch via.
 
     Returns True if the via passes basic clearance/hole/short checks.
+
+    Hole-to-hole spacing applies to every drilled pad/via regardless of
+    net (including net-less mounting boreholes and same-net barrels):
+    holes must never merge. Annulus-to-copper applies to foreign nets
+    and to net-less holes (mechanical keepout); same-net copper overlap
+    is allowed. Foreign tracks are checked analytically on the via's
+    layers (the raster mask alone under-covers diagonal approaches).
     """
-    from ..board_model import Point
-    from shapely.geometry import Point as ShapelyPoint, Polygon as ShapelyPolygon
+    from shapely.geometry import Point as ShapelyPoint
 
     pt = ShapelyPoint(x_mm, y_mm)
     via_outer = size_mm / 2.0
@@ -313,39 +332,44 @@ def _verify_stitch_via(
 
     for fp in model.footprints:
         for pad in fp.pads:
-            if pad.net_name is None or pad.net_name == net_name:
-                continue
             if not pad.is_through_hole:
                 continue
+            same_net = pad.net_name is not None and pad.net_name == net_name
             pad_pt = ShapelyPoint(pad.position.x_mm, pad.position.y_mm)
-            pad_outer = max(pad.size_mm) / 2.0
-            # Clearance check: via annulus + clearance vs pad copper
-            if pt.distance(pad_pt) < via_outer + clearance_mm + pad_outer:
-                return False
-            # Hole clearance: via drill vs pad hole
-            if pad.drill_mm > 0:
+            # Hole clearance vs every drilled hole (any net, incl. none).
+            if pad.drill_mm > 0 and drill_mm > 0:
                 if pt.distance(pad_pt) < via_inner + hole_clearance_mm + pad.drill_mm / 2.0:
                     return False
+            if same_net:
+                continue
+            pad_outer = max(pad.size_mm) / 2.0
+            # Clearance check: via annulus + clearance vs pad copper/hole.
+            if pt.distance(pad_pt) < via_outer + clearance_mm + pad_outer:
+                return False
 
     for via in model.vias:
-        if via.net_name is None or via.net_name == net_name:
-            continue
         via_pt = ShapelyPoint(via.position.x_mm, via.position.y_mm)
-        # Via-to-via clearance
-        if pt.distance(via_pt) < via_outer + clearance_mm + via.size_mm / 2.0:
-            return False
-        # Drill hole clearance
+        # Drill hole clearance vs every via (any net).
         if via.drill_mm > 0 and drill_mm > 0:
             if pt.distance(via_pt) < via_inner + hole_clearance_mm + via.drill_mm / 2.0:
                 return False
+        if via.net_name is not None and via.net_name == net_name:
+            continue
+        # Via-to-via annulus clearance (foreign or net-less only).
+        if pt.distance(via_pt) < via_outer + clearance_mm + via.size_mm / 2.0:
+            return False
 
-    # Check against tracks
+    # Analytic check against foreign tracks on the via's layers.
     for track in model.tracks:
         if track.net_name is None or track.net_name == net_name:
             continue
-        # Quick bounding box check first
-        # (Full segment-circle distance would be more accurate but slower)
-        pass
+        if track.layer not in layers:
+            continue
+        if _seg_dist_mm(x_mm, y_mm,
+                        float(track.start.x_mm), float(track.start.y_mm),
+                        float(track.end.x_mm), float(track.end.y_mm)) < \
+                via_outer + clearance_mm + track.width_mm / 2.0:
+            return False
 
     return True
 
@@ -360,17 +384,21 @@ def plan_stitches(
     max_vias: int = 32,
     max_bridges: int = 16,
     max_bridge_mm: float = 30.0,
+    min_island_mm2: float = 2.0,
 ) -> StitchPlan:
     """Join pour islands within each board region (never across regions).
 
-    Per zoned ground net: union-find islands linked by existing same-net
-    barrels, then per region join every group into the largest fed group —
+    Per zoned ground net: union-find islands sharing a same-net barrel,
+    then per region join every group into the largest fed group —
     first by overlap via, else by a clearance-respecting bridge track.
     Via sites must clear foreign copper by ``size/2 + clearance``,
-    existing drills, the SMD via-block mask, and via-forbidding keepouts.
+    every drilled hole (any net, including mounting boreholes) by the
+    hole clearance, the SMD via-block mask, and via-forbidding keepouts.
     Bridge tracks route on one layer through cells clear of foreign copper
-    by ``width/2 + clearance``. Deterministic; bounded budgets (fed
-    groups first, then larger groups).
+    by ``width/2 + clearance``. Tiny unfed groups below
+    ``min_island_mm2`` (pour slivers no part connects to) are ignored:
+    stitching them spends vias for no continuity. Deterministic; bounded
+    budgets (fed groups first, then larger groups).
     """
     res = grid.resolution_mm
     if res <= 0 or (max_vias <= 0 and max_bridges <= 0):
@@ -459,6 +487,22 @@ def plan_stitches(
         def group_fed(members: List[Tuple[str, int]]) -> bool:
             return any(bool((((lab[layer] == i) & copper[layer]) & seed[layer]).any())
                        for layer, i in members)
+
+        # Drop pour slivers too small to matter: unfed groups below the
+        # area threshold are ignored entirely (never stitched, never
+        # counted as unjoined). A via joining one to the pour connects
+        # nothing no part touches.
+        min_island_cells = min_island_mm2 / (res * res) if res > 0 else 0
+        kept: Dict[Tuple[str, int], List[Tuple[str, int]]] = {}
+        dropped_nodes = 0
+        for key, members in groups.items():
+            if min_island_cells > 0 and not group_fed(members) \
+                    and group_cells(members) < min_island_cells:
+                dropped_nodes += len(members)
+                continue
+            kept[key] = members
+        groups = kept
+        before -= dropped_nodes
 
         # Partition groups per region; join within each region only.
         by_region: Dict[int, List[List[Tuple[str, int]]]] = {}

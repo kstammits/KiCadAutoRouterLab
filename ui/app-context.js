@@ -74,6 +74,10 @@ async function ctxCollectBundle() {
       power_override: powerOverride,
       selected: [...(typeof selectedNets !== "undefined" ? selectedNets : [])],
     },
+    placement_state: {
+      pinned: [...(typeof pinnedUuids !== "undefined" ? pinnedUuids : [])],
+      selected: [...(typeof selectedUuids !== "undefined" ? selectedUuids : [])],
+    },
     inlets: inletsP ? {
       gnd: inletsP.gnd_list ?? inletsP.gnd ?? [],
       power: inletsP.power ?? {},
@@ -189,6 +193,35 @@ async function ctxRestoreNetsState(bundle) {
   }
 }
 
+async function ctxRestorePlacementState(bundle) {
+  // Footprint pins + placement selection. Bundles predating placement_state
+  // simply skip this (nothing to restore). Pin toggle flips state, so diff
+  // both directions against the freshly loaded board; stale uuids (edited
+  // board) are warned and skipped one by one.
+  const st = bundle.placement_state;
+  if (!st) return;
+  const wantPinned = new Set(st.pinned || []);
+  const wantSelected = [...(st.selected || [])];
+  try {
+    const cur = new Set((await apiJson("/api/placement/pinned")).pinned || []);
+    for (const uuid of wantPinned) {
+      if (!cur.has(uuid)) {
+        try { await postJSON("/api/placement/pin", { uuid }); }
+        catch (err) { toast(`pin restore skipped for ${uuid}: ${err.message}`); }
+      }
+    }
+    for (const uuid of cur) {
+      if (!wantPinned.has(uuid)) {
+        try { await postJSON("/api/placement/pin", { uuid }); }
+        catch (err) { toast(`unpin restore skipped for ${uuid}: ${err.message}`); }
+      }
+    }
+  } catch (err) { toast(`pins restore skipped: ${err.message}`); }
+  try {
+    await postJSON("/api/placement/selection", { selected: wantSelected });
+  } catch (err) { toast(`placement selection restore skipped: ${err.message}`); }
+}
+
 async function ctxLoadContextFile(file) {
   const diag = (typeof routeDiag !== "undefined") ? routeDiag : null;
   try {
@@ -204,10 +237,16 @@ async function ctxLoadContextFile(file) {
     // 2. Server state through existing endpoints.
     await ctxRestoreServerState(bundle);
     await ctxRestoreNetsState(bundle);
+    await ctxRestorePlacementState(bundle);
     // 3. Client refresh from the loaded board.
     if (typeof loadParams === "function") await loadParams().catch(() => {});
     if (typeof loadRoutingParams === "function") await loadRoutingParams().catch(() => {});
     await fetchNets();
+    // Placement selection/pins restored above: pull server truth into the
+    // client sets and repaint rows + SVG highlights.
+    if (typeof loadSelectionLight === "function") await loadSelectionLight().catch(() => {});
+    if (typeof fetchFootprints === "function") await fetchFootprints().catch(() => {});
+    else if (typeof applySelectionUI === "function") applySelectionUI();
     const avail = new Set((typeof lastNetsByName !== "undefined" ? [...lastNetsByName.keys()] : []));
     if (typeof selectedNets !== "undefined") {
       selectedNets = new Set((bundle.nets_state?.selected || []).filter(n => avail.has(n)));

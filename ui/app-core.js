@@ -4,6 +4,24 @@
 // loading, resizers. No domain logic; cross-panel state lives in its
 // owning panel file.
 
+// Persistent banner for boot/version problems toasts can't carry (they
+// auto-hide in 4s). Hidden until shown.
+function showCompat(msg) {
+  try {
+    const b = document.getElementById("compat-banner");
+    if (b) { b.hidden = false; b.textContent = msg; b.title = msg; }
+  } catch { /* DOM not ready */ }
+}
+
+// First-thing failure surface: a script that fails to load or evaluate
+// otherwise dies silently — dead buttons, bare console errors. Name the
+// file so the cause is actionable instead of mysterious.
+window.addEventListener("error", (e) => {
+  if (e.message && /ResizeObserver loop/.test(String(e.message))) return;
+  const file = String(e.filename || "").split("/").pop();
+  showCompat(`UI error${file ? ` in ${file}` : ""}: ${e.message || "failed to load"} — hard-refresh, check console`);
+}, true);
+
 // Fail-safe DOM helpers: a missing/renamed id warns instead of throwing at
 // load and killing the whole script (script runs after the DOM, end of body).
 function el(id) {

@@ -22,6 +22,7 @@ from .runner import PlacementProposal, _run_region_simulation, _thin_frames, run
 from .model import (
     _build_net_edges_pad_level,
     _collect_pad_nodes,
+    _find_decap_chip_links,
     _find_decap_pad_indices,
 )
 from .params import (
@@ -33,7 +34,7 @@ from .params import (
 )
 from .rigid import _clamp_rigid_step, _rigid_pose_vertices
 from .legality import LegalityReport, check_legality
-from .refine import refine_placement
+from .refine import refine_placement, refine_placement_with_report
 
 __all__ = [
     "PlacementParams",
@@ -42,6 +43,7 @@ __all__ = [
     "LegalityReport",
     "check_legality",
     "refine_placement",
+    "refine_placement_with_report",
     # Backward-compat re-exports (import from submodules in new code):
     "FRAME_ANGLE_DECIMALS",
     "FRAME_XY_DECIMALS",
@@ -52,6 +54,7 @@ __all__ = [
     "_collect_pad_nodes",
     "_contact_weights",
     "_courtyard_outline_polygon",
+    "_find_decap_chip_links",
     "_find_decap_pad_indices",
     "_footprint_courtyard_polygon",
     "courtyard_is_degenerate",

@@ -78,16 +78,16 @@ $$\mathbf{F}_{\text{attr}} = k_{\text{attr}} \cdot w_{\text{edge}} \cdot \hat{\m
 - $w_{\text{edge}}$ is a dimensionless weight per net edge:
   - Signal nets: `1.0`
   - Power nets: `power_attraction_scale / (fanout - 1)` — fans out the pull so a rail shared by many parts doesn't collapse them
-  - Decoupling caps (C*, 2 pads, one power + one GND): additional `decap_boost` multiplier (default `4×`)
+  - Decoupling caps (C*, 2 pads, one power + one GND): admitted GND-side edges at the fanout-scaled power rate plus a symmetric local link from a small cap to its nearest `U*` chip (≤15 mm, weight `decap_link`, default `4`; bulk/distant caps stay global-only)
   - GND nets: **excluded** (pours connect anywhere) — *except* decap GND-side edges
 
-![Effective attraction per pad vs. net fanout for signal vs. power nets. Power rails fan out the pull so total force per pad stays roughly constant; decap boost (4×) is shown for reference.](figures/fig_attraction_fanout.png){#fig-attraction-fanout}
+![Effective attraction per pad vs. net fanout for signal vs. power nets. Power rails fan out the pull so total force per pad stays roughly constant; the local decap-chip link (weight 4) overpowers rail fanout.](figures/fig_attraction_fanout.png){#fig-attraction-fanout}
 
 **Parameter tradeoff**:
 
 - **Higher `attraction_k_N`** → stronger pull → tighter clustering, faster convergence, but more overlap pressure on courtyards
 - **`power_attraction_scale`** — turn down (< 1) to weaken rail pull; turn off (`include_power_nets: false`) to exclude power entirely
-- **`decap_boost`** — increase to anchor decoupling caps more aggressively to their power/GND rails
+- **`decap_link`** — increase to anchor decoupling caps more aggressively to their linked chip (global rail pull is never boosted)
 
 ---
 

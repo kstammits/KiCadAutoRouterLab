@@ -10,7 +10,9 @@ wanders away from its IC.
   pull per pad, no global collapse);
 - ground nets: excluded, except decap-incident edges (decap GND-side
   exception), which ride at the same fanout-scaled rate;
-- decap-incident edges: x decap_boost on top.
+- decap_link scales only the supplemental symmetric local decap-chip
+  links, never the global rail clique, so the chip link overpowers
+  rail fanout.
 
 Boards mirror tests/test_placement_forces.py conventions (valid
 head-to-tail courtyard rects via helpers.make_fp, virtual single region).
@@ -35,6 +37,7 @@ from kicad_autorouter.placement import (
     PlacementParams,
     _build_net_edges_pad_level,
     _collect_pad_nodes,
+    _find_decap_chip_links,
     _find_decap_pad_indices,
     run_placement,
 )
@@ -171,7 +174,7 @@ class TestEdgeWeights:
         )
         assert len(src) == 0
 
-    def test_decap_gnd_exception_and_boost(self):
+    def test_decap_gnd_exception_no_boost(self):
         # C1 (VCC, GND) + U1 (VCC, GND): both nets fanout 2.
         u1 = make_fp("U1", "uuid-u1", 0.0, 0.0, ("VCC", "GND"))
         c1 = make_fp("C1", "uuid-c1", 30.0, 0.0, ("VCC", "GND"))
@@ -180,19 +183,19 @@ class TestEdgeWeights:
         decap = _find_decap_pad_indices(pads, pad_to_fp_idx, ref_by_idx)
         assert len(decap) == 2  # both C1 pads, neither U1 pad
         src, dst, w = _build_net_edges_pad_level(
-            pads, pad_to_fp_idx, decap_pad_indices=decap, decap_boost=4.0
+            pads, pad_to_fp_idx, decap_pad_indices=decap, decap_link=4.0
         )
         assert len(src) == 2  # VCC pair + GND pair (exception)
-        assert all(ww == pytest.approx(4.0 / (2 - 1)) for ww in w)
+        assert all(ww == pytest.approx(1.0 / (2 - 1)) for ww in w)
 
-    def test_decap_boost_zero_kills_gnd_exception(self):
+    def test_decap_link_zero_kills_gnd_exception(self):
         u1 = make_fp("U1", "uuid-u1", 0.0, 0.0, ("VCC", "GND"))
         c1 = make_fp("C1", "uuid-c1", 30.0, 0.0, ("VCC", "GND"))
         model = _board([u1, c1])
         pads, pad_to_fp_idx, ref_by_idx = _pads_and_refs(model)
         decap = _find_decap_pad_indices(pads, pad_to_fp_idx, ref_by_idx)
         src, dst, w = _build_net_edges_pad_level(
-            pads, pad_to_fp_idx, decap_pad_indices=decap, decap_boost=0.0
+            pads, pad_to_fp_idx, decap_pad_indices=decap, decap_link=0.0
         )
         nets = {pads[s].net_name for s in src}
         assert "GND" not in nets
@@ -255,17 +258,17 @@ class TestPowerBehavior:
         fx, _ = prop.forces["uuid-c1"]
         assert fx < 0.0
         ax, _ = prop.force_components["uuid-c1"]["attraction"]
-        # SI newtons: 2 boosted edges x ka=5e-5 x decap_boost=4.0.
-        assert ax == pytest.approx(-0.0004), (
-            f"decap attraction must be 2 boosted edges x ka=5e-5 x boost 4, got {ax}"
+        # SI newtons: far cap (30mm) is unassigned, so 2 unboosted global
+        # one-sided edges x ka=5e-5 and no local links.
+        assert ax == pytest.approx(-0.0001), (
+            f"far decap attraction must be 2 global edges x ka=5e-5, got {ax}"
         )
 
-    def test_decap_edges_pull_only_the_decap(self):
-        """One-sided decap edges protect the target from being dragged in.
+    def test_global_edges_one_sided_when_unassigned(self):
+        """Distant decaps keep one-sided global pull and spare the chip.
 
-        The cap must still feel its boosted attraction, but the IC side of
-        a decap-incident edge is silent; otherwise a large neighbor can be
-        pulled onto the cap.
+        At 30mm the cap is past the link range, so the IC side stays
+        silent; close caps gain symmetric local links (covered below).
         """
         prop = run_placement(_decap_board(), _decap_params())
         ax, _ = prop.force_components["uuid-c1"]["attraction"]
@@ -277,7 +280,7 @@ class TestPowerBehavior:
         attraction and its step points away (repulsion only)."""
         prop = run_placement(
             _decap_board(),
-            _decap_params(include_power_nets=False, decap_boost=0.0),
+            _decap_params(include_power_nets=False, decap_link=0.0),
         )
         assert "uuid-c1" in prop.deltas
         dx, _, _ = prop.deltas["uuid-c1"]
@@ -306,17 +309,17 @@ class TestPowerParams:
     def test_defaults(self):
         p = PlacementParams()
         assert p.power_attraction_scale == 1.0
-        assert p.decap_boost == 4.0
+        assert p.decap_link == 4.0
         assert p.include_power_nets is True
 
     def test_roundtrip(self):
-        p = PlacementParams(power_attraction_scale=0.5, decap_boost=8.0,
+        p = PlacementParams(power_attraction_scale=0.5, decap_link=8.0,
                             include_power_nets=False)
         assert PlacementParams.from_dict(p.to_dict()) == p
 
     @pytest.mark.parametrize("bad", [
         {"power_attraction_scale": -1.0},
-        {"decap_boost": -0.5},
+        {"decap_link": -0.5},
         {"include_power_nets": 1},
         {"include_power_nets": "yes"},
     ])
@@ -326,9 +329,92 @@ class TestPowerParams:
 
     def test_zero_scales_allowed(self):
         p = PlacementParams.from_dict(
-            {"power_attraction_scale": 0.0, "decap_boost": 0.0})
+            {"power_attraction_scale": 0.0, "decap_link": 0.0})
         assert p.power_attraction_scale == 0.0
-        assert p.decap_boost == 0.0
+        assert p.decap_link == 0.0
+
+    def test_legacy_boost_alias(self):
+        assert PlacementParams.from_dict({"decap_boost": 8.0}).decap_link == 8.0
+        p = PlacementParams.from_dict({"decap_link": 3.0, "decap_boost": 8.0})
+        assert p.decap_link == 3.0
+
+
+@pytest.mark.unit
+class TestDecapChipLinks:
+    """Supplemental symmetric links: small caps link near U*, else global-only."""
+
+    def _collect(self, fps):
+        model = _board(fps)
+        pads, pad_to_fp_idx, _, _, _ = _collect_pad_nodes(model)
+        ref_by = {}
+        for i, fi in enumerate(pad_to_fp_idx):
+            if fi >= 0 and fi not in ref_by:
+                ref_by[fi] = model.footprints[fi].ref
+        return pads, pad_to_fp_idx, ref_by
+
+    def test_close_cap_links_nearest_chip(self):
+        u1 = make_fp("U1", "uuid-u1", 0.0, 0.0, ("VCC", "GND"))
+        c1 = make_fp("C1", "uuid-c1", 5.0, 0.0, ("VCC", "GND"))
+        pads, pad_to_fp, ref_by = self._collect([u1, c1])
+        edges, links = _find_decap_chip_links(pads, pad_to_fp, ref_by)
+        assert links == {"C1": "U1"}
+        assert len(edges) == 2
+        nets = sorted(pads[i].net_name for i, _ in edges)
+        assert nets == ["GND", "VCC"]
+
+    def test_distant_cap_unassigned(self):
+        u1 = make_fp("U1", "uuid-u1", 0.0, 0.0, ("VCC", "GND"))
+        c1 = make_fp("C1", "uuid-c1", 60.0, 0.0, ("VCC", "GND"))
+        pads, pad_to_fp, ref_by = self._collect([u1, c1])
+        edges, links = _find_decap_chip_links(pads, pad_to_fp, ref_by)
+        assert links == {"C1": None}
+        assert edges == []
+
+    def test_bulk_cap_never_links(self):
+        u1 = make_fp("U1", "uuid-u1", 0.0, 0.0, ("VCC", "GND"))
+        c1 = make_fp("C1", "uuid-c1", 5.0, 0.0, ("VCC", "GND"),
+                     hw=5.0, hh=5.0)
+        pads, pad_to_fp, ref_by = self._collect([u1, c1])
+        from kicad_autorouter.mass import courtyard_bbox_area_m2
+        areas = {1: courtyard_bbox_area_m2(c1)}
+        edges, links = _find_decap_chip_links(
+            pads, pad_to_fp, ref_by, fp_area_m2_by_idx=areas)
+        assert links == {"C1": None}
+        assert edges == []
+
+    def test_non_u_ref_never_target(self):
+        j1 = make_fp("J1", "uuid-j1", 3.0, 0.0, ("VCC", "GND"))
+        c1 = make_fp("C1", "uuid-c1", 5.0, 0.0, ("VCC", "GND"))
+        pads, pad_to_fp, ref_by = self._collect([j1, c1])
+        edges, links = _find_decap_chip_links(pads, pad_to_fp, ref_by)
+        assert links == {"C1": None}
+        assert edges == []
+
+    def test_local_link_is_symmetric_and_pulls_chip(self):
+        u1 = make_fp("U1", "uuid-u1", 0.0, 0.0, ("VCC", "GND"))
+        c1 = make_fp("C1", "uuid-c1", 5.0, 0.0, ("VCC", "GND"))
+        prop = run_placement(_board([u1, c1]), _decap_params(max_iterations=1))
+        assert prop.force_components["uuid-u1"]["attraction"] != (0.0, 0.0)
+        ax, _ = prop.force_components["uuid-c1"]["attraction"]
+        assert ax < 0.0
+
+    def test_local_link_overpowers_rail_fanout(self):
+        # Globals stay fanout-scaled while the local chip link carries the
+        # full decap_link weight, so the chip link dominates on busy rails.
+        u1 = make_fp("U1", "uuid-u1", 0.0, 0.0, ("VCC", "GND"))
+        u2 = make_fp("U2", "uuid-u2", 40.0, 0.0, ("VCC", "GND"))
+        u3 = make_fp("U3", "uuid-u3", 80.0, 0.0, ("VCC", "GND"))
+        c1 = make_fp("C1", "uuid-c1", 5.0, 0.0, ("VCC", "GND"))
+        pads, pad_to_fp, ref_by = self._collect([u1, u2, u3, c1])
+        decap = _find_decap_pad_indices(pads, pad_to_fp, ref_by)
+        _, _, w = _build_net_edges_pad_level(
+            pads, pad_to_fp, decap_pad_indices=decap, decap_link=4.0
+        )
+        assert all(ww == pytest.approx(1.0 / (4 - 1)) for ww in w)
+        edges, links = _find_decap_chip_links(pads, pad_to_fp, ref_by)
+        assert links == {"C1": "U1"}
+        assert len(edges) == 2
+        assert 4.0 > max(w)
 
 
 # ---------------------------------------------------------------------------

@@ -57,12 +57,12 @@ default heavy fixture (12+ files); deselect via `-m "not dccf"` + `--ignore` or
 | `test_routing_pour` | 8 | Pours passable-at-toll, severance steers |
 | `test_track_ripup` | 7 | `commit_placement` + `rip_up_nets` |
 
-## Power / pour / DRC (69 tests)
+## Power / pour / DRC (74 tests)
 
 | File | n | Intent |
 |------|---|--------|
 | `test_pour` | 11 | Pour continuity model: masks + GND-island detection (analysis only) |
-| `test_stitch` | 12 | GND repair: stitching vias + bridges |
+| `test_stitch` | 17 | GND repair: stitching vias + bridges |
 | `test_gnd_strip` | 9 | GND-only eviction: signals never rip each other |
 | `test_plane_fanout` | 4 | Inner-zone stubs to plane in 4-layer mode |
 | `test_drc_routing` | 1 | Magnet nets routed → DRC passes |
@@ -101,7 +101,7 @@ Small files that duplicate a neighbor's contract — merge, don't extend:
 * `test_routing_crossing` (1) + `test_routing_chunked` (1) + `test_routing_astar` (2) → fold into `test_routing_search` (13) as `test_routing_properties`. All pin search-level contracts; chunked is a server-design tripwire, keep that one test but co-locate it.
 * `test_debug_grids` (4) → cull if the debug endpoint goes; it pins a view-model, not physics.
 * `test_motion_roundtrip` (3) → keep only while the SVG player exists; it pins a duplicated transform, not placement.
-* Pour/GND cluster (`test_pour` 11 + `test_stitch` 12 + `test_gnd_strip` 9 + `test_routing_pour` 8 = 40) → heaviest overlap; if one goes, `test_stitch` is the behavior that matters.
+* Pour/GND cluster (`test_pour` 11 + `test_stitch` 17 + `test_gnd_strip` 9 + `test_routing_pour` 8 = 45) → heaviest overlap; if one goes, `test_stitch` is the behavior that matters.
 * Layer-mode sprawl (`test_board_mode` 8 + `test_collapse` 8 + `test_quad_layers` 7 + `test_allowed_layers` 5 + `test_plane_fanout` 4 = 32) → five files for one mode switch; collapse to mode + layers.
 * `test_magnet` (6) vs `test_placement_forces` (17) → intentional companion split (behavior vs isolation); keep both unless trimming hard, then keep `test_magnet`.
 

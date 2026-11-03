@@ -27,6 +27,9 @@ function buildTidyParams() {
   for (const def of TIDY_PARAM_DEFS) {
     const wrap = document.createElement("div");
     wrap.className = "param";
+    // Ancestor title covers slider + number box (the label <span> title
+    // alone does not cover its sibling inputs).
+    if (def.desc) wrap.title = def.desc;
     const dmin = tidyToDisplay(def.min, def);
     const dmax = tidyToDisplay(def.max, def);
     const dstep = def.display?.step ?? def.step;
@@ -125,11 +128,32 @@ async function runTidy() {
     }
     await poll();
     if (typeof renderFootprintTable === "function") renderFootprintTable();
-    if (typeof acceptBtn !== "undefined" && acceptBtn) acceptBtn.disabled = !(r.moved > 0);
+    if (typeof acceptBtn !== "undefined" && acceptBtn) acceptBtn.disabled = !(r.refined > 0);
     if (diag) {
-      diag.textContent = r.refined > 0
-        ? `tidied ${r.refined} parts (${r.moved} in proposal) — review in Place → Accept`
-        : `no tidy change (${r.moved} in proposal)`;
+      const rep = (r && r.tidy_report) || {};
+      const noN = Array.isArray(rep.no_neighbors) ? rep.no_neighbors.length : 0;
+      const rolled = Array.isArray(rep.rolled_back) ? rep.rolled_back.length : 0;
+      const considered = Number(rep.considered) || 0;
+      const baseN = Number(rep.base_overlaps) || 0;
+      if (r.refined > 0) {
+        let msg = `tidied ${r.refined} parts — review in Place → Accept`;
+        const bits = [];
+        if (baseN) bits.push(`left ${baseN} existing touch${baseN > 1 ? "es" : ""} alone`);
+        if (rolled) bits.push(`${rolled} skipped (would land on another part)`);
+        if (noN) bits.push(`${noN} had nothing nearby`);
+        if (bits.length) msg += ` (${bits.join("; ")})`;
+        diag.textContent = msg;
+      } else if (considered > 0 && noN >= considered) {
+        diag.textContent = `no tidy change — nothing within radius (tried ${considered} parts)`;
+      } else {
+        const bits = [];
+        if (baseN) bits.push(`${baseN} existing touch${baseN > 1 ? "es" : ""} left alone`);
+        if (rolled) bits.push(`${rolled} skipped (would land on another part)`);
+        if (noN) bits.push(`${noN} had nothing nearby`);
+        diag.textContent = bits.length
+          ? `no tidy change (${bits.join("; ")})`
+          : `no tidy change`;
+      }
     }
   } catch (err) {
     if (diag) diag.textContent = `tidy failed: ${err.message}`;

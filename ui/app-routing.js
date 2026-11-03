@@ -29,6 +29,21 @@ async function loadRoutingParams() {
   }
 }
 
+// One-line new-user descriptions for the routing sliders. Slider/number
+// inputs are siblings of the label <span>, so the description also goes on
+// the wrapping .param div (ancestor title covers both inputs on hover).
+const ROUTING_PARAM_DESCS = {
+  track_width_mm: "Default signal track width (mm). Per-net overrides and power width win over this.",
+  power_width_mm: "Track width for power (PWR-marked) nets.",
+  clearance_mm: "Copper clearance: minimum gap between different-net copper (mm).",
+  fanout_margin_mm: "Steering-only push away from foreign (other-net) pins (mm). Guides the search; never changes clearance rules.",
+  via_cost_mm: "Extra cost per via, in mm of track — higher means fewer vias.",
+  pour_severance_weight: "Penalty for cutting GND-pour continuity. 0 disables pour-awareness.",
+  grid_resolution_mm: "Routing grid cell size (mm). 0.05 is 4x cells (slower, finer); large boards may reject fine grids.",
+  max_terminals_per_net: "Nets with more terminals auto-split into chunks (piecemeal). 0 = no cap.",
+  piecemeal_chunk_terminals: "Terminals per chunk when a net exceeds the cap. 0 = disable chunking (over-cap nets fail fast).",
+};
+
 // Render routing params sliders
 function renderRoutingParams(params, modeOwned = [], modePreset = {}) {
   const grid = el("routing-params-grid");
@@ -84,9 +99,11 @@ function renderRoutingParams(params, modeOwned = [], modePreset = {}) {
   grid.innerHTML = ROUTING_PARAM_DEFS.map(def => {
     const value = params[def.key] ?? def.default;
     const managed = modeOwned.includes(def.key);
+    const desc = ROUTING_PARAM_DESCS[def.key] || def.label;
+    const tip = managed ? `Managed by mode — ${desc}` : desc;
     return `
-      <div class="param">
-        <span title="${managed ? "Managed by mode" : def.label}">${def.label}${managed ? " (mode)" : ""}</span>
+      <div class="param" title="${tip}">
+        <span title="${tip}">${def.label}${managed ? " (mode)" : ""}</span>
         <div class="row">
           <input type="range" data-key="${def.key}" min="${def.min}" max="${def.max}" step="${def.step}" value="${value}" ${managed ? "disabled" : ""}>
           <input type="number" data-key="${def.key}" min="${def.min}" max="${def.max}" step="${def.step}" value="${value}" ${managed ? "disabled" : ""}>
@@ -476,8 +493,9 @@ async function ripSelectedNets() {
   const ripBtn = el("rip-selected-btn");
   const routeBtn = el("route-selected-btn");
   const routeAllBtn = el("route-all-btn");
+  const selectUnroutedBtn = el("select-unrouted-btn");
   const nets = Array.from(selectedNets);
-  for (const b of [ripBtn, routeBtn, routeAllBtn]) {
+  for (const b of [ripBtn, routeBtn, routeAllBtn, selectUnroutedBtn]) {
     if (b) { b.disabled = true; b.classList.add("loading"); }
   }
   try {
@@ -501,7 +519,7 @@ async function ripSelectedNets() {
   } catch (err) {
     diag.textContent = `rip-up failed: ${err.message}`;
   } finally {
-    for (const b of [ripBtn, routeBtn, routeAllBtn]) {
+    for (const b of [ripBtn, routeBtn, routeAllBtn, selectUnroutedBtn]) {
       if (b) b.classList.remove("loading");
     }
     updateNetSelectionUI();

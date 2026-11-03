@@ -56,6 +56,23 @@ def _courtyard_lines(svg: str, uuid: str):
     ]
 
 
+def test_selected_and_movable_courtyards_differ():
+    """Selection must read at a glance: only selected parts glow green.
+
+    Movable-but-unselected courtyards render neutral dim; selected ones
+    render bright green with a halo under-stroke so they stand out on a
+    dense board. Pads keep their net colors either way.
+    """
+    fp = make_fp("U1", "uuid-u1", 0.0, 0.0, ("N1", "N2"), hw=2.0, hh=2.0)
+    model = _synthetic_model(fp)
+    plain = render_board_svg(model)
+    assert 'stroke="#7ee0a0"' not in plain
+    assert "sel-halo" not in plain
+    sel = render_board_svg(model, selected_uuids={"uuid-u1"})
+    assert "sel-halo" in sel
+    assert sel.count('stroke="#7ee0a0"') >= 2
+
+
 def test_svg_renders_repaired_micro_gap_courtyard():
     """T1/T2-style 0.01mm gap renders the repaired collision polygon."""
     from dataclasses import replace

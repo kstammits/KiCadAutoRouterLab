@@ -64,7 +64,7 @@ ingest and result reporting). Normative formulas:
 | **Adaptive-dt guard** | Halve dt + bleed velocity on KE jumps (>1.25×), regrow ×1.1; bounded by `dt_min_s`/`dt_max_s` | §2 Adaptive-dt guard | `_run_region_simulation` (adaptive-dt block) |
 | **Tightening ratio** | Final vs start pooled intra-group distance; <1 means the board clusters | §3 Regime map | `tighten_mean`, `tighten_max` (calibration) |
 | **Broadphase** | 15 mm uniform-grid + bounding-circle cull before exact courtyard geometry | §1 Broadphase | `_run_region_simulation` (courtyard cache) |
-| **Decap / power / GND rules** | Fanout scaling on power edges; ground excluded except decap-incident; `decap_boost` multiplier | §1 Decap boost, Fanout scaling, Ground exclusion | `_build_net_edges_pad_level`, `PlacementParams.decap_boost`, `PlacementParams.power_attraction_scale` |
+| **Decap / power / GND rules** | Fanout scaling on power edges; ground excluded except decap-incident; `decap_link` multiplier + local chip links | §1 Decap-chip link, Fanout scaling, Ground exclusion | `_build_net_edges_pad_level`, `_find_decap_chip_links`, `PlacementParams.decap_link`, `PlacementParams.power_attraction_scale` |
 | **Tangential assist** | Sliding assist along contact (MTV-perp): `γ·|F_n|·sign(v_rel_t)`, latched per contact pair so near-zero velocity noise doesn't flip-slide | §1 Tangential assist | `PlacementParams.contact_tangent_gamma`, `_tangent_sign` |
 | **Final depenetration pass** | One relaxed nearest-point separation round after dynamics settle: ejects residual courtyard overlap the penalty law couldn't clear; contraction + rigid reproject each pass | `src/kicad_autorouter/placement/runner.py` (`_depenetrate_positions`) | `_DEPEN_RELAX`, `_DEPEN_CLEAN_AREA_MM2`, `_DEPEN_MAX_ROT_RAD` |
 
@@ -123,9 +123,11 @@ ingest and result reporting). Normative formulas:
 - **Ghost pull** (`ghost_k_N`, N): fixed pseudo-part attractor; file
   `TARGET,ka` values weight it, no reaction on the ghost
   (`PlacementParams.ghost_k_N`).
-- **Decap boost** (`decap_boost`, dimensionless): multiplier on
-  decoupling-cap-incident edges; 0 also removes the decap GND-side
-  exception (`PlacementParams.decap_boost`).
+- **Decap-chip link** (`decap_link`, dimensionless): weight of
+  supplemental symmetric local links (small cap to nearest `U*` within
+  15 mm; bulk and distant caps stay global-only), overpowering rail
+  fanout; global rail edges are never boosted; 0 also removes the decap
+  GND-side exception (`PlacementParams.decap_link`).
 - **Fanout scaling**: power edges weigh `power_scale/(fanout−1)` so a
   shared rail pulls each pad about as hard in total as one signal edge —
   rails minimize wirelength without collapsing the board
@@ -319,6 +321,10 @@ Key facts that shape the algorithm choice:
   KiCad's isolated-fill DRC.
 - **Region-aware stitching**: stitcher respects board panel boundaries (never joins
   separate panels in the same file).
+- **Stitch siting**: candidate vias clear foreign copper analytically (tracks
+  included) and every drilled hole — including mounting boreholes and same-net
+  barrels — by the hole clearance; part-less pour slivers below
+  `stitch_min_island_mm2` are ignored instead of stitched.
 
 ### Zone refill round-trip
 

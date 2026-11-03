@@ -20,7 +20,7 @@ const PARAM_DEFS = [
 
 const ADVANCED_PARAM_DEFS = [
   { key: "power_attraction_scale", label: "Power attraction", min: 0, max: 10, step: 0.05 },
-  { key: "decap_boost", label: "Decap boost", min: 0, max: 16, step: 0.5 },
+  { key: "decap_link", label: "Decap\u2013chip link", min: 0, max: 16, step: 0.5 },
   { key: "ghost_k_N", label: "Ghost pull (N)", min: 1e-7, max: 1e-3, step: 1e-7, log: true },
   { key: "wall_exponent", label: "Wall exponent", min: 1.0, max: 3.0, step: 0.1 },
   { key: "cross_layer_pin_halo_m", label: "X-layer pin halo (mm)", min: 0, max: 5, step: 0.05,
@@ -46,7 +46,7 @@ const PARAM_DESC = {
   damping_Ns_m: "Viscous damping F = −c·v (N·s/m). The physics damper: higher settles faster with less overshoot. Legalize: 0.12; Cluster: 0.08. Log scale.",
   max_iterations: "Hard limit on simulation steps (dimensionless).",
   power_attraction_scale: "Power-rail attraction trim (fanout-scaled k/(fanout-1) per edge). 1 = full participation; 0 restores the old exclude-power behavior.",
-  decap_boost: "Decoupling-cap edge multiplier (on top of fanout scaling). Also gates the decap GND-side exception: 0 removes decap GND edges.",
+  decap_link: "Weight of the supplemental symmetric pull between a small cap and its nearest chip (<=15mm, U* only); global rail pull is never boosted. 0 removes decap GND edges and disables local links.",
   ghost_k_N: "Ghost attractor spring scale (newtons); file ka values weight it. Log scale. Only matters with ghost attractors.",
   wall_exponent: "Exponent p in wall force F = k*(1-s/h)^p. 1 = linear, 2 = quadratic (stiffens deep penetration). Legalize: 2.0; Cluster: 1.0-1.5.",
   cross_layer_pin_halo_m: "Near-miss reach for THT pins protruding onto the far side vs opposite-side bodies. Shown in mm; stored in meters. Solder-fillet clearance (~0.7mm default), not the 4-6mm courtyard halo. 0 disables cross-layer pin response.",
@@ -83,6 +83,10 @@ function dispDecimals(def) {
 function buildParamRow(def, desc) {
   const el = document.createElement("div");
   el.className = "param";
+  // Ancestor title: hovering the slider or number box shows the same
+  // description as the label (the label <span> title alone does not cover
+  // its sibling inputs).
+  if (desc) el.title = desc;
   const isLog = def.log === true;
   const dmin = toDisplay(def.min, def);
   const dmax = toDisplay(def.max, def);

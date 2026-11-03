@@ -53,6 +53,10 @@ class BoardState:
         self.force_components: Dict[str, Dict[str, Tuple[float, float]]] = {}  # Per-cause breakdown
         self.pinned_uuids: set[str] = set()  # User-pinned (pseudo-locked)
         self.selected_uuids: set[str] = set()  # Currently selected for move
+        # Selection/pin are view state: they bump selection_version only,
+        # never the board version (which drives heavy SVG re-injects in the
+        # client's poll loop). /api/state exposes both.
+        self.selection_version = 0
         self.drc_violations: list[dict] = []  # Cached DRC violations for overlay
         self.drc_for_version: Optional[int] = None  # Board version the cached result was computed against
         self.drc_unconnected: int = 0  # Unconnected item count from last DRC run
@@ -141,6 +145,7 @@ class BoardState:
                 # Infer the board mode from the stackup (user-overridable).
                 self.mode = infer_mode(self.model.copper_layers) if self.model else None
             self.version += 1
+            self.selection_version += 1
             return self.version
 
     @property
@@ -246,17 +251,38 @@ class BoardState:
             self.drc_unconnected = unconnected
             self.drc_error = error
 
+    def get_selection_version(self) -> int:
+        with self._lock:
+            return self.selection_version
+
     def set_pinned_uuids(self, uuids: set[str]) -> int:
         with self._lock:
             self.pinned_uuids = uuids.copy()
-            self.version += 1
-            return self.version
+            self.selection_version += 1
+            return self.selection_version
 
     def set_selected_uuids(self, uuids: set[str]) -> int:
         with self._lock:
             self.selected_uuids = uuids.copy()
-            self.version += 1
-            return self.version
+            self.selection_version += 1
+            return self.selection_version
+
+    def replace_selection(self, uuids: set[str]) -> int:
+        """Replace the whole selection set (bulk ops, single-select)."""
+        with self._lock:
+            self.selected_uuids = set(uuids)
+            self.selection_version += 1
+            return self.selection_version
+
+    def set_selected(self, uuid: str, selected: bool) -> int:
+        """Idempotent single-uuid set (no toggle quirk for optimistic UI)."""
+        with self._lock:
+            if selected:
+                self.selected_uuids.add(uuid)
+            else:
+                self.selected_uuids.discard(uuid)
+            self.selection_version += 1
+            return self.selection_version
 
     def toggle_pinned(self, uuid: str) -> int:
         with self._lock:
@@ -264,23 +290,28 @@ class BoardState:
                 self.pinned_uuids.remove(uuid)
             else:
                 self.pinned_uuids.add(uuid)
-            self.version += 1
-            return self.version
+            self.selection_version += 1
+            return self.selection_version
 
-    def toggle_selected(self, uuid: str) -> int:
+    def toggle_selected(self, uuid: str, selected: bool | None = None) -> int:
         with self._lock:
-            if uuid in self.selected_uuids:
-                self.selected_uuids.remove(uuid)
-            else:
+            if selected is None:
+                if uuid in self.selected_uuids:
+                    self.selected_uuids.remove(uuid)
+                else:
+                    self.selected_uuids.add(uuid)
+            elif selected:
                 self.selected_uuids.add(uuid)
-            self.version += 1
-            return self.version
+            else:
+                self.selected_uuids.discard(uuid)
+            self.selection_version += 1
+            return self.selection_version
 
     def clear_selection(self) -> int:
         with self._lock:
             self.selected_uuids.clear()
-            self.version += 1
-            return self.version
+            self.selection_version += 1
+            return self.selection_version
 
     def select_all_unlocked(self, model) -> int:
         """Select all unlocked, non-pinned footprints."""
@@ -289,8 +320,8 @@ class BoardState:
                 fp.uuid for fp in model.footprints
                 if fp.uuid and not fp.locked and fp.uuid not in self.pinned_uuids
             }
-            self.version += 1
-            return self.version
+            self.selection_version += 1
+            return self.selection_version
 
     # ==================== Protected Nets & Routing State ====================
 
@@ -470,6 +501,7 @@ class BoardState:
             self.routing_grid = None
             self.routing_model = None
             self.version += 1
+            self.selection_version += 1
             return self.version
 
     def reset_to_original(self) -> int:
@@ -480,6 +512,7 @@ class BoardState:
                 self.pcb_tree = self.original_pcb_tree
                 self.proposal = None
                 self.selected_uuids.clear()
+                self.selection_version += 1
                 self.undo_stack.clear()
                 self._last_nudge_at = 0.0
                 self._last_nudge_keys = frozenset()

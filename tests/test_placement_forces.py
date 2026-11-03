@@ -452,7 +452,7 @@ class TestRigidProjection:
                 wall_k_N=1e-15,
                 
                 include_power_nets=False,
-                decap_boost=0.0,
+                decap_link=0.0,
             )
             return run_placement(model, params).deltas.get("uuid-c1", (0.0, 0.0, 0.0))[0]
 

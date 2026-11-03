@@ -1238,6 +1238,7 @@ def route_nets(
             max_vias=params.stitch_vias_max,
             max_bridges=params.stitch_bridges_max,
             max_bridge_mm=params.stitch_bridge_max_mm,
+            min_island_mm2=params.stitch_min_island_mm2,
         )
         for sv in plan.vias:
             vias.append(OutputVia(

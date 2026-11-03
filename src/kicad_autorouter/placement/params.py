@@ -111,8 +111,12 @@ class PlacementParams:
     mass_floor_kg: float = 1e-9
     # Power-rail attraction trim (dimensionless).
     power_attraction_scale: float = 1.0
-    # Decoupling-cap edge multiplier (dimensionless).
-    decap_boost: float = 4.0
+    # Decap-chip link strength (dimensionless): weight of supplemental
+    # symmetric local links between a small cap and its nearest chip
+    # (see placement.model._find_decap_chip_links), overpowering rail
+    # fanout. Global rail edges are never boosted. 0 removes decap GND
+    # edges and disables local links.
+    decap_link: float = 4.0
     # Kill-switch for power participation.
     include_power_nets: bool = True
     # Courtyard-overlap area (mm^2) above which a pair is illegal.
@@ -145,11 +149,17 @@ class PlacementParams:
         are dropped here and the dataclass defaults take over. This keeps
         lowering ``dt_s`` from ever failing validation against a stale
         ``dt_min_s``.
+
+        Legacy ``decap_boost`` maps to ``decap_link`` (explicit
+        ``decap_link`` wins when both are present).
         """
+        payload = dict(data)
+        if "decap_link" not in payload and "decap_boost" in payload:
+            payload["decap_link"] = payload["decap_boost"]
         known = {f.name for f in fields(cls)}
         params = cls(**{
-            name: data[name] for name in known
-            if name in data and name not in ("dt_min_s", "dt_max_s")
+            name: payload[name] for name in known
+            if name in payload and name not in ("dt_min_s", "dt_max_s")
         })
         _validate(params)
         return params
@@ -173,7 +183,7 @@ def _validate(params: PlacementParams) -> None:
         "mass_density_kg_m2",
         "mass_floor_kg",
         "power_attraction_scale",
-        "decap_boost",
+        "decap_link",
         "wall_exponent",
         "wall_cap_depth_mm",
         "overlap_tolerance_mm2",
@@ -209,8 +219,8 @@ def _validate(params: PlacementParams) -> None:
         raise ValueError("contact_tangent_gamma must be a number")
     if not math.isfinite(gamma) or gamma < 0.0:
         raise ValueError("contact_tangent_gamma must be finite and >= 0.0")
-    if params.decap_boost < 0:
-        raise ValueError("decap_boost must be >= 0")
+    if params.decap_link < 0:
+        raise ValueError("decap_link must be >= 0")
     if not isinstance(params.include_power_nets, bool):
         raise ValueError("include_power_nets must be a boolean")
     if not isinstance(params.debug, bool):

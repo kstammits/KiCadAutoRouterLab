@@ -19,7 +19,14 @@ from typing import Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
-from ..board_model import BoardModel, BoardRegion, Footprint, Pad
+from ..board_model import (
+    BoardModel,
+    BoardRegion,
+    Footprint,
+    Pad,
+    is_ground_net,
+    is_power_net_effective,
+)
 from ..mass import courtyard_bbox_area_m2, footprint_mass_kg
 from .contact import (
     _board_bbox,
@@ -32,6 +39,7 @@ from .force import ForceContext, _compute_total_force, _overlap_depth_mm
 from .model import (
     _build_net_edges_pad_level,
     _collect_pad_nodes,
+    _find_decap_chip_links,
     _find_decap_pad_indices,
 )
 from .params import (
@@ -415,21 +423,67 @@ def _run_region_simulation(
         region_pads, region_pad_to_fp_idx,
         decap_pad_indices=_decap_pads,
         power_scale=params.power_attraction_scale,
-        decap_boost=params.decap_boost,
+        decap_link=params.decap_link,
         include_power=params.include_power_nets,
         extra_power=extra_power_nets,
     )
+
+    # Supplemental decap-chip links: small caps gain one symmetric edge
+    # per shared net to their nearest chip (global rail clique above is
+    # kept for rail balance and chip rotation). Unassigned/distant caps
+    # and bulk electrolytics get nothing here (global-only).
+    if params.decap_link > 0.0:
+        _fp_area: Dict[int, float] = {}
+        for _i, _fp_idx in enumerate(region_pad_to_fp_idx):
+            if _fp_idx >= 0 and _fp_idx not in _fp_area:
+                try:
+                    _fp_area[_fp_idx] = courtyard_bbox_area_m2(
+                        model.footprints[_fp_idx]
+                    )
+                except (AttributeError, TypeError, ValueError):
+                    continue
+        _local_edges, _ = _find_decap_chip_links(
+            region_pads, region_pad_to_fp_idx, _ref_by_idx,
+            fp_area_m2_by_idx=_fp_area,
+            extra_power=extra_power_nets,
+        )
+        _kept: List[Tuple[int, int]] = []
+        for _a, _b in _local_edges:
+            try:
+                _net = region_pads[_a].net_name
+            except (IndexError, AttributeError):
+                continue
+            if not _net or _net != getattr(region_pads[_b], "net_name", None):
+                continue
+            if is_power_net_effective(_net, extra_power_nets) and not params.include_power_nets:
+                continue
+            _kept.append((_a, _b) if _a < _b else (_b, _a))
+        _n_global = len(src_idx)
+        if _kept:
+            _lsrc = np.array([k[0] for k in _kept], dtype=int)
+            _ldst = np.array([k[1] for k in _kept], dtype=int)
+            _lw = np.full(len(_kept), float(params.decap_link), dtype=float)
+            src_idx = np.concatenate([src_idx, _lsrc])
+            dst_idx = np.concatenate([dst_idx, _ldst])
+            edge_weights = np.concatenate([edge_weights, _lw])
+            _n_global = len(edge_weights) - len(_kept)
+    else:
+        _n_global = len(edge_weights)
+        _kept = []
     has_net_edges = len(src_idx) > 0
 
-    # Decap protection: decap-incident edges pull the cap toward its target
-    # but do not drag the target (often a large, anchored part) into the cap.
-    # Decap-decap edges stay symmetric (neither side is a target).
+    # Decap protection: global decap-incident edges pull the cap toward
+    # its target but do not drag the target (often a large, anchored
+    # part) into the cap. Decap-decap edges and supplemental local
+    # decap-chip links stay symmetric (the chip rotates toward its cap).
     edge_sides = np.zeros(len(src_idx), dtype=np.int8)
     if _decap_pads and len(src_idx):
-        _src_decap = np.isin(src_idx, list(_decap_pads))
-        _dst_decap = np.isin(dst_idx, list(_decap_pads))
-        edge_sides[_src_decap & ~_dst_decap] = 1
-        edge_sides[_dst_decap & ~_src_decap] = 2
+        _n_global = min(int(_n_global), len(src_idx))
+        _gsrc, _gdst = src_idx[:_n_global], dst_idx[:_n_global]
+        _src_decap = np.isin(_gsrc, list(_decap_pads))
+        _dst_decap = np.isin(_gdst, list(_decap_pads))
+        edge_sides[:_n_global][_src_decap & ~_dst_decap] = 1
+        edge_sides[:_n_global][_dst_decap & ~_src_decap] = 2
 
     # Build mapping from footprint UUID to local pad indices for wall checks
     region_fp_to_pad_indices = {}

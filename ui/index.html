@@ -16,25 +16,25 @@
   <aside class="sidebar" id="sidebar">
     <div class="sidebar-header">
       <span class="sidebar-title">Footprints</span>
-      <input type="search" class="sidebar-search" id="fp-search" placeholder="Filter by ref, footprint, net..." aria-label="Filter footprints">
+      <input type="search" class="sidebar-search" id="fp-search" placeholder="Filter by ref, footprint, net..." aria-label="Filter footprints" title="Filter the parts list by ref, footprint, or net name">
       <button id="sidebar-toggle" class="panel-toggle" title="Collapse parts list">▶</button>
     </div>
     <div class="sidebar-filters">
       <div class="filter-row">
         <span class="filter-label">Ref:</span>
-        <input type="text" class="filter-input" id="filter-ref" placeholder="R*, C1, U*" aria-label="Filter by reference pattern">
+        <input type="text" class="filter-input" id="filter-ref" placeholder="R*, C1, U*" aria-label="Filter by reference pattern" title="Filter by reference pattern (wildcards allowed: R*, C1, U*)">
         <span class="filter-label">Net:</span>
-        <input type="text" class="filter-input" id="filter-net" placeholder="GND, VCC, NET_*" aria-label="Filter by net name">
+        <input type="text" class="filter-input" id="filter-net" placeholder="GND, VCC, NET_*" aria-label="Filter by net name" title="Filter by net name (wildcards allowed: GND, VCC, NET_*)">
       </div>
       <div class="filter-row">
         <span class="filter-label">Layer:</span>
-        <select class="filter-select" id="filter-layer" aria-label="Filter by layer">
+        <select class="filter-select" id="filter-layer" aria-label="Filter by layer" title="Show only footprints on this copper layer">
           <option value="">All</option>
           <option value="F">Front (F.Cu)</option>
           <option value="B">Back (B.Cu)</option>
         </select>
         <span class="filter-label">State:</span>
-        <select class="filter-select" id="filter-state" aria-label="Filter by state">
+        <select class="filter-select" id="filter-state" aria-label="Filter by state" title="Show only footprints in this state (locked = KiCad-locked, pinned = your pin, ghost = keepout wall)">
           <option value="">All</option>
           <option value="movable">Movable</option>
           <option value="locked">Locked (KiCad)</option>
@@ -44,8 +44,8 @@
         </select>
       </div>
       <div class="filter-row">
-        <label class="filter-chk"><input type="checkbox" id="filter-hide-locked" checked> Hide locked</label>
-        <label class="filter-chk"><input type="checkbox" id="filter-hide-fixed"> Hide fixed (locked+pinned)</label>
+        <label class="filter-chk" title="Hide KiCad-locked footprints from the parts list"><input type="checkbox" id="filter-hide-locked" checked> Hide locked</label>
+        <label class="filter-chk" title="Hide locked and pinned footprints from the parts list"><input type="checkbox" id="filter-hide-fixed"> Hide fixed (locked+pinned)</label>
       </div>
     </div>
     <div class="sidebar-content">
@@ -135,9 +135,10 @@
     <div class="top-bar">
       <input type="file" id="load-input" accept=".kicad_pcb,.kicad_sch" multiple hidden>
       <span class="top-group top-group-file">
-        <button id="load-btn">Load PCB…</button>
+        <button id="load-btn" title="Open a .kicad_pcb file (drop its .kicad_sch alongside for real net names)">Load PCB…</button>
         <span id="board-name">no board loaded</span>
-        <span id="conn-badge" class="chip" hidden style="color:#f87171; border-color:#f87171;">● disconnected — server unreachable</span>
+          <span id="conn-badge" class="chip" hidden style="color:#f87171; border-color:#f87171;">● disconnected — server unreachable</span>
+          <span id="compat-banner" class="chip" hidden style="color:#fbbf24; border-color:#fbbf24;"></span>
         <span id="board-sch" class="chip" hidden>pcb only</span>
       </span>
       <span class="top-group">
@@ -148,9 +149,9 @@
         <span id="app-version" class="chip" style="font-size:0.6rem;">v?</span>
       </span>
       <span class="top-group">
-        <label class="chk"><input type="checkbox" id="overlay-toggle" checked> Show proposal</label>
-        <label class="chk"><input type="checkbox" id="forces-toggle" checked> forces</label>
-        <label class="chk" id="cost-grid-label" hidden><input type="checkbox" id="cost-grid-toggle"> Cost grid</label>
+        <label class="chk" title="Show the accepted proposal overlay (placement deltas on top of the committed board)"><input type="checkbox" id="overlay-toggle" checked> Show proposal</label>
+        <label class="chk" title="Show per-part force vectors in the placement colors below"><input type="checkbox" id="forces-toggle" checked> forces</label>
+        <label class="chk" id="cost-grid-label" hidden title="Show the routing cost-grid heatmap (needs Debug data from a route run)"><input type="checkbox" id="cost-grid-toggle"> Cost grid</label>
         <select id="cost-grid-net" hidden title="Per-net fanout halo overlay (soft/hard rings + terminal seals)">
           <option value="">occupancy only</option>
         </select>
@@ -165,7 +166,7 @@
         <label class="chk" title="Show KiCad's cached zone fills (stale after edits; use --refill-zones to refresh)"><input type="checkbox" id="zones-fill-toggle"> Zone fills (cached)</label>
       </span>
       <span class="top-group">
-        <label class="chk"><input type="checkbox" id="drc-toggle"> DRC</label>
+        <label class="chk" title="Show kicad-cli DRC markers on the board (run DRC first)"><input type="checkbox" id="drc-toggle"> DRC</label>
         <button id="drc-run-btn" title="Run kicad-cli DRC on the current board">Run DRC</button>
         <span class="zoom-info" id="drc-info"></span>
       </span>
@@ -191,7 +192,7 @@
         <!-- Drop zone shown when no board loaded -->
         <div class="drop" id="drop-zone" hidden>
           Drop <code>.kicad_pcb</code> / <code>.kicad_sch</code> files here to load them.
-          <p style="margin-top:.5rem;font-size:.75rem;color:#5b6b7a;">Or click <button id="load-btn-drop" style="background:none;border:1px solid #3a4a5a;padding:.15rem .5rem;border-radius:4px;cursor:pointer;">Load…</button></p>
+          <p style="margin-top:.5rem;font-size:.75rem;color:#5b6b7a;">Or click <button id="load-btn-drop" style="background:none;border:1px solid #3a4a5a;padding:.15rem .5rem;border-radius:4px;cursor:pointer;" title="Open a .kicad_pcb file (drop its .kicad_sch alongside for real net names)">Load…</button></p>
         </div>
         <!-- SVG injected here -->
       </div>
@@ -221,11 +222,11 @@
         <div id="placement-panel">
           <div class="bar">
             <span class="num">Place</span>
-            <label class="chk" style="margin-left:.5rem;"><input type="number" id="step-iters" value="5" min="1" max="5000" step="1" style="width:5rem;"> iters</label>
+            <label class="chk" style="margin-left:.5rem;"><input type="number" id="step-iters" value="5" min="1" max="5000" step="1" style="width:5rem;" title="Placement iterations per Step click (small = preview, large = closer to Run)"> iters</label>
             <button id="step-selected-btn" class="primary" title="Run a few placement iterations on the selection (empty selection targets all movable)">Step</button>
             <button id="run-selected-btn" class="primary" title="Run placement to convergence (max iterations) on the selection (empty selection targets all movable)">Run</button>
             <button id="refresh-forces-btn" title="Recompute forces with current parameters">↻ Forces</button>
-            <button id="accept-btn" disabled>Accept</button>
+            <button id="accept-btn" disabled title="Commit the placement proposal to the board (Undo stays available)">Accept</button>
             <button id="clear-btn" title="Discard the current placement proposal">Clear Proposal</button>
             <span id="place-scope-hint" class="zoom-info" title="What Step/Run will target">nothing selected → Step/Run targets all movable</span>
             <span id="diag"></span>
@@ -257,7 +258,7 @@
             <summary title="Power, decap, ghost, and convergence knobs hidden from the main panel">Advanced</summary>
             <div class="params" id="advanced-params-grid"></div>
           </details>
-          <div class="bar"><button id="reset-params-btn">Reset params</button><button id="copy-link-btn" title="Copy a bookmarkable link carrying the full current parameter set as URL query params (SI units, same keys as the params API)">Copy link</button></div>
+          <div class="bar"><button id="reset-params-btn" title="Restore the calibrated default placement params">Reset params</button><button id="copy-link-btn" title="Copy a bookmarkable link carrying the full current parameter set as URL query params (SI units, same keys as the params API)">Copy link</button></div>
         </div>
 
         <!-- Routing panel -->
@@ -266,6 +267,7 @@
             <span class="num">Route</span>
             <button id="route-selected-btn" class="primary" title="Route selected nets">Route Selected Nets</button>
             <button id="route-all-btn" title="Route all unprotected nets">Route All Unprotected</button>
+            <button id="select-unrouted-btn" title="Select unprotected nets with 2+ pads and no tracks/vias yet (failed and never-routed nets)">Select Unrouted</button>
             <button id="rip-selected-btn" title="Rip up (remove) copper for selected nets without re-routing">Rip Selected Nets</button>
             <button id="route-cancel-btn" hidden title="Stop after the current net (already-routed nets are kept)">Cancel</button>
             <progress id="route-progress" hidden max="1" value="0" style="width:8rem;" title="Per-net routing progress"></progress>
@@ -318,11 +320,11 @@
               <thead>
                 <tr>
                   <th style="width:3rem;"><input type="checkbox" id="nets-select-all" title="Select all visible"></th>
-                  <th>Net Name</th>
-                  <th style="width:4rem;">Pads</th>
-                  <th style="width:5rem;">Footprints</th>
-                  <th style="width:5rem;">Tracks</th>
-                  <th style="width:4rem;">Vias</th>
+                  <th title="Net name — click a row to select it for routing, click copper on the board to highlight its net">Net Name</th>
+                  <th style="width:4rem;" title="Pad count: routing endpoints on this net">Pads</th>
+                  <th style="width:5rem;" title="Footprints touching this net">Footprints</th>
+                  <th style="width:5rem;" title="Routed track segments already on this net">Tracks</th>
+                  <th style="width:4rem;" title="Vias already on this net">Vias</th>
                   <th style="width:4.5rem;" title="Resolved track width for this net (explicit → netclass → power → default)">Width</th>
                   <th style="width:4rem;" title="Power status: keyword rules or your ⚡ override (click to toggle)">Pwr</th>
                   <th style="width:5rem;" title="Decoupling caps on this net (C*, power+ground)">Decap</th>
@@ -342,7 +344,7 @@
             <span class="num">Tidy</span>
             <button id="tidy-run-btn" class="primary" title="Geometric neat pass: align angles to neighbors + equalize gaps (legality-gated, merges into the Place proposal)">Run Tidy</button>
             <span id="tidy-diag"></span>
-            <span class="zoom-info" title="Tidy merges into the current Place proposal; review and Accept there">merges into Place proposal → Accept there</span>
+            <span class="zoom-info" title="Tidy merges into the current Place proposal; review and Accept there. A selection limits what moves; the whole board (minus ghosts) is alignment context.">selection limits what moves; whole board aligns → Accept in Place</span>
           </div>
           <div class="params" id="tidy-params-grid"></div>
         </div>
