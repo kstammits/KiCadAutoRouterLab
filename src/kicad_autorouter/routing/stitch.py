@@ -26,7 +26,7 @@ from typing import Dict, List, Set, Tuple
 import numpy as np
 from scipy import ndimage
 
-from ..board_model import BoardModel, Point, Track, Via
+from ..board_model import BoardModel, Point, Track, Via, copper_tracks
 from .grid import RoutingGrid, board_to_grid, grid_to_board
 from .obstacles import _fill_polygon, build_via_block_mask
 from .pour import (
@@ -89,7 +89,7 @@ def _foreign_mask(
             if layer_idx not in _pad_layers(fp, pad, grid):
                 continue
             _paint_pad(mask, grid, pad, clearance_mm)
-    for track in model.tracks:
+    for track in copper_tracks(model):
         if track.net_name is None or track.net_name == net_name:
             continue
         if track.layer != layer:
@@ -360,7 +360,7 @@ def _verify_stitch_via(
             return False
 
     # Analytic check against foreign tracks on the via's layers.
-    for track in model.tracks:
+    for track in copper_tracks(model):
         if track.net_name is None or track.net_name == net_name:
             continue
         if track.layer not in layers:

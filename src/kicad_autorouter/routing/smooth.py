@@ -351,6 +351,10 @@ def _point_clear(
     return _footprint_clear(cost_layer, soft_layer, float(c), float(r), corridor_radius, blocked_threshold, None)
 
 
+# Chords within a cell count as distance ties for fillet-aware ranking.
+_RANK_EPS_CELLS = 1.0
+
+
 def _greedy_pass(
     run: List[Tuple[int, int, int]],
     cost_layer,
@@ -360,19 +364,34 @@ def _greedy_pass(
     blocked_layer=None,
     hard_radius: Optional[int] = None,
     angle_step_rad: float = math.pi / 18,
+    rank_radius_cells: float = 0.0,
 ) -> List[Tuple[int, int, int]]:
-    """One greedy furthest-visible pass over a same-layer run."""
+    """One greedy furthest-visible pass over a same-layer run.
+
+    Furthest reachable node wins (fewest, longest segments). With
+    ``rank_radius_cells > 0``, distance ties (within a cell) break by
+    angle penalty, then by admitted fillet radius at the current corner
+    (the joint the fillet would replace — bigger means more sweep per
+    fillet). Ranking is pure geometry (no grid access); acceptance
+    still needs the clearance gate downstream. ``0`` keeps the legacy
+    distance/angle comparison exactly.
+    """
     n = len(run)
     if n < 3:
         return list(run)
+    # Lazy: biarc gates via this module's footprint checks, so a top-level
+    # import would cycle (biarc -> smooth -> biarc).
+    corner_radius = None
+    if rank_radius_cells and rank_radius_cells > 0:
+        from .biarc import corner_radius as _cr
+        corner_radius = _cr
     out = [run[0]]
     i = 0
     while i < n - 1:
-        # Furthest reachable node wins (fewest, longest segments).
-        # Among equally-far nodes, prefer angle closest to step_rad multiple.
         j = n - 1
         best_j = None
         best_penalty = float('inf')
+        best_radius = -1.0
         while j > i + 1:
             if _line_walkable(
                 run[i][0], run[i][1], run[j][0], run[j][1],
@@ -380,10 +399,47 @@ def _greedy_pass(
                 blocked_layer, hard_radius,
             ):
                 dist = math.hypot(run[j][0] - run[i][0], run[j][1] - run[i][1])
-                if best_j is None or dist > best_dist or (dist == best_dist and _angle_penalty(run[i][0], run[i][1], run[j][0], run[j][1], angle_step_rad) < best_penalty):
+                penalty = _angle_penalty(run[i][0], run[i][1], run[j][0], run[j][1], angle_step_rad)
+                if corner_radius is not None:
+                    # Corner at run[i]: incoming leg is the committed
+                    # out[-2] -> run[i] (earlier nodes may be skipped;
+                    # out[-1] IS run[i], so it would be degenerate).
+                    # Candidate leg is run[i] -> run[j]. Radius is the
+                    # third key (distance, then angle): tangent length
+                    # ties whenever distances tie, so only radius — which
+                    # grows with the turn the fillet would replace —
+                    # discriminates here. Prefer the bigger fillet: that
+                    # is where rounding buys the most sweep. Strict >
+                    # keeps full ties deterministic (first-found wins).
+                    prev = out[-2] if len(out) >= 2 else run[i]
+                    radius = corner_radius(
+                        (float(prev[0]), float(prev[1])),
+                        (float(run[i][0]), float(run[i][1])),
+                        (float(run[j][0]), float(run[j][1])),
+                        float(rank_radius_cells),
+                    )
+                    take = (
+                        best_j is None
+                        or dist > best_dist + _RANK_EPS_CELLS
+                        or (
+                            abs(dist - best_dist) <= _RANK_EPS_CELLS
+                            and (
+                                penalty < best_penalty - 1e-9
+                                or (
+                                    abs(penalty - best_penalty) <= 1e-9
+                                    and radius > best_radius
+                                )
+                            )
+                        )
+                    )
+                else:
+                    radius = -1.0
+                    take = best_j is None or dist > best_dist or (dist == best_dist and penalty < best_penalty)
+                if take:
                     best_j = j
                     best_dist = dist
-                    best_penalty = _angle_penalty(run[i][0], run[i][1], run[j][0], run[j][1], angle_step_rad)
+                    best_penalty = penalty
+                    best_radius = radius
             j -= 1
         if best_j is None:
             best_j = i + 1
@@ -590,6 +646,7 @@ def _smooth_run(
     blocked_layer=None,
     hard_radius: Optional[int] = None,
     angle_step_rad: float = math.pi / 18,
+    rank_radius_cells: float = 0.0,
 ) -> List[Tuple[int, int, int]]:
     """Iterative bidirectional greedy + outward lump repair.
 
@@ -604,11 +661,13 @@ def _smooth_run(
     if n < 3:
         return list(run)
     cur = _greedy_pass(run, cost_layer, soft_layer, blocked_threshold,
-                       corridor_radius, blocked_layer, hard_radius, angle_step_rad)
+                       corridor_radius, blocked_layer, hard_radius, angle_step_rad,
+                       rank_radius_cells)
     for _ in range(3):
         rev = list(reversed(cur))
         back = _greedy_pass(rev, cost_layer, soft_layer, blocked_threshold,
-                            corridor_radius, blocked_layer, hard_radius, angle_step_rad)
+                            corridor_radius, blocked_layer, hard_radius, angle_step_rad,
+                            rank_radius_cells)
         nxt = list(reversed(back))
         if len(nxt) >= len(cur):
             cur = nxt if len(nxt) < len(cur) else cur
@@ -617,6 +676,32 @@ def _smooth_run(
     cur = _repair_lumps(cur, cost_layer, soft_layer, blocked_threshold,
                         corridor_radius, blocked_layer, hard_radius, angle_step_rad)
     return cur
+
+
+def _split_runs(
+    path: List[Tuple[int, int, int]],
+    pinned: Set[Tuple[int, int]],
+) -> List[List[Tuple[int, int, int]]]:
+    """Split a branch into maximal same-layer runs.
+
+    A layer transition ends the current run and starts a new one, so
+    smoothing can never shortcut across a via (which would move the via
+    position). Concatenating the smoothed runs preserves every via edge
+    exactly: each run keeps its endpoints, and adjacent runs join at the
+    original via nodes. Pinned middle terminals likewise force boundaries
+    (shared node in both runs — same layer, so sharing is safe here).
+    """
+    runs: List[List[Tuple[int, int, int]]] = [[path[0]]]
+    for idx, node in enumerate(path[1:], start=1):
+        last_node = runs[-1][-1]
+        if node[2] != last_node[2]:
+            runs.append([node])
+        else:
+            runs[-1].append(node)
+            is_interior = idx < len(path) - 1
+            if is_interior and (node[0], node[1]) in pinned:
+                runs.append([node])
+    return runs
 
 
 def smooth_grid_path(
@@ -629,6 +714,7 @@ def smooth_grid_path(
     blocked_mask=None,
     hard_radius: Optional[int] = None,
     angle_step_rad: float = math.pi / 18,
+    rank_radius_cells: float = 0.0,
 ) -> List[Tuple[int, int, int]]:
     """Shortcut a routed grid path within each same-layer run.
 
@@ -662,24 +748,7 @@ def smooth_grid_path(
         return list(path)
     n_layers = cost_grid.shape[0]
     pinned = pinned or set()
-
-    # Split into maximal same-layer runs. A layer transition ends the
-    # current run and starts a new one, so smoothing can never shortcut
-    # across a via (which would move the via position). Concatenating the
-    # smoothed runs preserves every via edge exactly: each run keeps its
-    # endpoints, and adjacent runs join at the original via nodes.
-    # Pinned middle terminals likewise force boundaries (shared node in
-    # both runs — same layer, so sharing is safe here).
-    runs: List[List[Tuple[int, int, int]]] = [[path[0]]]
-    for idx, node in enumerate(path[1:], start=1):
-        last_node = runs[-1][-1]
-        if node[2] != last_node[2]:
-            runs.append([node])
-        else:
-            runs[-1].append(node)
-            is_interior = idx < len(path) - 1
-            if is_interior and (node[0], node[1]) in pinned:
-                runs.append([node])
+    runs = _split_runs(path, pinned)
 
     smoothed: List[Tuple[int, int, int]] = []
     for run in runs:
@@ -692,13 +761,82 @@ def smooth_grid_path(
             blocked_layer = blocked_mask[layer] if blocked_mask is not None else None
             new_run = _smooth_run(run, cost_layer, soft_layer, blocked_threshold, max(0, corridor_radius), blocked_layer,
                                    max(0, corridor_radius) if hard_radius is None else max(0, hard_radius),
-                                   angle_step_rad)
+                                   angle_step_rad, rank_radius_cells)
         if smoothed and new_run and new_run[0] == smoothed[-1]:
             # Shared pinned node: dedupe. (Via boundaries are disjoint
             # node pairs, so they are never merged here.)
             new_run = new_run[1:]
         smoothed.extend(new_run)
     return smoothed
+
+
+def smooth_branch_pieces(
+    path: List[Tuple[int, int, int]],
+    cost_grid,
+    blocked_threshold: int = 100,
+    corridor_radius: int = 0,
+    pinned: Optional[Set[Tuple[int, int]]] = None,
+    soft_mask=None,
+    blocked_mask=None,
+    hard_radius: Optional[int] = None,
+    angle_step_rad: float = math.pi / 18,
+    rank_radius_cells: float = 0.0,
+    max_radius_cells: float = 10.0,
+    min_leg_cells: float = 3.0,
+    sample_spacing_cells: float = 0.5,
+) -> Tuple[List[Tuple[int, int, int]], List[tuple]]:
+    """Smooth one branch and fillet its runs: the single gate, where runs live.
+
+    Same topology pass as :func:`smooth_grid_path` (same-layer runs, via
+    and pinned boundaries preserved), but each smoothed run is additionally
+    filleted in place: interior unpinned corners get tangent arcs through
+    the biarc clearance gate, rejected corners keep sharp joints. Returns
+    ``(smoothed_path, pieces)`` where pieces is the flat arc-chain for the
+    whole branch (``("seg"/"arc", ..., layer)`` plus ``("via", ...)``
+    markers at layer transitions) for arc-aware reservation/emission.
+    """
+    from .biarc import fit_branch_arcs  # lazy: biarc gates via this module
+    if not path:
+        return [], []
+    if len(path) < 3:
+        return list(path), []
+    n_layers = cost_grid.shape[0]
+    pinned = set(pinned or set())
+    pinned.add((path[0][0], path[0][1]))
+    pinned.add((path[-1][0], path[-1][1]))
+    runs = _split_runs(path, pinned)
+
+    smoothed: List[Tuple[int, int, int]] = []
+    pieces: List[tuple] = []
+    for ri, run in enumerate(runs):
+        layer = run[0][2]
+        if ri > 0:
+            prev_end, cur_start = runs[ri - 1][-1], run[0]
+            pieces.append(("via", float(cur_start[0]), float(cur_start[1]),
+                           prev_end[2], cur_start[2]))
+        if len(run) < 3 or not (0 <= layer < n_layers):
+            new_run = list(run)
+            for a, b in zip(new_run, new_run[1:]):
+                pieces.append(("seg", float(a[0]), float(a[1]),
+                               float(b[0]), float(b[1]), layer))
+        else:
+            cost_layer = cost_grid[layer]
+            soft_layer = soft_mask[layer] if soft_mask is not None else None
+            blocked_layer = blocked_mask[layer] if blocked_mask is not None else None
+            new_run = _smooth_run(run, cost_layer, soft_layer, blocked_threshold, max(0, corridor_radius), blocked_layer,
+                                   max(0, corridor_radius) if hard_radius is None else max(0, hard_radius),
+                                   angle_step_rad, rank_radius_cells)
+            run_pieces = fit_branch_arcs(
+                new_run, cost_layer, soft_layer, blocked_threshold,
+                max(0, corridor_radius), blocked_layer,
+                max(0, corridor_radius) if hard_radius is None else max(0, hard_radius),
+                pinned, max_radius_cells, min_leg_cells, sample_spacing_cells,
+            )
+            pieces.extend(run_pieces)
+        if smoothed and new_run and new_run[0] == smoothed[-1]:
+            new_run = new_run[1:]
+        smoothed.extend(new_run)
+    return smoothed, pieces
 
 
 def smoothed_wire_mm(path: List[Tuple[int, int, int]], resolution_mm: float) -> float:

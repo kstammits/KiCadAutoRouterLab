@@ -149,6 +149,7 @@ def _run_routing_job(job_id: str) -> None:
     payload = {
         "ok": True,
         "tracks_added": result.tracks_added,
+        "arcs_added": result.arcs_added,
         "vias_added": result.vias_added,
         "fanout_vias_added": result.fanout_vias_added,
         "fanout_tracks_added": result.fanout_tracks_added,

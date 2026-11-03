@@ -643,6 +643,9 @@ class Handler(BaseHTTPRequestHandler):
             for t in model.tracks:
                 if t.net_name:
                     track_counts[t.net_name] = track_counts.get(t.net_name, 0) + 1
+            for a in model.arcs:
+                if a.net_name:
+                    track_counts[a.net_name] = track_counts.get(a.net_name, 0) + 1
             for v in model.vias:
                 if v.net_name:
                     via_counts[v.net_name] = via_counts.get(v.net_name, 0) + 1
@@ -2031,6 +2034,7 @@ class Handler(BaseHTTPRequestHandler):
             payload = {
                 "ok": True,
                 "tracks_added": result.tracks_added,
+                "arcs_added": result.arcs_added,
                 "vias_added": result.vias_added,
                 "fanout_vias_added": result.fanout_vias_added,
                 "fanout_tracks_added": result.fanout_tracks_added,

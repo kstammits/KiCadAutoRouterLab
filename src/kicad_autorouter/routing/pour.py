@@ -30,7 +30,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 from scipy import ndimage
 
-from ..board_model import BoardModel, Footprint, Pad, is_ground_net
+from ..board_model import BoardModel, Footprint, Pad, copper_tracks, is_ground_net
 from .grid import RoutingGrid, board_to_grid, grid_to_board
 from .obstacles import _fill_polygon, bresenham_cells, stamp_discs
 
@@ -184,7 +184,7 @@ def pour_copper_mask(
                 cut = np.zeros((H, W), dtype=bool)
                 _paint_pad(cut, grid, pad, zone.clearance_mm + max(pad.size_mm) * 0.0)
                 copper &= ~cut
-        for track in model.tracks:
+        for track in copper_tracks(model):
             if track.net_name is None or track.net_name == net_name:
                 continue
             if track.layer != layer:
@@ -233,7 +233,7 @@ def pour_copper_mask(
             if layer_idx not in _pad_layers(fp, pad, grid):
                 continue
             _paint_pad(copper, grid, pad, 0.0)
-    for track in model.tracks:
+    for track in copper_tracks(model):
         if track.net_name != net_name or track.layer != layer:
             continue
         _paint_track(copper, grid, track.start.x_mm, track.start.y_mm,

@@ -7,7 +7,7 @@ import uuid as uuid_module
 from typing import Collection, Dict, List, Optional, Set, Tuple
 
 from ..sexpr import SExpr, get_generator_version
-from .model import BoardModel, BoardRegion, EdgeCutArc, FilledPolygon, Footprint, KeepoutZone, NetClass, NetConnection, Pad, Point, Segment, Track, Via, Zone
+from .model import ArcTrack, BoardModel, BoardRegion, EdgeCutArc, FilledPolygon, Footprint, KeepoutZone, NetClass, NetConnection, Pad, Point, Segment, Track, Via, Zone
 from .query import _assign_board_regions, _extract_board_polygons, _polygon_bbox, _to_board, sample_circular_arc
 
 def _point(node: SExpr) -> Point:
@@ -455,6 +455,34 @@ def tracks(tree: SExpr) -> list[Track]:
         )
     return result
 
+def arcs(tree: SExpr) -> list[ArcTrack]:
+    """Extract copper track arcs (``(arc ...)``) in board coordinates.
+
+    KiCad ``(arc start mid end)`` are three points ON the arc (not Bezier
+    controls). Nodes missing any endpoint are skipped, same as segments.
+    """
+    result = []
+    for arc in tree.children("arc"):
+        start = arc.find("start")
+        mid = arc.find("mid")
+        end = arc.find("end")
+        if start is None or mid is None or end is None:
+            continue
+        if len(start.args) < 2 or len(mid.args) < 2 or len(end.args) < 2:
+            continue
+        width = _first_number(arc.find("width"))
+        result.append(
+            ArcTrack(
+                start=Point(float(start.args[0]), float(start.args[1])),
+                mid=Point(float(mid.args[0]), float(mid.args[1])),
+                end=Point(float(end.args[0]), float(end.args[1])),
+                width_mm=width if width is not None else 0.25,
+                layer=_layer_of(arc),
+                net_name=_net_name(arc.find("net")),
+            )
+        )
+    return result
+
 def vias(tree: SExpr) -> list[Via]:
     """Extract vias in board coordinates."""
     result = []
@@ -725,6 +753,7 @@ def board_model(tree: SExpr) -> BoardModel:
         nets=netlist(tree),
         by_ref=by_ref,
         tracks=tuple(tracks(tree)),
+        arcs=tuple(arcs(tree)),
         vias=tuple(vias(tree)),
         zones=tuple(zones(tree)),
         edge_cuts=edge_cuts_list,

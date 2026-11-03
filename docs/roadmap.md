@@ -104,6 +104,18 @@ Open work only. Completed changes belong in git history, not here.
   path-cost parity before changing the default.
 - **Routing time estimator**: replace the GUI `2 + 1.2·n` model with the
   per-net pad-count pair estimate plus a failed-net allowance.
+- **Track-tidy mode, deferred**: Tidy tab is placement-only today
+  (footprint angle/gap refine, merges into Place → Accept), so routed-track
+  cleanup has no home and users cannot tell when Tidy applies. Proposed:
+  a track-tidy section in the Tidy tab operating on selected routed nets,
+  proposal-based (nothing auto-applies): robust collinear merge, spike /
+  double-back strip, via-pair → tee collapse (e.g. power track going up
+  one via and down another where one tee suffices), corner-cut, stub
+  prune, layer-stay. Clearance-first for signals (conservative corridor
+  footprint, own-pads exempt; `drc_ok=false` proposals shown but never
+  applied). Needs `routing/tidy_tracks.py` proposal generator +
+  `POST /api/tidy/tracks` (propose) / `/apply` (subset commit, DRC-gated)
+  + proposal cards in `app-tidy.js`. Parked — do other work first.
 
 ## GND pours and stitching
 

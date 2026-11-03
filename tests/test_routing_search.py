@@ -202,7 +202,7 @@ class TestStarBranches:
         terms = [(30, 20, 0), (10, 20, 0), (50, 20, 0), (30, 5, 0)]
         res = router.route(terms)
         assert res.success
-        tracks, _ = routes_to_tracks_vias({"S": res}, grid)
+        tracks, _, _ = routes_to_tracks_vias({"S": res}, grid)
         assert tracks  # all spokes produce copper
         cell = grid.resolution_mm * math.sqrt(2) + 1e-6
         for t in tracks:

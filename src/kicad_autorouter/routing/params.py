@@ -73,6 +73,13 @@ class RoutingParams:
     window_retries: int = 3  # Window attempts per pair (last = full board)
     corridor: bool = True  # Attempt coarse corridor guidance when initial window fails
     refill_zones: bool = False  # Refill copper pours after routing (kicad-cli --refill-zones --save-board)
+    arc_fillets: bool = False  # Tangent-arc corner fillets (biarc post-pass)
+    # When True, smoothed branches get sharp interior corners replaced with
+    # tangent circular arcs (clearance-gated, vias/pins untouched) and emit
+    # KiCad (arc) copper. False = straight-segment output (prior behavior).
+    arc_max_radius_mm: float = 1.0  # Fillet tangent-length cap (also bounds radius)
+    arc_min_leg_mm: float = 0.3  # Corners with a shorter leg keep the sharp joint
+    arc_sample_mm: float = 0.05  # Arc clearance-gate sample spacing
     fanout_planes: bool = False  # Via-to-plane stubs for plane-owned nets (inner zones)
     # When True, a ground/power-effective net owning an inner-copper zone
     # (In*.Cu) is satisfied with short outer stubs + through-vias tapping
@@ -119,6 +126,10 @@ class RoutingParams:
             "window_retries": self.window_retries,
             "corridor": self.corridor,
             "refill_zones": self.refill_zones,
+            "arc_fillets": self.arc_fillets,
+            "arc_max_radius_mm": self.arc_max_radius_mm,
+            "arc_min_leg_mm": self.arc_min_leg_mm,
+            "arc_sample_mm": self.arc_sample_mm,
             "fanout_planes": self.fanout_planes,
             "fanout_plane_vias_max": self.fanout_plane_vias_max,
             "allowed_layers": list(self.allowed_layers) if self.allowed_layers is not None else None,
@@ -138,6 +149,8 @@ class RoutingParams:
             "stitch_bridge_max_mm", "stitch_bridge_width_mm", "stitch_min_island_mm2", "pour_severance_weight", "fanout_margin_mm",
             "window_margin_cells", "window_growth", "window_retries",
             "corridor", "refill_zones", "allowed_layers",
+            "arc_fillets", "arc_max_radius_mm", "arc_min_leg_mm",
+            "arc_sample_mm",
             "fanout_planes", "fanout_plane_vias_max",
         }
         filtered = {k: v for k, v in d.items() if k in valid_keys}
@@ -158,6 +171,7 @@ def _validate_routing_params(params: "RoutingParams") -> None:
         "clearance_mm", "via_size_mm", "via_drill_mm", "heuristic_weight",
         "stitch_bridge_max_mm", "stitch_bridge_width_mm", "stitch_min_island_mm2",
         "pour_severance_weight", "fanout_margin_mm",
+        "arc_max_radius_mm", "arc_min_leg_mm", "arc_sample_mm",
     )
     for name in nonneg:
         value = getattr(params, name)
@@ -201,7 +215,7 @@ def _validate_routing_params(params: "RoutingParams") -> None:
         raise ValueError("window_growth must be a positive finite number")
     for name in (
         "run_drc", "debug", "stitch_gnd_vias", "strip_gnd_blockers",
-        "corridor", "refill_zones", "fanout_planes",
+        "corridor", "refill_zones", "fanout_planes", "arc_fillets",
     ):
         if not isinstance(getattr(params, name), bool):
             raise ValueError(f"{name} must be a boolean")

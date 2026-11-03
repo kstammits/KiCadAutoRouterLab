@@ -7,7 +7,7 @@ from dataclasses import replace
 from typing import Collection, Dict, List, Optional, Set, Tuple
 
 from ..sexpr import SExpr
-from .model import BoardModel, EdgeCutArc, Footprint, Point, Segment
+from .model import ArcTrack, BoardModel, EdgeCutArc, Footprint, Point, Segment, Track
 
 def _to_board(
     local_x_mm: float,
@@ -36,6 +36,38 @@ def _to_board(
 def transform_local(fp: Footprint, local_x_mm: float, local_y_mm: float) -> Point:
     """Map a point in ``fp``'s local coordinate system to board coordinates."""
     return _to_board(local_x_mm, local_y_mm, fp.x_mm, fp.y_mm, fp.angle_deg, fp.layer)
+
+def arc_chords(model: BoardModel, n: int = 16) -> List[Track]:
+    """Straight-chord approximations of copper arcs for analysis code.
+
+    Grids, keepouts, pour cuts and resistance walks operate on straight
+    segments; arcs reach them as sampled chords (shared endpoints, so
+    connectivity and ~length are preserved). Emission and the viewer use
+    the true arcs — this helper is analysis-only.
+    """
+    out: List[Track] = []
+    for arc in getattr(model, "arcs", ()):
+        pts = list(sample_circular_arc(
+            (arc.start.x_mm, arc.start.y_mm),
+            (arc.mid.x_mm, arc.mid.y_mm),
+            (arc.end.x_mm, arc.end.y_mm),
+            max(1, int(n)),
+        ))
+        for (x1, y1), (x2, y2) in zip(pts, pts[1:]):
+            if x1 == x2 and y1 == y2:
+                continue
+            out.append(Track(
+                start=Point(x1, y1), end=Point(x2, y2),
+                width_mm=arc.width_mm, layer=arc.layer,
+                net_name=arc.net_name,
+            ))
+    return out
+
+
+def copper_tracks(model: BoardModel) -> List[Track]:
+    """All copper as straight segments: tracks plus sampled arc chords."""
+    return list(model.tracks) + arc_chords(model)
+
 
 def _point_key(p: Point) -> Tuple[float, float]:
     """Rounded point key for graph adjacency (1e-3 mm tolerance).
@@ -473,6 +505,7 @@ def commit_placement(
         return net_name not in affected_nets
 
     kept_tracks = tuple(t for t in model.tracks if keep_copper(t.net_name))
+    kept_arcs = tuple(a for a in model.arcs if keep_copper(a.net_name))
     kept_vias = tuple(v for v in model.vias if keep_copper(v.net_name))
 
     # Apply footprint movement (preserves all board metadata via replace
@@ -481,4 +514,4 @@ def commit_placement(
 
     # Return model with pruned copper, preserving everything else
     # (ghost_footprints, version, regions, ...).
-    return replace(moved_model, tracks=kept_tracks, vias=kept_vias)
+    return replace(moved_model, tracks=kept_tracks, arcs=kept_arcs, vias=kept_vias)

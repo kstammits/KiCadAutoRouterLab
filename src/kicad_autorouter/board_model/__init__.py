@@ -7,6 +7,7 @@ as before — ``board_model.py`` lives on as this package's namespace:
 """
 
 from .model import (
+    ArcTrack,
     BoardModel,
     BoardRegion,
     EdgeCutArc,
@@ -46,7 +47,9 @@ from .query import (
     _to_local,
     _to_local_point,
     apply_deltas,
+    arc_chords,
     commit_placement,
+    copper_tracks,
     sample_circular_arc,
     sample_quadratic_bezier,
     transform_local,
@@ -73,6 +76,7 @@ from .parse import (
     _zone_fill,
     _zone_layers,
     _zone_polygon,
+    arcs,
     board_model,
     copper_layers,
     edge_arcs,

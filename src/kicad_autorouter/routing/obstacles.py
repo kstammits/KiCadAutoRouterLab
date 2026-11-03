@@ -101,6 +101,12 @@ def build_occupancy_grid(
         clearance_mm = clr * grid.resolution_mm
         _mark_track(cost_grid, grid, track, clearance_mm)
 
+    # 3b. Existing track arcs -> sampled polyline, same width+clearance halo.
+    for arc in getattr(model, "arcs", ()):
+        clr = clearance_cells.get(arc.net_name, default_clearance_cells) if arc.net_name else default_clearance_cells
+        clearance_mm = clr * grid.resolution_mm
+        _mark_arc(cost_grid, grid, arc, clearance_mm)
+
     # 4. Vias -> blocked on both layers with full copper+clearance halo
     for via in model.vias:
         clr = clearance_cells.get(via.net_name, default_clearance_cells) if via.net_name else default_clearance_cells
@@ -711,6 +717,36 @@ def _mark_track(cost_grid: np.ndarray, grid, track, clearance_mm: float = 0.2):
                 stamp_square(layer_grid, r, c, radius, BLOCKED)
             else:
                 layer_grid[r, c] = BLOCKED
+
+
+def _mark_arc(cost_grid: np.ndarray, grid, arc, clearance_mm: float = 0.2):
+    """Mark a copper track arc as blocked via its sampled polyline.
+
+    Circular arcs have no closed-form rasterizer here, so the arc is
+    sampled (16 segments, matching edge-cut arcs) and each chord is
+    stamped with the same width + clearance halo as straight tracks.
+    Layers outside the routing grid are skipped, like ``_mark_track``.
+    """
+    layer_idx = grid.layer_to_idx.get(arc.layer)
+    if layer_idx is None or layer_idx >= cost_grid.shape[0]:
+        return
+    radius = track_corridor_radius_cells(arc.width_mm, clearance_mm, grid.resolution_mm)
+    pts = list(sample_circular_arc(
+        (arc.start.x_mm, arc.start.y_mm),
+        (arc.mid.x_mm, arc.mid.y_mm),
+        (arc.end.x_mm, arc.end.y_mm),
+        16,
+    ))
+    layer_grid = cost_grid[layer_idx]
+    for (x1, y1), (x2, y2) in zip(pts, pts[1:]):
+        c1, r1 = board_to_grid(grid, x1, y1)
+        c2, r2 = board_to_grid(grid, x2, y2)
+        for c, r in bresenham_cells(c1, r1, c2, r2):
+            if 0 <= r < layer_grid.shape[0] and 0 <= c < layer_grid.shape[1]:
+                if radius:
+                    stamp_square(layer_grid, r, c, radius, BLOCKED)
+                else:
+                    layer_grid[r, c] = BLOCKED
 
 
 def _mark_via(

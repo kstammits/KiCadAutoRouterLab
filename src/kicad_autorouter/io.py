@@ -112,9 +112,9 @@ def rip_up_nets(
     affected_nets: Set[str],
     protected_nets: Optional[Set[str]] = None,
 ) -> SExpr:
-    """Return the board tree with (segment) and (via) nodes removed for affected nets.
+    """Return the board tree with (segment), (arc) and (via) nodes removed for affected nets.
 
-    Tracks/vias on protected nets are preserved.
+    Tracks/arcs/vias on protected nets are preserved.
 
     Args:
         tree: PCB S-expression tree
@@ -130,7 +130,7 @@ def rip_up_nets(
     protected = protected_nets or set()
 
     def should_keep(node: SExpr) -> bool:
-        if node.head not in ("segment", "via"):
+        if node.head not in ("segment", "arc", "via"):
             return True
         net_node = node.find("net")
         net_name = _net_name(net_node)

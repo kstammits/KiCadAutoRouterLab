@@ -38,6 +38,10 @@ class RouteResult:
     # corridor reservation) must iterate ``branches`` to avoid teleport
     # segments between spokes of a star.
     branches: Tuple[Tuple[int, int, int], ...] = ()
+    # Fitted arc-chain geometry per branch (grid-float pieces, aligned with
+    # ``branches`` when present): ("seg", c1, r1, c2, r2) or ("arc", cs, rs,
+    # cm, rm, ce, re). Empty = straight-segment emission from grid paths.
+    arc_pieces: Tuple = ()
     # Per-A*-attempt trace (only populated when the router runs with
     # debug=True): one dict per attempt with pair, window kind/size,
     # expansions, success, and seconds. Timings live in return values so

@@ -11,7 +11,7 @@ from typing import Collection, Optional, Tuple, List, Set, Dict
 
 import numpy as np
 
-from ..board_model import BoardModel, Point, Track, Via, is_ground_net, is_power_net_effective
+from ..board_model import ArcTrack, BoardModel, Point, Track, Via, is_ground_net, is_power_net_effective
 from ..io import rip_up_nets
 from ..drc import run_drc_on_tree, DRCResult
 from ..sexpr import parse_file, to_sexpr
@@ -25,8 +25,9 @@ from . import (
     CostMap,
 )
 from .output import routes_to_tracks_vias, apply_routes_to_tree
-from .output import Track as OutputTrack, Via as OutputVia
-from .smooth import own_net_soft_mask, smooth_grid_path, smoothed_wire_mm
+from .output import Arc as OutputArc, Track as OutputTrack, Via as OutputVia
+from .biarc import pieces_wire_cells
+from .smooth import own_net_soft_mask, smooth_branch_pieces, smooth_grid_path, smoothed_wire_mm
 from .router import SECONDARY_BLOCKED
 from .router import RouteResult as NetRouteResult
 from .power import identify_power_nets
@@ -62,6 +63,8 @@ class RoutingResult:
     failed_reasons: Dict[str, str] = field(default_factory=dict)  # net -> explicit failure reason
     partial_tracks: Tuple = ()  # Display-only copper from failed nets' routed chunks (never written back)
     partial_vias: Tuple = ()  # Display-only vias from failed nets' routed chunks (never written back)
+    partial_arcs: Tuple = ()  # Display-only arcs ditto (overlay ignores them for now)
+    arcs_added: int = 0  # KiCad (arc) bends emitted by the biarc post-pass
 
 
 # Re-export: canonical home is routing.params (config + validation +
@@ -336,7 +339,42 @@ def _apply_route_to_grid(
     track_radius = max(max(0, half_width_cells - 1), max(0, extra_radius))
     via_radius = max(1, via_clearance_cells)
 
-    for path in _branch_paths(result):
+    # Arc-fitted results reserve their true curved copper (sampled arcs +
+    # stubs) instead of the pre-fillet chords, so later nets keep clearance
+    # to what is actually emitted.
+    fitted = getattr(result, "arc_pieces", ())
+    branches = _branch_paths(result)
+    if fitted and len(fitted) == len(branches) and any(fitted):
+        for path, branch_pieces in zip(branches, fitted):
+            if branch_pieces:
+                by_layer: Dict[int, list] = {}
+                for p in branch_pieces:
+                    if p[0] in ("seg", "arc"):
+                        by_layer.setdefault(p[-1], []).append(p)
+                for layer_idx, pieces in by_layer.items():
+                    if 0 <= layer_idx < n_layers:
+                        _stamp_fitted_pieces(cost_grid[layer_idx], pieces,
+                                             track_radius)
+            else:
+                # Arc-less branch: fall back to chord stamping so its
+                # straight copper is still reserved.
+                for i in range(len(path) - 1):
+                    c1, r1, l1 = path[i]
+                    c2, r2, l2 = path[i + 1]
+                    if l1 == l2:
+                        _mark_line_blocked(cost_grid[l1], r1, c1, r2, c2,
+                                           track_radius)
+        for path in branches:
+            for i in range(len(path) - 1):
+                c1, r1, l1 = path[i]
+                c2, r2, l2 = path[i + 1]
+                if l1 != l2:
+                    for _l, _r, _c in ((l1, r1, c1), (l2, r2, c2)):
+                        if 0 <= _l < n_layers and 0 <= _r < H and 0 <= _c < W:
+                            stamp_square(cost_grid[_l], _r, _c, via_radius, BLOCKED)
+        return
+
+    for path in branches:
         for i in range(len(path) - 1):
             c1, r1, l1 = path[i]
             c2, r2, l2 = path[i + 1]
@@ -380,8 +418,17 @@ def _merge_chunk_results(results: List[NetRouteResult]) -> NetRouteResult:
     in first-seen order, matching single-flight shape.
     """
     branches: List[Tuple[int, int, int]] = []
+    arc_pieces: List[tuple] = []
     for r in results:
-        branches.extend(_branch_paths(r))
+        brs = _branch_paths(r)
+        branches.extend(brs)
+        # Fitted arc chains ride with their branches (1:1, same order);
+        # unfitted results pad empty so alignment survives the splice.
+        fitted = getattr(r, "arc_pieces", ())
+        if fitted and len(fitted) == len(brs):
+            arc_pieces.extend(fitted)
+        else:
+            arc_pieces.extend([() for _ in brs])
     seen = set()
     union: List[Tuple[int, int, int]] = []
     for b in branches:
@@ -401,6 +448,7 @@ def _merge_chunk_results(results: List[NetRouteResult]) -> NetRouteResult:
         corridor_used=sum(r.corridor_used for r in results),
         corridor_cells=sum(r.corridor_cells for r in results),
         branches=tuple(tuple(b) for b in branches),
+        arc_pieces=tuple(arc_pieces),
         debug_attempts=tuple(a for r in results for a in r.debug_attempts),
     )
 
@@ -482,7 +530,9 @@ def _mark_line_blocked(layer_grid: np.ndarray, r1: int, c1: int, r2: int, c2: in
 
 def _smooth_result(result, cost_grid, routing_grid, corridor: int, blocked_threshold: int = 100,
                    pinned=None, soft_mask=None, clearance_radius: int = 0,
-                   blocked_mask=None, angle_step_rad: float = math.pi / 18):
+                   blocked_mask=None, angle_step_rad: float = math.pi / 18,
+                   fit_arcs: bool = False, max_radius_mm: float = 1.0,
+                   min_leg_mm: float = 0.3, sample_mm: float = 0.05):
     """String-pull a successful route before corridor reservation.
 
     Smoothing runs against the pre-route grid (which must NOT yet contain
@@ -492,6 +542,12 @@ def _smooth_result(result, cost_grid, routing_grid, corridor: int, blocked_thres
     segment is ever created); via nodes/layers and ``pinned`` terminals
     are preserved by ``smooth_grid_path``. Returns a result with smoothed
     branches, rebuilt union path, and recomputed wire length.
+
+    With ``fit_arcs``, the pull-string also ranks chords by admitted
+    fillet radius and each smoothed run is filleted in place (single
+    clearance gate, where the runs live); fitted arc chains ride on
+    ``result.arc_pieces`` for arc-aware reservation/emission. Topology
+    stays the smoother's job — arcs only round corners, never move them.
 
     The shortcut footprint covers ``max(corridor - 1, clearance_radius)``
     so smoothed copper keeps clearance to neighboring tracks, and
@@ -516,24 +572,52 @@ def _smooth_result(result, cost_grid, routing_grid, corridor: int, blocked_thres
             all_pinned.add((branch[0][0], branch[0][1]))   # branch start
             all_pinned.add((branch[-1][0], branch[-1][1])) # branch end
 
+    res_mm = routing_grid.resolution_mm
+    max_r_cells = max_radius_mm / res_mm if res_mm > 0 else 0.0
     new_branches = []
+    new_pieces = []
     changed = False
+    any_arc = False
     for branch in _branch_paths(result):
-        smoothed = smooth_grid_path(
-            branch,
-            cost_grid,
-            blocked_threshold=blocked_threshold,
-            corridor_radius=corridor_radius,
-            pinned=all_pinned,
-            soft_mask=soft_mask,
-            blocked_mask=blocked_mask,
-            hard_radius=hard_radius,
-            angle_step_rad=angle_step_rad,
-        )
-        new_branches.append(smoothed)
-        if len(smoothed) != len(branch):
-            changed = True
-    if not changed:
+        if fit_arcs and res_mm > 0:
+            smoothed, pieces = smooth_branch_pieces(
+                branch,
+                cost_grid,
+                blocked_threshold=blocked_threshold,
+                corridor_radius=corridor_radius,
+                pinned=all_pinned,
+                soft_mask=soft_mask,
+                blocked_mask=blocked_mask,
+                hard_radius=hard_radius,
+                angle_step_rad=angle_step_rad,
+                rank_radius_cells=max_r_cells,
+                max_radius_cells=max_r_cells,
+                min_leg_cells=min_leg_mm / res_mm,
+                sample_spacing_cells=max(sample_mm / res_mm, 0.25),
+            )
+            new_branches.append(smoothed)
+            new_pieces.append(tuple(pieces))
+            if any(p[0] == "arc" for p in pieces):
+                any_arc = True
+            if len(smoothed) != len(branch):
+                changed = True
+        else:
+            smoothed = smooth_grid_path(
+                branch,
+                cost_grid,
+                blocked_threshold=blocked_threshold,
+                corridor_radius=corridor_radius,
+                pinned=all_pinned,
+                soft_mask=soft_mask,
+                blocked_mask=blocked_mask,
+                hard_radius=hard_radius,
+                angle_step_rad=angle_step_rad,
+            )
+            new_branches.append(smoothed)
+            new_pieces.append(())
+            if len(smoothed) != len(branch):
+                changed = True
+    if not changed and not any_arc:
         return result
     seen = set()
     union_path = []
@@ -542,15 +626,55 @@ def _smooth_result(result, cost_grid, routing_grid, corridor: int, blocked_thres
             if cell not in seen:
                 seen.add(cell)
                 union_path.append(cell)
-    wire_mm = sum(
-        smoothed_wire_mm(b, routing_grid.resolution_mm) for b in new_branches
-    )
+    # Wire matches emission branch by branch: fitted pieces where arcs
+    # exist (emission uses them), smoothed chords elsewhere (legacy path).
+    wire_mm = 0.0
+    for smoothed, pieces in zip(new_branches, new_pieces):
+        if any(p[0] == "arc" for p in pieces):
+            wire_mm += pieces_wire_cells(
+                [p for p in pieces if p[0] in ("seg", "arc")]) * res_mm
+        else:
+            wire_mm += smoothed_wire_mm(smoothed, res_mm)
     return replace(
         result,
         path=union_path,
         branches=tuple(tuple(b) for b in new_branches),
+        arc_pieces=tuple(new_pieces) if any_arc else (),
         wire_mm=wire_mm,
     )
+
+
+def _stamp_fitted_pieces(layer_grid, pieces, radius: int) -> None:
+    """Reserve fitted seg/arc pieces on a cost layer (arc-aware stamping).
+
+    Pieces are grid-float coords; arcs are densely sampled (every ~0.25
+    cell) so the stamped corridor follows the true curve instead of the
+    pre-fillet chord. Via markers are skipped here — via halos are
+    stamped by the branch path scan.
+    """
+    from ..board_model import sample_circular_arc as _sample_arc
+    H, W = layer_grid.shape
+    dense: List[Tuple[float, float]] = []
+    for p in pieces:
+        if p[0] == "seg":
+            length = math.hypot(p[3] - p[1], p[4] - p[2])
+            n = max(1, int(math.ceil(length / 0.25)))
+            for i in range(n + 1):
+                t = i / n
+                dense.append((p[1] + (p[3] - p[1]) * t, p[2] + (p[4] - p[2]) * t))
+        elif p[0] == "arc":
+            s, m, e = (p[1], p[2]), (p[3], p[4]), (p[5], p[6])
+            chord = math.hypot(e[0] - s[0], e[1] - s[1])
+            n = max(4, int(math.ceil(chord / 0.25)) + 1)
+            dense.extend(_sample_arc(s, m, e, n))
+    for cf, rf in dense:
+        c = int(round(cf))
+        r = int(round(rf))
+        if 0 <= r < H and 0 <= c < W:
+            if radius:
+                stamp_square(layer_grid, r, c, radius, BLOCKED)
+            else:
+                layer_grid[r, c] = BLOCKED
 
 
 def route_nets(
@@ -1017,6 +1141,10 @@ def route_nets(
                     clearance_radius=clearance_radius,
                     blocked_mask=region_blocked_mask,
                     angle_step_rad=math.pi / 18,
+                    fit_arcs=params.arc_fillets,
+                    max_radius_mm=params.arc_max_radius_mm,
+                    min_leg_mm=params.arc_min_leg_mm,
+                    sample_mm=params.arc_sample_mm,
                 )
                 timings["smooth_s"] = timings.get("smooth_s", 0.0) + (time.perf_counter() - t_smooth)
                 _apply_route_to_grid(
@@ -1172,10 +1300,10 @@ def route_nets(
     timings["corridor_use_rate"] = (
         round(cused / max(ctried, 1), 4) if ctried else 0.0
     )
-    # 10. Convert all results to tracks/vias (per-net resolved widths;
+    # 10. Convert all results to tracks/vias/arcs (per-net resolved widths;
     # own-THT hops reuse the barrel: no Via emitted there)
     tht_sites = _tht_sites_by_net(model, routing_grid)
-    tracks, vias = routes_to_tracks_vias(
+    tracks, vias, route_arcs = routes_to_tracks_vias(
         all_results,
         routing_grid,
         net_class_widths=width_map,
@@ -1188,7 +1316,7 @@ def route_nets(
     )
     # Display-only copper from failed nets' routed chunks (review in the
     # viewer overlay; excluded from writeback, stitching, and DRC).
-    partial_tracks, partial_vias = routes_to_tracks_vias(
+    partial_tracks, partial_vias, partial_arcs = routes_to_tracks_vias(
         partial_results,
         routing_grid,
         net_class_widths=width_map,
@@ -1222,6 +1350,11 @@ def route_nets(
                 Track(start=Point(*t.start), end=Point(*t.end),
                       width_mm=t.width_mm, layer=t.layer, net_name=t.net_name)
                 for t in tracks
+            ),
+            arcs=model.arcs + tuple(
+                ArcTrack(start=Point(*a.start), mid=Point(*a.mid), end=Point(*a.end),
+                         width_mm=a.width_mm, layer=a.layer, net_name=a.net_name)
+                for a in route_arcs
             ),
             vias=model.vias + tuple(
                 Via(position=Point(*v.position), size_mm=v.size_mm,
@@ -1260,7 +1393,7 @@ def route_nets(
     # 11. Apply routes to PCB tree
     pcb_tree = None
     if original_pcb_tree is not None:
-        pcb_tree = apply_routes_to_tree(original_pcb_tree, tracks, vias)
+        pcb_tree = apply_routes_to_tree(original_pcb_tree, tracks, vias, route_arcs)
 
     # 11b. Refill zones if requested (requires kicad-cli).
     # Runs on a temp copy so the in-memory tree is only replaced when
@@ -1307,6 +1440,8 @@ def route_nets(
         failed_reasons=dict(ripup.net_failures),
         partial_tracks=tuple(partial_tracks),
         partial_vias=tuple(partial_vias),
+        partial_arcs=tuple(partial_arcs),
+        arcs_added=len(route_arcs),
     ), cost_grid, routing_grid
 
 
@@ -1363,9 +1498,10 @@ def _rip_up_nets_from_model(model: BoardModel, net_names: List[str]) -> BoardMod
     
     net_set = set(net_names)
     kept_tracks = tuple(t for t in model.tracks if t.net_name not in net_set)
+    kept_arcs = tuple(a for a in model.arcs if a.net_name not in net_set)
     kept_vias = tuple(v for v in model.vias if v.net_name not in net_set)
 
-    return replace(model, tracks=kept_tracks, vias=kept_vias)
+    return replace(model, tracks=kept_tracks, arcs=kept_arcs, vias=kept_vias)
 
 
 def _strip_gnd_blockers_from_model(model: BoardModel) -> Tuple[BoardModel, int]:
@@ -1381,8 +1517,9 @@ def _strip_gnd_blockers_from_model(model: BoardModel) -> Tuple[BoardModel, int]:
     "never rip signal/power" (see ``strip_gnd_blockers`` param).
     """
     kept_tracks = tuple(t for t in model.tracks if not is_ground_net(t.net_name))
+    kept_arcs = tuple(a for a in model.arcs if not is_ground_net(a.net_name))
     kept_vias = tuple(v for v in model.vias if not is_ground_net(v.net_name))
-    removed = (len(model.tracks) - len(kept_tracks)) + (len(model.vias) - len(kept_vias))
+    removed = (len(model.tracks) - len(kept_tracks)) + (len(model.arcs) - len(kept_arcs)) + (len(model.vias) - len(kept_vias))
     if removed == 0:
         return model, 0
-    return replace(model, tracks=kept_tracks, vias=kept_vias), removed
+    return replace(model, tracks=kept_tracks, arcs=kept_arcs, vias=kept_vias), removed

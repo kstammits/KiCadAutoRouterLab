@@ -62,6 +62,7 @@ def _copper_layers_of(model: BoardModel) -> Tuple[str, ...]:
 
     declared = tuple(getattr(model, "copper_layers", ()) or ())
     used = [t.layer for t in model.tracks if t.layer]
+    used += [a.layer for a in getattr(model, "arcs", ()) if a.layer]
     for zone in model.zones:
         used.extend(zone.layers)
     if not declared and not used:
@@ -236,6 +237,10 @@ def _bounds(model: BoardModel) -> Tuple[float, float, float, float]:
     for t in model.tracks:
         add(t.start)
         add(t.end)
+    for a in getattr(model, "arcs", ()):
+        add(a.start)
+        add(a.mid)
+        add(a.end)
     for v in model.vias:
         add(v.position)
     if not xs or not ys:
@@ -645,7 +650,8 @@ def _tracks_svg(model: BoardModel, colors: Dict[str, str]) -> List[str]:
     layers = _copper_layers_of(model)
     for layer in layers:
         layer_tracks = [t for t in model.tracks if t.layer == layer]
-        if not layer_tracks:
+        layer_arcs = [a for a in getattr(model, "arcs", ()) if a.layer == layer]
+        if not layer_tracks and not layer_arcs:
             continue
         opacity, dash = _layer_track_style(layer, layers)
         out.append(f'<g id="layer-{layer}-tracks" fill="none" stroke-linecap="round" opacity="{opacity}">')
@@ -661,6 +667,25 @@ def _tracks_svg(model: BoardModel, colors: Dict[str, str]) -> List[str]:
                 f'x2="{_fmt(t.end.x_mm)}" y2="{_fmt(t.end.y_mm)}" '
                 f'stroke="{color}" stroke-width="{_fmt(t.width_mm)}"{dash}>'
                 f"<title>{title}</title></line>"
+            )
+        for a in layer_arcs:
+            color = _tint_track_color(colors.get(a.net_name or "", NO_NET), layer, layers)
+            net_attr = html.escape(a.net_name or "", quote=True)
+            title = html.escape(
+                f"{a.net_name or '(no net)'} · {a.layer} · {a.width_mm:.2f}mm · arc",
+            )
+            pts = list(sample_circular_arc(
+                (a.start.x_mm, a.start.y_mm),
+                (a.mid.x_mm, a.mid.y_mm),
+                (a.end.x_mm, a.end.y_mm),
+                24,
+            ))
+            d = "M" + " L".join(f"{_fmt(x)} {_fmt(y)}" for x, y in pts)
+            out.append(
+                f'<path class="track arc-track" data-net="{net_attr}" data-layer="{layer}" '
+                f'd="{d}" fill="none" '
+                f'stroke="{color}" stroke-width="{_fmt(a.width_mm)}"{dash}>'
+                f"<title>{title}</title></path>"
             )
         out.append("</g>")
     return out

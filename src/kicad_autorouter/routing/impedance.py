@@ -43,7 +43,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Collection, Dict, List, Optional, Sequence, Set, Tuple
 
-from ..board_model import BoardModel, is_ground_net
+from ..board_model import BoardModel, copper_tracks, is_ground_net
 from .grid import RoutingGrid, board_to_grid, create_grid_from_model
 from .pour import labeled_copper
 
@@ -728,7 +728,7 @@ def _build_graph(model: BoardModel, grid: RoutingGrid,
             for layer in layers:
                 tap_points.setdefault((layer, via.net_name), []).append(
                     (via.position.x_mm, via.position.y_mm))
-    for track in model.tracks:
+    for track in copper_tracks(model):
         if track.net_name not in nets_set:
             continue
         x1, y1 = track.start.x_mm, track.start.y_mm
@@ -814,7 +814,7 @@ def _build_graph(model: BoardModel, grid: RoutingGrid,
         pad_layers = [fp.layer] if not pad.is_through_hole else list(layers)
         for layer in pad_layers:
             _tap_island(pad.net_name, pad.position.x_mm, pad.position.y_mm, layer, key)
-    for track in model.tracks:
+    for track in copper_tracks(model):
         if track.net_name not in nets_set:
             continue
         for (x, y) in ((track.start.x_mm, track.start.y_mm),
