@@ -73,13 +73,20 @@ class RoutingParams:
     window_retries: int = 3  # Window attempts per pair (last = full board)
     corridor: bool = True  # Attempt coarse corridor guidance when initial window fails
     refill_zones: bool = False  # Refill copper pours after routing (kicad-cli --refill-zones --save-board)
-    arc_fillets: bool = False  # Tangent-arc corner fillets (biarc post-pass)
+    arc_fillets: bool = True  # Tangent-arc corner fillets (biarc post-pass)
     # When True, smoothed branches get sharp interior corners replaced with
     # tangent circular arcs (clearance-gated, vias/pins untouched) and emit
     # KiCad (arc) copper. False = straight-segment output (prior behavior).
     arc_max_radius_mm: float = 1.0  # Fillet tangent-length cap (also bounds radius)
     arc_min_leg_mm: float = 0.3  # Corners with a shorter leg keep the sharp joint
     arc_sample_mm: float = 0.05  # Arc clearance-gate sample spacing
+    arc_keep_min_radius_mm: float = 0.5  # Spare open corners admitting >= this fillet radius from the pull-string
+    # (same pass, same clearance gate — kept corners always become arcs).
+    # Census-tuned: 0.5 adds arcs with fewer sharp leftovers and ~2% wire;
+    # 1.0 is nearly inert at default cap, 0.25 buys more arcs at ~4% wire
+    # with occasional sharp regressions. 0.0 = legacy shortcut-everything.
+    # Staircases still collapse; only corners with roomy legs survive, so
+    # this buys broad arcs with air.
     fanout_planes: bool = False  # Via-to-plane stubs for plane-owned nets (inner zones)
     # When True, a ground/power-effective net owning an inner-copper zone
     # (In*.Cu) is satisfied with short outer stubs + through-vias tapping
@@ -134,6 +141,7 @@ class RoutingParams:
             "arc_max_radius_mm": self.arc_max_radius_mm,
             "arc_min_leg_mm": self.arc_min_leg_mm,
             "arc_sample_mm": self.arc_sample_mm,
+            "arc_keep_min_radius_mm": self.arc_keep_min_radius_mm,
             "fanout_planes": self.fanout_planes,
             "fanout_plane_vias_max": self.fanout_plane_vias_max,
             "refine_seeds": self.refine_seeds,
@@ -142,7 +150,7 @@ class RoutingParams:
         }
 
     @classmethod
-    def from_dict(cls, d: dict) -> "RoutingParams":
+    def from_dict(cls, d: dict, strict: bool = False) -> "RoutingParams":
         # Filter to only known keys
         valid_keys = {
             "grid_resolution_mm", "margin_mm", "via_cost_mm",
@@ -156,10 +164,13 @@ class RoutingParams:
             "window_margin_cells", "window_growth", "window_retries",
             "corridor", "refill_zones", "allowed_layers",
             "arc_fillets", "arc_max_radius_mm", "arc_min_leg_mm",
-            "arc_sample_mm",
+            "arc_sample_mm", "arc_keep_min_radius_mm",
             "fanout_planes", "fanout_plane_vias_max",
             "refine_seeds", "refine_seed",
         }
+        unknown = sorted(k for k in d if k not in valid_keys)
+        if strict and unknown:
+            raise ValueError(f"unknown routing params: {unknown}")
         filtered = {k: v for k, v in d.items() if k in valid_keys}
         if isinstance(filtered.get("allowed_layers"), (list, tuple)):
             filtered["allowed_layers"] = list(filtered["allowed_layers"])
@@ -179,6 +190,7 @@ def _validate_routing_params(params: "RoutingParams") -> None:
         "stitch_bridge_max_mm", "stitch_bridge_width_mm", "stitch_min_island_mm2",
         "pour_severance_weight", "fanout_margin_mm",
         "arc_max_radius_mm", "arc_min_leg_mm", "arc_sample_mm",
+        "arc_keep_min_radius_mm",
     )
     for name in nonneg:
         value = getattr(params, name)

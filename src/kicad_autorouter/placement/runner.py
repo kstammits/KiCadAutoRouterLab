@@ -11,11 +11,14 @@ are fixed anchors).
 
 from __future__ import annotations
 
+import logging
 import math
 import time
 from collections.abc import Collection
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple, TypeVar
+
+logger = logging.getLogger(__name__)
 
 import numpy as np
 
@@ -203,6 +206,7 @@ def _depenetrate_positions(
                         fp, pad_positions=positions, pad_indices=[int(r) for r in rows]
                     )
                 except Exception:
+                    logger.debug("courtyard polygon failed for %s", uuid)
                     continue
                 if poly is None or poly.is_empty:
                     continue
@@ -211,6 +215,7 @@ def _depenetrate_positions(
                 coords = np.asarray(poly.exterior.coords, dtype=np.float64)
                 r = float(np.max(np.linalg.norm(coords - [c.x, c.y], axis=1)))
             except Exception:
+                logger.debug("courtyard centroid failed for %s", uuid)
                 continue
             if not math.isfinite(r) or r < 1e-9:
                 r = 1.0

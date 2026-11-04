@@ -268,3 +268,71 @@ def test_bidirectional_no_start_bias():
     )
     assert abs(len(fwd) - len(rev)) <= 2, (len(fwd), len(rev))
     assert len(fwd) <= 6 and len(rev) <= 6
+
+
+def _elbow(size=60):
+    """Open 90-degree corner with long legs: raw cell-by-cell steps."""
+    run = [(5 + i, 5, 0) for i in range(20)]
+    run += [(24, 5 + i, 0) for i in range(1, 20)]
+    grid = np.zeros((1, size, size), dtype=np.int16)
+    return run, grid
+
+
+_KEEP = dict(keep_min_radius_cells=2.0, keep_max_radius_cells=20.0,
+             keep_min_leg_cells=0.6, keep_sample_spacing_cells=0.5)
+
+
+def test_keep_rule_preserves_open_90_for_fillet():
+    """The pull-string must spare a roomy corner so the fitter can arc it."""
+    from kicad_autorouter.routing.smooth import smooth_branch_pieces
+    run, grid = _elbow()
+    smoothed, pieces = smooth_branch_pieces(
+        run, grid, blocked_threshold=100,
+        max_radius_cells=20.0, min_leg_cells=0.6,
+        sample_spacing_cells=0.5, keep_min_radius_cells=2.0,
+    )
+    assert (24, 5, 0) in smoothed
+    assert any(p[0] == "arc" for p in pieces), "kept corner never became an arc"
+    # keep=0 is legacy: the diagonal erases the corner, nothing to fillet.
+    legacy, legacy_pieces = smooth_branch_pieces(run, grid, blocked_threshold=100)
+    assert legacy == [(5, 5, 0), (24, 24, 0)]
+    assert not any(p[0] == "arc" for p in legacy_pieces)
+
+
+def test_keep_rule_still_collapses_staircases():
+    """Cell-scale legs admit only nub radii: staircases keep collapsing."""
+    from kicad_autorouter.routing.smooth import _greedy_pass
+    _, grid = _elbow()
+    st = [(5, 5, 0)]
+    c, r = 5, 5
+    for _ in range(10):
+        c += 1
+        st.append((c, r, 0))
+        r += 1
+        st.append((c, r, 0))
+    assert len(_greedy_pass(st, grid[0], None, 100, 0, **_KEEP)) == 2
+
+
+def test_keep_rule_vetoed_by_clearance_gate():
+    """A corner whose fillet would clip copper is shortcut as before."""
+    from kicad_autorouter.routing.smooth import _greedy_pass
+    grid = np.zeros((1, 40, 40), dtype=np.int16)
+    grid[0, 6, 14] = 100  # inside the (10,5)->(15,5)->(15,10) fillet band
+    # (arc hugs the corner through x in [12.5,15], y in [5,7.5]),
+    # off the (10,5)->(15,10) diagonal chord.
+    run = [(10, 5, 0), (15, 5, 0), (15, 10, 0)]
+    vetoed = _greedy_pass(run, grid[0], None, 100, 0, **_KEEP)
+    assert vetoed == [(10, 5, 0), (15, 10, 0)]
+    grid[0, 6, 14] = 0
+    kept = _greedy_pass(run, grid[0], None, 100, 0, **_KEEP)
+    assert kept == run
+
+
+def test_keep_rule_idempotent():
+    """A kept corner survives re-smoothing (forward/backward stability)."""
+    from kicad_autorouter.routing.smooth import _smooth_run
+    run, grid = _elbow()
+    once = _smooth_run(run, grid[0], None, 100, 0, **_KEEP)
+    twice = _smooth_run(once, grid[0], None, 100, 0, **_KEEP)
+    assert twice == once
+    assert (24, 5, 0) in twice

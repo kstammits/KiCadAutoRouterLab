@@ -200,6 +200,7 @@ def _courtyard_overlaps(model):
 
 @pytest.mark.regression
 @pytest.mark.dccf
+@pytest.mark.slow
 def test_dccf_overlap_audit(dccf_model):
     """Full-DCCF Legalize run: placement must not create or worsen squeezes.
 

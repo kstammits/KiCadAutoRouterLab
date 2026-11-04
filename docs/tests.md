@@ -8,12 +8,14 @@ Full suite: 536 collected, 535 passed + 1 skipped, zero warnings.
 `unit` pure no-fixture · `params` params validation · `physics` force-spring (needs nets) ·
 `cli` CLI · `server` HTTP API · `regression` bug fixes · `minimal` 4-part fixture ·
 `dccf` 97-part audio fixture. No `tube111` marker: the 105-part board is the
-default heavy fixture (12+ files); deselect via `-m "not dccf"` + `--ignore` or
-`-k` for fast loops. Use `minimal` for no-`kicad-cli` smoke tests.
+default heavy fixture (12+ files). Slow DCCF tests carry `@pytest.mark.slow`;
+fast DCCF tests (grid builds, padless checks, tight-spot probes) run in the
+fast loop. Deselect slow via `-m "not slow"`; deselect all DCCF via
+`-m "not dccf"`. Use `minimal` for no-`kicad-cli` smoke tests.
 
 ## Running
 
-`.venv/bin/python -m pytest tests/ -q` (fast: `-m "minimal or unit"`).
+`.venv/bin/python -m pytest tests/ -q` (fast: `-m "minimal or unit or (dccf and not slow)"`).
 `scripts/gen_manual.py --check` in CI for manual/figure freshness.
 
 ## Placement & physics (231 tests)

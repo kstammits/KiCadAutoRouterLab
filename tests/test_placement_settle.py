@@ -100,6 +100,7 @@ def test_buried_in_rv1_keeps_working_until_out():
 
 @pytest.mark.regression
 @pytest.mark.dccf
+@pytest.mark.slow
 def test_dccf_legalize_stop_is_honest(dccf_model):
     """Full-DCCF legalize run: if overlaps/forces remain at the budget, the
     proposal must say 'budget' with a nonzero residual — headless callers

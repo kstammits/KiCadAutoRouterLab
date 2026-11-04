@@ -5,9 +5,17 @@ single-flight kicad-cli DRC run. server.py re-exports these names so the
 handlers keep working.
 """
 
+import logging
+import sys
 import threading
 import time
+from pathlib import Path
 from typing import Dict
+
+logger = logging.getLogger(__name__)
+
+_UI_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(_UI_DIR.parent))
 
 from kicad_autorouter.board_model import board_model
 from kicad_autorouter.drc import TMP_DIR, run_drc_on_tree
@@ -17,9 +25,9 @@ from kicad_autorouter.routing.pipeline import (
     route_nets,
 )
 
-from debug_grids import _cost_grid_to_debug
+from ui.debug_grids import _cost_grid_to_debug
 
-from server_state import STATE
+from ui.server_state import STATE
 
 
 # Single-flight DRC: at most one kicad-cli subprocess at a time. Concurrent
@@ -138,8 +146,7 @@ def _run_routing_job(job_id: str) -> None:
         _ROUTING_JOB_LOCK.release()
         return
     except Exception as exc:  # noqa: BLE001 — surfaced via poll, never a hang
-        import traceback
-        traceback.print_exc()
+        logger.exception("routing job %s failed", job_id)
         with _JOBS_LOCK:
             job["state"] = "failed"
             job["error"] = f"routing failed: {exc}"
@@ -148,7 +155,13 @@ def _run_routing_job(job_id: str) -> None:
         return
     except BaseException:
         # Never wedge the single-flight lock (KeyboardInterrupt/SystemExit
-        # in the worker must not 409-block the server forever).
+        # in the worker must not 409-block the server forever). Mark the job
+        # failed first so pollers don't see it stuck in "running" forever.
+        with _JOBS_LOCK:
+            if job is not None:
+                job["state"] = "failed"
+                job["error"] = "routing job interrupted"
+                job["finished"] = time.perf_counter()
         _ROUTING_JOB_LOCK.release()
         raise
 

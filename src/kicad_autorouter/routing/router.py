@@ -727,12 +727,22 @@ class SingleNetRouter:
         if goal_mask is not None and goal_mask[sl, sr, sc]:
             return RouteResult([start], 0.0, 0, 0.0, True)
 
-        # A* with (f, g, col, row, layer, parent)
-        # f = g + h
+        # A* with (f, spread, h, g, seq, col, row, layer, parent)
+        # f = g + h. Ties (the common case on open ground, where every
+        # goal-ward step costs the same) break toward the diagonal:
+        # ``spread`` (the larger remaining axis) prefers shrinking the
+        # long axis first, so raw paths come out as diagonal-hugging
+        # stairs instead of single-axis L runs. Tie-breaks never
+        # override f, so optimality is unchanged; ``seq`` keeps entries
+        # totally ordered so heapq never compares parent tuples.
         open_set = []
         import heapq
+        import itertools
+        seq = itertools.count()
         start_h = heuristic(sc, sr, sl)
-        heapq.heappush(open_set, (start_h, 0, sc, sr, sl, None))
+        start_spread = max(abs(sc - gc), abs(sr - gr))
+        start_h_unweighted = abs(sc - gc) + abs(sr - gr) + abs(sl - gl)
+        heapq.heappush(open_set, (start_h, start_spread, start_h_unweighted, 0, next(seq), sc, sr, sl, None))
 
         # g_score array clipped to the window: [layer, row - r0, col - c0].
         # Small windows shrink both the allocation and the expansion flood.
@@ -751,7 +761,7 @@ class SingleNetRouter:
 
         expansions = 0
         while open_set:
-            f, g, c, r, l, p = heapq.heappop(open_set)
+            f, _, _, g, _, c, r, l, p = heapq.heappop(open_set)
             expansions += 1
             if expansions > self.max_expansions:
                 return RouteResult([], 0.0, 0, 0.0, False, expansions)
@@ -809,7 +819,9 @@ class SingleNetRouter:
                     g_score[l, nr - r0, nc - c0] = ng
                     parent[(nc, nr, l)] = (c, r, l)
                     nf = ng + heuristic(nc, nr, l)
-                    heapq.heappush(open_set, (nf, ng, nc, nr, l, (c, r, l)))
+                    nh = abs(nc - gc) + abs(nr - gr) + abs(l - gl)
+                    nspread = max(abs(nc - gc), abs(nr - gr))
+                    heapq.heappush(open_set, (nf, nspread, nh, ng, next(seq), nc, nr, l, (c, r, l)))
 
             # Via transitions (up/down)
             for nl in [l - 1, l + 1]:
@@ -851,7 +863,9 @@ class SingleNetRouter:
                         g_score[nl, r - r0, c - c0] = ng
                         parent[(c, r, nl)] = (c, r, l)
                         nf = ng + heuristic(c, r, nl)
-                        heapq.heappush(open_set, (nf, ng, c, r, nl, (c, r, l)))
+                        nh = abs(c - gc) + abs(r - gr) + abs(nl - gl)
+                        nspread = max(abs(c - gc), abs(r - gr))
+                        heapq.heappush(open_set, (nf, nspread, nh, ng, next(seq), c, r, nl, (c, r, l)))
 
         return RouteResult([], 0.0, 0, 0.0, False, expansions)
 

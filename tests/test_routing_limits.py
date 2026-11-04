@@ -205,6 +205,7 @@ def test_per_net_budget_round_trip():
 
 
 @pytest.mark.dccf
+@pytest.mark.slow
 def test_dccf_gnd_chunks_with_bounded_budget():
     """Over-cap GND auto-splits; per-chunk budgets bound total work."""
     import math
@@ -232,6 +233,7 @@ def test_dccf_gnd_chunks_with_bounded_budget():
 
 
 @pytest.mark.dccf
+@pytest.mark.slow
 def test_dccf_gnd_per_net_budget_stops_search():
     """Net-level budget bounds the pair-search flood (terminal guard off)."""
     model = board_model(parse_file(DCCF_PCB))

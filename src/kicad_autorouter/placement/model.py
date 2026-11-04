@@ -354,3 +354,9 @@ def _find_decap_chip_links(
                     jd, jbest = d, j
             edges.append((i, jbest))
     return edges, links
+
+
+# Public aliases (non-private) for consumers outside the package, e.g. the UI
+# server. Behavior is identical to the underscore originals.
+collect_pad_nodes = _collect_pad_nodes
+find_decap_chip_links = _find_decap_chip_links

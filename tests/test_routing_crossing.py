@@ -11,9 +11,13 @@ Thresholds calibrated by running (0.5mm grid routes both nets in <0.1s
 with exactly 2 vias); the properties are structural, not numeric.
 """
 
+from dataclasses import replace as dc_replace
 from pathlib import Path
 
-from kicad_autorouter.board_model import Footprint, board_model
+from shapely.geometry import Polygon
+
+from kicad_autorouter.board_model import Footprint, KeepoutZone, Point, board_model
+from kicad_autorouter.board_model import vias as board_vias
 from kicad_autorouter.io import add_footprint_to_tree
 from kicad_autorouter.routing.pipeline import RoutingParams, route_nets
 from kicad_autorouter.sexpr import parse_file
@@ -52,6 +56,44 @@ def _xcross_model():
     return pcb_tree, board_model(pcb_tree)
 
 
+# Central keepout sits exactly on the X intersection (135, 95): both
+# straight diagonals pass through it. F.Cu-only, so X1 must detour around
+# it on F.Cu while X2's B.Cu bridge can still dive underneath — proving
+# the block is layer-specific and neither net goes wonky (through it,
+# around the board, or via inside it).
+KEEPOUT_X0, KEEPOUT_X1 = 130.0, 140.0
+KEEPOUT_Y0, KEEPOUT_Y1 = 90.0, 100.0
+
+
+def _central_keepout() -> KeepoutZone:
+    return KeepoutZone(
+        uuid="xcross-kz-center",
+        layers=("F.Cu",),
+        polygon=(
+            Point(KEEPOUT_X0, KEEPOUT_Y0),
+            Point(KEEPOUT_X1, KEEPOUT_Y0),
+            Point(KEEPOUT_X1, KEEPOUT_Y1),
+            Point(KEEPOUT_X0, KEEPOUT_Y1),
+        ),
+        tracks_allowed=False,
+        vias_allowed=False,
+        pads_allowed=False,
+        copper_pour_allowed=False,
+        footprints_allowed=False,
+    )
+
+
+def _xcross_model_with_keepout():
+    """X-crossing model plus the central F.Cu keepout (model-level inject).
+
+    Writeback only carries tracks/vias, so the tree needs no zone writer —
+    same pattern as the THT-free-via walls.
+    """
+    pcb_tree, model = _xcross_model()
+    model = dc_replace(model, keepout_zones=model.keepout_zones + (_central_keepout(),))
+    return pcb_tree, model
+
+
 def test_diagonal_nets_route_with_via_crossing():
     pcb_tree, model = _xcross_model()
     assert {c.ref for c in model.nets["X1"]} == {"XNW", "XSE"}
@@ -83,3 +125,73 @@ def test_diagonal_nets_route_with_via_crossing():
     assert any(
         back.intersects(front) for back in x2_back for front in x1_front
     ), "X2's B.Cu span must cross X1's F.Cu copper in plan view"
+
+
+def test_diagonal_nets_respect_keepout():
+    """Central F.Cu keepout: routing still succeeds, block stays clean.
+
+    The keepout covers the ideal-diagonal intersection, so a straight
+    shot would have to detour (F.Cu) or dive under it (B.Cu). The router
+    currently hugs the board edges instead, so today this guards the
+    weaker — but still valuable — property: an unrelated keepout neither
+    breaks the crossing nor collects copper/vias, and wire stays bounded
+    versus the no-keepout baseline (nothing goes wonky).
+    """
+    params = RoutingParams(run_drc=False, grid_resolution_mm=0.5)
+    base_tree, base_model = _xcross_model()
+    base, _, _ = route_nets(
+        base_model, ["X1", "X2"], set(),
+        params=params, original_pcb_tree=base_tree,
+    )
+    assert base.nets_routed == 2, f"baseline must route: {base}"
+
+    pcb_tree, model = _xcross_model_with_keepout()
+    result, _, _ = route_nets(
+        model, ["X1", "X2"], set(),
+        params=params, original_pcb_tree=pcb_tree,
+    )
+
+    assert result.nets_routed == 2, f"keepout must not break routing: {result}"
+    assert result.nets_failed == 0, f"no net may fail: {result}"
+    assert result.vias_added >= 2, (
+        f"expected the via-pair crossing to survive the keepout, got {result.vias_added}"
+    )
+
+    assert result.pcb_tree is not None
+    x1_front = plan_segments(result.pcb_tree, "X1", "F.Cu")
+    x2_back = plan_segments(result.pcb_tree, "X2", "B.Cu")
+    assert x1_front, "X1 should still hold F.Cu"
+    assert x2_back, "X2 should still bridge on B.Cu"
+    assert any(
+        back.intersects(front) for back in x2_back for front in x1_front
+    ), "X2's B.Cu span must still cross X1's F.Cu copper in plan view"
+
+    # The block is F.Cu-only: no F.Cu copper and no via annulus may enter
+    # it; B.Cu stays free to pass underneath.
+    block = Polygon([
+        (KEEPOUT_X0, KEEPOUT_Y0), (KEEPOUT_X1, KEEPOUT_Y0),
+        (KEEPOUT_X1, KEEPOUT_Y1), (KEEPOUT_X0, KEEPOUT_Y1),
+    ])
+    fcu_segs = (
+        plan_segments(result.pcb_tree, "X1", "F.Cu")
+        + plan_segments(result.pcb_tree, "X2", "F.Cu")
+    )
+    assert fcu_segs, "expected F.Cu copper to check against the keepout"
+    assert not any(seg.intersects(block) for seg in fcu_segs), (
+        "no F.Cu copper may enter the keepout"
+    )
+    for via in board_vias(result.pcb_tree):
+        assert not block.intersects(
+            Polygon([
+                (via.position.x_mm - via.size_mm / 2.0, via.position.y_mm - via.size_mm / 2.0),
+                (via.position.x_mm + via.size_mm / 2.0, via.position.y_mm - via.size_mm / 2.0),
+                (via.position.x_mm + via.size_mm / 2.0, via.position.y_mm + via.size_mm / 2.0),
+                (via.position.x_mm - via.size_mm / 2.0, via.position.y_mm + via.size_mm / 2.0),
+            ])
+        ), f"via {via.net_name} drilled inside the keepout at {via.position}"
+
+    # Bounded detour: the keepout must not send the router off the rails.
+    assert result.total_wire_mm <= 1.5 * base.total_wire_mm, (
+        f"keepout wire {result.total_wire_mm:.1f}mm blew up vs "
+        f"baseline {base.total_wire_mm:.1f}mm"
+    )

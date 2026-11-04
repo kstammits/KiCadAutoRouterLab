@@ -139,7 +139,7 @@ class PlacementParams:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: dict) -> "PlacementParams":
+    def from_dict(cls, data: dict, strict: bool = False) -> "PlacementParams":
         """Build params from a JSON-style dict; missing keys take defaults and
         unknown keys are ignored (so the UI may POST partial param sets).
 
@@ -152,11 +152,18 @@ class PlacementParams:
 
         Legacy ``decap_boost`` maps to ``decap_link`` (explicit
         ``decap_link`` wins when both are present).
+
+        ``strict``:
+          - ``False`` (default): drop unknown keys (current behavior).
+          - ``True``: raise ``ValueError`` listing the unknown keys.
         """
         payload = dict(data)
         if "decap_link" not in payload and "decap_boost" in payload:
             payload["decap_link"] = payload["decap_boost"]
         known = {f.name for f in fields(cls)}
+        unknown = sorted(k for k in payload if k not in known)
+        if strict and unknown:
+            raise ValueError(f"unknown placement params: {unknown}")
         params = cls(**{
             name: payload[name] for name in known
             if name in payload and name not in ("dt_min_s", "dt_max_s")

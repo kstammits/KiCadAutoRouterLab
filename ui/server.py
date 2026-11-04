@@ -1,4 +1,5 @@
 import json
+import logging
 import signal
 import sys
 import threading
@@ -7,20 +8,21 @@ import tomllib
 import uuid as uuidlib
 from dataclasses import replace
 from typing import Dict
+
+logger = logging.getLogger(__name__)
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 UI_DIR = Path(__file__).resolve().parent
 REPO_ROOT = UI_DIR.parent.resolve()
-sys.path.insert(0, str(UI_DIR.parent / "src"))
+sys.path.insert(0, str(REPO_ROOT))
 
 from kicad_autorouter.board_model import (
     board_model,
     copper_layers as tree_copper_layers,
     is_ground_net,
     is_power_net_effective,
-    resolve_track_width_mm,
 )
 from kicad_autorouter.io import (
     collapse_to_two_layer,
@@ -36,12 +38,12 @@ from kicad_autorouter.placement import (
     run_placement,
 )
 from kicad_autorouter.placement.model import (
-    _collect_pad_nodes,
-    _find_decap_chip_links,
+    collect_pad_nodes,
+    find_decap_chip_links,
 )
 from kicad_autorouter.routing.pipeline import (
     RoutingParams,
-    _terminals_for_net,
+    terminals_for_net,
     resolve_clearance,
     resolve_track_width,
     route_nets,
@@ -66,10 +68,7 @@ from kicad_autorouter.strategy import (
 )
 from kicad_autorouter.svg_render import decap_fp_uuids, net_colors, render_board_svg
 
-# Re-export: canonical home is ui.debug_grids (pure numpy->dict payloads
-# for the SVG cost overlay). Kept here so `server._cost_grid_to_debug`
-# users (handlers + tests) keep working.
-from debug_grids import _cost_grid_to_debug, _secondary_to_debug
+from ui.debug_grids import _cost_grid_to_debug, _secondary_to_debug
 
 # App version from pyproject.toml
 with open(REPO_ROOT / "pyproject.toml", "rb") as f:
@@ -170,14 +169,8 @@ def _docs_entry(name: str, path: Path) -> dict:
     return entry
 
 
-# Re-export: canonical home is ui.server_state (in-memory board/pair
-# state). Kept here so `server.STATE` users (handlers + tests) keep
-# working.
-from server_state import NUDGE_COALESCE_S, STATE
-
-# Re-export: canonical home is ui.server_jobs (background routing/DRC
-# workers). Kept here so the handlers below keep working.
-from server_jobs import (
+from ui.server_state import NUDGE_COALESCE_S, STATE
+from ui.server_jobs import (
     _JOBS,
     _JOBS_LOCK,
     _ROUTING_JOB_LOCK,
@@ -236,9 +229,6 @@ def save_routing_params(params: RoutingParams) -> None:
     existing["routing"] = params.to_dict()
     _write_params_file(existing)
 
-
-# NOTE: _cost_grid_to_debug + _secondary_to_debug live in ui.debug_grids
-# (re-exported at module top); their old home was here.
 
 
 def proposal_to_json(proposal, include_frames=True) -> dict:
@@ -714,7 +704,7 @@ class Handler(BaseHTTPRequestHandler):
                     for n in nets:
                         decap_by_net.setdefault(n, []).append(fp.ref)
             try:
-                _pads, _pad_to_fp, _, _, _ = _collect_pad_nodes(model)
+                _pads, _pad_to_fp, _, _, _ = collect_pad_nodes(model)
                 _ref_by: dict = {}
                 for _i, _fi in enumerate(_pad_to_fp):
                     if _fi >= 0 and _fi not in _ref_by:
@@ -725,7 +715,7 @@ class Handler(BaseHTTPRequestHandler):
                         _areas[_fi] = courtyard_bbox_area_m2(_fp)
                     except (AttributeError, TypeError, ValueError):
                         continue
-                _, decap_links = _find_decap_chip_links(
+                _, decap_links = find_decap_chip_links(
                     _pads, _pad_to_fp, _ref_by,
                     fp_area_m2_by_idx=_areas,
                     extra_power=extra_power,
@@ -747,15 +737,7 @@ class Handler(BaseHTTPRequestHandler):
                     "is_power": is_power_net_effective(net_name, extra_power),
                     "is_ground": is_ground_net(net_name),
                     "power_user": net_name in extra_power,
-                    "width_mm": round(resolve_track_width_mm(
-                        net_name,
-                        net_widths=rp.net_widths,
-                        net_netclass=model.net_netclass,
-                        net_classes=model.net_classes,
-                        default_mm=rp.track_width_mm,
-                        power_mm=rp.power_width_mm,
-                        extra_power=extra_power,
-                    ), 3),
+                    "width_mm": round(resolve_track_width(model, rp, net_name, extra_power), 3),
                     "color": colors.get(net_name, "#8a93a0"),
                     "decap_refs": sorted(decap_by_net.get(net_name, [])),
                     "decap_links": {
@@ -853,7 +835,7 @@ class Handler(BaseHTTPRequestHandler):
                     secondary = build_fanout_cost(
                         model, STATE.routing_grid, net_name,
                         clearance_mm=clear, track_half_mm=width / 2.0)
-                    terminals = _terminals_for_net(model, STATE.routing_grid, net_name)
+                    terminals = terminals_for_net(model, STATE.routing_grid, net_name)
                 except Exception as exc:
                     self._send(500, f"secondary build failed: {exc}".encode(), "text/plain")
                     return
@@ -1155,8 +1137,7 @@ class Handler(BaseHTTPRequestHandler):
                     extra_power_nets=STATE.get_power_override_nets(),
                 )
             except Exception as exc:
-                import traceback
-                traceback.print_exc()
+                logger.exception("placement step failed")
                 self._send(500, f"placement failed: {exc}".encode(), "text/plain")
                 return
             STATE.set_forces(proposal.forces)
@@ -1242,8 +1223,7 @@ class Handler(BaseHTTPRequestHandler):
                     wall_tolerance_mm=saved.wall_tolerance_mm,
                 )
             except Exception as exc:
-                import traceback
-                traceback.print_exc()
+                logger.exception("refine failed")
                 self._send(500, f"refine failed: {exc}".encode(), "text/plain")
                 return
             merged = dict(base_deltas)
@@ -1341,8 +1321,7 @@ class Handler(BaseHTTPRequestHandler):
                     extra_power_nets=STATE.get_power_override_nets(),
                 )
             except Exception as exc:
-                import traceback
-                traceback.print_exc()
+                logger.exception("placement failed")
                 self._send(500, f"placement failed: {exc}".encode(), "text/plain")
                 return
 
@@ -2035,8 +2014,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, f"routing rejected: {exc}".encode(), "text/plain")
                 return
             except Exception as exc:
-                import traceback
-                traceback.print_exc()
+                logger.exception("routing failed")
                 self._send(500, f"routing failed: {exc}".encode(), "text/plain")
                 return
             
@@ -2152,8 +2130,8 @@ class Handler(BaseHTTPRequestHandler):
 
         self._send(404, b"not found", "text/plain")
 
-    def log_message(self, fmt, *args):  # keep console quiet
-        pass
+    def log_message(self, fmt, *args):  # keep console quiet; capturable via logging
+        logger.debug("%s - %s", self.address_string(), fmt % args)
 
 
 def main() -> None:

@@ -13,8 +13,11 @@ simulation loop stays readable. Force components:
 
 from __future__ import annotations
 
+import logging
 import math
 from typing import Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 import numpy as np
 from shapely.geometry import Point, Polygon
@@ -41,6 +44,7 @@ def _overlap_depth_mm(pi: Polygon, pj: Polygon, ux: float, uy: float) -> float:
         pa = [x * ux + y * uy for x, y in pi.exterior.coords]
         pb = [x * ux + y * uy for x, y in pj.exterior.coords]
     except Exception:
+        logger.debug("overlap depth shapely failed")
         return 0.0
     return max(0.0, min(max(pa), max(pb)) - max(min(pa), min(pb)))
 
@@ -459,6 +463,7 @@ def _compute_total_force(
                     dx = float(qi.x - qj.x)
                     dy = float(qi.y - qj.y)
                 except Exception:
+                    logger.debug("nearest_points failed li=%s lj=%s", li, lj)
                     dx = dy = 0.0
                 _gap = math.hypot(dx, dy)
                 if _gap <= 1e-8:
@@ -565,6 +570,7 @@ def _compute_total_force(
                     dx = float(qi.x - qj.x)
                     dy = float(qi.y - qj.y)
                 except Exception:
+                    logger.debug("nearest_points failed li=%s lj=%s", li, lj)
                     dx = dy = 0.0
                 dist = math.hypot(dx, dy)
                 if dist <= 1e-8:

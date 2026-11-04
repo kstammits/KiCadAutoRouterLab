@@ -44,7 +44,7 @@ Open work only. Completed changes belong in git history, not here.
 
 - **R9 smoother post-pass**: curve/spline interpolation after the stick
   phase (B-spline or clothoid) while preserving clearance. Landed subset:
-  tangent-arc corner fillets (`arc_fillets`, default off) — the smoother
+  tangent-arc corner fillets (`arc_fillets`, default on) — the smoother
   ranks distance/angle ties by admitted fillet radius and the biarc fitter
   rounds clearance-gated corners into native `(arc)` copper. Open: curved
   *paths* (arcs as search primitives, not post-pass), push-aside.

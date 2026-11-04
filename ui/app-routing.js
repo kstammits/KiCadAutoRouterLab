@@ -602,8 +602,9 @@ async function ripSelectedNets() {
   const routeBtn = el("route-selected-btn");
   const routeAllBtn = el("route-all-btn");
   const selectUnroutedBtn = el("select-unrouted-btn");
+  const shuffleBtn = el("shuffle-btn");
   const nets = Array.from(selectedNets);
-  for (const b of [ripBtn, routeBtn, routeAllBtn, selectUnroutedBtn]) {
+  for (const b of [ripBtn, routeBtn, routeAllBtn, selectUnroutedBtn, shuffleBtn]) {
     if (b) { b.disabled = true; b.classList.add("loading"); }
   }
   try {
@@ -629,20 +630,23 @@ async function ripSelectedNets() {
   } catch (err) {
     diag.textContent = `rip-up failed: ${err.message}`;
   } finally {
-    for (const b of [ripBtn, routeBtn, routeAllBtn, selectUnroutedBtn]) {
+    for (const b of [ripBtn, routeBtn, routeAllBtn, selectUnroutedBtn, shuffleBtn]) {
       if (b) b.classList.remove("loading");
     }
     updateNetSelectionUI();
   }
 }
 
-on("route-cancel-btn", "click", () => {
+function requestRouteCancel() {
   // Cooperative cancel: the in-flight job stops between pairs/attempts
   // server-side (already-routed nets are kept). The poll loop observes the
   // flag, posts the cancel, then collects the partial outcome.
   routeCancelRequested = true;
   if (routeCurrentJobId) cancelRoutingJob(routeCurrentJobId);
-});
+}
+
+on("route-cancel-btn", "click", requestRouteCancel);
+on("shuffle-cancel-btn", "click", requestRouteCancel);
 
 // Route all unprotected nets
 async function routeAllNets() {
@@ -791,8 +795,155 @@ async function refineSelectedNets() {
   }
 }
 
+// Shuffle lives in the Tidy tab: rip and re-route random routable nets,
+// N times in a queue. Picks each net uniformly from unprotected 2+ pad
+// nets (repeats allowed, so a "lucky" net can roll again). Single-net
+// routing jobs already strip that net's copper first (pipeline stage 0a),
+// so no explicit rip-up call is needed. Own diag/progress/cancel in the
+// Tidy panel; the shared route busy-state still locks the Route buttons
+// (single-flight server jobs). Per-net failures don't abort the queue
+// (except HTTP 400, which would fail every net identically).
+async function shuffleRandomNets() {
+  const diag = el("shuffle-diag");
+  const cancelBtn = el("shuffle-cancel-btn");
+  const progress = el("shuffle-progress");
+  const countInput = el("shuffle-count");
+  if (!diag || !progress) return;
+
+  let times = Math.round(Number(countInput?.value) || 10);
+  if (!(times >= 1)) times = 1;
+  if (times > 50) times = 50;
+  if (countInput) countInput.value = String(times);
+
+  if (!lastNetsByName || lastNetsByName.size === 0) await fetchNets();
+  const pool = [...(lastNetsByName?.values() || [])]
+    .filter(n => (n.pad_count || 0) >= 2 && !n.protected)
+    .map(n => n.name);
+  if (pool.length === 0) {
+    diag.textContent = "shuffle: no routable nets (need 2+ pads, unprotected)";
+    return;
+  }
+  await saveRoutingParams();
+  const params = readRoutingParams();
+  const queue = [];
+  for (let i = 0; i < times; i++) {
+    queue.push(pool[Math.floor(Math.random() * pool.length)]);
+  }
+
+  const expCap = Number(params.max_expansions_per_net) > 0
+    ? Number(params.max_expansions_per_net) : ROUTE_EXP_CAP_FALLBACK;
+  diag.textContent = `shuffle ×${times} from ${pool.length} nets · budget ${fmtExpShort(expCap)}/net`;
+  diag.title = `Random queue: ${queue.join(", ")}`;
+
+  setRouteBusy(true);
+  if (countInput) countInput.disabled = true;
+  progress.hidden = false;
+  progress.value = 0;
+  if (cancelBtn) cancelBtn.hidden = false;
+  routeCancelRequested = false;
+
+  const totals = { tracks: 0, arcs: 0, vias: 0, routed: 0, failed: 0, expansions: 0, astarS: 0 };
+  const failures = [];
+  const perRoll = [];
+  let doneCount = 0;
+  let lastBoardVersion = lastVersion;
+  const t0 = performance.now();
+  const elapsed = () => `${Math.round((performance.now() - t0) / 1000)}s`;
+
+  for (let i = 0; i < queue.length; i++) {
+    if (routeCancelRequested) break;
+    const net = queue[i];
+    diag.textContent = `shuffle ${i + 1}/${queue.length} (${net}) — starting — ${elapsed()}`;
+    diag.title = `Random queue: ${queue.join(", ")}`;
+    progress.value = i / queue.length;
+
+    let jobId = null;
+    try {
+      jobId = await startRoutingJob(net, params);
+      routeCurrentJobId = jobId;
+      const { result: r, userCancelled, timedOut } = await pollRoutingJob(jobId, net, i, queue.length, diag, progress, `shuffle ${i + 1}/${queue.length}`, t0, expCap, 0);
+      routeCurrentJobId = null;
+      if (userCancelled) break;
+      if (timedOut) {
+        if (r) {
+          totals.tracks += r.tracks_added || 0;
+          totals.vias += r.vias_added || 0;
+          totals.routed += r.nets_routed || 0;
+          if (r.version) {
+            lastBoardVersion = r.version;
+            lastVersion = r.version;
+            await fetchAndInjectSVG(r.version);
+          }
+        }
+        failures.push(`${net}: hit ${ROUTE_JOB_CAP_S / 60}min cap (cancelled server-side, partial kept)`);
+        perRoll.push({ net, ok: false, note: "cap" });
+        totals.failed += 1;
+        continue;
+      }
+      if (!r) throw new Error("empty job result");
+      totals.tracks += r.tracks_added || 0;
+      totals.arcs += r.arcs_added || 0;
+      totals.vias += r.vias_added || 0;
+      totals.routed += r.nets_routed || 0;
+      totals.failed += r.nets_failed || 0;
+      totals.expansions += r.expansions || 0;
+      if (r.timings?.astar_s) totals.astarS += r.timings.astar_s;
+      for (const [n, reason] of Object.entries(r.failed_reasons || {})) {
+        failures.push(`${n}: ${reason}`);
+      }
+      perRoll.push({
+        net,
+        ok: (r.nets_failed || 0) === 0,
+        tracks: r.tracks_added || 0,
+        arcs: r.arcs_added || 0,
+        vias: r.vias_added || 0,
+      });
+      if (r.debug) showCostGridDebug(r.debug);
+      if (r.version) {
+        lastBoardVersion = r.version;
+        lastVersion = r.version;
+        await fetchAndInjectSVG(r.version);
+      }
+    } catch (err) {
+      routeCurrentJobId = null;
+      if (err?.status === 400) {
+        failures.push(`${net}: ${err.message}`);
+        totals.failed += queue.length - i;
+        doneCount = queue.length;
+        diag.textContent = `shuffle aborted: ${err.message} — kept ${totals.routed}/${queue.length} rolls`;
+        break;
+      }
+      failures.push(`${net}: ${err.message}`);
+      perRoll.push({ net, ok: false, note: String(err.message || err) });
+      totals.failed += 1;
+    } finally {
+      doneCount = i + 1;
+      progress.value = doneCount / queue.length;
+    }
+  }
+
+  await fetchNets();
+  renderPartialCopperOverlay();
+  if (typeof refreshTidyMetrics === "function") {
+    try { await refreshTidyMetrics(perRoll); } catch { /* metrics are best-effort */ }
+  }
+  diag.textContent = `shuffled ${doneCount}/${queue.length} (${queue.slice(0, doneCount).join(", ")}) — ` +
+    formatTotalsDiag({
+      totals, failures, doneCount, netCount: queue.length, lastBoardVersion,
+      elapsedTxt: elapsed(), cancelled: routeCancelRequested,
+    });
+  diag.title = diag.textContent;
+
+  setRouteBusy(false);
+  if (countInput) countInput.disabled = false;
+  if (cancelBtn) cancelBtn.hidden = true;
+  progress.hidden = true;
+  updateNetSelectionUI();
+}
+
 // Event listeners for routing panel
 on("route-selected-btn", "click", routeSelectedNets);
 on("route-all-btn", "click", routeAllNets);
 on("rip-selected-btn", "click", ripSelectedNets);
 on("refine-btn", "click", refineSelectedNets);
+on("shuffle-btn", "click", shuffleRandomNets);

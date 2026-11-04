@@ -13,10 +13,12 @@ function setConnected(ok) {
 // route buttons show the spinner. (ripSelectedNets manages ripBtn's own
 // spinner; route tails rely on updateNetSelectionUI for final enable.)
 function setRouteBusy(on) {
-  const btns = ["route-selected-btn", "route-all-btn", "select-unrouted-btn", "rip-selected-btn"]
+  const btns = ["route-selected-btn", "route-all-btn", "select-unrouted-btn", "rip-selected-btn", "refine-btn", "shuffle-btn"]
     .map(id => el(id));
   for (const b of btns) if (b) b.disabled = on;
   for (const b of btns.slice(0, 2)) if (b) b.classList.toggle("loading", on);
+  const shuffleCount = el("shuffle-count");
+  if (shuffleCount) shuffleCount.disabled = on;
 }
 
 // Inlet/bridge state lives in one endpoint; read-modify-write callers
@@ -408,6 +410,8 @@ function updateSelectionUI() {
       ? `${selectedUuids.size} selected → Step/Run targets selection`
       : "nothing selected → Step/Run targets all movable";
   }
+  // Tidy scope line mirrors the same selection (move subset vs all).
+  if (typeof syncTidyScope === "function") syncTidyScope();
   // Nudge pad mirrors the placement selection (ghosts excluded).
   const nudgeCount = el("nudge-count");
   if (nudgeCount) nudgeCount.textContent = String(selectedUuids.size);

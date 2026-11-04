@@ -303,7 +303,7 @@ Key facts that shape the algorithm choice:
 - Secondary objectives that conflict with shortest path: crosstalk, via count, metal
   density, timing.
 
-### Tangent-arc corner fillets (`arc_fillets`, default off)
+### Tangent-arc corner fillets (`arc_fillets`, default on)
 
 KiCad copper tracks are `(segment)`/`(via)` only — but `(arc start mid end)` is
 also legal copper, and arcs round sharp corners without the extra length of a

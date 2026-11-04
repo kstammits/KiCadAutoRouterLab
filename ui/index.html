@@ -348,11 +348,30 @@
         <div id="tidy-panel" hidden>
           <div class="bar">
             <span class="num">Tidy</span>
-            <button id="tidy-run-btn" class="primary" title="Geometric neat pass: align angles to neighbors + equalize gaps (legality-gated, merges into the Place proposal)">Run Tidy</button>
+            <button id="tidy-run-btn" class="primary" title="Straighten angles and even out gaps. Never adds overlaps; the result lands in the Place proposal for review.">Run Tidy</button>
+            <button id="tidy-goto-place" title="Switch to the Place tab to review the tidy result and Accept it">Review in Place</button>
             <span id="tidy-diag"></span>
-            <span class="zoom-info" title="Tidy merges into the current Place proposal; review and Accept there. A selection limits what moves; the whole board (minus ghosts) is alignment context.">selection limits what moves; whole board aligns → Accept in Place</span>
+          </div>
+          <p class="section-hint">Neatens rows: straightens angles, evens gaps. Never adds overlaps. The result lands in the Place proposal — review and Accept there.</p>
+          <div class="bar">
+            <span id="tidy-scope" class="zoom-info" title="A selection limits what moves; the whole board (minus ghosts) stays alignment context.">No selection — all movable parts move.</span>
+          </div>
+          <div class="bar" id="tidy-presets-bar" title="Strength presets: how far parts blend toward their neighbors">
+            <span class="zoom-info">Strength:</span>
+            <button data-tidy-preset="0.3" title="Gentle nudge toward neighbor angles and gaps">Subtle</button>
+            <button data-tidy-preset="0.6" title="Balanced neat pass (recommended starting point)">Default</button>
+            <button data-tidy-preset="1" title="Full blend toward neighbor angles and gaps">Strong</button>
           </div>
           <div class="params" id="tidy-params-grid"></div>
+          <div class="bar">
+            <span class="num">Shuffle</span>
+            <button id="shuffle-btn" title="Silly slot machine: rip and re-route a random routable net. Set ×N to queue a run of them.">🎲 Shuffle</button><label class="chk" title="How many random re-routes to queue (1–50)">×<input type="number" id="shuffle-count" value="10" min="1" max="50" step="1" style="width:3rem;"></label>
+            <button id="shuffle-cancel-btn" hidden title="Stop after the current roll (already-routed nets are kept)">Cancel</button>
+            <progress id="shuffle-progress" hidden max="1" value="0" style="width:8rem;" title="Shuffle queue progress"></progress>
+            <span id="shuffle-diag"></span>
+          </div>
+          <p class="section-hint">Random re-route: picks a routable net (2+ pads, unprotected), rips its copper and routes it fresh. Queue ×N rolls and watch the totals below move.</p>
+          <div id="tidy-metrics" style="font-size:.72rem;padding:.2rem .7rem;" title="Board totals: routed nets, copper counts, DRC cache state">no board loaded</div>
         </div>
 
         <!-- Docs panel -->

@@ -427,3 +427,70 @@ def test_dccf_single_net_fillet_no_crash():
     result, _, _ = route_nets(model, ["B1"], set(), params=params,
                               original_pcb_tree=tree)
     assert result.nets_routed == 1, f"B1 must route: {result.failed_reasons}"
+
+
+def test_keep_rule_pipeline_broad_arc_on_tube111():
+    """Pipeline integration: C2TubeOut fillets to a multi-mm arc.
+
+    The diagonal-hugging path already leaves the roomy corner, so the
+    keep knob changes neither search cost nor arc count on this route;
+    that it preserves open corners where shortcutting would erase them
+    is covered by the smooth unit tests. Here we check the pipeline
+    wiring end to end: arc emitted, broad radius, wire parity.
+    """
+    from pathlib import Path
+    from kicad_autorouter.board_model import board_model, tracks
+    from kicad_autorouter.routing.pipeline import RoutingParams, route_nets
+    from kicad_autorouter.sexpr import parse_file
+    model = board_model(parse_file(Path("tests/fixtures/tube111.kicad_pcb")))
+    tree = parse_file(Path("tests/fixtures/minimal.kicad_pcb"))
+
+    def _route(keep, cap):
+        params = RoutingParams(run_drc=False, grid_resolution_mm=0.5,
+                               arc_fillets=True,
+                               arc_keep_min_radius_mm=keep,
+                               arc_max_radius_mm=cap)
+        result, _, _ = route_nets(model, ["C2TubeOut"], set(), params=params,
+                                  original_pcb_tree=tree)
+        assert result.nets_routed == 1, f"C2TubeOut must route: {result.failed_reasons}"
+        return result
+
+    legacy = _route(0.0, 3.0)
+    assert legacy.expansions > 0
+    kept = _route(1.0, 3.0)
+    assert kept.expansions == legacy.expansions  # search untouched
+    assert kept.arcs_added >= 1
+    assert abs(kept.total_wire_mm - legacy.total_wire_mm) / legacy.total_wire_mm <= 0.05
+    # Radii from the emitted (arc) nodes: at least one broad sweep.
+    radii = []
+    for node in kept.pcb_tree.children("arc"):
+        pts = {}
+        for a in node.args:
+            if a.head in ("start", "mid", "end"):
+                pts[a.head] = (float(a.args[0]), float(a.args[1]))
+        if len(pts) == 3:
+            (ax, ay), (bx, by), (cx, cy) = pts["start"], pts["mid"], pts["end"]
+            d = 2 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by))
+            if abs(d) > 1e-12:
+                ux = ((ax * ax + ay * ay) * (by - cy) + (bx * bx + by * by) * (cy - ay)
+                      + (cx * cx + cy * cy) * (ay - by)) / d
+                uy = ((ax * ax + ay * ay) * (cx - bx) + (bx * bx + by * by) * (ax - cx)
+                      + (cx * cx + cy * cy) * (bx - ax)) / d
+                import math
+                radii.append(math.hypot(ax - ux, ay - uy))
+    assert max(radii) >= 3.0, f"expected a broad sweep, got {radii}"
+    # Kept corner: no new sharp 90s vs legacy.
+    def _sharp90(result):
+        segs = [(t.start, t.end) for t in tracks(result.pcb_tree)
+                if t.net_name == "C2TubeOut"]
+        import math
+        n = 0
+        for (a, b), (c, d) in zip(segs, segs[1:]):
+            v1 = (b.x_mm - a.x_mm, b.y_mm - a.y_mm)
+            v2 = (d.x_mm - c.x_mm, d.y_mm - c.y_mm)
+            n1, n2 = math.hypot(*v1) or 1e-9, math.hypot(*v2) or 1e-9
+            ang = math.degrees(math.acos(max(-1.0, min(1.0,
+                (v1[0] * v2[0] + v1[1] * v2[1]) / (n1 * n2)))))
+            n += ang >= 80
+        return n
+    assert _sharp90(kept) <= _sharp90(legacy)

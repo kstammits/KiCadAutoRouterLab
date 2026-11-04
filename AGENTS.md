@@ -45,10 +45,12 @@ browser workflow UI. Works on real boards, DRC-validated.
   alone rebuilds just the manual.
 - JS syntax: `./scripts/check_js.sh` (`node --check` all `ui/app-*.js`;
   warns and passes when node is absent).
-- Markers: `unit params physics cli server regression minimal dccf`
-  (see `[tool.pytest.ini_options]`). Always use `.venv/bin/python` —
-  system `python` lacks project deps (`scipy`, `shapely`, …) and fails at
-  collection with `ModuleNotFoundError`.
+- Markers: `unit params physics cli server regression minimal dccf slow`
+  (see `[tool.pytest.ini_options]`). `slow` marks tests taking >5s; they're
+  excluded from the fast loop via `-m "not slow"`. Fast loop:
+  `-m "minimal or unit or (dccf and not slow)"`. Always use
+  `.venv/bin/python` — system `python` lacks project deps (`scipy`,
+  `shapely`, …) and fails at collection with `ModuleNotFoundError`.
 - Cleanup: `scripts/clean.sh [--all]` (gitignored scratch only).
 
 ## Conventions

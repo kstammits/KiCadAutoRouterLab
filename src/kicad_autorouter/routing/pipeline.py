@@ -158,6 +158,11 @@ def _terminals_for_net(
     return terminals
 
 
+# Public alias (non-private) for consumers outside the package, e.g. the UI
+# server. Behavior is identical to the underscore original.
+terminals_for_net = _terminals_for_net
+
+
 def _group_terminals_by_region(
     model: BoardModel,
     grid: RoutingGrid,

@@ -18,7 +18,7 @@ from typing import Optional, Sequence, Tuple
 from shapely.geometry import LineString
 from shapely.geometry import Point as ShapelyPoint
 
-from kicad_autorouter.board_model import BoardModel, Footprint, Pad, Point, tracks
+from kicad_autorouter.board_model import BoardModel, Footprint, Pad, Point, arcs, tracks
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -185,13 +185,24 @@ def make_fp(
 
 
 def plan_segments(pcb_tree, net: str, layer: str) -> list:
-    """Plan-view LineStrings of a net's tracks on one copper layer."""
+    """Plan-view LineStrings of a net's tracks on one copper layer.
+
+    Includes (arc) copper as start→mid→end chords so arc-fillet
+    output counts as copper in plan view.
+    """
     segs = []
     for tr in tracks(pcb_tree):
         if tr.net_name == net and tr.layer == layer:
             segs.append(LineString([
                 (tr.start.x_mm, tr.start.y_mm),
                 (tr.end.x_mm, tr.end.y_mm),
+            ]))
+    for ar in arcs(pcb_tree):
+        if ar.net_name == net and ar.layer == layer:
+            segs.append(LineString([
+                (ar.start.x_mm, ar.start.y_mm),
+                (ar.mid.x_mm, ar.mid.y_mm),
+                (ar.end.x_mm, ar.end.y_mm),
             ]))
     return segs
 

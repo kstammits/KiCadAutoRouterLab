@@ -38,46 +38,80 @@ SOFT_THRESHOLD = 50  # HIGH_COST pad rings / EDGE_KEEPOUT: no shortcut through
                          # COURTYARD (25) is below this — shortcuts allowed
 
 
+def _soft_stamp(mask, grid, n_layers, res_mm, fp, pad, clearance_mm, track_half_mm) -> None:
+    """Stamp one pad's escape halo into a soft mask (shared own/sibling path)."""
+    from .grid import board_to_grid, mm_to_cells
+
+    try:
+        w, h = float(pad.size_mm[0]), float(pad.size_mm[1])
+    except (TypeError, ValueError, IndexError):
+        w, h = 0.0, 0.0
+    shape = (getattr(pad, "shape", "") or "").lower()
+    if shape in ("rect", "roundrect", "chamfered", "trapezoid", "custom"):
+        pad_half = math.hypot(w, h) / 2.0
+    else:
+        pad_half = max(w, h) / 2.0
+    radius = mm_to_cells(pad_half + clearance_mm + track_half_mm, res_mm)
+    col, row = board_to_grid(grid, pad.position.x_mm, pad.position.y_mm)
+    if pad.is_through_hole:
+        layers = tuple(range(n_layers))
+    else:
+        idx = grid.layer_to_idx.get(fp.layer)
+        layers = (idx,) if idx is not None else ()
+    for li in layers:
+        if li >= n_layers:
+            continue
+        r0, r1 = max(0, row - radius), min(grid.height_cells - 1, row + radius)
+        c0, c1 = max(0, col - radius), min(grid.width_cells - 1, col + radius)
+        mask[li, r0:r1 + 1, c0:c1 + 1] = True
+
+
 def own_net_soft_mask(model, grid, net_name: str, clearance_mm: float, track_half_mm: float):
     """Boolean ``(n_layers, H, W)`` mask of the net's own pad areas.
 
     Inside the mask, penalized cells may be crossed by shortcuts (the
     track must escape its own pads). Everywhere else shortcuts require
     FREE cells. BLOCKED cells are impassable regardless of the mask.
+
+    Same-footprint sibling pads (other nets on a footprint hosting this
+    net) are included when the pad-to-pad edge gap admits a legal track
+    (``>= 2 * clearance + track width``). A track escaping its own SMD
+    pad must cross its siblings' halos; without the exemption the
+    smoother vetoes the direct chord (HIGH_COST >= SOFT_THRESHOLD) and
+    keeps the router's Manhattan detour even though the gap is
+    DRC-legal. Sibling *copper* stays protected: the blocked mask
+    (secondary THT_EXCLUSION cores) has no exemption.
     """
+    from .obstacles import _pad_half_extent_mm
+
     n_layers = len(grid.layers)
     mask = np.zeros((n_layers, grid.height_cells, grid.width_cells), dtype=bool)
     res_mm = grid.resolution_mm
     if res_mm <= 0:
         return mask
-    from .grid import board_to_grid, mm_to_cells
 
+    need_mm = 2.0 * clearance_mm + 2.0 * track_half_mm
     for fp in model.footprints:
-        for pad in fp.pads:
-            if not pad.net_name or pad.net_name != net_name:
+        own_pads = [p for p in fp.pads if p.net_name and p.net_name == net_name]
+        if not own_pads:
+            continue
+        for pad in own_pads:
+            _soft_stamp(mask, grid, n_layers, res_mm, fp, pad, clearance_mm, track_half_mm)
+        for sib in fp.pads:
+            if not sib.net_name or sib.net_name == net_name:
                 continue
-            try:
-                w, h = float(pad.size_mm[0]), float(pad.size_mm[1])
-            except (TypeError, ValueError, IndexError):
-                w, h = 0.0, 0.0
-            shape = (getattr(pad, "shape", "") or "").lower()
-            if shape in ("rect", "roundrect", "chamfered", "trapezoid", "custom"):
-                pad_half = math.hypot(w, h) / 2.0
-            else:
-                pad_half = max(w, h) / 2.0
-            radius = mm_to_cells(pad_half + clearance_mm + track_half_mm, res_mm)
-            col, row = board_to_grid(grid, pad.position.x_mm, pad.position.y_mm)
-            if pad.is_through_hole:
-                layers = tuple(range(n_layers))
-            else:
-                idx = grid.layer_to_idx.get(fp.layer)
-                layers = (idx,) if idx is not None else ()
-            for li in layers:
-                if li >= n_layers:
-                    continue
-                r0, r1 = max(0, row - radius), min(grid.height_cells - 1, row + radius)
-                c0, c1 = max(0, col - radius), min(grid.width_cells - 1, col + radius)
-                mask[li, r0:r1 + 1, c0:c1 + 1] = True
+            sib_half = _pad_half_extent_mm(sib)
+            gap_ok = False
+            for own in own_pads:
+                dist = math.hypot(
+                    sib.position.x_mm - own.position.x_mm,
+                    sib.position.y_mm - own.position.y_mm,
+                )
+                if dist - _pad_half_extent_mm(own) - sib_half >= need_mm:
+                    gap_ok = True
+                    break
+            if gap_ok:
+                _soft_stamp(mask, grid, n_layers, res_mm, fp, sib, clearance_mm, track_half_mm)
     return mask
 
 
@@ -353,6 +387,10 @@ def _greedy_pass(
     hard_radius: Optional[int] = None,
     angle_step_rad: float = math.pi / 18,
     rank_radius_cells: float = 0.0,
+    keep_min_radius_cells: float = 0.0,
+    keep_max_radius_cells: float = 0.0,
+    keep_min_leg_cells: float = 0.0,
+    keep_sample_spacing_cells: float = 0.5,
 ) -> List[Tuple[int, int, int]]:
     """One greedy furthest-visible pass over a same-layer run.
 
@@ -363,6 +401,15 @@ def _greedy_pass(
     fillet). Ranking is pure geometry (no grid access); acceptance
     still needs the clearance gate downstream. ``0`` keeps the legacy
     distance/angle comparison exactly.
+
+    With ``keep_min_radius_cells > 0``, a winning chord that would erase
+    a keep-worthy corner is cut short at the first such corner along its
+    span: same geometry the fitter will use plus the identical clearance
+    gate, so every kept corner becomes an arc downstream, never a
+    leftover sharp joint. Staircases (cell-scale legs) admit only nub
+    radii and keep collapsing as before; only open corners with roomy
+    legs survive. ``0`` keeps legacy shortcut-everything behavior
+    exactly.
     """
     n = len(run)
     if n < 3:
@@ -431,6 +478,30 @@ def _greedy_pass(
             j -= 1
         if best_j is None:
             best_j = i + 1
+        if (
+            keep_min_radius_cells > 0.0
+            and keep_max_radius_cells > 0.0
+            and best_j > i + 1
+        ):
+            # The winning chord erases every node it skips. Cut it short
+            # at the first keep-worthy corner along its span — later
+            # iterations handle the rest. Legs are measured as the chords
+            # that would actually result (run[i] -> run[k] -> run[best_j]),
+            # not the raw 1-cell steps: a real sweep corner only exists
+            # once the straight approaches collapse. Geometry checks
+            # inside _keep_sweep_corner fail fast (angle, then radius,
+            # then legs) so only genuine candidates pay for the
+            # clearance gate.
+            for k in range(i + 1, best_j):
+                if _keep_sweep_corner(
+                    run[i], run[k], run[best_j],
+                    cost_layer, soft_layer, blocked_threshold,
+                    corridor_radius, blocked_layer, hard_radius,
+                    keep_min_radius_cells, keep_max_radius_cells,
+                    keep_min_leg_cells, keep_sample_spacing_cells,
+                ):
+                    best_j = k
+                    break
         out.append(run[best_j])
         i = best_j
     return out
@@ -441,6 +512,67 @@ def _angle_penalty(c1: int, r1: int, c2: int, r2: int, step_rad: float) -> float
     ang = math.atan2(r2 - r1, c2 - c1)
     nearest = round(ang / step_rad) * step_rad
     return abs(ang - nearest)
+
+
+# Minimum direction change a kept corner must carry. Shallower joints keep
+# legacy shortcutting: rounding them buys a near-invisible arc at the cost
+# of the tightest chord, so there is no sweep worth preserving.
+_KEEP_MIN_TURN_RAD = math.pi / 4
+
+
+def _keep_sweep_corner(
+    a, b, c,
+    cost_layer,
+    soft_layer,
+    blocked_threshold: int,
+    corridor_radius: int,
+    blocked_layer,
+    hard_radius,
+    keep_min_radius_cells: float,
+    keep_max_radius_cells: float,
+    keep_min_leg_cells: float,
+    keep_sample_spacing_cells: float,
+) -> bool:
+    """True when the corner ``a -> b -> c`` must survive shortcutting.
+
+    Callers pass the chords that would actually result from cutting the
+    winning shortcut at ``b`` (incoming ``a -> b``, outgoing ``b -> c``),
+    not the raw path steps — a sweep corner only exists once the straight
+    approaches collapse. Preserve-only-if-fillet-fires: the admitted
+    radius uses the same ``_corner_params`` geometry the fitter will use
+    (same tangent cap), the minimum leg mirrors the fitter's
+    ``min_leg_cells`` skip, and the clearance gate is the identical
+    ``_arc_walkable`` call with the same corridor/hard/spacing arguments.
+    A kept corner therefore becomes an arc downstream, never a leftover
+    sharp joint.
+    """
+    # Lazy: biarc gates via this module's footprint checks, so a top-level
+    # import would cycle (biarc -> smooth -> biarc).
+    from .biarc import _arc_walkable, _corner_arc, _corner_params
+    p0 = (float(a[0]), float(a[1]))
+    p1 = (float(b[0]), float(b[1]))
+    p2 = (float(c[0]), float(c[1]))
+    params = _corner_params(p0, p1, p2, keep_max_radius_cells)
+    if params is None:
+        return False
+    _t, radius, _ax, _ay, _bx, _by, half = params
+    if 2.0 * half < _KEEP_MIN_TURN_RAD:
+        return False
+    if radius < keep_min_radius_cells:
+        return False
+    d1 = math.hypot(p1[0] - p0[0], p1[1] - p0[1])
+    d2 = math.hypot(p2[0] - p1[0], p2[1] - p1[1])
+    if min(d1, d2) < keep_min_leg_cells:
+        return False
+    arc = _corner_arc(p0, p1, p2, keep_max_radius_cells)
+    if arc is None:
+        return False
+    t1, mid, t2 = arc
+    return bool(_arc_walkable(
+        t1, mid, t2, cost_layer, soft_layer, blocked_threshold,
+        corridor_radius, blocked_layer, hard_radius,
+        keep_sample_spacing_cells,
+    ))
 
 
 def _steiner_candidates(
@@ -523,6 +655,10 @@ def _repair_lumps(
     blocked_layer=None,
     hard_radius: Optional[int] = None,
     angle_step_rad: float = math.pi / 18,
+    keep_min_radius_cells: float = 0.0,
+    keep_max_radius_cells: float = 0.0,
+    keep_min_leg_cells: float = 0.0,
+    keep_sample_spacing_cells: float = 0.5,
 ) -> List[Tuple[int, int, int]]:
     """Replace residual stairstep lumps with outward 2–3 leg detours.
 
@@ -617,8 +753,12 @@ def _repair_lumps(
                 nodes = nodes[:i + 1] + waypoints + nodes[j:]
                 changed = True
                 # Re-collapse around the insertion; restart scan just after.
+                # Keep-rule params ride along so repair never erases a corner
+                # the main passes preserved.
                 nodes = _greedy_pass(nodes, cost_layer, soft_layer, blocked_threshold,
-                                     corridor_radius, blocked_layer, hard_radius, angle_step_rad)
+                                     corridor_radius, blocked_layer, hard_radius, angle_step_rad,
+                                     0.0, keep_min_radius_cells, keep_max_radius_cells,
+                                     keep_min_leg_cells, keep_sample_spacing_cells)
                 i += 1
             else:
                 i += 1
@@ -635,34 +775,46 @@ def _smooth_run(
     hard_radius: Optional[int] = None,
     angle_step_rad: float = math.pi / 18,
     rank_radius_cells: float = 0.0,
+    keep_min_radius_cells: float = 0.0,
+    keep_max_radius_cells: float = 0.0,
+    keep_min_leg_cells: float = 0.0,
+    keep_sample_spacing_cells: float = 0.5,
 ) -> List[Tuple[int, int, int]]:
     """Iterative bidirectional greedy + outward lump repair.
 
     Forward-only greedy commits to the furthest-visible node from one end,
-    which strands mid-region lumps (the reported stairstep behavior). Running
-    greedy forward, then backward on the result, until stable removes the
-    start-end bias with the same walkability guarantees. Residual dense
-    windows that no subset shortcut can clear go through outward Steiner
-    repair (new vertices, same clearance checks).
+    which strands mid-region lumps (the reported stairstep behavior).
+    Running greedy forward, then backward on the result, until stable
+    removes the start-end bias with the same walkability guarantees.
+    Residual dense windows that no subset shortcut can clear go through
+    outward Steiner repair (new vertices, same clearance checks).
+
+    Keep-rule params ride into every greedy call (both directions plus
+    the repair re-collapse) so a preserved sweep corner survives the
+    whole pass, not just one direction. All default to legacy
+    shortcut-everything.
     """
     n = len(run)
     if n < 3:
         return list(run)
+    keep = (keep_min_radius_cells, keep_max_radius_cells,
+            keep_min_leg_cells, keep_sample_spacing_cells)
     cur = _greedy_pass(run, cost_layer, soft_layer, blocked_threshold,
                        corridor_radius, blocked_layer, hard_radius, angle_step_rad,
-                       rank_radius_cells)
+                       rank_radius_cells, *keep)
     for _ in range(3):
         rev = list(reversed(cur))
         back = _greedy_pass(rev, cost_layer, soft_layer, blocked_threshold,
                             corridor_radius, blocked_layer, hard_radius, angle_step_rad,
-                            rank_radius_cells)
+                            rank_radius_cells, *keep)
         nxt = list(reversed(back))
         if len(nxt) >= len(cur):
             cur = nxt if len(nxt) < len(cur) else cur
             break
         cur = nxt
     cur = _repair_lumps(cur, cost_layer, soft_layer, blocked_threshold,
-                        corridor_radius, blocked_layer, hard_radius, angle_step_rad)
+                        corridor_radius, blocked_layer, hard_radius, angle_step_rad,
+                        *keep)
     return cur
 
 
@@ -772,6 +924,7 @@ def smooth_branch_pieces(
     max_radius_cells: float = 10.0,
     min_leg_cells: float = 3.0,
     sample_spacing_cells: float = 0.5,
+    keep_min_radius_cells: float = 0.0,
 ) -> Tuple[List[Tuple[int, int, int]], List[tuple]]:
     """Smooth one branch and fillet its runs: the single gate, where runs live.
 
@@ -782,6 +935,11 @@ def smooth_branch_pieces(
     ``(smoothed_path, pieces)`` where pieces is the flat arc-chain for the
     whole branch (``("seg"/"arc", ..., layer)`` plus ``("via", ...)``
     markers at layer transitions) for arc-aware reservation/emission.
+
+    ``keep_min_radius_cells > 0`` spares open corners admitting at least
+    that fillet radius from the pull-string (same clearance gate the
+    fitter uses, so kept corners always become arcs). ``0`` keeps legacy
+    shortcut-everything smoothing exactly.
     """
     from .biarc import fit_branch_arcs  # lazy: biarc gates via this module
     if not path:
@@ -813,7 +971,9 @@ def smooth_branch_pieces(
             blocked_layer = blocked_mask[layer] if blocked_mask is not None else None
             new_run = _smooth_run(run, cost_layer, soft_layer, blocked_threshold, max(0, corridor_radius), blocked_layer,
                                    max(0, corridor_radius) if hard_radius is None else max(0, hard_radius),
-                                   angle_step_rad, rank_radius_cells)
+                                   angle_step_rad, rank_radius_cells,
+                                   keep_min_radius_cells, max_radius_cells,
+                                   min_leg_cells, sample_spacing_cells)
             run_pieces = fit_branch_arcs(
                 new_run, cost_layer, soft_layer, blocked_threshold,
                 max(0, corridor_radius), blocked_layer,

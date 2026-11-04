@@ -24,6 +24,8 @@ from .model import (
     _collect_pad_nodes,
     _find_decap_chip_links,
     _find_decap_pad_indices,
+    collect_pad_nodes,
+    find_decap_chip_links,
 )
 from .params import (
     FRAME_ANGLE_DECIMALS,
@@ -58,6 +60,8 @@ __all__ = [
     "_find_decap_pad_indices",
     "_footprint_courtyard_polygon",
     "courtyard_is_degenerate",
+    "find_decap_chip_links",
+    "collect_pad_nodes",
     "_rigid_pose_vertices",
     "_run_region_simulation",
     "_thin_frames",
