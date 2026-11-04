@@ -86,6 +86,10 @@ class RoutingParams:
     # the plane instead of long outer MST tracks. Two-layer preset forces
     # False (prior behavior retained); four-layer preset forces True.
     fanout_plane_vias_max: int = 16  # Cap on plane-fanout vias per route_nets call
+    refine_seeds: int = 3  # Candidate orderings tried by refine_routing
+    # (baseline current copper + refine_seeds shuffled re-routes; best wins).
+    refine_seed: int = 0  # Base RNG seed for refine order shuffles (0 = fixed
+    # sequence; reproducible across runs).
     allowed_layers: Optional[List[str]] = None  # Copper subset to route on (None = all stackup layers).
     # Enforced in route_nets: terminals on disallowed layers fail the net
     # with an explicit reason, and A* moves / via landings are confined to
@@ -132,6 +136,8 @@ class RoutingParams:
             "arc_sample_mm": self.arc_sample_mm,
             "fanout_planes": self.fanout_planes,
             "fanout_plane_vias_max": self.fanout_plane_vias_max,
+            "refine_seeds": self.refine_seeds,
+            "refine_seed": self.refine_seed,
             "allowed_layers": list(self.allowed_layers) if self.allowed_layers is not None else None,
         }
 
@@ -152,6 +158,7 @@ class RoutingParams:
             "arc_fillets", "arc_max_radius_mm", "arc_min_leg_mm",
             "arc_sample_mm",
             "fanout_planes", "fanout_plane_vias_max",
+            "refine_seeds", "refine_seed",
         }
         filtered = {k: v for k, v in d.items() if k in valid_keys}
         if isinstance(filtered.get("allowed_layers"), (list, tuple)):
@@ -192,6 +199,7 @@ def _validate_routing_params(params: "RoutingParams") -> None:
         "max_attempts_per_net", "max_expansions", "max_expansions_per_net", "max_terminals_per_net",
         "piecemeal_chunk_terminals", "stitch_vias_max",
         "stitch_bridges_max", "fanout_plane_vias_max", "window_margin_cells", "window_retries",
+        "refine_seeds", "refine_seed",
     ):
         value = getattr(params, name)
         if isinstance(value, bool) or not isinstance(value, int):
@@ -206,6 +214,8 @@ def _validate_routing_params(params: "RoutingParams") -> None:
         raise ValueError("stitch budgets are capped at 100k")
     if params.fanout_plane_vias_max > 100_000:
         raise ValueError("fanout_plane_vias_max is capped at 100k")
+    if params.refine_seeds > 8:
+        raise ValueError("refine_seeds is capped at 8 (each seed re-routes the set)")
     if (
         not isinstance(params.window_growth, (int, float))
         or isinstance(params.window_growth, bool)

@@ -3,6 +3,9 @@
 Regression for the tube111 +12V case — a netlist name shared across
 panels must route per region (each side up to its own pads; assembly
 bridges join the boards), never as one copper track across the gap.
+Also covers the tube111 C2TubeOut case — single-region nets must never
+leave the board outline (hard outside-board block + per-region
+confinement for all nets, not just multi-region ones).
 """
 
 from pathlib import Path
@@ -82,6 +85,111 @@ def test_tube111_plus12v_spans_two_regions():
     )
     assert set(groups) == {1, 2}
     assert sum(groups.values()) == len(model.nets["+12V"])
+
+
+def _single_panel_model_with_blocker() -> BoardModel:
+    """One 20x20mm panel; SIG must detour around a foreign mid-board track.
+
+    The blocker spans nearly the full width at y=10, so the cheapest
+    toll-avoiding detour would swing outside the outline (y<0 / y>20)
+    when outside copper is merely penalized. The hard outside-board
+    block must keep the detour inside.
+    """
+    from kicad_autorouter.board_model import Track
+
+    poly = (Point(0, 0), Point(20, 0), Point(20, 20), Point(0, 20))
+    regions = (BoardRegion(uuid="reg-a", polygon=poly, bbox=(0, 20, 0, 20)),)
+    fps = (
+        make_fp("U1", "uuid-s1", 2.0, 10.0, nets=("SIG",)),
+        make_fp("U2", "uuid-s2", 18.0, 10.0, nets=("SIG",)),
+    )
+    blocker = Track(
+        start=Point(3.0, 10.0), end=Point(17.0, 10.0),
+        width_mm=0.5, layer="F.Cu", net_name="FOREIGN",
+    )
+    return BoardModel(
+        footprints=fps,
+        keepout_zones=(),
+        nets={"SIG": tuple(NetConnection(ref=fp.ref, pad_number="1") for fp in fps)},
+        by_ref={fp.ref: fp for fp in fps},
+        tracks=(blocker,),
+        edge_cuts=_rect_cuts(0, 0, 20, 20),
+        board_regions=regions,
+        footprint_region={"uuid-s1": 0, "uuid-s2": 0},
+    )
+
+
+def test_outside_board_cells_are_blocked():
+    """Grid cells outside every board polygon are impassable."""
+    from kicad_autorouter.routing.grid import board_to_grid
+    from kicad_autorouter.routing.obstacles import (
+        BLOCKED,
+        build_occupancy_grid,
+        inside_board_mask,
+    )
+
+    model = _single_panel_model_with_blocker()
+    grid = create_grid_from_model(model, 0.5, 2.0)
+    inside = inside_board_mask(grid, model)
+    assert inside is not None and inside.any() and (~inside).any()
+    cost = build_occupancy_grid(model, grid)
+    assert bool((cost[:, ~inside] >= BLOCKED).all())
+    c, r = board_to_grid(grid, -1.0, 10.0)  # 1mm outside the left edge
+    assert not inside[r, c]
+    assert bool((cost[:, r, c] >= BLOCKED).all())
+
+
+def test_single_region_net_never_leaves_outline():
+    """SIG detours around the blocker but stays inside the panel."""
+    model = _single_panel_model_with_blocker()
+    tree = parse_tree(MINIMAL_PCB)
+    result, _, _ = route_nets(
+        model, ["SIG"], set(),
+        params=RoutingParams(run_drc=False, grid_resolution_mm=0.25),
+        original_pcb_tree=tree,
+    )
+    assert result.nets_routed == 1, f"SIG must route inside: {result.failed_reasons}"
+    poly = ShapelyPolygon([(p.x_mm, p.y_mm) for p in model.board_regions[0].polygon])
+    checked = 0
+    for tr in tracks(result.pcb_tree):
+        if tr.net_name != "SIG":
+            continue
+        mid = ShapelyPoint(
+            (tr.start.x_mm + tr.end.x_mm) / 2.0,
+            (tr.start.y_mm + tr.end.y_mm) / 2.0,
+        )
+        assert poly.covers(mid), f"SIG left board outline: {tr.start}-{tr.end}"
+        checked += 1
+    assert checked > 0, "expected SIG copper"
+
+
+def test_tube111_c2tubeout_stays_inside_outline():
+    """tube111 C2TubeOut (region 2) must not hug the outline from outside."""
+    model = board_model(parse_file(TUBE111_PCB))
+    tree = parse_tree(MINIMAL_PCB)
+    result, _, _ = route_nets(
+        model, ["C2TubeOut"], set(),
+        params=RoutingParams(run_drc=False, grid_resolution_mm=0.5),
+        original_pcb_tree=tree,
+    )
+    assert result.nets_routed == 1, f"C2TubeOut must route: {result.failed_reasons}"
+    polys = [
+        ShapelyPolygon([(p.x_mm, p.y_mm) for p in r.polygon])
+        for r in model.board_regions
+    ]
+    checked = 0
+    for tr in tracks(result.pcb_tree):
+        if tr.net_name != "C2TubeOut":
+            continue
+        mid = ShapelyPoint(
+            (tr.start.x_mm + tr.end.x_mm) / 2.0,
+            (tr.start.y_mm + tr.end.y_mm) / 2.0,
+        )
+        assert any(p.covers(mid) for p in polys), (
+            f"C2TubeOut left board outline: {tr.start}-{tr.end}"
+        )
+        checked += 1
+    assert checked > 0, "expected C2TubeOut copper"
 
 
 def test_two_panel_net_never_crosses_gap():

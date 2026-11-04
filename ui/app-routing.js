@@ -14,15 +14,17 @@ async function loadRoutingParams() {
     // source in strategy.mode_owned_keys).
     let owned = [];
     let preset = {};
+    let mode = null;
     try {
       const mres = await fetch("/api/mode");
       if (mres.ok) {
         const minfo = await mres.json();
         preset = minfo.preset || {};
         owned = minfo.owned || Object.keys(preset);
+        mode = minfo.mode || null;
       }
     } catch (err) { /* no board loaded — nothing is mode-owned */ }
-    renderRoutingParams(routingParams, owned, preset);
+    renderRoutingParams(routingParams, owned, preset, mode);
   } catch (err) {
     toast(`routing params load failed: ${err.message}`);
     renderRoutingParams({});
@@ -38,75 +40,58 @@ const ROUTING_PARAM_DESCS = {
   clearance_mm: "Copper clearance: minimum gap between different-net copper (mm).",
   fanout_margin_mm: "Steering-only push away from foreign (other-net) pins (mm). Guides the search; never changes clearance rules.",
   via_cost_mm: "Extra cost per via, in mm of track — higher means fewer vias.",
-  pour_severance_weight: "Penalty for cutting GND-pour continuity. 0 disables pour-awareness.",
-  grid_resolution_mm: "Routing grid cell size (mm). 0.05 is 4x cells (slower, finer); large boards may reject fine grids.",
+  pour_severance_weight: "4-layer only — penalty for cutting GND-pour continuity. 0 disables pour-awareness.",
   max_terminals_per_net: "Nets with more terminals auto-split into chunks (piecemeal). 0 = no cap.",
   piecemeal_chunk_terminals: "Terminals per chunk when a net exceeds the cap. 0 = disable chunking (over-cap nets fail fast).",
-  arc_max_radius_mm: "Fillet size cap (mm): corners round up to this radius when legs and clearance allow.",
-  arc_min_leg_mm: "Corners with a shorter leg keep the sharp joint (mm). 0 = fillet everything the gate allows.",
-  margin_mm: "Board-edge margin (mm): routing stays this far inside the outline.",
   via_size_mm: "Via outer diameter (mm).",
   via_drill_mm: "Via drill diameter (mm).",
-  heuristic_weight: "Weighted-A* greediness: higher is faster but respects penalties less. 1 = exact.",
-  max_attempts_per_net: "Retry attempts per net before giving up.",
-  max_expansions: "A* node-expansion cap per pair-search (fail fast, don't hang).",
   max_expansions_per_net: "Total expansion budget across one net's pair-searches. 0 = no cap.",
-  window_margin_cells: "Initial A* bbox dilation around a pair (cells).",
-  window_growth: "Search-window expansion factor per retry.",
-  window_retries: "Window attempts per pair (last = full board).",
-  stitch_vias_max: "Cap on auto stitching vias per route call.",
-  stitch_bridges_max: "Cap on auto GND bridge tracks per route call.",
-  stitch_bridge_max_mm: "Longest single GND bridge track (mm).",
-  stitch_bridge_width_mm: "GND bridge track width (mm): thin squeezes through tight pour gaps.",
-  stitch_min_island_mm2: "Unfed pour islands below this area are ignored (never stitched).",
-  arc_sample_mm: "Arc clearance-gate sample spacing (mm): finer is stricter and slower.",
-  fanout_plane_vias_max: "Cap on plane-fanout vias per route call (inner-plane stubs).",
+  refine_seeds: "Refine candidates: shuffled re-routes tried per Refine run (plus keeping current copper).",
+  refine_seed: "Refine base seed: shuffles derive from base..base+seeds-1 (reproducible; auto-advances per run).",
 };
+// Removed sliders stay engine/API-valid (RoutingParams + validation
+// untouched; POST merges) — grid resolution, arc radii/sample, edge
+// margin, heuristic weight, per-search attempts/expansions, search
+// windows, stitch caps, and plane-fanout cap are set-and-forget or
+// script-tuned, so they live outside the panel.
 
-// Main-panel sliders: everyday knobs. Everything else (search budget,
-// via geometry, window retries, stitch caps) lives in Advanced.
+// Main-panel sliders: everyday copper knobs. Chunking + via geometry +
+// the single per-net search budget live in Advanced; everything else
+// (grid resolution, arc radii, margin, heuristic, per-search caps,
+// windows, stitch caps, plane-fanout cap) is API-only at calibrated
+// defaults — POST /api/routing/params merges, so hidden keys survive.
 const ROUTING_PARAM_DEFS = [
   { key: "track_width_mm", label: "Track Width (mm)", min: 0.1, max: 2.0, step: 0.05, default: 0.25 },
   { key: "power_width_mm", label: "Power Width (mm)", min: 0.2, max: 3.0, step: 0.05, default: 0.5 },
   { key: "clearance_mm", label: "Clearance (mm)", min: 0.1, max: 1.0, step: 0.05, default: 0.2 },
   { key: "fanout_margin_mm", label: "Push away from foreign pins (mm, steering only)", min: 0, max: 1.0, step: 0.05, default: 0 },
   { key: "via_cost_mm", label: "Via Cost (mm)", min: 1, max: 20, step: 0.5, default: 5 },
-  { key: "pour_severance_weight", label: "Pour Severance Weight (0 disables)", min: 0, max: 200, step: 5, default: 30 },
-  { key: "grid_resolution_mm", label: "Grid Resolution (mm) — 0.05 is 4x cells, may be rejected on large boards", min: 0.05, max: 0.5, step: 0.05, default: 0.1 },
-  { key: "max_terminals_per_net", label: "Max terminals per net (0 = no cap; larger nets auto-split into chunks)", min: 0, max: 128, step: 1, default: 16 },
-  { key: "piecemeal_chunk_terminals", label: "Piecemeal chunk size (0 = disable chunking; over-cap nets fail fast)", min: 0, max: 32, step: 1, default: 12 },
-  { key: "arc_max_radius_mm", label: "Arc fillet max radius (mm)", min: 0, max: 3.0, step: 0.05, default: 1.0 },
-  { key: "arc_min_leg_mm", label: "Arc fillet min leg (mm, 0 = fillet everything gated)", min: 0, max: 1.0, step: 0.05, default: 0.3 },
+  // 4-layer-only knob: hidden in two-layer mode (mode forces it there),
+  // amber-badged elsewhere (see routingSliderHtml + .param-4l in style.css).
+  { key: "pour_severance_weight", label: "Pour Severance Weight (0 disables)", min: 0, max: 200, step: 5, default: 30, fourLayerOnly: true },
 ];
 
 const ROUTING_ADVANCED_PARAM_DEFS = [
-  { key: "margin_mm", label: "Edge Margin (mm)", min: 0, max: 10, step: 0.5, default: 2.0 },
   { key: "via_size_mm", label: "Via Size (mm)", min: 0.4, max: 1.5, step: 0.05, default: 0.8 },
   { key: "via_drill_mm", label: "Via Drill (mm)", min: 0.2, max: 0.8, step: 0.05, default: 0.4 },
-  { key: "heuristic_weight", label: "Heuristic Weight", min: 1, max: 5, step: 0.1, default: 3.0 },
-  { key: "max_attempts_per_net", label: "Attempts Per Net", min: 1, max: 10, step: 1, default: 3 },
-  { key: "max_expansions", label: "Max Expansions / search", min: 100000, max: 10000000, step: 100000, default: 2000000 },
   { key: "max_expansions_per_net", label: "Max Expansions / net (0 = no cap)", min: 0, max: 20000000, step: 100000, default: 4000000 },
-  { key: "window_margin_cells", label: "Window Margin (cells)", min: 8, max: 128, step: 4, default: 32 },
-  { key: "window_growth", label: "Window Growth ×", min: 1, max: 4, step: 0.1, default: 2.0 },
-  { key: "window_retries", label: "Window Retries", min: 0, max: 10, step: 1, default: 3 },
-  { key: "stitch_vias_max", label: "Stitch Vias Max", min: 0, max: 128, step: 1, default: 32 },
-  { key: "stitch_bridges_max", label: "Stitch Bridges Max", min: 0, max: 64, step: 1, default: 16 },
-  { key: "stitch_bridge_max_mm", label: "Bridge Max Length (mm)", min: 5, max: 100, step: 1, default: 30 },
-  { key: "stitch_bridge_width_mm", label: "Bridge Width (mm)", min: 0.15, max: 1.0, step: 0.05, default: 0.3 },
-  { key: "stitch_min_island_mm2", label: "Min Island (mm²)", min: 0, max: 20, step: 0.5, default: 2.0 },
-  { key: "arc_sample_mm", label: "Arc Sample Spacing (mm)", min: 0.02, max: 0.2, step: 0.01, default: 0.05 },
-  { key: "fanout_plane_vias_max", label: "Plane Fanout Vias Max", min: 0, max: 64, step: 1, default: 16 },
+  { key: "max_terminals_per_net", label: "Max terminals per net (0 = no cap; larger nets auto-split into chunks)", min: 0, max: 128, step: 1, default: 16 },
+  { key: "piecemeal_chunk_terminals", label: "Piecemeal chunk size (0 = disable chunking; over-cap nets fail fast)", min: 0, max: 32, step: 1, default: 12 },
+  { key: "refine_seeds", label: "Refine Candidates", min: 1, max: 8, step: 1, default: 3 },
+  { key: "refine_seed", label: "Refine Base Seed", min: 0, max: 9999, step: 1, default: 0 },
 ];
 
-function routingSliderHtml(def, params, modeOwned) {
+function routingSliderHtml(def, params, modeOwned, mode = null) {
   const value = params[def.key] ?? def.default;
   const managed = modeOwned.includes(def.key);
+  // 4-layer-only knobs (e.g. pour severance) are hidden in two-layer
+  // mode; elsewhere they carry an amber 4L badge (see .param-4l).
+  const fourL = def.fourLayerOnly === true && mode !== "two-layer";
   const desc = ROUTING_PARAM_DESCS[def.key] || def.label;
-  const tip = managed ? `Managed by mode — ${desc}` : desc;
+  const tip = (fourL ? "4-layer only — " : "") + (managed ? `Managed by mode — ${desc}` : desc);
   return `
-      <div class="param" title="${tip}">
-        <span title="${tip}">${def.label}${managed ? " (mode)" : ""}</span>
+      <div class="param${fourL ? " param-4l" : ""}" title="${tip}">
+        <span title="${tip}">${def.label}${fourL ? ' <span class="mode4l-badge">4L</span>' : ""}${managed ? " (mode)" : ""}</span>
         <div class="row">
           <input type="range" data-key="${def.key}" min="${def.min}" max="${def.max}" step="${def.step}" value="${value}" ${managed ? "disabled" : ""}>
           <input type="number" data-key="${def.key}" min="${def.min}" max="${def.max}" step="${def.step}" value="${value}" ${managed ? "disabled" : ""}>
@@ -132,11 +117,15 @@ function syncRoutingGrid(grid) {
     });
   });
 }
-// Render routing params sliders (main + Advanced grids)
-function renderRoutingParams(params, modeOwned = [], modePreset = {}) {
+// Render routing params sliders (main + Advanced grids). `mode` is the
+// board mode name ("two-layer"/"four-layer"/null when no board): 4-layer-only
+// knobs are hidden in two-layer mode and amber-badged elsewhere.
+function renderRoutingParams(params, modeOwned = [], modePreset = {}, mode = null) {
   const grid = el("routing-params-grid");
   const advGrid = el("routing-advanced-params-grid");
   if (!grid) return;
+  const visibleMainDefs = ROUTING_PARAM_DEFS.filter(
+    def => !(def.fourLayerOnly === true && mode === "two-layer"));
 
   // Option flags share one full-width row below the sliders (not one
   // grid cell per checkbox) to save vertical space.
@@ -197,12 +186,12 @@ function renderRoutingParams(params, modeOwned = [], modePreset = {}) {
     </div>
   `;
 
-  grid.innerHTML = ROUTING_PARAM_DEFS.map(def => routingSliderHtml(def, params, modeOwned)).join("") + debugHtml;
+  grid.innerHTML = visibleMainDefs.map(def => routingSliderHtml(def, params, modeOwned, mode)).join("") + debugHtml;
   syncRoutingGrid(grid);
 
   if (advGrid) {
     advGrid.innerHTML =
-      ROUTING_ADVANCED_PARAM_DEFS.map(def => routingSliderHtml(def, params, modeOwned)).join("") + advFlagsHtml;
+      ROUTING_ADVANCED_PARAM_DEFS.map(def => routingSliderHtml(def, params, modeOwned, mode)).join("") + advFlagsHtml;
     syncRoutingGrid(advGrid);
   }
 }
@@ -679,7 +668,132 @@ async function routeAllNets() {
   }
 }
 
+// Refine: re-route the selected nets under several shuffled orders, keep
+// the best by (nets routed, then wire + via cost). One background job;
+// the server restores prior copper unless a candidate strictly wins.
+async function startRefineJob(nets, params) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const res = await fetch("/api/routing/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ net_names: nets, params, refine: true }),
+    });
+    if (res.status === 409 && attempt === 0) {
+      await new Promise(r => setTimeout(r, 5000));
+      continue;
+    }
+    if (!res.ok) {
+      const msg = await res.text();
+      const err = new Error(msg);
+      err.status = res.status;
+      throw err;
+    }
+    const data = await res.json();
+    if (!data.job_id) throw new Error("server did not return a job id");
+    return data.job_id;
+  }
+  throw new Error("another routing job is running");
+}
+
+function formatRefineSummary(r) {
+  const cands = r.candidates || [];
+  const candTxt = cands.map(c => c.seed === -1
+    ? `kept:${c.nets_routed}r`
+    : `s${c.seed}:${c.nets_routed}r/${c.score}mm`).join(" ");
+  return `best of ${cands.length} (seed ${r.winner_seed}): ` +
+    `v${r.version} — ${r.tracks_added} tracks` +
+    (r.arcs_added ? `, ${r.arcs_added} arcs` : "") + `, ${r.vias_added} vias, ` +
+    `${r.nets_routed} routed, ${r.nets_failed} failed ` +
+    `(expansions ${fmtExpansions(r.expansions)}) [${candTxt}]`;
+}
+
+async function refineSelectedNets() {
+  if (selectedNets.size === 0) return;
+  const diag = routeDiag;
+  const cancelBtn = el("route-cancel-btn");
+  const progress = el("route-progress");
+  if (!diag || !progress) return;
+
+  const nets = Array.from(selectedNets);
+  await saveRoutingParams();
+  const params = readRoutingParams();
+  const t0 = performance.now();
+  const elapsed = () => `${Math.round((performance.now() - t0) / 1000)}s`;
+  const deadline = t0 + ROUTE_JOB_CAP_S * 1000;
+
+  setRouteBusy(true);
+  progress.hidden = false;
+  progress.value = 0;
+  if (cancelBtn) cancelBtn.hidden = false;
+  routeCancelRequested = false;
+  partialCopperData = [];
+  renderPartialCopperOverlay();
+
+  let jobId = null;
+  try {
+    jobId = await startRefineJob(nets, params);
+    routeCurrentJobId = jobId;
+    for (;;) {
+      if (routeCancelRequested) {
+        await cancelRoutingJob(jobId);
+        break;
+      }
+      const job = await apiJson(jobUrl(jobId));
+      const p = job.progress || {};
+      const candTxt = p.candidates > 0 ? `candidate ${p.candidate}/${p.candidates} · ` : "";
+      const pairTxt = p.pairs_total > 0 ? `pair ${Math.min(p.pairs_total, p.pairs_done + 1)}/${p.pairs_total}` : "starting";
+      diag.textContent = `refine ${candTxt}${pairTxt} · ${elapsed()}`;
+      if (p.candidates > 0) progress.value = Math.min(0.99, (p.candidate || 1) / p.candidates);
+      if (job.state === "done") {
+        routeCurrentJobId = null;
+        const r = job.result;
+        if (!r) throw new Error("empty job result");
+        if (r.version) {
+          lastVersion = r.version;
+          await fetchAndInjectSVG(r.version);
+        }
+        await fetchNets();
+        renderPartialCopperOverlay();
+        diag.textContent = formatRefineSummary(r) + ` (${elapsed()})`;
+        diag.title = diag.textContent;
+        // Advance the base seed past the tried range so the next Refine
+        // explores fresh orders instead of replaying these.
+        const tried = (r.candidates || []).filter(c => c.seed >= 0).length;
+        if (tried > 0) {
+          const nextSeed = Number(params.refine_seed || 0) + tried;
+          for (const id of ["routing-params-grid", "routing-advanced-params-grid"]) {
+            const g = el(id);
+            if (!g) continue;
+            const num = g.querySelector('input[type="number"][data-key="refine_seed"]');
+            const range = g.querySelector('input[type="range"][data-key="refine_seed"]');
+            if (num) num.value = nextSeed;
+            if (range) range.value = Math.min(Number(range.max), nextSeed);
+          }
+        }
+        if (undoBtn) undoBtn.disabled = false;
+        break;
+      }
+      if (job.state === "failed") throw new Error(job.error || "refine job failed");
+      if (performance.now() > deadline) {
+        await cancelRoutingJob(jobId);
+        diag.textContent = `refine hit ${ROUTE_JOB_CAP_S / 60}min cap — kept current copper`;
+        break;
+      }
+      await new Promise(r => setTimeout(r, ROUTE_JOB_POLL_MS));
+    }
+  } catch (err) {
+    routeCurrentJobId = null;
+    diag.textContent = `refine failed: ${err.message}`;
+  } finally {
+    setRouteBusy(false);
+    if (cancelBtn) cancelBtn.hidden = true;
+    progress.hidden = true;
+    updateNetSelectionUI();
+  }
+}
+
 // Event listeners for routing panel
 on("route-selected-btn", "click", routeSelectedNets);
 on("route-all-btn", "click", routeAllNets);
 on("rip-selected-btn", "click", ripSelectedNets);
+on("refine-btn", "click", refineSelectedNets);

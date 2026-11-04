@@ -113,6 +113,13 @@ def build_occupancy_grid(
     # 6. Edge cuts -> edge keepout zone (using actual Edge.Cuts lines)
     _mark_edge_keepout(cost_grid, grid, model, keepout_mm=0.5)
 
+    # 6b. Hard outside-board block: cells outside every board polygon are
+    # impassable, so copper can never hug the outline from the outside
+    # (e.g. tube111 C2TubeOut ran left/below the region-2 edge at +40/cell
+    # because EDGE_KEEPOUT is only a toll). The 2 mm grid margin stays for
+    # halo math, but those cells are now BLOCKED.
+    _mark_outside_board_blocked(cost_grid, grid, model)
+
     # 7. Keepout zones -> blocked on their layers (unless tracks allowed)
     for kz in getattr(model, "keepout_zones", ()):
         _mark_keepout(cost_grid, grid, kz)
@@ -851,6 +858,52 @@ def _mark_edge_keepout(cost_grid: np.ndarray, grid, model, keepout_mm: float = 0
         )
         cost_grid[layer_idx, :, -keepout_cells:] = np.maximum(
             cost_grid[layer_idx, :, -keepout_cells:], EDGE_KEEPOUT
+        )
+
+
+def inside_board_mask(grid, model) -> "np.ndarray | None":
+    """Bool (H, W) mask of cells inside any board polygon (None = no outline).
+
+    Union over ``model.board_regions`` polygons; rectangular bbox fallback
+    per region when the polygon is degenerate. Callers treat None as
+    unconstrained (single-board legacy path with no Edge.Cuts).
+    """
+    import numpy as _np
+
+    regions = getattr(model, "board_regions", ())
+    if not regions:
+        return None
+    H, W = grid.height_cells, grid.width_cells
+    inside = _np.zeros((H, W), dtype=bool)
+    for region in regions:
+        poly = getattr(region, "polygon", ())
+        if poly and len(poly) >= 3:
+            pts = [
+                (row, col)
+                for (col, row) in (board_to_grid(grid, p.x_mm, p.y_mm) for p in poly)
+            ]
+            tmp = _np.zeros((H, W), dtype=_np.uint8)
+            _fill_polygon(tmp, pts, 1)
+            inside |= tmp.astype(bool)
+        else:
+            try:
+                min_x, max_x, min_y, max_y = region.bbox
+            except Exception:
+                continue
+            c0, r0 = board_to_grid(grid, min_x, min_y)
+            c1, r1 = board_to_grid(grid, max_x, max_y)
+            inside[max(0, r0):r1 + 1, max(0, c0):c1 + 1] = True
+    return inside
+
+
+def _mark_outside_board_blocked(cost_grid: np.ndarray, grid, model) -> None:
+    """Stamp BLOCKED on every routing layer outside all board polygons."""
+    inside = inside_board_mask(grid, model)
+    if inside is None or bool(inside.any()) is False:
+        return
+    for layer_idx in range(cost_grid.shape[0]):
+        cost_grid[layer_idx][~inside] = np.maximum(
+            cost_grid[layer_idx][~inside], BLOCKED
         )
 
 

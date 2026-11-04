@@ -1849,7 +1849,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, b"params must be an object", "text/plain")
                 return
             try:
-                params = RoutingParams.from_dict(req)
+                # Partial-update merge (same as placement): overlay incoming
+                # keys onto the saved routing params so API-only knobs
+                # (hidden UI sliders, script-tuned budgets) survive a POST
+                # that only carries visible inputs.
+                merged = load_routing_params().to_dict()
+                merged.update(req)
+                params = RoutingParams.from_dict(merged)
             except (ValueError, TypeError) as exc:
                 self._send(400, f"bad routing params: {exc}".encode(), "text/plain")
                 return
@@ -1908,6 +1914,7 @@ class Handler(BaseHTTPRequestHandler):
                     "state": "queued",
                     "net_names": clean_names,
                     "params_dict": params_dict,
+                    "refine": bool(req.get("refine", False)),
                     "mode": mode_info["mode"],
                     "mode_warning": mode_info["warning"],
                     "cancel_requested": False,

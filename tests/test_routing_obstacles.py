@@ -274,13 +274,29 @@ class TestZoneMarking:
 
     def test_zone_marking_keeps_thin_strips_thin(self, grid, minimal_model):
         """Regression: minimal's full-width keepout strips must not become
-        full-height blocked bars (board_to_grid returns (col, row))."""
+        full-height blocked bars (board_to_grid returns (col, row)).
+
+        Columns outside the board outline are hard-blocked by design
+        (outside copper is impassable), so only inside-board columns are
+        checked here.
+        """
+        from kicad_autorouter.routing.obstacles import inside_board_mask
+
         cost_grid = build_occupancy_grid(minimal_model, grid, default_clearance_mm=0.2)
         H, W = cost_grid.shape[1], cost_grid.shape[2]
+        inside = inside_board_mask(grid, minimal_model)
         for layer_idx in range(cost_grid.shape[0]):
-            full_height_cols = np.where(
-                (cost_grid[layer_idx] >= BLOCKED).sum(axis=0) >= H - 2
-            )[0]
+            blocked = cost_grid[layer_idx] >= BLOCKED
+            if inside is not None:
+                # Only columns with inside-board cells can fail this test;
+                # margin columns outside the outline are fully blocked.
+                full_height_cols = [
+                    c for c in range(W)
+                    if inside[:, c].any()
+                    and (blocked[:, c] & inside[:, c]).sum() >= inside[:, c].sum() - 2
+                ]
+            else:
+                full_height_cols = np.where(blocked.sum(axis=0) >= H - 2)[0]
             assert len(full_height_cols) == 0
 
 

@@ -68,7 +68,7 @@ def test_inner_track_ignored_through_via_blocks():
     grid = create_grid_from_model(model, resolution_mm=0.5, margin_mm=2.0)
     base = build_occupancy_grid(model, grid)
     inner_track = Track(
-        start=Point(60.0, 150.0), end=Point(70.0, 150.0),
+        start=Point(60.0, 100.0), end=Point(70.0, 100.0),
         width_mm=0.25, layer="In1.Cu", net_name="SIG",
     )
     with_inner = build_occupancy_grid(replace(model, tracks=model.tracks + (inner_track,)), grid)
@@ -77,7 +77,7 @@ def test_inner_track_ignored_through_via_blocks():
     with_outer = build_occupancy_grid(replace(model, tracks=model.tracks + (outer_track,)), grid)
     assert (with_outer != base).any()
     # Inner-only blind via: no outer blockage. Through via: blocks F/B.
-    blind = Via(position=Point(65.0, 152.0), size_mm=0.8, drill_mm=0.4,
+    blind = Via(position=Point(65.0, 102.0), size_mm=0.8, drill_mm=0.4,
                 layers=("In1.Cu", "In2.Cu"), net_name="SIG")
     assert (build_occupancy_grid(replace(model, vias=model.vias + (blind,)), grid) == base).all()
     through = replace(blind, layers=("F.Cu", "B.Cu"))

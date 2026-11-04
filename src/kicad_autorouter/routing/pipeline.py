@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import random
 import tempfile
 import time
 from dataclasses import dataclass, field, replace
@@ -65,6 +66,11 @@ class RoutingResult:
     partial_vias: Tuple = ()  # Display-only vias from failed nets' routed chunks (never written back)
     partial_arcs: Tuple = ()  # Display-only arcs ditto (overlay ignores them for now)
     arcs_added: int = 0  # KiCad (arc) bends emitted by the biarc post-pass
+    total_wire_mm: float = 0.0  # Raw route wire: tracks + arc chord-sums
+    # (stitch bridges excluded so candidates compare on routing alone)
+    candidates: Tuple[dict, ...] = ()  # refine_routing order trials
+    winner_seed: int = 0  # Shuffle seed of the winning refine candidate
+    # (-1 = kept pre-refine copper without re-routing)
 
 
 # Re-export: canonical home is routing.params (config + validation +
@@ -514,6 +520,29 @@ def _check_chunk_coverage(
             f"unreachable in routed copper"
         )
     return None
+
+
+def _route_escapes_board(result, grid, model, term_set=None) -> bool:
+    """True when any routed branch cell lies outside every board polygon.
+
+    Raster-consistent with the hard outside-board block: terminal cells
+    are exempt (the region raster can clip a pad cell at the polygon
+    edge, and A* already allows terminals on blocked cells).
+    """
+    from .obstacles import inside_board_mask
+
+    inside = inside_board_mask(grid, model)
+    if inside is None:
+        return False
+    exempt = {(c, r) for c, r, _ in (term_set or ())}
+    for c, r, _ in _branch_cells(result):
+        if (c, r) in exempt:
+            continue
+        if not (0 <= r < inside.shape[0] and 0 <= c < inside.shape[1]):
+            return True
+        if not inside[r, c]:
+            return True
+    return False
 
 
 def _mark_line_blocked(layer_grid: np.ndarray, r1: int, c1: int, r2: int, c2: int, radius: int = 0) -> None:
@@ -992,7 +1021,7 @@ def route_nets(
         )
         multi_region = len(region_groups) > 1
         region_masks: List = []
-        if multi_region and model.board_regions:
+        if model.board_regions:
             try:
                 region_masks = _board_region_masks(model, routing_grid)
             except Exception:
@@ -1075,12 +1104,13 @@ def route_nets(
         # Per-region confinement: copy the base secondary and mark every
         # cell outside the group's region BLOCKED, so A*, corridor
         # guidance, and the smoother can never wander across the
-        # inter-panel gap. Region -1 (outside all polygons) stays
+        # inter-panel gap or outside the board outline (single-region
+        # nets included — e.g. tube111 C2TubeOut hugging the edge from
+        # outside). Region -1 (outside all polygons) stays
         # unconstrained, preserving single-board behavior.
         def _secondary_for_region(region_idx: int, term_set=None):
             if (
-                not multi_region
-                or region_idx < 0
+                region_idx < 0
                 or region_idx >= len(region_masks)
             ):
                 return secondary, secondary >= SECONDARY_BLOCKED
@@ -1147,6 +1177,8 @@ def route_nets(
                     sample_mm=params.arc_sample_mm,
                 )
                 timings["smooth_s"] = timings.get("smooth_s", 0.0) + (time.perf_counter() - t_smooth)
+                if _route_escapes_board(res, routing_grid, model, term_set):
+                    return None, ("open", f"{tag}route left board outline")
                 _apply_route_to_grid(
                     res, cost_grid, routing_grid, corridor,
                     extra_radius=clearance_radius,
@@ -1333,6 +1365,17 @@ def route_nets(
     tracks.extend(plane_tracks)
     vias.extend(plane_vias)
 
+    # Raw route wire for refine scoring (tracks exact, arcs chord-summed;
+    # stitch copper appended later is excluded so candidates compare on
+    # routing alone).
+    total_wire_mm = sum(
+        math.hypot(t.end[0] - t.start[0], t.end[1] - t.start[1]) for t in tracks
+    ) + sum(
+        math.hypot(a.mid[0] - a.start[0], a.mid[1] - a.start[1])
+        + math.hypot(a.end[0] - a.mid[0], a.end[1] - a.mid[1])
+        for a in route_arcs
+    )
+
     # 10b. Automatic GND continuity repair (stitching vias + bridge tracks).
     # Runs on the routed board: newly routed copper joins the island model,
     # so fresh fragments get repaired in the same call. Appends standard
@@ -1442,7 +1485,183 @@ def route_nets(
         partial_vias=tuple(partial_vias),
         partial_arcs=tuple(partial_arcs),
         arcs_added=len(route_arcs),
+        total_wire_mm=total_wire_mm,
     ), cost_grid, routing_grid
+
+
+def refine_routing(
+    model: BoardModel,
+    net_names: List[str],
+    protected_nets: Set[str],
+    cost_grid: Optional[np.ndarray] = None,
+    routing_grid: Optional[RoutingGrid] = None,
+    params: Optional[RoutingParams] = None,
+    original_pcb_tree: Optional = None,
+    extra_power_nets: Collection[str] = (),
+    progress_cb=None,  # fn(net_name, done, total, expansions) — best-effort
+    should_cancel=None,  # fn() -> bool — checked between candidates/nets
+    stage_cb=None,  # fn(candidate_idx, total_candidates) — best-effort
+) -> Tuple[RoutingResult, np.ndarray, RoutingGrid]:
+    """Order-space search: re-route the nets under several seeded orders.
+
+    Sequential routing is order-dependent — an early track can wall off a
+    later net. This tries ``params.refine_seeds`` shuffled orders (plus the
+    pre-refine copper as contestant ``seed -1``) and commits only the best
+    by (nets routed, then ``total_wire_mm + via_cost_mm * vias``). Stitching
+    runs once on the winner, never per candidate, so trials compare raw
+    routing alone. Never makes things worse: ties or total failure keep
+    the incoming copper untouched.
+
+    Refused nets (protected, or over ``max_terminals_per_net``) are left
+    untouched and reported in ``failed_reasons``.
+    """
+    if params is None:
+        params = RoutingParams()
+    seeds = max(1, int(params.refine_seeds))
+    base_seed = int(params.refine_seed)
+    protected = set(protected_nets or ())
+
+    def _report_stage(idx: int, total: int) -> None:
+        if stage_cb is None:
+            return
+        try:
+            stage_cb(idx, total)
+        except Exception:
+            pass
+
+    # Gate: pad counts decide the over-cap refusals.
+    pad_counts: Dict[str, int] = {}
+    for fp in model.footprints:
+        for pad in fp.pads:
+            if pad.net_name:
+                pad_counts[pad.net_name] = pad_counts.get(pad.net_name, 0) + 1
+    eligible: List[str] = []
+    refused: Dict[str, str] = {}
+    for name in net_names:
+        if name in protected:
+            refused[name] = "protected — refine never rips protected copper"
+        elif (
+            params.max_terminals_per_net > 0
+            and pad_counts.get(name, 0) > params.max_terminals_per_net
+        ):
+            refused[name] = (
+                f"{pad_counts.get(name, 0)} pads over max_terminals_per_net "
+                f"({params.max_terminals_per_net}) — shrink the set or raise the cap"
+            )
+        else:
+            eligible.append(name)
+
+    def _current_score() -> Tuple[int, float]:
+        """(nets with copper, wire + via_cost * vias) of pre-refine copper."""
+        en = set(eligible)
+        wire = 0.0
+        nvias = 0
+        have: Set[str] = set()
+        for t in model.tracks:
+            if t.net_name in en:
+                wire += math.hypot(
+                    t.end.x_mm - t.start.x_mm, t.end.y_mm - t.start.y_mm)
+                have.add(t.net_name)
+        for a in model.arcs:
+            if a.net_name in en:
+                wire += math.hypot(
+                    a.mid.x_mm - a.start.x_mm, a.mid.y_mm - a.start.y_mm)
+                wire += math.hypot(
+                    a.end.x_mm - a.mid.x_mm, a.end.y_mm - a.mid.y_mm)
+                have.add(a.net_name)
+        for v in model.vias:
+            if v.net_name in en:
+                nvias += 1
+                have.add(v.net_name)
+        return len(have), wire + params.via_cost_mm * nvias
+
+    cur_routed, cur_score = _current_score()
+    candidates: List[dict] = [{
+        "seed": -1, "order": list(eligible), "nets_routed": cur_routed,
+        "nets_failed": len(eligible) - cur_routed,
+        "score": round(cur_score, 3), "expansions": 0,
+    }]
+    best_seed = -1
+    best_routed, best_score = cur_routed, cur_score
+    best_expansions = 0
+    cancelled = False
+
+    # Trials run stitch/DRC/refill-free (raw copper only); the winner gets
+    # one full pass afterwards. Fresh cost grid per trial — rebuilt from the
+    # same ripped model, so only the order varies.
+    cand_params = replace(
+        params, stitch_gnd_vias=False, run_drc=False, refill_zones=False)
+    for k in range(seeds):
+        if should_cancel is not None and should_cancel():
+            cancelled = True
+            break
+        seed = base_seed + k
+        order = list(eligible)
+        random.Random(seed).shuffle(order)
+        _report_stage(k + 1, seeds)
+        try:
+            res, _, _ = route_nets(
+                model=model,
+                net_names=order,
+                protected_nets=protected,
+                cost_grid=None,
+                routing_grid=routing_grid,
+                params=cand_params,
+                original_pcb_tree=None,
+                extra_power_nets=extra_power_nets,
+                progress_cb=progress_cb,
+                should_cancel=should_cancel,
+            )
+        except RoutingCancelled:
+            cancelled = True
+            break
+        score = (res.total_wire_mm
+                 + params.via_cost_mm * (res.vias_added + res.fanout_vias_added))
+        candidates.append({
+            "seed": seed, "order": order, "nets_routed": res.nets_routed,
+            "nets_failed": res.nets_failed, "score": round(score, 3),
+            "expansions": res.expansions,
+        })
+        best_expansions += res.expansions
+        if (res.nets_routed, -score) > (best_routed, -best_score):
+            best_seed = seed
+            best_routed, best_score = res.nets_routed, score
+
+    if best_seed == -1:
+        # Baseline kept: nothing re-routed, incoming grids/tree untouched.
+        kept = RoutingResult(
+            tracks_added=0, vias_added=0, nets_routed=0,
+            nets_failed=len(refused), drc_clean=True, drc_violations=0,
+            pcb_tree=original_pcb_tree, failed_reasons=dict(refused),
+            candidates=tuple(candidates), winner_seed=-1,
+            cancelled=cancelled, expansions=best_expansions,
+        )
+        return kept, cost_grid, routing_grid
+
+    # Winner replay with full params: deterministic A* reproduces the trial
+    # copper, then stitch/refill/DRC run once on the best layout.
+    winner_order = next(
+        c["order"] for c in candidates if c["seed"] == best_seed)
+    _report_stage(seeds + 1, seeds + 1)
+    final, final_cost, final_grid = route_nets(
+        model=model,
+        net_names=winner_order,
+        protected_nets=protected,
+        cost_grid=None,
+        routing_grid=routing_grid,
+        params=params,
+        original_pcb_tree=original_pcb_tree,
+        extra_power_nets=extra_power_nets,
+        progress_cb=progress_cb,
+        should_cancel=should_cancel,
+    )
+    final.failed_reasons.update(refused)
+    final.nets_failed += len(refused)
+    final.candidates = tuple(candidates)
+    final.winner_seed = best_seed
+    final.expansions += best_expansions
+    final.cancelled = final.cancelled or cancelled
+    return final, final_cost, final_grid
 
 
 def _tht_sites_by_net(model, grid) -> dict:
