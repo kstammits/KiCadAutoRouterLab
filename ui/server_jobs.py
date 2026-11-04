@@ -178,6 +178,12 @@ def _run_routing_job(job_id: str) -> None:
              "net_name": v.net_name}
             for v in result.partial_vias
         ],
+        "partial_arcs": [
+            {"start": list(a.start), "mid": list(a.mid), "end": list(a.end),
+             "width_mm": a.width_mm, "layer": a.layer,
+             "net_name": a.net_name}
+            for a in result.partial_arcs
+        ],
         "version": version,
     }
     if job.get("mode_warning"):

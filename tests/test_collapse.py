@@ -117,7 +117,8 @@ def test_collapse_drops_inner_arcs_annotations_and_top_fills():
     assert "g-inner" not in text
     assert "g-user" in text
     assert "filled_polygon" not in text
-    assert report["tracks_removed"] == 3
+    assert report["tracks_removed"] == 2  # g-inner gr_text + filled_polygon
+    assert report["arcs_removed"] == 1  # a-inner copper arc, counted separately
     # Structural-only guarantee: footprints/pads/netclasses untouched.
     assert "net 0" in text
 

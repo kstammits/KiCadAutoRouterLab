@@ -62,20 +62,12 @@ def _copper_layers_of(model: BoardModel) -> Tuple[str, ...]:
 
     declared = tuple(getattr(model, "copper_layers", ()) or ())
     used = [t.layer for t in model.tracks if t.layer]
-    used += [a.layer for a in getattr(model, "arcs", ()) if a.layer]
+    used += [a.layer for a in model.arcs if a.layer]
     for zone in model.zones:
         used.extend(zone.layers)
     if not declared and not used:
         return ("F.Cu", "B.Cu")
     return _sort_copper_layers(list(declared) + [u for u in used if u not in declared])
-
-
-def _layer_position(layer: str, layers: Tuple[str, ...]) -> int:
-    """Stackup index of a layer (0 = top); unknown layers sort last."""
-    try:
-        return list(layers).index(layer)
-    except ValueError:
-        return len(layers)
 
 
 def _layer_track_style(layer: str, layers: Tuple[str, ...]) -> Tuple[str, str]:
@@ -237,7 +229,7 @@ def _bounds(model: BoardModel) -> Tuple[float, float, float, float]:
     for t in model.tracks:
         add(t.start)
         add(t.end)
-    for a in getattr(model, "arcs", ()):
+    for a in model.arcs:
         add(a.start)
         add(a.mid)
         add(a.end)
@@ -650,7 +642,7 @@ def _tracks_svg(model: BoardModel, colors: Dict[str, str]) -> List[str]:
     layers = _copper_layers_of(model)
     for layer in layers:
         layer_tracks = [t for t in model.tracks if t.layer == layer]
-        layer_arcs = [a for a in getattr(model, "arcs", ()) if a.layer == layer]
+        layer_arcs = [a for a in model.arcs if a.layer == layer]
         if not layer_tracks and not layer_arcs:
             continue
         opacity, dash = _layer_track_style(layer, layers)

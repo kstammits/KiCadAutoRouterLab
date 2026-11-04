@@ -2,10 +2,21 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import List, Tuple
 
 import numpy as np
+
+
+def mm_to_cells(mm: float, res_mm: float, minimum: int = 1) -> int:
+    """Millimeters to grid cells: ``max(minimum, ceil(mm / res))``.
+
+    Non-positive resolutions yield ``minimum`` (degenerate grid guard).
+    """
+    if res_mm <= 0:
+        return minimum
+    return max(minimum, int(math.ceil(mm / res_mm)))
 
 
 @dataclass(frozen=True)

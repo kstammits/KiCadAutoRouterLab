@@ -27,19 +27,7 @@ from typing import List, Optional, Set, Tuple
 
 import numpy as np
 
-try:
-    from numba import njit
-except ImportError:  # pragma: no cover - Numba is a hard dependency.
-
-    def njit(*args, **kwargs):
-        """No-op fallback when Numba is unavailable (slow but correct)."""
-        if len(args) == 1 and callable(args[0]) and not kwargs:
-            return args[0]
-
-        def wrap(fn):
-            return fn
-
-        return wrap
+from ._numba import njit
 
 # Shared dummy for absent optional masks (Numba has no None-arrays: the
 # accompanying ``has_*`` flag short-circuits before any indexing).
@@ -62,7 +50,7 @@ def own_net_soft_mask(model, grid, net_name: str, clearance_mm: float, track_hal
     res_mm = grid.resolution_mm
     if res_mm <= 0:
         return mask
-    from .grid import board_to_grid
+    from .grid import board_to_grid, mm_to_cells
 
     for fp in model.footprints:
         for pad in fp.pads:
@@ -77,7 +65,7 @@ def own_net_soft_mask(model, grid, net_name: str, clearance_mm: float, track_hal
                 pad_half = math.hypot(w, h) / 2.0
             else:
                 pad_half = max(w, h) / 2.0
-            radius = max(1, int(math.ceil((pad_half + clearance_mm + track_half_mm) / res_mm)))
+            radius = mm_to_cells(pad_half + clearance_mm + track_half_mm, res_mm)
             col, row = board_to_grid(grid, pad.position.x_mm, pad.position.y_mm)
             if pad.is_through_hole:
                 layers = tuple(range(n_layers))

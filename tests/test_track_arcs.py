@@ -128,3 +128,63 @@ def test_svg_renders_arc_copper():
     svg = render_board_svg(model)
     assert 'class="track arc-track"' in svg
     assert 'data-net="PWR"' in svg
+
+
+def test_malformed_copper_coordinates_are_skipped():
+    """Non-numeric coordinates skip the node instead of aborting the load."""
+    from kicad_autorouter.board_model.parse import edge_arcs, edge_cuts, tracks, vias
+    bad = SExpr("kicad_pcb", (
+        SExpr("segment", (
+            SExpr("start", ("abc", 0.0)),
+            SExpr("end", (10.0, 0.0)),
+            SExpr("width", (0.25,)),
+            SExpr("layer", ("F.Cu",)),
+            SExpr("net", ("SIG",)),
+        )),
+        SExpr("segment", (
+            SExpr("start", (0.0, 0.0)),
+            SExpr("end", (10.0, 0.0)),
+            SExpr("width", (0.25,)),
+            SExpr("layer", ("F.Cu",)),
+            SExpr("net", ("SIG",)),
+        )),
+        _arc_node((0.0, 0.0), ("bad", 5.0), (20.0, 0.0), 0.5, "F.Cu", "PWR"),
+        SExpr("via", (
+            SExpr("at", (1.0,)),
+            SExpr("net", ("SIG",)),
+        )),
+        SExpr("gr_arc", (
+            SExpr("layer", ("Edge.Cuts",)),
+            SExpr("start", (0.0, 0.0)),
+            SExpr("mid", (None, 5.0)),
+            SExpr("end", (10.0, 0.0)),
+        )),
+    ))
+    assert len(tracks(bad)) == 1  # corrupt segment skipped, good one kept
+    assert arcs(bad) == []  # corrupt arc skipped
+    assert vias(bad) == []  # short (at) skipped
+    assert edge_arcs(bad) == ()  # non-numeric mid skipped
+    assert edge_cuts(bad) == ()  # no edge lines present
+    model = board_model(bad)  # whole-board load survives
+    assert len(model.tracks) == 1 and model.arcs == ()
+
+
+def test_degenerate_arc_is_zero_copper_everywhere():
+    """start==end arcs: no analysis chords, no obstacle stamp (no phantoms)."""
+    from dataclasses import replace
+
+    import numpy as np
+
+    from kicad_autorouter.board_model.query import arc_chords
+    from kicad_autorouter.routing.grid import RoutingGrid
+    from kicad_autorouter.routing.obstacles import BLOCKED, FREE, _mark_arc
+    dead = ArcTrack(start=Point(5.0, 5.0), mid=Point(5.0, 5.0),
+                    end=Point(5.0, 5.0),
+                    width_mm=0.25, layer="F.Cu", net_name="S")
+    model = replace(board_model(_board_tree()), arcs=(dead,))
+    assert arc_chords(model) == []
+    grid = RoutingGrid(resolution_mm=0.1, layers=("F.Cu", "B.Cu"),
+                       origin_mm=(0.0, 0.0), width_cells=100, height_cells=100)
+    cost = np.full((2, 100, 100), FREE, dtype=np.int16)
+    _mark_arc(cost, grid, dead)
+    assert not np.any(cost >= BLOCKED)

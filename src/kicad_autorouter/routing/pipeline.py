@@ -31,7 +31,7 @@ from .smooth import own_net_soft_mask, smooth_branch_pieces, smooth_grid_path, s
 from .router import SECONDARY_BLOCKED
 from .router import RouteResult as NetRouteResult
 from .power import identify_power_nets
-from .grid import RoutingGrid, board_to_grid, grid_to_board
+from .grid import RoutingGrid, board_to_grid, grid_to_board, mm_to_cells
 from .pour import pour_corridors, pour_net_names, severance_cost
 from .stitch import plan_stitches
 from .stitch import _region_masks as _board_region_masks
@@ -257,7 +257,7 @@ def _plan_plane_stubs(
         c0, r0 = board_to_grid(routing_grid, pad.position.x_mm, pad.position.y_mm)
         layer_idx = routing_grid.layer_to_idx.get(fp.layer, 0)
         # Spiral search for a free via cell near the pad (≤2 mm).
-        search_cells = max(1, int(math.ceil(2.0 / res_mm))) if res_mm > 0 else 8
+        search_cells = mm_to_cells(2.0, res_mm) if res_mm > 0 else 8
         found = None
         for rad in range(0, search_cells + 1):
             ring_found = False
@@ -755,7 +755,7 @@ def route_nets(
             # stripped, so scan the tree instead via a net-name pass).
             from ..board_model import _net_name as _tree_net_name
             gnd_nets = set()
-            for node in (*original_pcb_tree.children("segment"), *original_pcb_tree.children("via")):
+            for node in (*original_pcb_tree.children("segment"), *original_pcb_tree.children("arc"), *original_pcb_tree.children("via")):
                 name = _tree_net_name(node.find("net"))
                 if is_ground_net(name):
                     gnd_nets.add(name)
@@ -810,14 +810,14 @@ def route_nets(
     # being re-routed (they were ripped from the model above) while keeping
     # prior unrelated routes (still present as tracks in the model) blocked.
 
-    # Known tradeoff: a rebuilt grid marks pre-existing tracks centerline-only
-    # (obstacles._mark_track has no width inflation), while in-batch
-    # _apply_route_to_grid reserves the full emitted-width corridor. So
-    # one-net-at-a-time callers (the chunked UI) let later nets run slightly
-    # tighter to earlier copper than a single batched call would (measured
-    # ~5% fewer tracks on 3 DCCF nets; routed/failed sets identical).
-    # Making rebuilds width-aware belongs with the GND-continuity work
-    # (docs/roadmap.md).
+    # Known tradeoff: a rebuilt grid marks pre-existing tracks with the
+    # default width + clearance halo (obstacles._mark_track/_mark_arc),
+    # while in-batch _apply_route_to_grid reserves the full emitted-width
+    # corridor (per-net widths). So one-net-at-a-time callers (the chunked
+    # UI) let later nets run slightly tighter to earlier copper than a
+    # single batched call would (measured ~5% fewer tracks on 3 DCCF nets;
+    # routed/failed sets identical). Making rebuilds width-aware belongs
+    # with the GND-continuity work (docs/roadmap.md).
     if cost_grid is None or cost_grid.shape != (
         len(routing_grid.layers), routing_grid.height_cells, routing_grid.width_cells
     ):

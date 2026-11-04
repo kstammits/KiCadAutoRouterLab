@@ -13,6 +13,7 @@ from scipy import ndimage
 
 from ..board_model import is_ground_net
 from .corridor import find_corridor
+from .dsu import DisjointSet
 from .grid import RoutingGrid
 from .obstacles import POUR
 
@@ -376,26 +377,7 @@ class SingleNetRouter:
                     seed_mask[l, r, c] = True
 
         # Component state for Steiner connections
-        class UnionFindLocal:
-            """Disjoint-set with path compression for Kruskal assembly."""
-            def __init__(self, n: int):
-                self.root = list(range(n))
-                self.components = n
-
-            def find(self, x: int) -> int:
-                root = self.root
-                while root[x] != x:
-                    root[x] = root[root[x]]
-                    x = root[x]
-                return x
-
-            def union(self, a: int, b: int) -> bool:
-                ra, rb = self.find(a), self.find(b)
-                if ra == rb:
-                    return False
-                self.root[rb] = ra
-                self.components -= 1
-                return True
+        uf = DisjointSet(range(n + (1 if seed_set else 0)))
 
         # Component root -> set of branch cells (for goal masks)
         component_branches: dict[int, set[Tuple[int, int, int]]] = {}
@@ -412,7 +394,6 @@ class SingleNetRouter:
             return mask
 
         # Custom Kruskal loop with Steiner support
-        uf = UnionFindLocal(n + (1 if seed_set else 0))
         mst_edges: List[Tuple[int, int]] = []
         path_matrix: Dict[Tuple[int, int], List[Tuple[int, int, int]]] = {}
         cost_matrix: Dict[Tuple[int, int], float] = {}
@@ -921,30 +902,6 @@ def ordered_pairs(terminals: List[Tuple[int, int, int]]) -> List[Tuple[int, int]
     return [(i, j) for _, i, j in pairs]
 
 
-class UnionFind:
-    """Disjoint-set with path compression for Kruskal assembly."""
-
-    def __init__(self, n: int):
-        self.root = list(range(n))
-        self.components = n
-
-    def find(self, x: int) -> int:
-        root = self.root
-        while root[x] != x:
-            root[x] = root[root[x]]
-            x = root[x]
-        return x
-
-    def union(self, a: int, b: int) -> bool:
-        """Merge sets; True when this connected two components."""
-        ra, rb = self.find(a), self.find(b)
-        if ra == rb:
-            return False
-        self.root[rb] = ra
-        self.components -= 1
-        return True
-
-
 def kruskal_connect(
     terminals: List[Tuple[int, int, int]],
     search_fn: Callable[[int, int], Tuple[bool, object, float]],
@@ -962,7 +919,7 @@ def kruskal_connect(
     if n < 2:
         return edges, paths, costs, 0, False
 
-    uf = UnionFind(n)
+    uf = DisjointSet(range(n))
     searches = 0
     for i, j in ordered_pairs(terminals):
         if uf.components == 1:

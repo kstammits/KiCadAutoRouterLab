@@ -303,6 +303,32 @@ Key facts that shape the algorithm choice:
 - Secondary objectives that conflict with shortest path: crosstalk, via count, metal
   density, timing.
 
+### Tangent-arc corner fillets (`arc_fillets`, default off)
+
+KiCad copper tracks are `(segment)`/`(via)` only — but `(arc start mid end)` is
+also legal copper, and arcs round sharp corners without the extra length of a
+chamfer. When `RoutingParams.arc_fillets` is on (Route panel → Arc fillets +
+max radius / min leg), each smoothed run is filleted in place:
+
+- **Fitter** (`routing/biarc.py:fit_branch_arcs`): tangent arc per interior
+  corner, tangent length capped at half each leg (adjacent fillets never
+  overlap) and at `arc_max_radius_mm`; legs shorter than `arc_min_leg_mm`
+  keep the sharp joint.
+- **Clearance gate** (`_arc_walkable`): the arc is sampled at
+  `arc_sample_mm` with the same width + clearance halo as tracks; end
+  samples sit on routed copper and are exempt, own-net soft mask applies,
+  foreign-THT hard exclusion has no exemption. Fail the gate → sharp joint.
+- **Ranking**: the pull-string breaks distance/angle ties by admitted fillet
+  radius (`corner_radius` — the turn sharpness only radius sees), so the
+  rounder corner wins ties.
+- **Emission**: fitted chains replace chord emission branch by branch
+  (`routes_to_tracks_vias` → `(arc start/mid/end)` nodes); arcs stamp the
+  occupancy grid (`_mark_arc`), count separately in the nets table (Arcs
+  column) and in ripped-copper reports, and rip with their net on placement
+  moves. Degenerate arcs (start == end) are zero copper everywhere: no
+  analysis chords, no blocker stamp, not emitted.
+- Degenerate input parses are skipped per node (never abort the load).
+
 ### Copper pours in routing
 
 - **Passable-at-toll**: zones (pours) are not blocked; they carry a soft cost

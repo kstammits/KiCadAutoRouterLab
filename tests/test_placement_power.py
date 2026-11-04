@@ -24,9 +24,7 @@ import numpy as np
 import pytest
 
 from kicad_autorouter.board_model import (
-    BoardModel,
     NetClass,
-    Point,
     is_ground_net,
     is_power_net,
     is_power_net_effective,
@@ -43,27 +41,12 @@ from kicad_autorouter.placement import (
 )
 from kicad_autorouter.routing.power import identify_power_nets
 
-from .helpers import make_fp
+from .helpers import make_board, make_fp
 from .test_pour import _board as _pour_board
 
 
-EDGE = 60.0
-
-
 def _board(fps):
-    return BoardModel(
-        footprints=tuple(fps),
-        keepout_zones=(),
-        nets={},
-        by_ref={fp.ref: fp for fp in fps},
-        edge_cuts=(
-            (Point(-EDGE, -EDGE), Point(EDGE, -EDGE)),
-            (Point(EDGE, -EDGE), Point(EDGE, EDGE)),
-            (Point(EDGE, EDGE), Point(-EDGE, EDGE)),
-            (Point(-EDGE, EDGE), Point(-EDGE, -EDGE)),
-        ),
-        footprint_region={fp.uuid: 0 for fp in fps},
-    )
+    return make_board(fps, edge=60.0)
 
 
 def _pads_and_refs(model):

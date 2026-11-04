@@ -43,7 +43,11 @@ Open work only. Completed changes belong in git history, not here.
 ## Routing
 
 - **R9 smoother post-pass**: curve/spline interpolation after the stick
-  phase (B-spline or clothoid) while preserving clearance.
+  phase (B-spline or clothoid) while preserving clearance. Landed subset:
+  tangent-arc corner fillets (`arc_fillets`, default off) — the smoother
+  ranks distance/angle ties by admitted fillet radius and the biarc fitter
+  rounds clearance-gated corners into native `(arc)` copper. Open: curved
+  *paths* (arcs as search primitives, not post-pass), push-aside.
 - **R10 push-and-shove**: move already-routed nets to make room for later
   nets, with finite violation costs and iterative improvement.
 - **R11 criticality ordering**: rank nets by sensitivity/difficulty before

@@ -15,7 +15,7 @@ import math
 import time
 from collections.abc import Collection
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple, TypeVar
 
 import numpy as np
 
@@ -1118,9 +1118,12 @@ def _run_region_simulation(
     )
 
 
-def _merge_region_frames(
-    per_region: List[List[Dict[str, Tuple[float, float, float]]]],
-) -> List[Dict[str, Tuple[float, float, float]]]:
+V = TypeVar("V")
+
+
+def _merge_region_lists(
+    per_region: List[List[Dict[str, V]]],
+) -> List[Dict[str, V]]:
     """Merge per-region frame lists into global frames.
 
     Regions converge independently, so lists differ in length; shorter
@@ -1130,27 +1133,9 @@ def _merge_region_frames(
     if not per_region:
         return []
     n = max(len(f) for f in per_region)
-    merged: List[Dict[str, Tuple[float, float, float]]] = []
+    merged: List[Dict[str, V]] = []
     for k in range(n):
-        frame: Dict[str, Tuple[float, float, float]] = {}
-        for frames in per_region:
-            if not frames:
-                continue
-            frame.update(frames[min(k, len(frames) - 1)])
-        merged.append(frame)
-    return merged
-
-
-def _merge_region_force_frames(
-    per_region: List[List[Dict[str, Dict[str, Tuple[float, float]]]]],
-) -> List[Dict[str, Dict[str, Tuple[float, float]]]]:
-    """Merge per-region force frame lists into global force frames."""
-    if not per_region:
-        return []
-    n = max(len(f) for f in per_region)
-    merged: List[Dict[str, Dict[str, Tuple[float, float]]]] = []
-    for k in range(n):
-        frame: Dict[str, Dict[str, Tuple[float, float]]] = {}
+        frame: Dict[str, V] = {}
         for frames in per_region:
             if not frames:
                 continue
@@ -1286,10 +1271,10 @@ def run_placement(
                 all_dbg["depen"].extend(region_dbg.get("depen", []))
 
         merged_frames = _thin_frames(
-            _merge_region_frames(all_region_frames), max_frames
+            _merge_region_lists(all_region_frames), max_frames
         ) if record_frames else []
         merged_force_frames = _thin_frames(
-            _merge_region_force_frames(all_region_force_frames), max_frames
+            _merge_region_lists(all_region_force_frames), max_frames
         ) if record_frames else []
 
         # Post-hoc legality check on final merged deltas

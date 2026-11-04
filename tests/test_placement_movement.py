@@ -20,12 +20,12 @@ import math
 import pytest
 
 from kicad_autorouter.board_model import (
-    BoardModel,
     BoardRegion,
     apply_deltas,
 )
 from kicad_autorouter.placement import PlacementParams, run_placement
 
+from .helpers import make_board
 from .helpers import make_fp as make_test_fp
 from .helpers import overlap_area
 
@@ -38,14 +38,7 @@ REGION = BoardRegion(uuid="r0", polygon=(), bbox=(-60.0, 60.0, -60.0, 60.0))
 
 
 def _board(*fps):
-    return BoardModel(
-        footprints=tuple(fps),
-        keepout_zones=(),
-        nets={},
-        by_ref={fp.ref: fp for fp in fps},
-        board_regions=(REGION,),
-        footprint_region={fp.uuid: 0 for fp in fps},
-    )
+    return make_board(fps, edge=None, regions=(REGION,))
 
 
 def _overlap_pair(x0=0.0, x1=4.0, y1=0.0):

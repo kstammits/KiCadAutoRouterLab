@@ -76,6 +76,7 @@ function netRowHtml(net, idx) {
       <td class="net-col-pads">${net.pad_count ?? ""}</td>
       <td class="net-col-fps">${net.footprint_count ?? ""}</td>
       <td class="net-col-tracks">${net.track_count ?? ""}</td>
+      <td class="net-col-arcs" title="Copper track arcs (rounded corners)">${net.arc_count ?? ""}</td>
       <td class="net-col-vias">${net.via_count ?? ""}</td>
       <td class="net-col-width">${width}</td>
       <td class="net-col-pwr" data-power-cell="${safeName}" title="${pwrTitle}" style="cursor:pointer;">${pwrCtrl}</td>
@@ -240,14 +241,15 @@ function selectUnroutedNets() {
     return;
   }
   const rows = [...lastNetsByName.values()];
+  const copper = n => (n.track_count || 0) + (n.arc_count || 0) + (n.via_count || 0);
   const unrouted = rows
     .filter(n => (n.pad_count || 0) >= 2
-      && ((n.track_count || 0) + (n.via_count || 0)) === 0
+      && copper(n) === 0
       && !n.protected)
     .map(n => n.name);
   const skippedProtected = rows
     .filter(n => (n.pad_count || 0) >= 2
-      && ((n.track_count || 0) + (n.via_count || 0)) === 0
+      && copper(n) === 0
       && n.protected).length;
   selectedNets = new Set(unrouted);
   syncNetRowSelection();

@@ -72,6 +72,20 @@ class TestRipGate:
 
 @pytest.mark.unit
 class TestStripHelper:
+    def test_removes_gnd_arc_only(self):
+        """A ground net carrying only arcs is still found and evicted."""
+        from kicad_autorouter.board_model import ArcTrack, Point
+        gnd_arc = ArcTrack(start=Point(1.0, 1.0), mid=Point(2.0, 3.0),
+                           end=Point(3.0, 1.0),
+                           width_mm=0.25, layer="F.Cu", net_name="GND")
+        sig_arc = ArcTrack(start=Point(1.0, 11.0), mid=Point(2.0, 13.0),
+                           end=Point(3.0, 11.0),
+                           width_mm=0.25, layer="F.Cu", net_name="K")
+        model = replace(_signal_board(), arcs=(gnd_arc, sig_arc))
+        stripped, removed = _strip_gnd_blockers_from_model(model)
+        assert removed == 2  # the GND via plus the GND arc
+        assert [a.net_name for a in stripped.arcs] == ["K"]
+        assert len(stripped.vias) == 0
     def test_removes_only_gnd(self):
         model = _signal_board()
         stripped, removed = _strip_gnd_blockers_from_model(model)

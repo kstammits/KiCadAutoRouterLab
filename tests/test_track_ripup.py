@@ -1,10 +1,11 @@
 """Tests for track rip-up functionality: commit_placement and rip_up_nets."""
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from kicad_autorouter.board_model import BoardModel, Footprint, Pad, Point, board_model, commit_placement
+from kicad_autorouter.board_model import ArcTrack, BoardModel, Footprint, Pad, Point, board_model, commit_placement
 from kicad_autorouter.board_model import _net_name as _net_name_from_node
 from kicad_autorouter.io import copper_counts_by_net, rip_up_nets
 from kicad_autorouter.sexpr import SExpr, parse_file
@@ -155,8 +156,8 @@ class TestRipUpNetsSexpr:
         )
         tree = SExpr("kicad_pcb", (seg, via))
         assert copper_counts_by_net(tree) == {
-            "GND": {"tracks": 1, "vias": 0},
-            "SIG": {"tracks": 0, "vias": 1},
+            "GND": {"tracks": 1, "arcs": 0, "vias": 0},
+            "SIG": {"tracks": 0, "arcs": 0, "vias": 1},
         }
         result = rip_up_nets(tree, {"GND"}, set())
         assert list(result.children("segment")) == []
@@ -292,3 +293,42 @@ class TestPCBTreeVsBoardModelSync:
                 f"Unprotected net {net_name} track mismatch"
             assert len(board_vias) == len(tree_vias), \
                 f"Unprotected net {net_name} via mismatch"
+
+    def test_placement_rip_removes_arcs_on_affected_nets(self, tube111_model, tube111_tree):
+        """Placement-triggered rip must drop (arc) copper with the net.
+
+        Injects one arc per side: +12V (affected, must rip) and GND
+        (protected, must survive). Both rip paths — commit_placement on
+        the model, rip_up_nets on the tree — must agree, or the next
+        route replays stale arc obstacles / the view shows ghost copper.
+        """
+        fp = next((f for f in tube111_model.footprints if f.ref == "C1"), None)
+        assert fp is not None
+        ripped_arc = ArcTrack(start=(0.0, 0.0), mid=(5.0, 5.0), end=(10.0, 0.0),
+                              width_mm=0.25, layer="F.Cu", net_name="+12V")
+        kept_arc = ArcTrack(start=(0.0, 0.0), mid=(5.0, -5.0), end=(10.0, 0.0),
+                            width_mm=0.25, layer="F.Cu", net_name="GND")
+        model = replace(tube111_model, arcs=tube111_model.arcs + (ripped_arc, kept_arc))
+
+        def arc_node(net):
+            return SExpr("arc", (
+                SExpr("start", (0.0, 0.0)),
+                SExpr("mid", (5.0, 5.0)),
+                SExpr("end", (10.0, 0.0)),
+                SExpr("width", (0.25,)),
+                SExpr("layer", ("F.Cu",)),
+                SExpr("net", (net,)),
+            ))
+        tree = replace(tube111_tree, args=tube111_tree.args + (arc_node("+12V"), arc_node("GND")))
+
+        deltas = {fp.uuid: (1.0, 1.0, 0.0)}
+        protected = {"GND"}
+        board_result = commit_placement(model, deltas, protected)
+        affected = {p.net_name for p in fp.pads if p.net_name}
+        tree_result = rip_up_nets(tree, affected, protected)
+
+        assert [a.net_name for a in board_result.arcs].count("+12V") == 0
+        assert [a.net_name for a in board_result.arcs].count("GND") == 1
+        tree_arcs = [_net_name_from_node(s.find("net")) for s in tree_result.children("arc")]
+        assert "+12V" not in tree_arcs
+        assert tree_arcs.count("GND") == 1

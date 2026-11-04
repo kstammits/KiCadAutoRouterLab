@@ -315,6 +315,10 @@
             <div id="bridge-suggest-list" style="font-size:.72rem;padding:.1rem .7rem;" hidden></div>
           </details>
           <div class="params" id="routing-params-grid"></div>
+          <details class="route-section" id="routing-advanced-details">
+            <summary title="Search budget, via geometry, window retries, and stitch caps hidden from the main panel">Advanced</summary>
+            <div class="params" id="routing-advanced-params-grid"></div>
+          </details>
           <div class="nets-table-container">
             <table id="nets-table">
               <thead>
@@ -323,7 +327,8 @@
                   <th title="Net name — click a row to select it for routing, click copper on the board to highlight its net">Net Name</th>
                   <th style="width:4rem;" title="Pad count: routing endpoints on this net">Pads</th>
                   <th style="width:5rem;" title="Footprints touching this net">Footprints</th>
-                  <th style="width:5rem;" title="Routed track segments already on this net">Tracks</th>
+                  <th style="width:5rem;" title="Straight routed track segments already on this net">Tracks</th>
+                  <th style="width:4rem;" title="Copper track arcs (rounded corners) already on this net">Arcs</th>
                   <th style="width:4rem;" title="Vias already on this net">Vias</th>
                   <th style="width:4.5rem;" title="Resolved track width for this net (explicit → netclass → power → default)">Width</th>
                   <th style="width:4rem;" title="Power status: keyword rules or your ⚡ override (click to toggle)">Pwr</th>

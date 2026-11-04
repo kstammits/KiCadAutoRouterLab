@@ -31,7 +31,7 @@ import numpy as np
 from scipy import ndimage
 
 from ..board_model import BoardModel, Footprint, Pad, copper_tracks, is_ground_net
-from .grid import RoutingGrid, board_to_grid, grid_to_board
+from .grid import RoutingGrid, board_to_grid, grid_to_board, mm_to_cells
 from .obstacles import _fill_polygon, bresenham_cells, stamp_discs
 
 
@@ -49,10 +49,6 @@ class PourIsland:
     has_connection: bool
     zone_uuids: Tuple[str, ...]
     bbox_mm: Tuple[float, float, float, float]
-
-
-def _cells(radius_mm: float, res_mm: float) -> int:
-    return max(0, int(math.ceil(radius_mm / res_mm))) if res_mm > 0 else 0
 
 
 def _pad_layers(fp: Footprint, pad: Pad, grid=None) -> List[int]:
@@ -81,7 +77,7 @@ def _paint_pad(mask: np.ndarray, grid: RoutingGrid, pad: Pad, inflate_mm: float)
     ang = math.radians(pad.angle_deg)
     shape = (pad.shape or "").lower()
     if shape in ("circle",):
-        r = _cells(max(w, h) / 2.0 + inflate_mm, res)
+        r = mm_to_cells(max(w, h) / 2.0 + inflate_mm, res, 0)
         # Compiled batch stamper (same cells as the disc_cells loop).
         stamp_discs(mask, [row], [col], [max(r, 1)], True)
         return
@@ -100,7 +96,7 @@ def _paint_pad(mask: np.ndarray, grid: RoutingGrid, pad: Pad, inflate_mm: float)
     if shape in ("oval",):
         # capsule ends (both discs in one compiled stamp call)
         dx, dy = ca * (w - h) / 2.0, sa * (w - h) / 2.0
-        r_end = _cells(min(w, h) / 2.0 + inflate_mm, res)
+        r_end = mm_to_cells(min(w, h) / 2.0 + inflate_mm, res, 0)
         end_rows, end_cols = [], []
         for ex, ey in (
             (pad.position.x_mm - dx, pad.position.y_mm - dy),
@@ -120,7 +116,7 @@ def _paint_track(
     """OR a capsule (segment + width) into a 2D bool mask."""
     H, W = mask.shape
     res = grid.resolution_mm
-    rad = _cells(half_width_mm, res)
+    rad = mm_to_cells(half_width_mm, res, 0)
     c1, r1 = board_to_grid(grid, x1, y1)
     c2, r2 = board_to_grid(grid, x2, y2)
     if rad <= 0:
@@ -141,7 +137,7 @@ def _paint_disc(mask: np.ndarray, grid: RoutingGrid, x_mm: float, y_mm: float,
     c, r = board_to_grid(grid, x_mm, y_mm)
     # Compiled batch stamper (same cells as the disc_cells loop).
     stamp_discs(mask, [r], [c],
-                [max(_cells(radius_mm, grid.resolution_mm), 1)], True)
+                [mm_to_cells(radius_mm, grid.resolution_mm)], True)
 
 
 def pour_copper_mask(
@@ -172,7 +168,7 @@ def pour_copper_mask(
         _fill_polygon(tmp, pts, 1)
         zone_mask = tmp.astype(bool)
         copper |= zone_mask
-        clr = _cells(zone.clearance_mm, res)
+        clr = mm_to_cells(zone.clearance_mm, res, 0)
 
         # Cut different-net copper, inflated by the zone clearance.
         for fp in model.footprints:
@@ -250,7 +246,7 @@ def pour_copper_mask(
     if min_thick is None:
         min_thick = 0.25
     if min_thick > 0:
-        it = _cells(min_thick / 2.0, res)
+        it = mm_to_cells(min_thick / 2.0, res, 0)
         if it > 0:
             copper = ndimage.binary_opening(copper, iterations=it)
 

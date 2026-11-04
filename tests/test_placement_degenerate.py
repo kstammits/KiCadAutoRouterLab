@@ -32,7 +32,7 @@ from kicad_autorouter.placement.model import (
     _find_decap_pad_indices,
 )
 
-from .helpers import make_fp, make_rect_courtyard
+from .helpers import make_board, make_fp, make_rect_courtyard
 
 
 def _dots_courtyard():
@@ -56,22 +56,7 @@ def _dots_chip():
 
 
 def _board(*fps):
-    edge = 30.0
-    by_ref = {fp.ref: fp for fp in fps}
-    regions = {fp.uuid: 0 for fp in fps}
-    return BoardModel(
-        footprints=fps,
-        keepout_zones=(),
-        nets={},
-        by_ref=by_ref,
-        edge_cuts=(
-            (Point(-edge, -edge), Point(edge, -edge)),
-            (Point(edge, -edge), Point(edge, edge)),
-            (Point(edge, edge), Point(-edge, edge)),
-            (Point(-edge, edge), Point(-edge, -edge)),
-        ),
-        footprint_region=regions,
-    )
+    return make_board(fps)
 
 
 def _pot_fp():

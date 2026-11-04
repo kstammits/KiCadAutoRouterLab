@@ -27,7 +27,8 @@ import numpy as np
 from scipy import ndimage
 
 from ..board_model import BoardModel, Point, Track, Via, copper_tracks
-from .grid import RoutingGrid, board_to_grid, grid_to_board
+from .dsu import DisjointSet
+from .grid import RoutingGrid, board_to_grid, grid_to_board, mm_to_cells
 from .obstacles import _fill_polygon, build_via_block_mask
 from .pour import (
     _pad_layers,
@@ -49,10 +50,6 @@ class StitchPlan:
     # Groups left unjoined (no valid site/path or over budget).
     islands_after: int
     nets: Tuple[str, ...] = ()
-
-
-def _cells(radius_mm: float, res_mm: float) -> int:
-    return max(0, int(math.ceil(radius_mm / res_mm))) if res_mm > 0 else 0
 
 
 def _drill_mask(model: BoardModel, grid: RoutingGrid) -> np.ndarray:
@@ -165,26 +162,6 @@ def _region_masks(model: BoardModel, grid: RoutingGrid) -> List[np.ndarray]:
             mask[max(0, r0):r1 + 1, max(0, c0):c1 + 1] = True
         masks.append(mask)
     return masks
-
-
-class _UnionFind:
-    def __init__(self) -> None:
-        self.parent: Dict[Tuple[str, int], Tuple[str, int]] = {}
-
-    def find(self, x: Tuple[str, int]) -> Tuple[str, int]:
-        parent = self.parent
-        parent.setdefault(x, x)
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-
-    def union(self, a: Tuple[str, int], b: Tuple[str, int]) -> None:
-        ra, rb = self.find(a), self.find(b)
-        if ra != rb:
-            if rb < ra:
-                ra, rb = rb, ra
-            self.parent[rb] = ra
 
 
 def _barrel_cells(model: BoardModel, grid: RoutingGrid, net_name: str) -> np.ndarray:
@@ -416,7 +393,7 @@ def plan_stitches(
     # Hole clearance per board setup constraints: 0.25 mm
     hole_clearance_mm = 0.25
     drill_keepout = ndimage.binary_dilation(
-        drills, iterations=max(1, int(math.ceil((drill_mm / 2.0 + hole_clearance_mm) / res)))
+        drills, iterations=mm_to_cells(drill_mm / 2.0 + hole_clearance_mm, res)
     )
     regions = _region_masks(model, grid)
     keepout_tracks = {layer: _track_keepout_mask(model, grid, layer) for layer in layers}
@@ -427,7 +404,7 @@ def plan_stitches(
     unjoined = 0
     nets_done: List[str] = []
     planned_cells: Set[Tuple[int, int]] = set()
-    min_spacing = max(1, int(math.ceil(size_mm * 2.0 / res)))
+    min_spacing = mm_to_cells(size_mm * 2.0, res)
 
     for net_name in ground_nets_with_zones(model):
         if len(all_vias) >= max_vias and len(all_tracks) >= max_bridges:
@@ -467,7 +444,7 @@ def plan_stitches(
                             via.size_mm / 2.0 + res)
 
         # Union-find islands sharing a barrel cell on both layers.
-        uf = _UnionFind()
+        uf: DisjointSet = DisjointSet()
         nodes = [(layer, i) for layer in layers for i in range(1, counts[layer] + 1)]
         b_rows, b_cols = np.nonzero(_barrel_cells(model, grid, net_name))
         for r, c in zip(b_rows.tolist(), b_cols.tolist()):
@@ -512,7 +489,7 @@ def plan_stitches(
         foreign = {layer: _foreign_mask(model, grid, net_name, layer, 0.0,
                                             include_drills=False)
                    for layer in layers}
-        annulus = max(1, int(math.ceil((size_mm / 2.0 + clearance_mm) / res)))
+        annulus = mm_to_cells(size_mm / 2.0 + clearance_mm, res)
         foreign_dil = {layer: ndimage.binary_dilation(foreign[layer], iterations=annulus)
                        for layer in layers}
         clear = {layer: copper[layer] & ~foreign_dil[layer] for layer in layers}
@@ -520,7 +497,7 @@ def plan_stitches(
         # grown: joined-network copper including placed bridge tracks, so
         # later groups chain through earlier repairs.
         grown = {layer: copper[layer].copy() for layer in layers}
-        bridge_half = max(1, int(math.ceil((bridge_width_mm / 2.0 + clearance_mm) / res)))
+        bridge_half = mm_to_cells(bridge_width_mm / 2.0 + clearance_mm, res)
         bridge_free = {
             layer: ~(ndimage.binary_dilation(foreign[layer], iterations=bridge_half))
             & ~ndimage.binary_dilation(drills, iterations=bridge_half)
@@ -664,7 +641,7 @@ def plan_stitches(
                     sr = sr_win + r0
                     sc = sc_win + c0
                     # Windowed A*: bound the search to start ± (bridge cap + margin)
-                    win = int(max_bridge_mm / res) + _cells(2.0, res) if res > 0 else H
+                    win = int(max_bridge_mm / res) + mm_to_cells(2.0, res, 0) if res > 0 else H
                     ar0, ar1 = max(0, sr - win), min(H, sr + win + 1)
                     ac0, ac1 = max(0, sc - win), min(W, sc + win + 1)
                     sub = _astar_path(free[ar0:ar1, ac0:ac1], (sr - ar0, sc - ac0),

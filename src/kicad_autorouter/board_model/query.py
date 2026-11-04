@@ -46,7 +46,7 @@ def arc_chords(model: BoardModel, n: int = 16) -> List[Track]:
     the true arcs — this helper is analysis-only.
     """
     out: List[Track] = []
-    for arc in getattr(model, "arcs", ()):
+    for arc in model.arcs:
         pts = list(sample_circular_arc(
             (arc.start.x_mm, arc.start.y_mm),
             (arc.mid.x_mm, arc.mid.y_mm),

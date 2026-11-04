@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Collection, List, Tuple
 
@@ -207,61 +208,79 @@ def routes_to_tracks_vias(
 
 
 def _merge_collinear_tracks(tracks: List[Track], tolerance: float = 1e-6) -> List[Track]:
-    """Merge adjacent collinear track segments on same layer/net."""
+    """Merge collinear track segments sharing an endpoint (same layer/net).
+
+    Chains head-to-tail (the normal smoother output) collapse to one
+    segment; any pair sharing an endpoint on the same line merges to the
+    min/max projection, which is exactly their union. Pairs sharing no
+    endpoint never merge, so T-junction spokes are preserved.
+    """
     if not tracks:
         return []
-    
-    # Group by (layer, net_name)
+
+    # Group by (layer, net_name, width).
     groups = {}
     for t in tracks:
         key = (t.layer, t.net_name, t.width_mm)
         groups.setdefault(key, []).append(t)
-    
+
     merged = []
     for key, group in groups.items():
-        # Sort by start position
-        group.sort(key=lambda t: (t.start[0], t.start[1]))
-        
-        current = group[0]
-        for next_t in group[1:]:
-            # Check if collinear and adjacent
-            if _segments_adjacent(current, next_t, tolerance):
-                # Extend current
-                current = Track(
-                    start=current.start,
-                    end=next_t.end,
-                    width_mm=current.width_mm,
-                    layer=current.layer,
-                    net_name=current.net_name,
-                )
+        # Greedy chaining: merge one partner per pass, re-scan until the
+        # chain collapses fully, then emit and start the next chain.
+        rest = list(group)
+        while rest:
+            current = rest.pop(0)
+            for i, other in enumerate(rest):
+                if _shared_endpoint(current, other, tolerance) and _collinear(current, other, tolerance):
+                    current = _union_segment(current, other)
+                    rest.pop(i)
+                    rest.insert(0, current)
+                    break
             else:
                 merged.append(current)
-                current = next_t
-        merged.append(current)
-    
     return merged
 
 
-def _segments_adjacent(t1: Track, t2: Track, tolerance: float) -> bool:
-    """Check if two track segments are collinear and share an endpoint."""
-    # Check same line
-    x1, y1 = t1.start
-    x2, y2 = t1.end
-    x3, y3 = t2.start
-    x4, y4 = t2.end
-    
-    # Check if they share an endpoint
-    same_start = abs(x1 - x3) < tolerance and abs(y1 - y3) < tolerance
-    same_end = abs(x2 - x4) < tolerance and abs(y2 - y4) < tolerance
-    if not (same_start or same_end):
-        return False
-    
-    # Check collinear (cross product = 0)
-    dx1, dy1 = x2 - x1, y2 - y1
-    dx2, dy2 = x4 - x3, y4 - y3
-    
-    cross = dx1 * dy2 - dy1 * dx2
-    return abs(cross) < tolerance
+def _shared_endpoint(t1: Track, t2: Track, tolerance: float) -> bool:
+    """True when the segments share any endpoint (False otherwise)."""
+    for p in (t1.start, t1.end):
+        for q in (t2.start, t2.end):
+            if abs(p[0] - q[0]) < tolerance and abs(p[1] - q[1]) < tolerance:
+                return True
+    return False
+
+
+def _collinear(t1: Track, t2: Track, tolerance: float) -> bool:
+    """True when both segments lie on the same line (normalized cross)."""
+    dx1, dy1 = t1.end[0] - t1.start[0], t1.end[1] - t1.start[1]
+    dx2, dy2 = t2.end[0] - t2.start[0], t2.end[1] - t2.start[1]
+    n1 = math.hypot(dx1, dy1)
+    n2 = math.hypot(dx2, dy2)
+    if n1 == 0.0 or n2 == 0.0:
+        return True  # degenerate point: union with shared endpoint is safe
+    return abs(dx1 * dy2 - dy1 * dx2) / (n1 * n2) < tolerance
+
+
+def _union_segment(t1: Track, t2: Track) -> Track:
+    """Min/max projection of both segments' endpoints onto their line."""
+    dx = t1.end[0] - t1.start[0]
+    dy = t1.end[1] - t1.start[1]
+    n = math.hypot(dx, dy)
+    if n == 0.0:
+        return t2
+    ux, uy = dx / n, dy / n
+    pts = (t1.start, t1.end, t2.start, t2.end)
+    proj = [p[0] * ux + p[1] * uy for p in pts]
+    lo, hi = min(proj), max(proj)
+    base = pts[proj.index(lo)]
+    return Track(
+        start=(base[0], base[1]),
+        end=(base[0] + ux * (hi - lo), base[1] + uy * (hi - lo)),
+        width_mm=t1.width_mm,
+        layer=t1.layer,
+        net_name=t1.net_name,
+    )
 
 
 def apply_routes_to_tree(

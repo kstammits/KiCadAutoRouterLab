@@ -193,8 +193,9 @@ class TestStarBranches:
         _valid_chain(res.path, start, goal)
 
     def test_star_emits_no_teleport_tracks(self):
-        """Track emission follows branches: no single segment may jump
-        between spokes (the old merged polyline drew one)."""
+        """Track emission follows branches: every track is covered by
+        branch cells (merged collinear spokes are one segment now, but
+        no segment may jump between spokes)."""
         import math
 
         grid = _grid(60, 40)
@@ -204,11 +205,58 @@ class TestStarBranches:
         assert res.success
         tracks, _, _ = routes_to_tracks_vias({"S": res}, grid)
         assert tracks  # all spokes produce copper
-        cell = grid.resolution_mm * math.sqrt(2) + 1e-6
+        cells = {(c, r) for b in res.branches for c, r, _ in b}
+
+        def to_cell(x, y):
+            return (int(math.floor(x / grid.resolution_mm - 0.5 + 1e-9)),
+                    int(math.floor(y / grid.resolution_mm - 0.5 + 1e-9)))
+
         for t in tracks:
-            dx = t.end[0] - t.start[0]
-            dy = t.end[1] - t.start[1]
-            assert math.hypot(dx, dy) <= cell
+            length = math.hypot(t.end[0] - t.start[0], t.end[1] - t.start[1])
+            steps = max(1, int(math.ceil(length / grid.resolution_mm * 2.0)))
+            for i in range(steps + 1):
+                x = t.start[0] + (t.end[0] - t.start[0]) * i / steps
+                y = t.start[1] + (t.end[1] - t.start[1]) * i / steps
+                assert to_cell(x, y) in cells, f"teleport sample {(x, y)} not on any branch"
+
+
+class TestMergeCollinear:
+    """Post-emission merge: chains collapse, spokes survive, copper is kept."""
+
+    def _t(self, a, b, layer="F.Cu", net="S"):
+        from kicad_autorouter.routing.output import Track
+        return Track(start=a, end=b, width_mm=0.2, layer=layer, net_name=net)
+
+    def test_chain_merges_head_to_tail(self):
+        from kicad_autorouter.routing.output import _merge_collinear_tracks
+        out = _merge_collinear_tracks(
+            [self._t((0, 0), (1, 0)), self._t((1, 0), (2, 0)), self._t((2, 0), (3, 0))])
+        assert [(t.start, t.end) for t in out] == [((0, 0), (3.0, 0.0))]
+
+    def test_opposite_spokes_unite_not_drop(self):
+        """Shared start, opposite directions: union is one segment, both kept."""
+        from kicad_autorouter.routing.output import _merge_collinear_tracks
+        out = _merge_collinear_tracks([self._t((0, 0), (1, 0)), self._t((0, 0), (-1, 0))])
+        assert len(out) == 1
+        assert (out[0].start, out[0].end) == ((-1, 0), (1.0, 0.0))
+
+    def test_tee_stem_and_disjoint_untouched(self):
+        from kicad_autorouter.routing.output import _merge_collinear_tracks
+        out = _merge_collinear_tracks([self._t((0, 0), (2, 0)), self._t((1, 0), (1, 1))])
+        assert len(out) == 2  # T stem joins mid-segment: no shared endpoint
+        out = _merge_collinear_tracks([self._t((0, 0), (1, 0)), self._t((2, 0), (3, 0))])
+        assert len(out) == 2  # disjoint collinear: no shared endpoint
+        out = _merge_collinear_tracks([self._t((0, 0), (1, 0)), self._t((1, 0), (1, 1))])
+        assert len(out) == 2  # bent joint: not collinear
+
+    def test_duplicates_collapse_and_layers_split(self):
+        from kicad_autorouter.routing.output import _merge_collinear_tracks
+        out = _merge_collinear_tracks([self._t((0, 0), (1, 0)), self._t((0, 0), (1, 0))])
+        assert len(out) == 1
+        out = _merge_collinear_tracks(
+            [self._t((0, 0), (1, 0), layer="F.Cu"),
+             self._t((1, 0), (2, 0), layer="B.Cu")])
+        assert len(out) == 2
 
 
 class TestRipRelay:

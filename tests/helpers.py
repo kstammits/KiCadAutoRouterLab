@@ -12,12 +12,54 @@ origin-centered courtyards use ``courtyard_origin=True``.
 from __future__ import annotations
 
 from dataclasses import replace  # noqa: F401  (re-exported for call sites)
+from pathlib import Path
 from typing import Optional, Sequence, Tuple
 
 from shapely.geometry import LineString
 from shapely.geometry import Point as ShapelyPoint
 
-from kicad_autorouter.board_model import Footprint, Pad, Point, tracks
+from kicad_autorouter.board_model import BoardModel, Footprint, Pad, Point, tracks
+
+FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def post_fixture(base: str, fixture: str = "minimal.kicad_pcb",
+                 name: Optional[str] = None, data: Optional[bytes] = None) -> dict:
+    """POST a fixture board to a live test server; return the parsed JSON."""
+    import json
+    import urllib.request
+
+    body = data if data is not None else (FIXTURES / fixture).read_bytes()
+    req = urllib.request.Request(
+        f"{base}/api/load?name={name or Path(fixture).stem}",
+        data=body, method="POST",
+    )
+    with urllib.request.urlopen(req) as r:
+        return json.load(r)
+
+
+def make_board(fps, edge: Optional[float] = 30.0, regions=None) -> BoardModel:
+    """Square-edge-cuts board; every footprint in region 0.
+
+    ``edge=None`` means no edge cuts; ``regions`` overrides the empty
+    ``board_regions`` (movement-style region tests).
+    """
+    fps = tuple(fps)
+    cuts = (
+        (Point(-edge, -edge), Point(edge, -edge)),
+        (Point(edge, -edge), Point(edge, edge)),
+        (Point(edge, edge), Point(-edge, edge)),
+        (Point(-edge, edge), Point(-edge, -edge)),
+    ) if edge is not None else ()
+    return BoardModel(
+        footprints=fps,
+        keepout_zones=(),
+        nets={},
+        by_ref={fp.ref: fp for fp in fps},
+        edge_cuts=cuts,
+        board_regions=() if regions is None else tuple(regions),
+        footprint_region={fp.uuid: 0 for fp in fps},
+    )
 
 
 def make_smd_pad(

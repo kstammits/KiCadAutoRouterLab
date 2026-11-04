@@ -8,30 +8,15 @@ from dataclasses import replace
 
 import pytest
 
-from kicad_autorouter.board_model import BoardModel, Point, Footprint
+from kicad_autorouter.board_model import Point, Footprint
 from kicad_autorouter.placement import PlacementParams, run_placement
 from kicad_autorouter.placement import _courtyard_outline_polygon, _footprint_courtyard_polygon
 
-from tests.helpers import make_fp, make_rect_courtyard, overlap_area
-
-
-EDGE = 100.0
+from tests.helpers import make_board, make_fp, make_rect_courtyard, overlap_area
 
 
 def _board(fps):
-    return BoardModel(
-        footprints=tuple(fps),
-        keepout_zones=(),
-        nets={},
-        by_ref={fp.ref: fp for fp in fps},
-        edge_cuts=(
-            (Point(-EDGE, -EDGE), Point(EDGE, -EDGE)),
-            (Point(EDGE, -EDGE), Point(EDGE, EDGE)),
-            (Point(EDGE, EDGE), Point(-EDGE, EDGE)),
-            (Point(-EDGE, EDGE), Point(-EDGE, -EDGE)),
-        ),
-        footprint_region={fp.uuid: 0 for fp in fps},
-    )
+    return make_board(fps, edge=100.0)
 
 
 def _base_params(**kw):

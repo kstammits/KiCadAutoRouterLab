@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "ui"))
 
 import server  # noqa: E402
 import server_state  # noqa: E402 (nudge clock lives here; see below)
+from tests.helpers import post_fixture
 
 
 @pytest.fixture(autouse=True)
@@ -58,12 +59,7 @@ def _get(base, path):
 
 
 def _load(base, fixture="ghost_test.kicad_pcb", name="ghost_test"):
-    data = (Path(__file__).parent / "fixtures" / fixture).read_bytes()
-    req = urllib.request.Request(
-        f"{base}/api/load?name={name}", data=data, method="POST"
-    )
-    with urllib.request.urlopen(req) as r:
-        return json.load(r)
+    return post_fixture(base, fixture, name)
 
 
 def _footprints(base):

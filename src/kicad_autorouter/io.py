@@ -88,18 +88,22 @@ def find_footprint_by_uuid(tree: SExpr, uuid: str) -> SExpr:
 
 
 def copper_counts_by_net(tree: SExpr) -> Dict[str, Dict[str, int]]:
-    """Count ``(segment)``/``(via)`` nodes per net name.
+    """Count ``(segment)``/``(arc)``/``(via)`` nodes per net name.
 
-    Returns ``{net_name: {"tracks": n, "vias": m}}``. Nodes without a
-    net assignment are skipped.
+    Returns ``{net_name: {"tracks": n, "arcs": a, "vias": m}}``. Nodes
+    without a net assignment are skipped.
     """
     from collections import defaultdict
 
-    counts: Dict[str, Dict[str, int]] = defaultdict(lambda: {"tracks": 0, "vias": 0})
+    counts: Dict[str, Dict[str, int]] = defaultdict(lambda: {"tracks": 0, "arcs": 0, "vias": 0})
     for seg in tree.children("segment"):
         name = _net_name(seg.find("net"))
         if name:
             counts[name]["tracks"] += 1
+    for arc in tree.children("arc"):
+        name = _net_name(arc.find("net"))
+        if name:
+            counts[name]["arcs"] += 1
     for via in tree.children("via"):
         name = _net_name(via.find("net"))
         if name:
@@ -283,6 +287,7 @@ def collapse_to_two_layer(tree: SExpr) -> Tuple[SExpr, dict]:
     """
     stackup_before = list(copper_layers(tree))
     tracks_removed = 0
+    arcs_removed = 0
     zones_removed = 0
     zones_restricted = 0
     vias_converted = 0
@@ -303,7 +308,10 @@ def collapse_to_two_layer(tree: SExpr) -> Tuple[SExpr, dict]:
             layer_node = child.find("layer")
             layer = str(layer_node.args[0]) if layer_node is not None and layer_node.args else ""
             if layer and layer not in COLLAPSE_OUTERS:
-                tracks_removed += 1
+                if child.head == "arc":
+                    arcs_removed += 1
+                else:
+                    tracks_removed += 1
                 changed = True
                 _note_net(child.find("net"))
                 continue
@@ -397,6 +405,7 @@ def collapse_to_two_layer(tree: SExpr) -> Tuple[SExpr, dict]:
     if not changed:
         report = {
             "tracks_removed": 0,
+            "arcs_removed": 0,
             "zones_removed": 0,
             "zones_restricted": 0,
             "vias_converted": 0,
@@ -410,6 +419,7 @@ def collapse_to_two_layer(tree: SExpr) -> Tuple[SExpr, dict]:
     new_tree = replace(tree, args=tuple(new_children))
     report = {
         "tracks_removed": tracks_removed,
+        "arcs_removed": arcs_removed,
         "zones_removed": zones_removed,
         "zones_restricted": zones_restricted,
         "vias_converted": vias_converted,

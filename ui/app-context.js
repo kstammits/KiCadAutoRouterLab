@@ -87,7 +87,7 @@ async function ctxCollectBundle() {
       diag: (typeof routeDiag !== "undefined" && routeDiag?.textContent) || "",
       est: document.getElementById("route-est")?.textContent || "",
       partials: (typeof partialCopperData !== "undefined" ? partialCopperData : []).map(p => ({
-        net: p.net, tracks: p.tracks || [], vias: p.vias || [],
+        net: p.net, tracks: p.tracks || [], vias: p.vias || [], arcs: p.arcs || [],
       })),
       debug: (typeof costGridDebug !== "undefined" ? costGridDebug : null),
     },
@@ -265,13 +265,13 @@ async function ctxLoadContextFile(file) {
     }
     const partials = bundle.attempt?.partials || [];
     if (typeof partialCopperData !== "undefined") {
-      partialCopperData = partials.map(p => ({ net: p.net, tracks: p.tracks || [], vias: p.vias || [] }));
+      partialCopperData = partials.map(p => ({ net: p.net, tracks: p.tracks || [], vias: p.vias || [], arcs: p.arcs || [] }));
       if (typeof renderPartialCopperOverlay === "function") renderPartialCopperOverlay();
     }
     if (bundle.attempt?.debug && typeof showCostGridDebug === "function") {
       showCostGridDebug(bundle.attempt.debug);
     }
-    const nTracks = partials.reduce((n, p) => n + (p.tracks || []).length, 0);
+    const nTracks = partials.reduce((n, p) => n + (p.tracks || []).length + (p.arcs || []).length, 0);
     const savedDiag = bundle.attempt?.diag || "";
     if (diag) {
       diag.textContent = `[context ${bundle.board.name} v${bundle.board.for_version}` +

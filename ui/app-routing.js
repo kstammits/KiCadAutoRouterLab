@@ -42,34 +42,116 @@ const ROUTING_PARAM_DESCS = {
   grid_resolution_mm: "Routing grid cell size (mm). 0.05 is 4x cells (slower, finer); large boards may reject fine grids.",
   max_terminals_per_net: "Nets with more terminals auto-split into chunks (piecemeal). 0 = no cap.",
   piecemeal_chunk_terminals: "Terminals per chunk when a net exceeds the cap. 0 = disable chunking (over-cap nets fail fast).",
+  arc_max_radius_mm: "Fillet size cap (mm): corners round up to this radius when legs and clearance allow.",
+  arc_min_leg_mm: "Corners with a shorter leg keep the sharp joint (mm). 0 = fillet everything the gate allows.",
+  margin_mm: "Board-edge margin (mm): routing stays this far inside the outline.",
+  via_size_mm: "Via outer diameter (mm).",
+  via_drill_mm: "Via drill diameter (mm).",
+  heuristic_weight: "Weighted-A* greediness: higher is faster but respects penalties less. 1 = exact.",
+  max_attempts_per_net: "Retry attempts per net before giving up.",
+  max_expansions: "A* node-expansion cap per pair-search (fail fast, don't hang).",
+  max_expansions_per_net: "Total expansion budget across one net's pair-searches. 0 = no cap.",
+  window_margin_cells: "Initial A* bbox dilation around a pair (cells).",
+  window_growth: "Search-window expansion factor per retry.",
+  window_retries: "Window attempts per pair (last = full board).",
+  stitch_vias_max: "Cap on auto stitching vias per route call.",
+  stitch_bridges_max: "Cap on auto GND bridge tracks per route call.",
+  stitch_bridge_max_mm: "Longest single GND bridge track (mm).",
+  stitch_bridge_width_mm: "GND bridge track width (mm): thin squeezes through tight pour gaps.",
+  stitch_min_island_mm2: "Unfed pour islands below this area are ignored (never stitched).",
+  arc_sample_mm: "Arc clearance-gate sample spacing (mm): finer is stricter and slower.",
+  fanout_plane_vias_max: "Cap on plane-fanout vias per route call (inner-plane stubs).",
 };
 
-// Render routing params sliders
+// Main-panel sliders: everyday knobs. Everything else (search budget,
+// via geometry, window retries, stitch caps) lives in Advanced.
+const ROUTING_PARAM_DEFS = [
+  { key: "track_width_mm", label: "Track Width (mm)", min: 0.1, max: 2.0, step: 0.05, default: 0.25 },
+  { key: "power_width_mm", label: "Power Width (mm)", min: 0.2, max: 3.0, step: 0.05, default: 0.5 },
+  { key: "clearance_mm", label: "Clearance (mm)", min: 0.1, max: 1.0, step: 0.05, default: 0.2 },
+  { key: "fanout_margin_mm", label: "Push away from foreign pins (mm, steering only)", min: 0, max: 1.0, step: 0.05, default: 0 },
+  { key: "via_cost_mm", label: "Via Cost (mm)", min: 1, max: 20, step: 0.5, default: 5 },
+  { key: "pour_severance_weight", label: "Pour Severance Weight (0 disables)", min: 0, max: 200, step: 5, default: 30 },
+  { key: "grid_resolution_mm", label: "Grid Resolution (mm) — 0.05 is 4x cells, may be rejected on large boards", min: 0.05, max: 0.5, step: 0.05, default: 0.1 },
+  { key: "max_terminals_per_net", label: "Max terminals per net (0 = no cap; larger nets auto-split into chunks)", min: 0, max: 128, step: 1, default: 16 },
+  { key: "piecemeal_chunk_terminals", label: "Piecemeal chunk size (0 = disable chunking; over-cap nets fail fast)", min: 0, max: 32, step: 1, default: 12 },
+  { key: "arc_max_radius_mm", label: "Arc fillet max radius (mm)", min: 0, max: 3.0, step: 0.05, default: 1.0 },
+  { key: "arc_min_leg_mm", label: "Arc fillet min leg (mm, 0 = fillet everything gated)", min: 0, max: 1.0, step: 0.05, default: 0.3 },
+];
+
+const ROUTING_ADVANCED_PARAM_DEFS = [
+  { key: "margin_mm", label: "Edge Margin (mm)", min: 0, max: 10, step: 0.5, default: 2.0 },
+  { key: "via_size_mm", label: "Via Size (mm)", min: 0.4, max: 1.5, step: 0.05, default: 0.8 },
+  { key: "via_drill_mm", label: "Via Drill (mm)", min: 0.2, max: 0.8, step: 0.05, default: 0.4 },
+  { key: "heuristic_weight", label: "Heuristic Weight", min: 1, max: 5, step: 0.1, default: 3.0 },
+  { key: "max_attempts_per_net", label: "Attempts Per Net", min: 1, max: 10, step: 1, default: 3 },
+  { key: "max_expansions", label: "Max Expansions / search", min: 100000, max: 10000000, step: 100000, default: 2000000 },
+  { key: "max_expansions_per_net", label: "Max Expansions / net (0 = no cap)", min: 0, max: 20000000, step: 100000, default: 4000000 },
+  { key: "window_margin_cells", label: "Window Margin (cells)", min: 8, max: 128, step: 4, default: 32 },
+  { key: "window_growth", label: "Window Growth ×", min: 1, max: 4, step: 0.1, default: 2.0 },
+  { key: "window_retries", label: "Window Retries", min: 0, max: 10, step: 1, default: 3 },
+  { key: "stitch_vias_max", label: "Stitch Vias Max", min: 0, max: 128, step: 1, default: 32 },
+  { key: "stitch_bridges_max", label: "Stitch Bridges Max", min: 0, max: 64, step: 1, default: 16 },
+  { key: "stitch_bridge_max_mm", label: "Bridge Max Length (mm)", min: 5, max: 100, step: 1, default: 30 },
+  { key: "stitch_bridge_width_mm", label: "Bridge Width (mm)", min: 0.15, max: 1.0, step: 0.05, default: 0.3 },
+  { key: "stitch_min_island_mm2", label: "Min Island (mm²)", min: 0, max: 20, step: 0.5, default: 2.0 },
+  { key: "arc_sample_mm", label: "Arc Sample Spacing (mm)", min: 0.02, max: 0.2, step: 0.01, default: 0.05 },
+  { key: "fanout_plane_vias_max", label: "Plane Fanout Vias Max", min: 0, max: 64, step: 1, default: 16 },
+];
+
+function routingSliderHtml(def, params, modeOwned) {
+  const value = params[def.key] ?? def.default;
+  const managed = modeOwned.includes(def.key);
+  const desc = ROUTING_PARAM_DESCS[def.key] || def.label;
+  const tip = managed ? `Managed by mode — ${desc}` : desc;
+  return `
+      <div class="param" title="${tip}">
+        <span title="${tip}">${def.label}${managed ? " (mode)" : ""}</span>
+        <div class="row">
+          <input type="range" data-key="${def.key}" min="${def.min}" max="${def.max}" step="${def.step}" value="${value}" ${managed ? "disabled" : ""}>
+          <input type="number" data-key="${def.key}" min="${def.min}" max="${def.max}" step="${def.step}" value="${value}" ${managed ? "disabled" : ""}>
+        </div>
+      </div>
+    `;
+}
+
+function syncRoutingGrid(grid) {
+  if (!grid) return;
+  grid.querySelectorAll('input[type="range"]').forEach(range => {
+    range.addEventListener("input", e => {
+      const key = e.target.dataset.key;
+      const num = grid.querySelector(`input[type="number"][data-key="${key}"]`);
+      if (num) num.value = range.value;
+    });
+  });
+  grid.querySelectorAll('input[type="number"]').forEach(num => {
+    num.addEventListener("input", e => {
+      const key = e.target.dataset.key;
+      const range = grid.querySelector(`input[type="range"][data-key="${key}"]`);
+      if (range) range.value = num.value;
+    });
+  });
+}
+// Render routing params sliders (main + Advanced grids)
 function renderRoutingParams(params, modeOwned = [], modePreset = {}) {
   const grid = el("routing-params-grid");
+  const advGrid = el("routing-advanced-params-grid");
   if (!grid) return;
-  
-  const ROUTING_PARAM_DEFS = [
-    { key: "track_width_mm", label: "Track Width (mm)", min: 0.1, max: 2.0, step: 0.05, default: 0.25 },
-    { key: "power_width_mm", label: "Power Width (mm)", min: 0.2, max: 3.0, step: 0.05, default: 0.5 },
-    { key: "clearance_mm", label: "Clearance (mm)", min: 0.1, max: 1.0, step: 0.05, default: 0.2 },
-    { key: "fanout_margin_mm", label: "Push away from foreign pins (mm, steering only)", min: 0, max: 1.0, step: 0.05, default: 0 },
-    { key: "via_cost_mm", label: "Via Cost (mm)", min: 1, max: 20, step: 0.5, default: 5 },
-    { key: "pour_severance_weight", label: "Pour Severance Weight (0 disables)", min: 0, max: 200, step: 5, default: 30 },
-    { key: "grid_resolution_mm", label: "Grid Resolution (mm) — 0.05 is 4x cells, may be rejected on large boards", min: 0.05, max: 0.5, step: 0.05, default: 0.1 },
-    { key: "max_terminals_per_net", label: "Max terminals per net (0 = no cap; larger nets auto-split into chunks)", min: 0, max: 128, step: 1, default: 16 },
-    { key: "piecemeal_chunk_terminals", label: "Piecemeal chunk size (0 = disable chunking; over-cap nets fail fast)", min: 0, max: 32, step: 1, default: 12 },
-  ];
-  
+
   // Option flags share one full-width row below the sliders (not one
   // grid cell per checkbox) to save vertical space.
   const debugChecked = params.debug ? "checked" : "";
+  const arcsChecked = params.arc_fillets ? "checked" : "";
   const stitchChecked = params.stitch_gnd_vias ?? true ? "checked" : "";
   const stripChecked = params.strip_gnd_blockers ?? true ? "checked" : "";
   const refillChecked = params.refill_zones ? "checked" : "";
+  const corridorChecked = params.corridor ?? true ? "checked" : "";
+  const runDrcChecked = params.run_drc ? "checked" : "";
+  const fanoutChecked = params.fanout_planes ? "checked" : "";
   const stitchManaged = modeOwned.includes("stitch_gnd_vias");
   const stripManaged = modeOwned.includes("strip_gnd_blockers");
   const refillManaged = modeOwned.includes("refill_zones");
+  const fanoutManaged = modeOwned.includes("fanout_planes");
   const layersManaged = modeOwned.includes("allowed_layers");
   const layersVal = modePreset.allowed_layers;
   const layersText = layersManaged
@@ -79,6 +161,9 @@ function renderRoutingParams(params, modeOwned = [], modePreset = {}) {
     <div class="param param-flags" style="grid-column:1/-1;">
       <span>Options</span>
       <div class="row" style="gap:.9rem; flex-wrap:wrap;">
+        <label class="chk" style="margin:0;" title="Round sharp corners into tangent copper arcs (clearance-gated; sharp joints kept where legs are short or copper is near)">
+          <input type="checkbox" data-key="arc_fillets" ${arcsChecked}> Arc fillets
+        </label>
         <label class="chk" style="margin:0;" title="${stitchManaged ? "Managed by mode" : "Auto-repair GND pour continuity after routing (stitching vias + bridge tracks)"}">
           <input type="checkbox" data-key="stitch_gnd_vias" ${stitchChecked} ${stitchManaged ? "disabled" : ""}> GND stitching${stitchManaged ? " (mode)" : ""}
         </label>
@@ -95,52 +180,47 @@ function renderRoutingParams(params, modeOwned = [], modePreset = {}) {
       ${layersManaged ? `<div class="row" style="margin-top:.4rem; font-size:.85em; opacity:.85;" title="Managed by mode — forced at job time">Layers: ${layersText} (mode)</div>` : ""}
     </div>
   `;
-  
-  grid.innerHTML = ROUTING_PARAM_DEFS.map(def => {
-    const value = params[def.key] ?? def.default;
-    const managed = modeOwned.includes(def.key);
-    const desc = ROUTING_PARAM_DESCS[def.key] || def.label;
-    const tip = managed ? `Managed by mode — ${desc}` : desc;
-    return `
-      <div class="param" title="${tip}">
-        <span title="${tip}">${def.label}${managed ? " (mode)" : ""}</span>
-        <div class="row">
-          <input type="range" data-key="${def.key}" min="${def.min}" max="${def.max}" step="${def.step}" value="${value}" ${managed ? "disabled" : ""}>
-          <input type="number" data-key="${def.key}" min="${def.min}" max="${def.max}" step="${def.step}" value="${value}" ${managed ? "disabled" : ""}>
-        </div>
+  const advFlagsHtml = `
+    <div class="param param-flags" style="grid-column:1/-1;">
+      <span>Search options</span>
+      <div class="row" style="gap:.9rem; flex-wrap:wrap;">
+        <label class="chk" style="margin:0;" title="Attempt coarse corridor guidance when the initial window fails (slower but escapes tight spots)">
+          <input type="checkbox" data-key="corridor" ${corridorChecked}> Corridor guidance
+        </label>
+        <label class="chk" style="margin:0;" title="${fanoutManaged ? "Managed by mode" : "Satisfy plane-owned nets with short outer stubs + through-vias tapping the inner plane instead of long outer tracks"}">
+          <input type="checkbox" data-key="fanout_planes" ${fanoutChecked} ${fanoutManaged ? "disabled" : ""}> Plane fanout${fanoutManaged ? " (mode)" : ""}
+        </label>
+        <label class="chk" style="margin:0;" title="Run kicad-cli DRC after routing (slow)">
+          <input type="checkbox" data-key="run_drc" ${runDrcChecked}> Run DRC
+        </label>
       </div>
-    `;
-  }).join("") + debugHtml;
-  
-  // Sync range and number inputs
-  grid.querySelectorAll('input[type="range"]').forEach(range => {
-    range.addEventListener("input", e => {
-      const key = e.target.dataset.key;
-      const num = grid.querySelector(`input[type="number"][data-key="${key}"]`);
-      if (num) num.value = range.value;
-    });
-  });
-  grid.querySelectorAll('input[type="number"]').forEach(num => {
-    num.addEventListener("input", e => {
-      const key = e.target.dataset.key;
-      const range = grid.querySelector(`input[type="range"][data-key="${key}"]`);
-      if (range) range.value = num.value;
-    });
-  });
+    </div>
+  `;
+
+  grid.innerHTML = ROUTING_PARAM_DEFS.map(def => routingSliderHtml(def, params, modeOwned)).join("") + debugHtml;
+  syncRoutingGrid(grid);
+
+  if (advGrid) {
+    advGrid.innerHTML =
+      ROUTING_ADVANCED_PARAM_DEFS.map(def => routingSliderHtml(def, params, modeOwned)).join("") + advFlagsHtml;
+    syncRoutingGrid(advGrid);
+  }
 }
 
-// Read routing params from UI
+// Read routing params from UI (main + Advanced grids)
 function readRoutingParams() {
-  const grid = el("routing-params-grid");
-  if (!grid) return {};
   const params = {};
-  grid.querySelectorAll('input[data-key]').forEach(input => {
-    if (input.type === "checkbox") {
-      params[input.dataset.key] = input.checked;
-    } else {
-      params[input.dataset.key] = input.type === "number" ? Number(input.value) : input.value;
-    }
-  });
+  for (const id of ["routing-params-grid", "routing-advanced-params-grid"]) {
+    const grid = el(id);
+    if (!grid) continue;
+    grid.querySelectorAll('input[data-key]').forEach(input => {
+      if (input.type === "checkbox") {
+        params[input.dataset.key] = input.checked;
+      } else {
+        params[input.dataset.key] = input.type === "number" ? Number(input.value) : input.value;
+      }
+    });
+  }
   return params;
 }
 
@@ -308,6 +388,30 @@ async function pollRoutingJob(jobId, net, idx, total, diag, progress, estNote, t
 // next route run; board refreshes wipe SVG overlays, so this re-renders
 // after the batch's final refresh.
 let partialCopperData = [];
+// Three on-arc points (KiCad semantics) to a polyline: circumcenter +
+// angle interpolation, so no SVG large-arc/sweep flags to get wrong.
+// Degenerate (collinear) input falls back to a straight chord.
+function arcToPolyline(start, mid, end, n) {
+  const segs = Math.max(2, n || 8);
+  const [sx, sy] = start, [mx, my] = mid, [ex, ey] = end;
+  const d = 2 * (sx * (my - ey) + mx * (ey - sy) + ex * (sy - my));
+  if (Math.abs(d) < 1e-9) return [start, end];
+  const s2 = sx * sx + sy * sy, m2 = mx * mx + my * my, e2 = ex * ex + ey * ey;
+  const ux = (s2 * (my - ey) + m2 * (ey - sy) + e2 * (sy - my)) / d;
+  const uy = (s2 * (ex - mx) + m2 * (sx - ex) + e2 * (mx - sx)) / d;
+  const norm = (a) => Math.atan2(Math.sin(a), Math.cos(a));
+  const a0 = Math.atan2(sy - uy, sx - ux);
+  const a1 = Math.atan2(my - uy, mx - ux);
+  const a2 = Math.atan2(ey - uy, ex - ux);
+  const sweep = norm(a1 - a0) + norm(a2 - a1);
+  const r = Math.hypot(sx - ux, sy - uy);
+  const pts = [];
+  for (let i = 0; i <= segs; i++) {
+    const a = a0 + (sweep * i) / segs;
+    pts.push([ux + r * Math.cos(a), uy + r * Math.sin(a)]);
+  }
+  return pts;
+}
 function renderPartialCopperOverlay() {
   makeSvgOverlay("partial-copper-overlay", partialCopperData.length > 0, partialCopperData, g => {
     for (const item of partialCopperData) {
@@ -319,6 +423,17 @@ function renderPartialCopperOverlay() {
         });
         line.appendChild(svgTitle(`${item.net} partial chunk copper (not saved — review only)`));
         g.appendChild(line);
+      }
+      for (const a of item.arcs || []) {
+        const pts = arcToPolyline(a.start, a.mid, a.end, 8)
+          .map(p => p.join(",")).join(" ");
+        const arc = svgEl("polyline", {
+          points: pts,
+          stroke: OVERLAY_COLORS.attention, "stroke-width": Math.max(a.width_mm, 0.15),
+          "stroke-dasharray": "1 0.6", "stroke-opacity": "0.9", fill: "none",
+        });
+        arc.appendChild(svgTitle(`${item.net} partial arc copper (not saved — review only)`));
+        g.appendChild(arc);
       }
       for (const v of item.vias || []) {
         const dot = svgEl("circle", {
@@ -334,7 +449,8 @@ function renderPartialCopperOverlay() {
 }
 
 function formatTotalsDiag({ totals, failures, doneCount, netCount, lastBoardVersion, elapsedTxt, cancelled }) {
-  const kept = `v${lastBoardVersion} — ${totals.tracks} tracks, ${totals.vias} vias, ` +
+  const kept = `v${lastBoardVersion} — ${totals.tracks} tracks` +
+    (totals.arcs ? `, ${totals.arcs} arcs` : "") + `, ${totals.vias} vias, ` +
     `${totals.routed} routed, ${totals.failed} failed (${elapsedTxt} · ${fmtExpansions(totals.expansions)}` +
     (totals.astarS ? `, ${totals.astarS.toFixed(0)}s A*` : "") + `)` +
     (totals.stitchVias || totals.stitchTracks
@@ -382,7 +498,7 @@ async function routeSelectedNets() {
   partialCopperData = [];
   renderPartialCopperOverlay();
 
-  const totals = { tracks: 0, vias: 0, routed: 0, failed: 0, expansions: 0, astarS: 0 };
+  const totals = { tracks: 0, arcs: 0, vias: 0, routed: 0, failed: 0, expansions: 0, astarS: 0 };
   const failures = [];
   let doneCount = 0;
   let lastBoardVersion = lastVersion;
@@ -406,6 +522,7 @@ async function routeSelectedNets() {
       if (timedOut) {
         if (r) {
           totals.tracks += r.tracks_added || 0;
+          totals.arcs += r.arcs_added || 0;
           totals.vias += r.vias_added || 0;
           totals.routed += r.nets_routed || 0;
           if (r.version) {
@@ -420,6 +537,7 @@ async function routeSelectedNets() {
       }
       if (!r) throw new Error("empty job result");
       totals.tracks += r.tracks_added || 0;
+      totals.arcs += r.arcs_added || 0;
       totals.vias += r.vias_added || 0;
       totals.routed += r.nets_routed || 0;
       totals.failed += r.nets_failed || 0;
@@ -433,11 +551,12 @@ async function routeSelectedNets() {
         totals.gndAfter = r.gnd_islands_after;
       }
       for (const [n, reason] of Object.entries(r.failed_reasons || {})) {
-        const pCount = (r.partial_tracks || []).filter(t => t.net_name === n).length;
+        const pCount = (r.partial_tracks || []).filter(t => t.net_name === n).length +
+          (r.partial_arcs || []).filter(t => t.net_name === n).length;
         failures.push(`${n}: ${reason}${pCount ? ` — ${pCount} partial tracks shown in orange (not saved)` : ""}`);
       }
-      if ((r.partial_tracks || []).length || (r.partial_vias || []).length) {
-        partialCopperData.push({ net, tracks: r.partial_tracks || [], vias: r.partial_vias || [] });
+      if ((r.partial_tracks || []).length || (r.partial_vias || []).length || (r.partial_arcs || []).length) {
+        partialCopperData.push({ net, tracks: r.partial_tracks || [], vias: r.partial_vias || [], arcs: r.partial_arcs || [] });
       }
       if (r.debug) showCostGridDebug(r.debug);
       // Incremental refresh: show each net's copper as it lands.
@@ -506,7 +625,9 @@ async function ripSelectedNets() {
     partialCopperData = [];
     renderPartialCopperOverlay();
     const txt = names.length
-      ? names.map(n => `${n}: ${ripped[n].tracks || 0} tracks/${ripped[n].vias || 0} vias`).join(", ")
+      ? names.map(n => `${n}: ${ripped[n].tracks || 0} tracks` +
+          ((ripped[n].arcs || 0) ? `/${ripped[n].arcs} arcs` : "") +
+          `/${ripped[n].vias || 0} vias`).join(", ")
       : "no copper removed";
     const skipped = (r.skipped_protected || []).join(", ");
     diag.textContent = `ripped ${txt}` + (skipped ? `; kept protected ${skipped}` : "") + ` (v${r.version})`;

@@ -97,15 +97,12 @@ def test_fit_respects_min_leg_and_pins():
 
 
 def test_fit_marks_via_transitions():
-    """Layer changes become via markers; runs fillet independently."""
-    cost = np.zeros((2, 40, 40), dtype=np.int16)
-    run = [(5, 5, 0), (15, 5, 0), (15, 5, 1), (15, 15, 1)]
-    pieces = fit_branch_arcs(run, cost[0], None, 100, 1,
+    """The fitter never invents via markers; the seam inserts them at splits."""
+    run = [(5, 5, 0), (15, 5, 0), (15, 15, 0)]
+    pieces = fit_branch_arcs(run, _clear(), None, 100, 1,
                              max_radius_cells=10.0, min_leg_cells=3.0)
-    # Same-layer smoother-style split is the pipeline's job; the fitter
-    # sees one run here, so it must NOT fillet across the via corner.
-    # (Pipeline splits runs before calling; this documents the contract.)
-    assert True  # contract covered by test_pipeline_splits_runs below
+    assert [p[0] for p in pieces] == ["seg", "arc", "seg"]
+    assert not any(p[0] == "via" for p in pieces)  # no layer info in a run
 
 
 def test_pipeline_splits_runs_at_vias():
@@ -205,6 +202,7 @@ def test_greedy_prefers_roomier_corner_on_tie():
     assert ranked == [(0, 12, 0), (10, 10, 0), (18, 16, 0), (18, 4, 0)]
 
 
+@pytest.mark.minimal
 def test_route_nets_end_to_end_with_fillets():
     """Full pipeline with arc_fillets: routes, emits (arc), writes back."""
     from pathlib import Path
@@ -281,3 +279,167 @@ def test_emission_produces_arcs():
     starts = {arc.start, arc.end}
     assert tracks[0].end in starts or tracks[0].start in starts
     assert tracks[1].end in starts or tracks[1].start in starts
+
+
+@pytest.mark.unit
+def test_fit_rejects_foreign_tht_hard_exclusion():
+    """Clearance gate: a foreign-THT hit anywhere on the arc kills it."""
+    import numpy as np
+    # Same L as test_fit_replaces_corner_and_shortens_wire (arc mid ~ (13.5, 6.5)).
+    run = [(5, 5, 0), (15, 5, 0), (15, 15, 0)]
+    blocked = np.zeros((40, 40), dtype=bool)
+    blocked[6, 14] = True  # inside the fillet band, off both legs
+    out = fit_branch_arcs(run, _clear(), None, 100, 1,
+                          blocked_layer=blocked, hard_radius=1,
+                          max_radius_cells=10.0, min_leg_cells=3.0)
+    assert [p[0] for p in out] == ["seg", "seg"]
+    # Control: no exclusion, same geometry fillets.
+    out = fit_branch_arcs(run, _clear(), None, 100, 1,
+                          max_radius_cells=10.0, min_leg_cells=3.0)
+    assert [p[0] for p in out] == ["seg", "arc", "seg"]
+
+
+@pytest.mark.unit
+def test_fit_exempts_own_net_soft_mask():
+    """Own-pad soft mask: cost hits under it don't kill the fillet."""
+    import numpy as np
+    run = [(5, 5, 0), (15, 5, 0), (15, 15, 0)]
+    cost = _clear()
+    soft = np.zeros((40, 40), dtype=bool)
+    # Poison the whole fillet band at penalized (not hard-blocked) level,
+    # then exempt it as own copper. Cells >= blocked_threshold are always
+    # impassable, so the poison must sit in the soft-exemptible band.
+    for rr in range(4, 12):
+        for cc in range(9, 17):
+            cost[rr, cc] = 80
+            soft[rr, cc] = True
+    out = fit_branch_arcs(run, cost, soft, 100, 1,
+                          max_radius_cells=10.0, min_leg_cells=3.0)
+    assert [p[0] for p in out] == ["seg", "arc", "seg"]
+    # Control: same poison without the mask stays sharp.
+    out = fit_branch_arcs(run, cost, None, 100, 1,
+                          max_radius_cells=10.0, min_leg_cells=3.0)
+    assert [p[0] for p in out] == ["seg", "seg"]
+
+
+@pytest.mark.unit
+def test_emitted_fillets_become_obstacles():
+    """A routed arc stamps BLOCKED cells so the next net must avoid it."""
+    from dataclasses import replace
+
+    import numpy as np
+
+    from kicad_autorouter.board_model import ArcTrack, BoardModel, Point
+    from kicad_autorouter.routing.grid import RoutingGrid, board_to_grid
+    from kicad_autorouter.routing.obstacles import BLOCKED, FREE, build_occupancy_grid
+    arc = ArcTrack(start=Point(0.0, 0.0), mid=Point(5.0, 9.0), end=Point(10.0, 4.0),
+                   width_mm=0.25, layer="F.Cu", net_name="A")
+    model = BoardModel(footprints=(), keepout_zones=(), nets={}, by_ref={},
+                       arcs=(arc,))
+    grid = RoutingGrid(resolution_mm=1.0, layers=("F.Cu",),
+                       origin_mm=(-50.0, -50.0), width_cells=100, height_cells=100)
+    cost = build_occupancy_grid(model, grid, default_clearance_mm=0.2)
+    assert cost.shape == (1, 100, 100)
+    c, r = board_to_grid(grid, 5.0, 9.0)
+    assert cost[0, r, c] >= BLOCKED  # apex cell stamped
+    c, r = board_to_grid(grid, 40.0, 40.0)
+    assert cost[0, r, c] == FREE  # far interior untouched
+
+
+@pytest.mark.unit
+def test_fitter_tags_single_layer_callers_must_split():
+    """fit_branch_arcs stamps every piece with run[0]'s layer.
+
+    A run containing a layer change would get a cross-layer arc, so the
+    pipeline must split runs at vias first (see
+    test_pipeline_splits_runs_at_vias for the seam doing it).
+    """
+    run = [(5, 5, 0), (15, 5, 0), (15, 5, 1), (15, 15, 1)]
+    out = fit_branch_arcs(run, _clear(), None, 100, 1,
+                          max_radius_cells=10.0, min_leg_cells=3.0)
+    layers = {p[-1] for p in out}
+    assert layers == {0}  # no per-piece layer awareness here
+
+
+@pytest.mark.unit
+def test_steiner_joint_stays_sharp_multibranch():
+    """A point shared by two branches is pinned: no arc consumes it."""
+    from kicad_autorouter.routing.grid import RoutingGrid
+    from kicad_autorouter.routing.pipeline import _smooth_result
+    from kicad_autorouter.routing.router import RouteResult
+    grid = RoutingGrid(resolution_mm=0.1, layers=("F.Cu", "B.Cu"),
+                       origin_mm=(0.0, 0.0), width_cells=40, height_cells=40)
+    cost = np.zeros((2, 40, 40), dtype=np.int16)
+    cost[0, 10, 10] = 100  # block the (5,5)->(15,15) diagonal: the L survives
+    b1 = ((5, 5, 0), (15, 5, 0), (15, 15, 0))
+    b2 = ((15, 5, 0), (25, 5, 0))  # attaches at b1's interior corner
+    res = RouteResult(path=list(b1) + list(b2), wire_mm=0.0, via_count=0,
+                      cost=0.0, success=True, branches=(b1, b2))
+    out = _smooth_result(res, cost, grid, 2,
+                         fit_arcs=True, max_radius_mm=1.0, min_leg_mm=0.3)
+    # No arc anywhere: the shared joint is pinned, the spoke is straight.
+    assert out.arc_pieces == ()
+    # And the shared joint survives as a sharp waypoint in branch 0.
+    assert (15, 5, 0) in out.branches[0]
+
+
+@pytest.mark.unit
+def test_flag_off_is_byte_identical():
+    """fit_arcs=False matches a direct smooth_grid_path call exactly."""
+    from kicad_autorouter.routing.grid import RoutingGrid
+    from kicad_autorouter.routing.pipeline import _smooth_result
+    from kicad_autorouter.routing.router import RouteResult
+    from kicad_autorouter.routing.smooth import smooth_grid_path, smoothed_wire_mm
+    grid = RoutingGrid(resolution_mm=0.1, layers=("F.Cu", "B.Cu"),
+                       origin_mm=(0.0, 0.0), width_cells=40, height_cells=40)
+    cost = np.zeros((2, 40, 40), dtype=np.int16)
+    branch = [(5, 5, 0), (15, 5, 0), (15, 15, 0)]
+    res = RouteResult(path=list(branch), wire_mm=0.0, via_count=0,
+                      cost=0.0, success=True, branches=(tuple(branch),))
+    out = _smooth_result(res, cost, grid, 2, fit_arcs=False)
+    pinned = {(5, 5), (15, 15)}
+    ref = smooth_grid_path(branch, cost, blocked_threshold=100,
+                           corridor_radius=1, pinned=pinned, hard_radius=1)
+    assert list(out.branches[0]) == ref
+    assert out.wire_mm == pytest.approx(smoothed_wire_mm(ref, 0.1))
+    assert out.arc_pieces == ()
+
+
+@pytest.mark.unit
+def test_partial_arcs_carry_server_payload_shape():
+    """Failed-net partial copper with fillets serializes like the server does."""
+    branch = [(5, 5, 0), (15, 5, 0), (15, 15, 0)]
+    pieces = fit_branch_arcs(branch, _clear(), None, 100, 1,
+                             max_radius_cells=10.0, min_leg_cells=3.0)
+    assert any(p[0] == "arc" for p in pieces)
+    from kicad_autorouter.routing.output import routes_to_tracks_vias
+    from kicad_autorouter.routing.router import RouteResult
+    from kicad_autorouter.routing.grid import RoutingGrid
+    grid = RoutingGrid(resolution_mm=0.1, layers=("F.Cu", "B.Cu"),
+                       origin_mm=(0.0, 0.0), width_cells=40, height_cells=40)
+    res = RouteResult(path=list(branch), wire_mm=0.0, via_count=0,
+                      cost=0.0, success=True, branches=(tuple(branch),),
+                      arc_pieces=(tuple(pieces),))
+    _, _, partial_arcs = routes_to_tracks_vias({"S": res}, grid)
+    assert len(partial_arcs) == 1
+    a = partial_arcs[0]
+    # Keys the server payloads (server.py + server_jobs.py) read.
+    payload = {"start": list(a.start), "mid": list(a.mid), "end": list(a.end),
+               "width_mm": a.width_mm, "layer": a.layer, "net_name": a.net_name}
+    assert payload["net_name"] == "S" and payload["layer"] == "F.Cu"
+    assert all(len(payload[k]) == 2 for k in ("start", "mid", "end"))
+
+
+@pytest.mark.dccf
+def test_dccf_single_net_fillet_no_crash():
+    """One DCCF signal net with fillets on: routes, never raises."""
+    from pathlib import Path
+    from kicad_autorouter.board_model import board_model
+    from kicad_autorouter.routing.pipeline import RoutingParams, route_nets
+    from kicad_autorouter.sexpr import parse_file
+    tree = parse_file(Path("tests/fixtures/DCCF.sved.kicad_pcb"))
+    model = board_model(tree)
+    params = RoutingParams(run_drc=False, arc_fillets=True)
+    result, _, _ = route_nets(model, ["B1"], set(), params=params,
+                              original_pcb_tree=tree)
+    assert result.nets_routed == 1, f"B1 must route: {result.failed_reasons}"

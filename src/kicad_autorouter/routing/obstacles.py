@@ -8,21 +8,8 @@ from typing import List, Tuple
 import numpy as np
 
 from ..board_model import BoardModel, Footprint, Pad, sample_circular_arc
-from .grid import RoutingGrid, board_to_grid
-
-try:
-    from numba import njit
-except ImportError:  # pragma: no cover - Numba is a hard dependency.
-
-    def njit(*args, **kwargs):
-        """No-op fallback when Numba is unavailable (slow but correct)."""
-        if len(args) == 1 and callable(args[0]) and not kwargs:
-            return args[0]
-
-        def wrap(fn):
-            return fn
-
-        return wrap
+from ._numba import njit
+from .grid import RoutingGrid, board_to_grid, mm_to_cells
 
 
 # Cell cost values (int8)
@@ -102,7 +89,7 @@ def build_occupancy_grid(
         _mark_track(cost_grid, grid, track, clearance_mm)
 
     # 3b. Existing track arcs -> sampled polyline, same width+clearance halo.
-    for arc in getattr(model, "arcs", ()):
+    for arc in model.arcs:
         clr = clearance_cells.get(arc.net_name, default_clearance_cells) if arc.net_name else default_clearance_cells
         clearance_mm = clr * grid.resolution_mm
         _mark_arc(cost_grid, grid, arc, clearance_mm)
@@ -182,7 +169,7 @@ def build_fanout_cost(
 
     outer_extra = pad_halo_radius_cells(0.0, clearance_mm, 0.0, res_mm)
     if extra_margin_mm > 0:
-        outer_extra += max(0, int(math.ceil(extra_margin_mm / res_mm)))
+        outer_extra += mm_to_cells(extra_margin_mm, res_mm, 0)
     outer_extra_mm = outer_extra * res_mm
     for fp in model.footprints:
         for pad in fp.pads:
@@ -354,18 +341,15 @@ def pad_halo_radius_cells(
     Single spelling of the ``max(1, ceil(...))`` formula used at pad-stamping
     call sites.
     """
-    if res_mm <= 0:
-        return 1
-    return max(1, int(math.ceil(
-        (pad_half_extent_mm + clearance_mm + track_half_mm) / res_mm
-    )))
+    return mm_to_cells(
+        pad_half_extent_mm + clearance_mm + track_half_mm, res_mm)
 
 
 def drill_radius_cells(drill_mm: float, res_mm: float) -> int:
     """Drill-hole radius in cells (the copper-free free-hop disc)."""
-    if res_mm <= 0 or drill_mm <= 0:
+    if drill_mm <= 0:
         return 1
-    return max(1, int(math.ceil((drill_mm / 2.0) / res_mm)))
+    return mm_to_cells(drill_mm / 2.0, res_mm)
 
 
 def via_halo_radius_cells(
@@ -381,11 +365,8 @@ def via_halo_radius_cells(
     ``clearance_mm + track_half_mm`` beyond the annulus edge. Same
     ``max(1, ceil(...))`` spelling as :func:`pad_halo_radius_cells`.
     """
-    if res_mm <= 0:
-        return 1
-    return max(1, int(math.ceil(
-        (via_size_mm / 2.0 + clearance_mm + track_half_mm) / res_mm
-    )))
+    return mm_to_cells(
+        via_size_mm / 2.0 + clearance_mm + track_half_mm, res_mm)
 
 
 def track_corridor_radius_cells(
@@ -401,9 +382,7 @@ def track_corridor_radius_cells(
     if res_mm <= 0:
         return 1
     half_width = max(1, int(math.ceil(width_mm / res_mm / 2.0)))
-    clearance_radius = max(0, int(math.ceil(
-        (clearance_mm + width_mm / 2.0) / res_mm
-    )))
+    clearance_radius = mm_to_cells(clearance_mm + width_mm / 2.0, res_mm, 0)
     return max(max(0, half_width - 1), clearance_radius)
 
 
@@ -726,7 +705,11 @@ def _mark_arc(cost_grid: np.ndarray, grid, arc, clearance_mm: float = 0.2):
     sampled (16 segments, matching edge-cut arcs) and each chord is
     stamped with the same width + clearance halo as straight tracks.
     Layers outside the routing grid are skipped, like ``_mark_track``.
+    Degenerate arcs (start == end: zero copper, invisible to analysis
+    and emission) stamp nothing — no phantom blockers.
     """
+    if abs(arc.start.x_mm - arc.end.x_mm) < 1e-9 and abs(arc.start.y_mm - arc.end.y_mm) < 1e-9:
+        return
     layer_idx = grid.layer_to_idx.get(arc.layer)
     if layer_idx is None or layer_idx >= cost_grid.shape[0]:
         return

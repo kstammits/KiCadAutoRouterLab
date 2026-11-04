@@ -24,24 +24,8 @@ import pytest
 from kicad_autorouter.board_model import BoardModel, Point, Footprint, apply_deltas
 from kicad_autorouter.placement import PlacementParams, run_placement
 
-from .helpers import make_fp, overlap_area
+from .helpers import make_board, make_fp, overlap_area
 from .test_courtyard_behavior import make_rv1_like
-
-
-def _board(fps, edge=30.0):
-    return BoardModel(
-        footprints=tuple(fps),
-        keepout_zones=(),
-        nets={},
-        by_ref={fp.ref: fp for fp in fps},
-        edge_cuts=(
-            (Point(-edge, -edge), Point(edge, -edge)),
-            (Point(edge, -edge), Point(edge, edge)),
-            (Point(edge, edge), Point(-edge, edge)),
-            (Point(-edge, edge), Point(-edge, -edge)),
-        ),
-        footprint_region={fp.uuid: 0 for fp in fps},
-    )
 
 
 def _deep_pair(x1=1.0):
@@ -51,7 +35,7 @@ def _deep_pair(x1=1.0):
     fb = make_fp("B", "uuid-b", x1, 0.0, ("N3", "N4"),
                  footprint_id="test:R", hw=3.0, hh=2.0,
                  pad_layers=("F.Cu",), pad_shape="circle")
-    return _board([fa, fb])
+    return make_board([fa, fb])
 
 
 @pytest.mark.physics
@@ -104,7 +88,7 @@ def test_settled_tail_reports_converged():
     fb = make_fp("B", "uuid-b", 12.0, 0.0, ("N3", "N4"),
                  footprint_id="test:R", hw=3.0, hh=2.0,
                  pad_layers=("F.Cu",), pad_shape="circle")
-    model = _board([fa, fb])
+    model = make_board([fa, fb])
     prop = run_placement(model, PlacementParams())
     assert prop.stop_reason == "converged"
     assert prop.iterations < 1000  # default budget
@@ -133,7 +117,7 @@ def test_buried_in_rv1_keeps_working_until_out():
     rv1 = make_rv1_like("RV1", "uuid-rv1", 0.0, 0.0, 0.0, locked=True)
     resistor = make_fp("R1", "uuid-r1", 37.0, 1.75, ("NET_A", "NET_B"),
                        hw=1.5, hh=1.0, pad_layers=("F.Cu",))
-    model = _board([rv1, resistor], edge=100.0)
+    model = make_board([rv1, resistor], edge=100.0)
     prop = run_placement(
         model,
         PlacementParams(max_iterations=300, convergence_eps_m=1e-12,
@@ -195,7 +179,7 @@ def test_loaded_contact_settles_despite_per_pad_loads():
                  locked=True)
     # A spans x -1..5, B spans 7..13: 2mm halo gap. Shared N1 pulls A
     # east into B; the wall holds it off at a hover gap.
-    model = _board([fa, fb], edge=100.0)
+    model = make_board([fa, fb], edge=100.0)
     prop = run_placement(
         model,
         PlacementParams(max_iterations=500,
@@ -245,7 +229,7 @@ def test_illegal_overlap_blocks_converged():
     fb = make_fp("B", "uuid-b", 1.0, 0.0, ("N1", "N4"),  # Shared net N1
                  footprint_id="test:R", hw=3.0, hh=2.0,
                  pad_layers=("F.Cu",), pad_shape="circle")
-    model = _board([fa, fb], edge=30.0)
+    model = make_board([fa, fb], edge=30.0)
     assert overlap_area(model, {}) > 10.0
     prop = run_placement(
         model,
@@ -282,7 +266,7 @@ def test_ghost_overlap_is_illegal():
         ),
         locked=False, uuid="uuid-gw", ghost=True, ghost_attractions=(),
     )
-    model = _board([fa, ghost], edge=30.0)
+    model = make_board([fa, ghost], edge=30.0)
     assert overlap_area(model, {}, uuids=("uuid-a", "uuid-gw")) > 10.0
     prop = run_placement(
         model,
@@ -317,7 +301,7 @@ def test_ghost_over_locked_is_exempt():
         ),
         locked=False, uuid="uuid-gw", ghost=True, ghost_attractions=(),
     )
-    model = _board([fb, ghost], edge=30.0)
+    model = make_board([fb, ghost], edge=30.0)
     prop = run_placement(
         model,
         PlacementParams(max_iterations=10, convergence_eps_m=1e-3),
@@ -430,7 +414,7 @@ def test_uuidless_footprint_is_counted_not_silent():
     ghost = make_fp("X", "", 50.0, 0.0, ("N9", "N10"),
                     footprint_id="test:R", hw=3.0, hh=2.0,
                     pad_layers=("F.Cu",), pad_shape="circle")
-    model = _board([fa, ghost])
+    model = make_board([fa, ghost])
     prop = run_placement(model, PlacementParams(max_iterations=10))
     assert prop.skipped_uuidless == 1
     # The uuid-less part never moved and never entered deltas:
