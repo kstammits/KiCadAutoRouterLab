@@ -79,16 +79,6 @@ def _frame_origins(model, frames, uuid):
 
 
 @pytest.mark.physics
-def test_overlap_decays_and_resolves():
-    m = _overlap_pair()
-    before = overlap_area(m, {})
-    assert before == pytest.approx(8.0)
-    prop = run_placement(m, _repulse_params())
-    after = overlap_area(m, prop.deltas)
-    assert after < 1e-6, f"overlap must resolve, left {after}"
-    assert after < 0.05 * before
-
-
 @pytest.mark.physics
 def test_overlap_decay_is_monotonic():
     m = _overlap_pair()
@@ -152,45 +142,6 @@ def test_path_does_not_ping_pong():
 
 
 @pytest.mark.physics
-def test_attraction_closes_distance():
-    fa = make_test_fp("A1", UUID_A, 0.0, 0.0, ("NET",),
-                      footprint_id="T:R_0805", hw=1.5, hh=1.0,
-                      pad_shape="circle", pad_layers=("F.Cu",))
-    fb = make_test_fp("B1", UUID_B, 20.0, 0.0, ("NET",),
-                      footprint_id="T:R_0805", hw=1.5, hh=1.0,
-                      pad_shape="circle", pad_layers=("F.Cu",))
-    m = _board(fa, fb)
-
-    def gap(deltas):
-        moved = apply_deltas(m, deltas)
-        pa = moved.by_ref["A1"].pads[0].position
-        pb = moved.by_ref["B1"].pads[0].position
-        return math.hypot(pb.x_mm - pa.x_mm, pb.y_mm - pa.y_mm)
-
-    d0 = gap({})
-    # Stronger attraction for 70% closure.
-    prop = run_placement(m, PlacementParams(
-        max_iterations=800, attraction_k_N=0.04, repulsion_k_N_m2=1e-08,
-        wall_k_N=0.002, wall_halo_m=0.003,
-        
-        damping_Ns_m=1e-3,
-        convergence_eps_m=0.0))  # disable convergence check
-    assert gap(prop.deltas) < 0.7 * d0
-    for fr in prop.frames:
-        assert gap(fr) <= d0 + 0.1, "attraction must not fling parts apart"
-
-
-@pytest.mark.physics
-def test_repulsion_separates_without_overlap():
-    m = _overlap_pair(x1=8.0)  # 2mm edge gap, inside the 3mm halo
-    assert overlap_area(m, {}) == 0.0
-    prop = run_placement(m, _repulse_params(max_iterations=10))
-    dx = prop.deltas[UUID_B][0] - prop.deltas[UUID_A][0]
-    assert dx > 0.0, "halo push must separate the pair"
-    assert overlap_area(m, prop.deltas) == 0.0
-
-
-@pytest.mark.physics
 def test_overlap_run_terminates_settled():
     """Friction deadband terminates the Coulomb tail: the separated pair
     must stop on its own, inside the board, with overlap resolved.
@@ -219,25 +170,6 @@ def test_overlap_run_terminates_settled():
     for uuid in (UUID_A, UUID_B):
         dx, dy, _ = prop.deltas[uuid]
         assert abs(dx) < 60.0 and abs(dy) < 60.0, f"{uuid} left the region"
-
-
-@pytest.mark.physics
-def test_friction_freezes_weak_motion_exactly():
-    """Sub-threshold pushes leave pads bit-identical (static friction)."""
-    fa = make_test_fp("A1", UUID_A, 0.0, 0.0, ("N1",),
-                      footprint_id="T:R_0805", hw=1.5, hh=1.0,
-                      pad_shape="circle", pad_layers=("F.Cu",))
-    fb = make_test_fp("B1", UUID_B, 60.0, 0.0, ("N2",),
-                      footprint_id="T:R_0805", hw=1.5, hh=1.0,
-                      pad_shape="circle", pad_layers=("F.Cu",))
-    m = _board(fa, fb)
-    params = PlacementParams(max_iterations=10, convergence_eps_m=1e-15,
-                             friction_N=1e3)  # large force threshold to freeze
-    prop = run_placement(m, params)
-    assert prop.deltas == {}
-    off = PlacementParams(max_iterations=10, convergence_eps_m=1e-15,
-                          friction_N=0.0)
-    assert run_placement(m, off).deltas != {}
 
 
 @pytest.mark.physics

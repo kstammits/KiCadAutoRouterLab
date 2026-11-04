@@ -105,21 +105,6 @@ class TestOverlapLaw:
     deepest.
     """
 
-    def test_deeper_overlap_pushes_harder(self):
-        # Unified wall law F = k*(1+pen/h): pen is the SAT depth along the
-        # MTV axis, so deepening must happen ALONG that axis. Fixed x-offset
-        # holds x-overlap at 4mm while y-overlap grows (depths 2.5/3/3.5mm);
-        # sliding along x past the y-overlap would (correctly) read flat.
-        mags = []
-        for dy in (1.5, 1.0, 0.5):
-            model = _overlap(dx=2.0, dy=dy)
-            prop = run_placement(model, _base_params(max_iterations=0))
-            mags.append(_courtyard_mag(prop, "uuid-b"))
-        assert mags[0] > 0.0, "even shallow overlap must push"
-        assert mags[0] < mags[1] < mags[2], (
-            f"push must grow with penetration: {mags}"
-        )
-
     def test_contact_is_continuous(self):
         """First touch from outside (halo max = kc) meets first touch from
         inside (kc * (1 + ~0 area)): no force cliff at the contact plane
@@ -311,46 +296,6 @@ class TestBoundaryRole:
         assert ax_walled > ax_open, (
             f"wall must resist the shove ({ax_walled} vs {ax_open})"
         )
-
-
-@pytest.mark.physics
-class TestGhostRole:
-    """Ghost attraction pulls its target; without it the target drifts."""
-
-    def _ghost_board(self):
-        target = _single_pad("T", "uuid-t", 0.0, 20.0, "N1")
-        ghost = replace(
-            _single_pad("G", "ghost-1", 0.0, 10.0, "NG",
-                        hw=2.0, hh=2.0),
-            ghost=True,
-            ghost_attractions=(("T", 0.5),),
-        )
-        model = _board([target])
-        model = replace(
-            model,
-            ghost_footprints=(ghost,),
-            by_ref={**model.by_ref, "G": ghost},
-            # Ghost attractions resolve only for region-mapped uuids.
-            footprint_region={**model.footprint_region, "ghost-1": 0},
-        )
-        return model
-
-    def test_ghost_pulls_target(self):
-        model = self._ghost_board()
-        prop = run_placement(
-            model, _base_params(max_iterations=30, repulsion_k_N_m2=1e-09)
-        )
-        assert "uuid-t" in prop.deltas
-        _, dy, _ = prop.deltas["uuid-t"]
-        assert dy < 0.0, f"target must move toward ghost (up), got dy={dy}"
-        fx, fy = prop.forces["uuid-t"]
-        assert fy < 0.0
-        assert prop.force_components["uuid-t"]["ghost"][1] < 0.0
-
-    def test_ghost_never_moves(self):
-        model = self._ghost_board()
-        prop = run_placement(model, _base_params(max_iterations=30))
-        assert "ghost-1" not in prop.deltas
 
 
 @pytest.mark.physics

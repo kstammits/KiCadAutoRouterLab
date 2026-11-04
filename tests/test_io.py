@@ -97,6 +97,22 @@ def test_roundtripped_pair_passes_drc_and_erc(cli, tmp_path):
     assert validate_sch(out_sch, cli=cli).ok
 
 
+def test_valid_pcb_passes_drc(cli):
+    report = validate_pcb(PCB_FIXTURE, cli=cli)
+    assert report.loaded
+    assert report.error is None
+    assert report.violations == []
+    assert report.ok
+
+
+def test_valid_sch_passes_erc(cli):
+    report = validate_sch(SCH_FIXTURE, cli=cli)
+    assert report.loaded
+    assert report.error is None
+    assert report.violations == []
+    assert report.ok
+
+
 # ---------------------------------------------------------------------------
 # S-expression layer: parse / serialize round-trips.
 #

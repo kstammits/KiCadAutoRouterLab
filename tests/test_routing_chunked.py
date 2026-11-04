@@ -22,7 +22,7 @@ DCCF_PCB = FIXTURES / "DCCF.sved.kicad_pcb"
 
 
 @pytest.fixture(scope="module")
-def minimal_tree():
+def dccf_tree():
     return parse_file(DCCF_PCB)
 
 
@@ -37,8 +37,10 @@ def _routable_nets(model, limit=3):
     return sorted(small)[:limit]
 
 
-def test_chunked_sequential_matches_batched(minimal_tree):
-    model = board_model(minimal_tree)
+@pytest.mark.slow
+@pytest.mark.dccf
+def test_chunked_sequential_matches_batched(dccf_tree):
+    model = board_model(dccf_tree)
     nets = _routable_nets(model)
     if len(nets) < 2:
         pytest.skip("need >= 2 routable nets")
@@ -47,14 +49,14 @@ def test_chunked_sequential_matches_batched(minimal_tree):
     # Batched: all nets in one call (with a tree so the final board exists
     # for the island comparison below).
     batched, _, _ = route_nets(model, nets, set(), params=params,
-                               original_pcb_tree=minimal_tree)
+                               original_pcb_tree=dccf_tree)
 
     # Chunked: one net per call, model rebuilt from the tree each time —
     # exactly what ui/server.py does between UI chunk requests.
     # Stitching runs per call, so route copper and stitch copper are
     # compared separately: the equivalence tripwire covers routing;
     # stitching is audited via island counts below.
-    tree = minimal_tree
+    tree = dccf_tree
     totals = {"tracks": 0, "vias": 0, "routed": 0, "failed": 0,
               "stitch_tracks": 0, "stitch_vias": 0}
     for net in nets:
@@ -100,15 +102,15 @@ def test_chunked_sequential_matches_batched(minimal_tree):
             final_model, create_grid_from_model(final_model)).values())
         assert final <= initial, f"{tag}: islands {initial} -> {final}"
     """Cancelling after k nets keeps their copper (no rollback by design)."""
-    model = board_model(minimal_tree)
+    model = board_model(dccf_tree)
     nets = _routable_nets(model)
     if len(nets) < 2:
         pytest.skip("need >= 2 routable nets")
     params = RoutingParams(run_drc=False)
 
     # Route only the first net, then "cancel".
-    m = board_model(minimal_tree)
-    res, _, _ = route_nets(m, [nets[0]], set(), params=params, original_pcb_tree=minimal_tree)
+    m = board_model(dccf_tree)
+    res, _, _ = route_nets(m, [nets[0]], set(), params=params, original_pcb_tree=dccf_tree)
     kept_model = board_model(res.pcb_tree)
 
     # The kept net's copper survived; the unrouted net has no tracks.

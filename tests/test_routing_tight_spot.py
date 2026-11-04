@@ -31,7 +31,7 @@ from kicad_autorouter.routing.pipeline import (
     resolve_track_width,
     via_halo_radius_cells,
 )
-from kicad_autorouter.routing.router import CostMap, RipUpManager, SingleNetRouter
+from kicad_autorouter.routing.router import CostMap, SingleNetRouter
 
 from .helpers import make_fp as make_test_fp
 
@@ -282,21 +282,10 @@ class TestTightSpotRipupPolicy:
     Only GND-family copper may be evicted (cheaply rebuilt via pours +
     stitching); signal/power copper is never ripped. A future push/shove
     or priority-rip feature changes this gate — these tests frame it.
+
+    Predicate coverage lives in test_gnd_strip.py; the VIN routing tests
+    below exercise the policy end to end.
     """
-
-    def test_gnd_victims_rippable_by_anyone(self):
-        ripup = RipUpManager()
-        assert ripup.can_rip("VIN", "GND")
-        assert ripup.can_rip("VIN", "GND_PWR")
-
-    def test_signal_victims_not_rippable(self):
-        ripup = RipUpManager()
-        assert not ripup.can_rip("VIN", "Net-(R1-Pad1)")
-        assert not ripup.can_rip("VIN", "SDA")
-
-    def test_same_net_reroute_allowed(self):
-        ripup = RipUpManager()
-        assert ripup.can_rip("VIN", "VIN")
 
 
 class TestViaHaloAndForeignExclusion:

@@ -212,6 +212,11 @@ Counts are additive (`fanout_vias_added` / `fanout_tracks_added`).
   Remaining: subnet selection by footprint set / region rect (chunk
   composition is row-major only), and true partial re-route (today a
   failed net keeps nothing; splice keeps only full passes).
+- **Sharpen the chunked-equivalence test**: `test_routing_chunked.py:40`
+  costs ~28s per run for a loose 0.8–1.2x ratio assertion with a
+  documented chunked-vs-batched divergence. Marked `slow` + `dccf` so the
+  fast loop skips it; sharpen to a tight bound or replace with a smaller
+  deterministic equivalence probe so it can return to the default suite.
 
 ## Documentation
 

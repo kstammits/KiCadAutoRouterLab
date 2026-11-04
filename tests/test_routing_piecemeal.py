@@ -138,6 +138,7 @@ def test_forced_chunks_on_small_net():
 
 
 @pytest.mark.dccf
+@pytest.mark.slow
 def test_dccf_gnd_failure_keeps_partial_copper():
     """A failed chunked net keeps its routed chunks as display-only copper.
 

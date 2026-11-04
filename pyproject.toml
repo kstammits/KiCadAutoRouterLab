@@ -37,4 +37,5 @@ markers = [
     "regression: Bug fix verification",
     "minimal: Uses minimal.kicad_pcb fixture (4 footprints, no nets)",
     "dccf: Uses DCCF.sved.kicad_pcb fixture (97 footprints, 59 nets)",
+    "slow: Tests taking >5s (excluded from the fast loop)",
 ]

@@ -107,40 +107,31 @@ SEPARATION_PARAMS = PlacementParams(
 
 
 @pytest.mark.regression
-def test_movable_separates_from_earlier_immobile():
-    """The R11/RV2 case: immobile part sorts FIRST, only B movable."""
-    model = _board(first_locked=True)
+@pytest.mark.parametrize("first_locked,dx_sign", [(True, 1.0), (False, -1.0)])
+def test_movable_separates_from_immobile(first_locked, dx_sign):
+    """Movable part separates from the locked one regardless of sort order.
+
+    The R11/RV2 case (first_locked=True: immobile part sorts FIRST, only B
+    movable) and its mirror (first_locked=False: the arm that always worked,
+    j > i) share one setup; only the push direction flips with geometry.
+    """
+    model = _board(first_locked=first_locked)
     before = _overlap_area(model, {})
     assert before > 10.0
     prop = run_placement(model, SEPARATION_PARAMS, movable_uuids={"uuid-b"})
     assert _overlap_area(model, prop.deltas) < before  # pushed apart
-    # Locked part untouched, movable part pushed east away from it.
+    # Locked part untouched, movable part pushed away along x.
     assert "uuid-a" not in prop.deltas
     dx, _, _ = prop.deltas["uuid-b"]
-    assert dx > 0.0
+    assert dx * dx_sign > 0.0
     comps = prop.force_components["uuid-b"]
     assert set(comps) == {"repulsion", "attraction", "ghost", "courtyard", "tangential"}
     # NOTE (SI MTV contact): the 5mm-x / 4mm-y overlap escapes along the
     # minimum axis (±y), so the wall force reads on cy, not cx. Old code
-    # reported exactly 0.0 on every axis (pair never evaluated).
+    # reported exactly 0.0 on every axis (pair never evaluated). The cy sign
+    # follows the dx sign (escape side mirrors the push side).
     _, cy = comps["courtyard"]
-    assert cy > 1e-3
-
-
-@pytest.mark.regression
-def test_movable_separates_from_later_immobile():
-    """The arm that always worked (j > i): guard the refactor kept it."""
-    model = _board(first_locked=False)
-    before = _overlap_area(model, {})
-    assert before > 10.0
-    prop = run_placement(model, SEPARATION_PARAMS, movable_uuids={"uuid-b"})
-    assert _overlap_area(model, prop.deltas) < before
-    assert "uuid-a" not in prop.deltas
-    dx, _, _ = prop.deltas["uuid-b"]
-    assert dx < 0.0  # B sits west of A here: pushed west
-    # NOTE (SI MTV contact): escape axis is ±y here; see above.
-    _, cy = prop.force_components["uuid-b"]["courtyard"]
-    assert cy < -1e-3  # a broken pair loop reads exactly 0.0
+    assert cy * dx_sign > 1e-3
 
 
 @pytest.mark.regression

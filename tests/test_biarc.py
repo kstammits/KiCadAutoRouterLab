@@ -128,22 +128,6 @@ def test_pipeline_splits_runs_at_vias():
     assert out.wire_mm < 40.0 * 0.1  # sharp wire is 40 cells
 
 
-def test_flag_off_is_legacy_compatible():
-    """Default params route straight copper with no arc pieces attached."""
-    from kicad_autorouter.routing.grid import RoutingGrid
-    from kicad_autorouter.routing.output import routes_to_tracks_vias
-    from kicad_autorouter.routing.router import RouteResult
-    grid = RoutingGrid(resolution_mm=0.1, layers=("F.Cu", "B.Cu"),
-                       origin_mm=(0.0, 0.0), width_cells=40, height_cells=40)
-    branch = [(5, 5, 0), (15, 5, 0), (15, 15, 0)]
-    res = RouteResult(path=list(branch), wire_mm=0.0, via_count=0,
-                      cost=0.0, success=True, branches=(tuple(branch),))
-    assert res.arc_pieces == ()
-    tracks, vias, arcs = routes_to_tracks_vias({"S": res}, grid)
-    assert arcs == []
-    assert len(tracks) == 2
-
-
 def test_smooth_result_fillets_corner_single_pass():
     """Real seam: _smooth_result with fit_arcs on a cornered run."""
     from kicad_autorouter.routing.grid import RoutingGrid

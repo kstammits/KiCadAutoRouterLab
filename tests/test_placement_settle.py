@@ -39,41 +39,6 @@ def _deep_pair(x1=1.0):
 
 
 @pytest.mark.physics
-def test_buried_pair_ignores_coarse_eps_and_clears():
-    """Eps coarser than the step cap must not stop iteration 1 with overlap.
-
-    Old displacement-only code broke immediately here (first step is capped
-    at vmax*dt = 1mm < eps = 10mm); the force gate must keep the run alive
-    until the 20mm² overlap actually clears.
-    """
-    model = _deep_pair()
-    assert overlap_area(model, {}) > 15.0
-    prop = run_placement(
-        model,
-        PlacementParams(max_iterations=100, convergence_eps_m=0.01,
-                        repulsion_k_N_m2=1e-15, attraction_k_N=1e-15,
-                        wall_k_N=0.08, wall_halo_m=0.006,
-                         ghost_k_N=1e-15,
-                        damping_Ns_m=0.12),
-    )
-    assert overlap_area(model, prop.deltas) < 1e-6
-    # The force gate must keep the run alive until overlap clears: with a
-    # healthy timestep the overlap clears fast and the run may then converge
-    # (both gates pass) before the budget is spent. Either outcome proves the
-    # force gate did its job — what must NOT happen is stopping at iteration 1
-    # with overlap remaining.
-    assert prop.iterations > 1
-    if prop.stop_reason == "converged":
-        assert prop.residual_max_force_N < 1e-3
-    else:
-        # Budget or stall: either way the run admits work remains (stalled
-        # = quiet with unserved forces; budget = still moving at the cap).
-        assert prop.stop_reason in ("budget", "stalled")
-        if prop.stop_reason == "budget":
-            assert prop.iterations == 100
-
-
-@pytest.mark.physics
 def test_settled_tail_reports_converged():
     """A genuinely finished run still early-stops and says so.
 

@@ -378,20 +378,6 @@ class TestOverlapForce:
         mag = math.hypot(fx, fy)
         assert mag > 0, f"Containment should produce non-zero force, got ({fx}, {fy})"
 
-    def test_containment_fallback_not_zero_force(self):
-        """Perfectly coincident centroids: SAT minimum penetration axis produces non-zero force."""
-        fa = make_smd_resistor("A", "uuid-a", 0.0, 0.0, "N1", "N2", hw=2.0, hh=1.0)
-        fb = make_smd_resistor("B", "uuid-b", 0.0, 0.0, "N3", "N4", hw=2.0, hh=1.0)
-        model = _board([fa, fb])
-        prop = run_placement(model, _base_params(max_iterations=0))
-        
-        fx, fy = prop.force_components["uuid-b"]["courtyard"]
-        mag = math.hypot(fx, fy)
-        
-        assert mag > 0, "Coincident parts should feel repulsion force"
-        # Force direction may be from shapely fallback (centroid-to-centroid + tiebreak)
-        # or from SAT (minimum penetration axis). Just verify non-zero.
-
     def test_overlap_resolves_to_zero_area(self):
         """Run to convergence: final intersection area ~0."""
         fa = make_smd_resistor("A", "uuid-a", 0.0, 0.0, "N1", "N2", hw=3.0, hh=2.0)

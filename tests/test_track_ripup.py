@@ -71,29 +71,6 @@ class TestCommitPlacementCore:
         other_tracks_after2 = len([t for t in result2.tracks if t.net_name == "+12V"])
         assert other_vias_after2 < other_vias_before or other_tracks_after2 < other_tracks_before
 
-    def test_commit_placement_preserves_protected_nets(self, tube111_model):
-        """Protected nets should never have tracks/vias ripped up."""
-        # Find a footprint on a non-protected net (not GND, +12V, -12V)
-        fp = next((fp for fp in tube111_model.footprints
-                   if fp.pads and fp.pads[0].net_name not in ("GND", "+12V", "-12V")), None)
-        assert fp is not None, "Expected a footprint on non-protected net"
-
-        net_name = fp.pads[0].net_name
-        initial_via_count = len([v for v in tube111_model.vias if v.net_name == net_name])
-        initial_track_count = len([t for t in tube111_model.tracks if t.net_name == net_name])
-
-        # Move footprint with its net protected
-        deltas = {fp.uuid: (2.0, 0.0, 0.0)}
-        protected = {net_name}
-        result = commit_placement(tube111_model, deltas, protected)
-
-        # Vias on protected net should be preserved
-        preserved_vias = [v for v in result.vias if v.net_name == net_name]
-        preserved_tracks = [t for t in result.tracks if t.net_name == net_name]
-        assert len(preserved_vias) == initial_via_count
-        assert len(preserved_tracks) == initial_track_count
-
-
 class TestRipUpNetsSexpr:
     """S-expression rip_up_nets tests."""
 

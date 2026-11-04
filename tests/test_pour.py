@@ -166,25 +166,24 @@ class TestFixtureCharacterization:
     unrouted DCCF fragments on pad cutouts alone.
     """
 
-    def test_tube111_island_counts(self):
-        model = board_model(parse_file(FIXTURES / "tube111.kicad_pcb"))
+    @pytest.mark.dccf
+    @pytest.mark.parametrize("fixture,fcu,bcu", [
+        ("tube111.kicad_pcb", 10, 26),
+        ("DCCF.sved.kicad_pcb", 1, 1),
+    ])
+    def test_fixture_island_counts(self, fixture, fcu, bcu):
+        # DCCF note: ab5735a widened the GND zone across both panels and
+        # refilled, so the pour is one fed island per layer (was 54/50
+        # fragments on the old single-panel pour). Re-record with
+        # justification per the class docstring on deliberate change.
+        model = board_model(parse_file(FIXTURES / fixture))
         grid = create_grid_from_model(model)
         out = gnd_islands(model, grid)
-        assert len(out["F.Cu"]) == 10
-        assert len(out["B.Cu"]) == 26
-        # Biggest island per layer is fed; small fragments include dead copper.
+        assert len(out["F.Cu"]) == fcu
+        assert len(out["B.Cu"]) == bcu
         assert out["F.Cu"][0].has_connection
         assert out["B.Cu"][0].has_connection
-        assert any(not isl.has_connection for isl in out["F.Cu"])
-
-    def test_dccf_island_counts(self):
-        # ab5735a widened the GND zone across both panels and refilled, so
-        # the pour is one fed island per layer (was 54/50 fragments on the
-        # old single-panel pour). Re-record with justification per above.
-        model = board_model(parse_file(FIXTURES / "DCCF.sved.kicad_pcb"))
-        grid = create_grid_from_model(model)
-        out = gnd_islands(model, grid)
-        assert len(out["F.Cu"]) == 1
-        assert len(out["B.Cu"]) == 1
-        assert out["F.Cu"][0].has_connection
-        assert out["B.Cu"][0].has_connection
+        if fcu > 1:
+            # Biggest island per layer is fed; small fragments include dead
+            # copper (tube111's 487 tracks carve 6 GND zones into pieces).
+            assert any(not isl.has_connection for isl in out["F.Cu"])
