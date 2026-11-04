@@ -325,16 +325,16 @@
               <thead>
                 <tr>
                   <th style="width:3rem;"><input type="checkbox" id="nets-select-all" title="Select all visible"></th>
-                  <th title="Net name — click a row to select it for routing, click copper on the board to highlight its net">Net Name</th>
-                  <th style="width:4rem;" title="Pad count: routing endpoints on this net">Pads</th>
-                  <th style="width:5rem;" title="Footprints touching this net">Footprints</th>
-                  <th style="width:5rem;" title="Straight routed track segments already on this net">Tracks</th>
-                  <th style="width:4rem;" title="Copper track arcs (rounded corners) already on this net">Arcs</th>
-                  <th style="width:4rem;" title="Vias already on this net">Vias</th>
-                  <th style="width:4.5rem;" title="Resolved track width for this net (explicit → netclass → power → default)">Width</th>
-                  <th style="width:4rem;" title="Power status: keyword rules or your ⚡ override (click to toggle)">Pwr</th>
-                  <th style="width:5rem;" title="Decoupling caps on this net (C*, power+ground)">Decap</th>
-                  <th class="net-col-protect" style="width:4rem;" title="Protected nets are routed first and never ripped up">
+                  <th class="sortable" data-sort="name" title="Net name — click a row to select it for routing, click copper on the board to highlight its net. Click header to sort.">Net Name</th>
+                  <th class="sortable" data-sort="status" style="width:3.5rem;" title="Status: ⚠ failed last run, 🌉 multi-region needs a mated-pair bridge, 🔗 bridged. Click header to sort failures first.">Status</th>
+                  <th class="sortable" data-sort="pads" style="width:4rem;" title="Pad count: routing endpoints on this net (hover for footprint count). Click header to sort.">Pads</th>
+                  <th class="sortable" data-sort="airwire" style="width:5.5rem;" title="Airwire estimate: MST length over pads, mm (unrouted difficulty). Click header to sort.">Air</th>
+                  <th class="sortable" data-sort="cost" style="width:5.5rem;" title="Routed cost: copper + vias × via_cost, mm equivalent (hover for breakdown). Click header to sort.">Cost</th>
+                  <th class="sortable" data-sort="segs" style="width:5rem;" title="Routed segments: straight tracks + arcs (hover for breakdown). Click header to sort.">Segs</th>
+                  <th class="sortable" data-sort="vias" style="width:4rem;" title="Vias already on this net. Click header to sort.">Vias</th>
+                  <th class="sortable" data-sort="width" style="width:4.5rem;" title="Resolved track width for this net (explicit → netclass → power → default). Click header to sort.">Width</th>
+                  <th class="sortable" data-sort="pwr" style="width:4rem;" title="Power status: keyword rules or your ⚡ override (click to toggle)">Pwr</th>
+                  <th class="net-col-protect sortable" data-sort="protect" style="width:4rem;" title="Protected nets are routed first and never ripped up. Click header to sort.">
                     <label class="chk"><input type="checkbox" id="nets-protect-all" title="Protect all visible">🔒</label>
                   </th>
                 </tr>

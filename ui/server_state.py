@@ -87,6 +87,11 @@ class BoardState:
         self.gnd_inlets: list = []
         self.power_inlets: Dict[str, list] = {}
         self.bridges: list = []
+        # Last routing outcome per net (net -> reason), for the nets-table
+        # failure badge. Overwritten by every routing/refine run; cleared
+        # on board load/reset (stale refs must not linger).
+        self.last_failed_reasons: Dict[str, str] = {}
+        self.last_failed_version: Optional[int] = None
         # Board mode switch (two-layer | four-layer): per-board server
         # memory, inferred from the stackup on load, user-overridable.
         # Presets apply as an in-memory overlay (never written to disk).
@@ -129,6 +134,8 @@ class BoardState:
                 self.gnd_inlets = []
                 self.power_inlets = {}
                 self.bridges = []
+                self.last_failed_reasons = {}
+                self.last_failed_version = None
                 # Auto-detect protected nets (power/ground, incl. user-marked power)
                 self.protected_nets.clear()
                 self.power_override_nets.clear()
@@ -444,6 +451,23 @@ class BoardState:
             self.version += 1
             return self.version
 
+    def set_last_failed(self, reasons: dict) -> None:
+        """Record the last routing run's per-net failure reasons.
+
+        Overwrites the previous run (fixed nets drop off). No version
+        bump: derived display state, read alongside /api/nets.
+        """
+        with self._lock:
+            self.last_failed_reasons = {
+                str(k): str(v) for k, v in (reasons or {}).items()
+            }
+            self.last_failed_version = self.version
+
+    def get_last_failed(self) -> tuple:
+        """Return (reasons copy, version stamp) of the last routing run."""
+        with self._lock:
+            return dict(self.last_failed_reasons), self.last_failed_version
+
     def push_undo(self) -> None:
         """Push current state to undo stack (called before mutating).
 
@@ -508,6 +532,8 @@ class BoardState:
                 self.cost_grid = None
                 self.routing_grid = None
                 self.routing_model = None
+                self.last_failed_reasons = {}
+                self.last_failed_version = None
                 # Restore board version and warning from original
                 self.board_version = self.model.version if self.model else ""
                 self.version_warning = self.model.version_warning if self.model else None

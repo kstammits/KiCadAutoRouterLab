@@ -391,6 +391,10 @@ def _handle_run(body):
         STATE.version += 1
         version = STATE.version
 
+    try:
+        STATE.set_last_failed(result.failed_reasons or {})
+    except (AttributeError, TypeError):
+        pass
     payload = _routing_result_payload(result)
     payload["mode_warning"] = mode_info["warning"]
     payload["version"] = version

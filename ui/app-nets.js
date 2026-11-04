@@ -36,6 +36,67 @@ async function fetchNets() {
   }
 }
 
+let netSortKey = null; // name | status | pads | airwire | cost | segs | vias | width | pwr | protect
+let netSortDir = 1; // 1 = asc, -1 = desc
+
+function netStatusRank(net) {
+  if (net.failed_reason) return 0;
+  if (net.needs_bridge) return 1;
+  if (net.multi_region) return 2; // bridged multi-region
+  return 3;
+}
+
+function netNum(v, fallback = -1) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function compareNets(a, b) {
+  if (!netSortKey) return 0;
+  let r = 0;
+  if (netSortKey === "name") {
+    r = (a.name || "").localeCompare(b.name || "", undefined, { numeric: true, sensitivity: "base" });
+  } else if (netSortKey === "status") {
+    r = netStatusRank(a) - netStatusRank(b);
+  } else if (netSortKey === "pads") {
+    r = netNum(a.pad_count, -1) - netNum(b.pad_count, -1);
+  } else if (netSortKey === "airwire") {
+    r = netNum(a.airwire_len_mm, -1) - netNum(b.airwire_len_mm, -1);
+  } else if (netSortKey === "cost") {
+    r = netNum(a.copper_cost_mm, -1) - netNum(b.copper_cost_mm, -1);
+  } else if (netSortKey === "segs") {
+    r = (netNum(a.track_count, 0) + netNum(a.arc_count, 0))
+      - (netNum(b.track_count, 0) + netNum(b.arc_count, 0));
+  } else if (netSortKey === "vias") {
+    r = netNum(a.via_count, -1) - netNum(b.via_count, -1);
+  } else if (netSortKey === "width") {
+    r = netNum(a.width_mm, -1) - netNum(b.width_mm, -1);
+  } else if (netSortKey === "pwr") {
+    const rank = n => (n.is_power ? 0 : (n.is_ground ? 1 : 2));
+    r = rank(a) - rank(b);
+  } else if (netSortKey === "protect") {
+    r = ((a.protected ? 0 : 1)) - ((b.protected ? 0 : 1));
+  }
+  if (r === 0) {
+    r = (a.name || "").localeCompare(b.name || "", undefined, { numeric: true, sensitivity: "base" });
+  }
+  return r * netSortDir;
+}
+
+function updateNetSortHeaders() {
+  document.querySelectorAll("#nets-table th.sortable").forEach(th => {
+    th.classList.remove("sorted-asc", "sorted-desc");
+    if (th.dataset.sort === netSortKey) {
+      th.classList.add(netSortDir === 1 ? "sorted-asc" : "sorted-desc");
+    }
+  });
+}
+
+function getSortedNets(nets) {
+  if (!netSortKey) return nets;
+  return [...nets].sort(compareNets);
+}
+
 // Render nets table
 function netRowHtml(net, idx) {
   const color = netColorByName(net.name, idx);
@@ -63,24 +124,50 @@ function netRowHtml(net, idx) {
   const width = (net.width_mm ?? "") === "" ? "" : Number(net.width_mm).toFixed(2);
   const decaps = Array.isArray(net.decap_refs) ? net.decap_refs : [];
   const links = (net.decap_links && typeof net.decap_links === "object") ? net.decap_links : {};
-  const decap = decaps.length
-    ? `<span class="decap-badge" title="Decoupling caps: ${escapeHtml(decaps.map(r => (links[r] ? `${r}\u2192${links[r]}` : r)).join(", "))}">◉×${decaps.length}</span>`
+  const decapTxt = decaps.length
+    ? `Decap: ${decaps.map(r => (links[r] ? `${r}\u2192${links[r]}` : r)).join(", ")}`
     : "";
+  const airD = (net.airwire_len_mm ?? "") === "" ? "" : Number(net.airwire_len_mm).toFixed(1);
+  const copperD = (net.copper_len_mm ?? "") === "" ? "" : Number(net.copper_len_mm).toFixed(1);
+  const costD = (net.copper_cost_mm ?? "") === "" ? "" : Number(net.copper_cost_mm).toFixed(1);
+  const airwire = airD === "" ? "" : String(Math.round(Number(airD)));
+  const copper = copperD === "" ? "" : String(Math.round(Number(copperD)));
+  const cost = costD === "" ? "" : String(Math.round(Number(costD)));
+  const airTitle = `Airwire MST estimate over pads: ${airD === "" ? "n/a" : airD + " mm"} (unrouted difficulty)`;
+  const costTitle = (net.via_cost_mm != null)
+    ? `Routed cost: copper ${copperD === "" ? "n/a" : copperD + " mm"} + ${net.via_count ?? 0} vias × ${net.via_cost_mm} mm = ${costD === "" ? "n/a" : costD + " mm"}`
+    : `Routed cost: copper ${copperD === "" ? "n/a" : copperD + " mm"} + via cost`;
+  const padsTitle = `Pads: ${net.pad_count ?? "?"} across ${net.footprint_count ?? "?"} footprints`;
+  const tracks = netNum(net.track_count, 0);
+  const arcs = netNum(net.arc_count, 0);
+  const segsTitle = `Routed segments: ${tracks} straight + ${arcs} arcs`;
+  let status = "";
+  if (net.failed_reason) {
+    const reason = escapeHtml(net.failed_reason);
+    const ver = (net.failed_version != null) ? ` (last run, v${net.failed_version})` : " (last run)";
+    status = `<span class="net-status net-status-failed" title="Routing failed${ver}: ${reason}">⚠</span>`;
+  } else if (net.needs_bridge) {
+    const regs = Array.isArray(net.regions) ? net.regions.join(", ") : "";
+    status = `<span class="net-status net-status-bridge" title="Spans board regions [${escapeHtml(regs)}] — routed per region, join via a mated-pair bridge (Bridges section)">🌉</span>`;
+  } else if (net.multi_region) {
+    status = `<span class="net-status net-status-bridged" title="Multi-region net with a declared bridge">🔗</span>`;
+  }
+  const nameTitle = decapTxt ? `${safeName} — ${decapTxt}` : safeName;
   return `
     <tr class="${selectedNets.has(net.name) ? 'net-selected-row' : ''}" data-net="${safeName}" style="--net-color: ${color};">
       <td class="net-col-select"><input type="checkbox" class="net-col-select" ${selectedNets.has(net.name) ? 'checked' : ''} data-net="${safeName}" title="Select ${safeName} for routing" aria-label="Select ${safeName} for routing"></td>
-      <td class="net-col-name">
+      <td class="net-col-name" title="${escapeHtml(nameTitle)}">
         <span class="net-swatch" style="background: ${color};"></span>
         ${netName}${pwr}
       </td>
-      <td class="net-col-pads">${net.pad_count ?? ""}</td>
-      <td class="net-col-fps">${net.footprint_count ?? ""}</td>
-      <td class="net-col-tracks">${net.track_count ?? ""}</td>
-      <td class="net-col-arcs" title="Copper track arcs (rounded corners)">${net.arc_count ?? ""}</td>
+      <td class="net-col-status">${status}</td>
+      <td class="net-col-pads" title="${escapeHtml(padsTitle)}">${net.pad_count ?? ""}</td>
+      <td class="net-col-air" title="${escapeHtml(airTitle)}">${airwire}</td>
+      <td class="net-col-cost" title="${escapeHtml(costTitle)}">${cost}</td>
+      <td class="net-col-segs" title="${escapeHtml(segsTitle)}">${tracks + arcs}</td>
       <td class="net-col-vias">${net.via_count ?? ""}</td>
       <td class="net-col-width">${width}</td>
       <td class="net-col-pwr" data-power-cell="${safeName}" title="${pwrTitle}" style="cursor:pointer;">${pwrCtrl}</td>
-      <td class="net-col-decap">${decap}</td>
       <td class="net-col-protect">
         <label class="chk"><input type="checkbox" class="net-protect-cb" ${net.protected ? 'checked' : ''} data-net="${safeName}" title="Protected nets are routed first and never ripped up"></label>
       </td>
@@ -91,8 +178,10 @@ function netRowHtml(net, idx) {
 function renderNetsTable(nets) {
   const tbody = el("nets-tbody");
   if (!tbody) return;
-  
-  tbody.innerHTML = nets.map(netRowHtml).join("");
+
+  const sorted = getSortedNets(nets || []);
+  updateNetSortHeaders();
+  tbody.innerHTML = sorted.map(netRowHtml).join("");
   
   // Add click handlers for checkboxes (in-place highlight, no re-render)
   tbody.querySelectorAll('input.net-col-select[type="checkbox"]').forEach(cb => {
@@ -267,6 +356,24 @@ function selectUnroutedNets() {
 
 // Protect all checkbox
 on("select-unrouted-btn", "click", selectUnroutedNets);
+
+// Sortable nets-table headers (mirrors the footprints table): click toggles
+// asc/desc, re-render keeps the selection (keyed by net name). Clicks on the
+// protect-all checkbox/label must not re-sort.
+document.querySelectorAll("#nets-table th.sortable").forEach(th => {
+  th.addEventListener("click", e => {
+    if (e.target.closest("label, input")) return;
+    const key = th.dataset.sort;
+    if (!key) return;
+    if (netSortKey === key) {
+      netSortDir = netSortDir === 1 ? -1 : 1;
+    } else {
+      netSortKey = key;
+      netSortDir = 1;
+    }
+    renderNetsTable([...(lastNetsByName ? lastNetsByName.values() : [])]);
+  });
+});
 
 // Protect all checkbox
 on("nets-protect-all", "change", async e => {

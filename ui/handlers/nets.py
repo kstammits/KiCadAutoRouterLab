@@ -90,25 +90,109 @@ def handle_post(path, qs, body, handler):
 # GET /api/nets
 # --------------------------------------------------------------------------- #
 
+def _mst_length_mm(points) -> float:
+    """Euclidean MST total over ``[(x_mm, y_mm)]`` (Prim's, O(n^2)).
+
+    Airwire difficulty proxy: 0 for fewer than 2 pads.
+    """
+    n = len(points)
+    if n < 2:
+        return 0.0
+    import math
+    in_tree = [False] * n
+    in_tree[0] = True
+    best = [math.hypot(points[i][0] - points[0][0],
+                        points[i][1] - points[0][1]) for i in range(n)]
+    total = 0.0
+    for _ in range(n - 1):
+        pick, pick_d = -1, math.inf
+        for i in range(n):
+            if not in_tree[i] and best[i] < pick_d:
+                pick, pick_d = i, best[i]
+        if pick < 0:
+            break
+        in_tree[pick] = True
+        total += pick_d
+        for i in range(n):
+            if not in_tree[i]:
+                d = math.hypot(points[i][0] - points[pick][0],
+                               points[i][1] - points[pick][1])
+                if d < best[i]:
+                    best[i] = d
+    return total
+
+
 def _handle_nets_get():
     model, _, _, _, _, _ = STATE.snapshot
     if model is None:
         return 404, b"no board loaded", "text/plain"
     protected = STATE.get_protected_nets()
     extra_power = STATE.get_power_override_nets()
+    last_failed, last_failed_version = STATE.get_last_failed()
     rp = load_routing_params()
+    try:
+        via_cost_mm = float(getattr(rp, "via_cost_mm", 5.0) or 0.0)
+    except (TypeError, ValueError):
+        via_cost_mm = 5.0
     track_counts = {}
     arc_counts = {}
     via_counts = {}
+    copper_len = {}
+    import math
     for t in model.tracks:
         if t.net_name:
             track_counts[t.net_name] = track_counts.get(t.net_name, 0) + 1
+            try:
+                d = math.hypot(t.end.x_mm - t.start.x_mm,
+                               t.end.y_mm - t.start.y_mm)
+            except (AttributeError, TypeError):
+                d = 0.0
+            copper_len[t.net_name] = copper_len.get(t.net_name, 0.0) + d
     for a in model.arcs:
         if a.net_name:
             arc_counts[a.net_name] = arc_counts.get(a.net_name, 0) + 1
+            try:
+                d = (math.hypot(a.mid.x_mm - a.start.x_mm,
+                                a.mid.y_mm - a.start.y_mm)
+                     + math.hypot(a.end.x_mm - a.mid.x_mm,
+                                  a.end.y_mm - a.mid.y_mm))
+            except (AttributeError, TypeError):
+                d = 0.0
+            copper_len[a.net_name] = copper_len.get(a.net_name, 0.0) + d
     for v in model.vias:
         if v.net_name:
             via_counts[v.net_name] = via_counts.get(v.net_name, 0) + 1
+    # Pad positions + board regions per net (airwire MST + bridge hint).
+    multi = len(getattr(model, "board_regions", ()) or ()) > 1
+    pad_points: dict = {}
+    pad_regions: dict = {}
+    region_of = getattr(model, "footprint_region", {}) or {}
+    for fp in model.footprints:
+        region = region_of.get(fp.uuid, -1) if multi else 0
+        for pad in fp.pads or ():
+            if not pad.net_name:
+                continue
+            try:
+                xy = (float(pad.position.x_mm), float(pad.position.y_mm))
+            except (AttributeError, TypeError, ValueError):
+                continue
+            pad_points.setdefault(pad.net_name, []).append(xy)
+            pad_regions.setdefault(pad.net_name, set()).add(region)
+    # Nets touched by a user-declared mated-pair bridge (by_ref lookup).
+    bridged_nets = set()
+    try:
+        for b in (STATE.get_inlets().get("bridges") or []):
+            for side in (b.get("a"), b.get("b")):
+                if not isinstance(side, dict):
+                    continue
+                fp = (model.by_ref or {}).get(side.get("ref"))
+                pads = fp.pads if fp is not None else ()
+                hit = next((p for p in pads
+                            if p.number == side.get("pad")), None)
+                if hit is not None and hit.net_name:
+                    bridged_nets.add(hit.net_name)
+    except (AttributeError, TypeError):
+        pass
 
     nets_data = []
     colors = net_colors(model, extra_power)
@@ -151,13 +235,20 @@ def _handle_nets_get():
         footprint_refs = set()
         for conn in conns:
             footprint_refs.add(conn.ref)
+        copper = round(copper_len.get(net_name, 0.0), 2)
+        airwire = round(_mst_length_mm(pad_points.get(net_name, [])), 2)
+        nvias = via_counts.get(net_name, 0)
+        cost = round(copper + nvias * via_cost_mm, 2)
+        regions = sorted(pad_regions.get(net_name, set()))
+        is_multi = multi and len(regions) > 1
+        is_bridged = net_name in bridged_nets
         nets_data.append({
             "name": net_name,
             "pad_count": len(conns),
             "footprint_count": len(footprint_refs),
             "track_count": track_counts.get(net_name, 0),
             "arc_count": arc_counts.get(net_name, 0),
-            "via_count": via_counts.get(net_name, 0),
+            "via_count": nvias,
             "protected": net_name in protected,
             "is_power": is_power_net_effective(net_name, extra_power),
             "is_ground": is_ground_net(net_name),
@@ -170,6 +261,17 @@ def _handle_nets_get():
                 for r in sorted(decap_by_net.get(net_name, []))
                 if r in decap_links
             },
+            "airwire_len_mm": airwire,
+            "copper_len_mm": copper,
+            "copper_cost_mm": cost,
+            "via_cost_mm": via_cost_mm,
+            "regions": regions,
+            "region_count": len(regions),
+            "multi_region": is_multi,
+            "bridged": is_bridged,
+            "needs_bridge": bool(is_multi and not is_bridged),
+            "failed_reason": last_failed.get(net_name),
+            "failed_version": last_failed_version if net_name in last_failed else None,
         })
     nets_data.sort(key=lambda n: (not n["protected"], -n["pad_count"]))
     body = json.dumps(

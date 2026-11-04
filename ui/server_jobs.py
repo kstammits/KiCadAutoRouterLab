@@ -182,6 +182,10 @@ def _run_routing_job(job_id: str) -> None:
             STATE.routing_model = model
         STATE.version += 1
         version = STATE.version
+    try:
+        STATE.set_last_failed(result.failed_reasons or {})
+    except (AttributeError, TypeError):
+        pass
     payload = _routing_result_payload(result)
     payload["version"] = version
     if job.get("mode_warning"):

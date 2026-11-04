@@ -243,6 +243,20 @@
      off-screen at drawer widths. */
   .nets-table-container { overflow-x: auto; max-width: 100%; }
   #nets-table { border-collapse: collapse; font-size: .7rem; }
+  #nets-table th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+  #nets-table th.sortable:hover { color: #d7e0e9; }
+  #nets-table th.sorted-asc::after { content: " ▲"; }
+  #nets-table th.sorted-desc::after { content: " ▼"; }
+  #nets-table td.net-col-status { text-align: center; }
+  #nets-table td.net-col-air, #nets-table td.net-col-cost,
+  #nets-table td.net-col-width, #nets-table td.net-col-pads,
+  #nets-table td.net-col-segs,
+  #nets-table td.net-col-vias { text-align: right; font-variant-numeric: tabular-nums; }
+  #nets-table tr.net-selected-row td { background: #1a2e1a; }
+  .net-status { display: inline-block; font-size: .8rem; line-height: 1; }
+  .net-status-failed { color: #f87171; }
+  .net-status-bridge { color: #fbbf24; }
+  .net-status-bridged { color: #7ee0a0; }
 
   /* Selection toolbar */
   .sel-toolbar { display:flex; gap:.4rem; align-items:center; padding:.35rem .7rem; border-top:1px solid #2a3540; font-size:.65rem; color:#9fb0c0; flex-wrap:wrap; background:#161c22; }
