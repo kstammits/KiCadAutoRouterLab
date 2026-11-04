@@ -6,9 +6,13 @@ Pure, deterministic, no prints, no function-attribute state.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
+from shapely import STRtree
+from shapely import contains as _shapely_contains
+from shapely import distance as _shapely_distance
+from shapely import points as _shapely_points
 from shapely.geometry import Polygon
 from shapely.ops import unary_union
 
@@ -95,11 +99,31 @@ def _collect_posed_polygons(
     return polys, pos, uuid_to_idx, moved
 
 
+def _tht_pin_union(fp: Footprint):
+    """Union of a footprint's through-hole pin copper (posed), or None.
+
+    Built once per legality check instead of once per cross-layer pair:
+    for THT pins, layer presence depends only on whether the far side is
+    a copper layer, so one union serves every pair (same construction as
+    the per-pair build it replaces).
+    """
+    pins = [
+        pad_copper_polygon(p)
+        for p in fp.pads
+        if p.is_through_hole
+    ]
+    if not pins:
+        return None
+    union = unary_union(pins)
+    return union if not union.is_empty else None
+
+
 def _cross_layer_pin_overlap(
     fa: Footprint,
     fb: Footprint,
     polys: Dict[str, Polygon],
     copper_layers,
+    pin_unions: Optional[Dict[str, object]] = None,
 ) -> float:
     """Worst THT-pin-vs-opposite-courtyard overlap area for a cross-layer pair.
 
@@ -109,6 +133,7 @@ def _cross_layer_pin_overlap(
     the far side and always return 0.0.
     """
     best = 0.0
+    cu = set(copper_layers or ())
     for fp_self, other_uuid, other_layer in (
         (fa, fb.uuid, fb.layer),
         (fb, fa.uuid, fa.layer),
@@ -116,15 +141,25 @@ def _cross_layer_pin_overlap(
         other_poly = polys.get(other_uuid)
         if other_poly is None or other_poly.is_empty:
             continue
-        pins = [
-            pad_copper_polygon(p)
-            for p in fp_self.pads
-            if p.is_through_hole
-            and pad_present_on_layer(p, fp_self.layer, other_layer, copper_layers)
-        ]
-        if not pins:
+        if other_layer not in cu:
+            # No THT pin is present on a non-copper far side: same empty
+            # result as filtering every pin out per pair.
             continue
-        inter = unary_union(pins).intersection(other_poly)
+        if pin_unions is not None and fp_self.uuid in pin_unions:
+            pins = pin_unions[fp_self.uuid]
+            if pins is None or pins.is_empty:
+                continue
+            inter = pins.intersection(other_poly)
+        else:
+            pins = [
+                pad_copper_polygon(p)
+                for p in fp_self.pads
+                if p.is_through_hole
+                and pad_present_on_layer(p, fp_self.layer, other_layer, copper_layers)
+            ]
+            if not pins:
+                continue
+            inter = unary_union(pins).intersection(other_poly)
         if not inter.is_empty:
             best = max(best, float(inter.area))
     return best
@@ -182,15 +217,34 @@ def _check_pairwise_overlaps(
         if uuid in polys and uuid not in region_groups.get(region_idx, []):
             region_groups.setdefault(region_idx, []).append(uuid)
 
+    # Per-footprint THT pin unions, built once (not once per pair).
+    pin_unions: Dict[str, object] = {}
+    for fp in list(moved.footprints) + list(moved.ghost_footprints):
+        if fp.uuid and fp.uuid not in pin_unions:
+            pin_unions[fp.uuid] = _tht_pin_union(fp)
+
     for region_idx, uuids in region_groups.items():
-        n = len(uuids)
-        for i in range(n):
-            ua = uuids[i]
+        # Spatial index over courtyard polygons: only envelope-overlapping
+        # pairs can intersect, so O(n^2) shapely intersections drop to
+        # O(candidate pairs). Pruned pairs provably have empty
+        # intersections (area 0, never above a non-negative tolerance),
+        # and the per-pair tests below are unchanged. THT pins may extend
+        # beyond their own courtyard, so cross-layer candidates also query
+        # with the pin union envelope.
+        geoms = [polys[u] for u in uuids]
+        tree = STRtree(geoms)
+        for i, ua in enumerate(uuids):
             pa = polys.get(ua)
             if pa is None or pa.is_empty:
                 continue
             type_a = fp_types.get(ua, "movable")
-            for j in range(i + 1, n):
+            cand = set(tree.query(pa).tolist())
+            pu = pin_unions.get(ua)
+            if pu is not None and not pu.is_empty:
+                cand.update(tree.query(pu).tolist())
+            for j in sorted(cand):
+                if j <= i:
+                    continue
                 ub = uuids[j]
                 pb = polys.get(ub)
                 if pb is None or pb.is_empty:
@@ -219,7 +273,7 @@ def _check_pairwise_overlaps(
                     fa = posed.get(ua)
                     fb = posed.get(ub)
                     area = _cross_layer_pin_overlap(
-                        fa, fb, polys, model.copper_layers,
+                        fa, fb, polys, model.copper_layers, pin_unions,
                     ) if fa is not None and fb is not None else 0.0
                     if area > overlap_tolerance_mm2:
                         overlapping_pairs.append((ua, ub, round(area, 6)))
@@ -261,7 +315,8 @@ def _check_wall_violations(
     if not model.board_regions:
         return wall_violations, max_penetration
 
-    # Build shapely polygons for each region
+    # Build shapely polygons for each region, plus the static outer ring
+    # built once instead of per footprint (identical values).
     from shapely.geometry import Polygon as ShapelyPolygon
     region_polys = []
     for reg in model.board_regions:
@@ -269,6 +324,9 @@ def _check_wall_violations(
             region_polys.append(ShapelyPolygon([(p.x_mm, p.y_mm) for p in reg.polygon]))
         else:
             region_polys.append(ShapelyPolygon())
+    region_rings = [
+        (p.exterior if not p.is_empty else None) for p in region_polys
+    ]
 
     # Check each movable footprint
     for fp in model.footprints:
@@ -297,15 +355,29 @@ def _check_wall_violations(
             # Distance to region as violation depth
             depth = poly.distance(region_poly)
         else:
-            # Straddling: max protruding vertex distance
+            # Straddling: max protruding vertex distance, measured to the
+            # outer ring over the vertices lying outside the region. Two
+            # vectorized GEOS calls instead of one Point + contains +
+            # distance per vertex (same per-point ops).
             depth = 0.0
-            from shapely.geometry import Point
-            for vertex in poly.exterior.coords:
-                pt = Point(vertex)
-                if not region_poly.contains(pt):
-                    d = pt.distance(region_poly.exterior)
-                    if d > depth:
-                        depth = d
+            try:
+                _coords = np.asarray(poly.exterior.coords, dtype=np.float64)
+                _pts = _shapely_points(_coords)
+                _outside = ~np.asarray(
+                    _shapely_contains(region_poly, _pts), dtype=bool
+                )
+                if _outside.any():
+                    _d = np.asarray(
+                        _shapely_distance(
+                            _pts[_outside], region_rings[region_idx]
+                        ),
+                        dtype=np.float64,
+                    )
+                    _finite = _d[np.isfinite(_d)]
+                    if _finite.size:
+                        depth = float(_finite.max())
+            except Exception:
+                pass
 
         if depth > wall_tolerance_mm:
             wall_violations.append((fp.uuid, round(depth, 6)))

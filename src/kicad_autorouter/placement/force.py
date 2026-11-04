@@ -20,6 +20,8 @@ from typing import Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 import numpy as np
+from shapely import distance as _shapely_distance
+from shapely import points as _shapely_points
 from shapely.geometry import Point, Polygon
 from shapely.ops import nearest_points
 
@@ -28,10 +30,11 @@ from .contact import (
     _analytical_collision,
     _classify_shape,
     _contact_weights,
+    _pose_shape_params,
     _wall_mag,
 )
 from .params import PlacementParams
-from .rigid import _rigid_pose_vertices
+from .rigid import _apply_rigid_motion, _rigid_motion_params, _rigid_pose_vertices
 
 
 def _overlap_depth_mm(pi: Polygon, pj: Polygon, ux: float, uy: float) -> float:
@@ -75,6 +78,8 @@ class ForceContext:
         fp_uuid_to_region: Optional[Dict[str, int]] = None,
         cy_cache: Optional[Dict[str, dict]] = None,
         pad_charged: Optional[np.ndarray] = None,
+        region_boundaries: Optional[List] = None,
+        region_centroids: Optional[List] = None,
     ):
         self.fp_uuids = fp_uuids
         self.fp_local_to_rows = fp_local_to_rows
@@ -90,6 +95,24 @@ class ForceContext:
         self.fp_pad_indices: Dict[str, List[int]] = fp_pad_indices or {}
         self.fp_uuid_to_local_idx: Dict[str, int] = fp_uuid_to_local_idx or {}
         self.region_polygons: List = region_polygons or []
+        # Static per-run derivatives of the region polygons. The board wall
+        # is evaluated every iteration for every movable footprint, so the
+        # boundary ring and centroid are built once here instead of via a
+        # GEOS construction per footprint per iteration (identical values).
+        if region_boundaries is not None:
+            self.region_boundaries: List = region_boundaries
+        else:
+            self.region_boundaries = [
+                (p.boundary if not p.is_empty else None)
+                for p in self.region_polygons
+            ]
+        if region_centroids is not None:
+            self.region_centroids: List = region_centroids
+        else:
+            self.region_centroids = [
+                ((p.centroid.x, p.centroid.y) if not p.is_empty else (math.nan, math.nan))
+                for p in self.region_polygons
+            ]
         self.fp_uuid_to_region: Dict[str, int] = fp_uuid_to_region or {}
         self.cy_cache: Dict[str, dict] = cy_cache or {}
         # Per-node Coulomb participation (netted pads only). Unconnected
@@ -283,7 +306,15 @@ def _compute_total_force(
                 if rebuild:
                     kind = body.get("kind", "empty")
                     body_verts = body.get("verts", np.array([]))
-                    if kind == "courtyard" and cp is not None:
+                    # One rigid fit per footprint per rebuild: the motion is
+                    # shared by the body ring, every pin center, and the
+                    # shape-parameter re-pose below (identical values to one
+                    # _rigid_pose_vertices call per set, one mean/atan2).
+                    motion = _rigid_motion_params(orig_pos, cp) if cp is not None else None
+                    if kind == "courtyard" and motion is not None:
+                        oc, cc, ca, sa, tx, ty, _ang = motion
+                        body_poly = Polygon(_apply_rigid_motion(body_verts, oc, cc, ca, sa, tx, ty))
+                    elif kind == "courtyard" and cp is not None:
                         body_poly = Polygon(_rigid_pose_vertices(body_verts, orig_pos, cp))
                     elif kind == "courtyard":
                         body_poly = Polygon(body_verts)
@@ -311,7 +342,18 @@ def _compute_total_force(
                     body_empty[fp_uuid] = bool(body_poly.is_empty)
 
                     fp_pins = []
-                    if pins and cp is not None:
+                    if pins and motion is not None:
+                        oc, cc, ca, sa, tx, ty, _ang = motion
+                        local_centers = np.array(
+                            [pin["center"] for pin in pins], dtype=np.float64
+                        )
+                        posed_centers = _apply_rigid_motion(
+                            local_centers, oc, cc, ca, sa, tx, ty
+                        )
+                        for pin, posed_center in zip(pins, posed_centers):
+                            pin_poly = Point(float(posed_center[0]), float(posed_center[1])).buffer(pin["radius"])
+                            fp_pins.append((pin_poly, (float(posed_center[0]), float(posed_center[1])), pin["radius"], pin.get("layer", ""), pin.get("extends_beyond_courtyard", False)))
+                    elif pins and cp is not None:
                         for pin in pins:
                             local_cx, local_cy = pin["center"]
                             pin_vert = np.array([[local_cx, local_cy]], dtype=np.float64)
@@ -326,7 +368,30 @@ def _compute_total_force(
                     pins_data[fp_uuid] = fp_pins
                     pins_empty[fp_uuid] = [bool(p.is_empty) for p, _, _, _, _ in fp_pins]
 
-                    shape_type, shape_params = _classify_shape(body_poly)
+                    # Courtyard bodies are rigid transforms of fixed file-pose
+                    # vertices: a repeat classification can only reproduce the
+                    # cached type, so re-pose the cached params from the pad
+                    # motion instead of re-running the numpy/GEOS classify.
+                    # First builds and non-courtyard kinds classify fully.
+                    prev_shape = cached.get("shape_type") if cached is not None else None
+                    if (
+                        kind == "courtyard"
+                        and prev_shape in (ShapeType.RECTANGLE, ShapeType.CIRCLE, ShapeType.POLYGON)
+                        and cached is not None
+                        and cached.get("last_centroid") is not None
+                        and cached.get("last_angle") is not None
+                    ):
+                        shape_type, shape_params = _pose_shape_params(
+                            prev_shape,
+                            cached.get("shape_params", {}),
+                            cached["last_centroid"],
+                            cached["last_angle"],
+                            curr_centroid,
+                            curr_angle,
+                            body_poly,
+                        )
+                    else:
+                        shape_type, shape_params = _classify_shape(body_poly)
 
                     centroid = body_poly.centroid
                     body_centroids.append([centroid.x, centroid.y])
@@ -424,6 +489,20 @@ def _compute_total_force(
             fp_centroids_arr = body_centroids_arr
             fp_radii_arr = body_radii_arr
 
+            # Per-footprint mean pad velocity, hoisted out of the per-push
+            # tangential helper: one mean per footprint per iteration
+            # instead of one per contact push (same rows, same mean).
+            fp_vel_mean: Optional[List[Tuple[float, float]]] = None
+            if pad_vel is not None and params.contact_tangent_gamma > 0.0:
+                fp_vel_mean = []
+                for _li in range(n_fp):
+                    _rows = fp_local_to_rows[_li]
+                    if _rows is None or len(_rows) == 0:
+                        fp_vel_mean.append((0.0, 0.0))
+                    else:
+                        _m = pad_vel[_rows].mean(axis=0)
+                        fp_vel_mean.append((float(_m[0]), float(_m[1])))
+
             def _spread_force(rows, cx, cy, radius, ux, uy, fx, fy,
                               poly_force, tangential_force,
                               ft_x=0.0, ft_y=0.0):
@@ -495,6 +574,9 @@ def _compute_total_force(
             def _fp_tangential_vel(fp_local_idx, tx, ty):
                 """Get average tangential velocity for a footprint.
                 Returns (0, 0) if footprint has no pads (e.g., wall ghost)."""
+                if fp_vel_mean is not None:
+                    _vx, _vy = fp_vel_mean[fp_local_idx]
+                    return _vx * tx + _vy * ty
                 rows = fp_local_to_rows[fp_local_idx]
                 if len(rows) == 0:
                     return 0.0
@@ -869,8 +951,8 @@ def _compute_total_force(
                         covered = region_poly.covers(body_poly)
                     except Exception:
                         continue
-                    clearance_boundary = region_poly.boundary
-                    if clearance_boundary.is_empty:
+                    clearance_boundary = ctx.region_boundaries[region_idx]
+                    if clearance_boundary is None or clearance_boundary.is_empty:
                         continue
                     if covered:
                         # Fully inside copper: halo-scaled push off the edge.
@@ -902,20 +984,28 @@ def _compute_total_force(
                         s_mm = 0.0
                     else:
                         # Straddling the edge: protrusion depth of the verts
-                        # sticking out, capped by the shared wall law.
+                        # sticking out, capped by the shared wall law. One
+                        # vectorized GEOS distance over the ring instead of
+                        # one Point + distance call per vertex (same
+                        # per-point GEOS op; non-finite entries contribute
+                        # nothing, matching the old max() comparison).
                         try:
-                            coords = list(body_poly.exterior.coords)
+                            _coords = np.asarray(
+                                body_poly.exterior.coords, dtype=np.float64
+                            )
+                            _d = np.asarray(
+                                _shapely_distance(
+                                    _shapely_points(_coords), region_poly
+                                ),
+                                dtype=np.float64,
+                            )
                         except Exception:
                             continue
                         depth = 0.0
-                        for vx, vy in coords:
-                            try:
-                                depth = max(
-                                    depth,
-                                    region_poly.distance(Point(vx, vy)),
-                                )
-                            except Exception:
-                                continue
+                        if _d.size:
+                            _finite = _d[np.isfinite(_d)]
+                            if _finite.size:
+                                depth = float(_finite.max())
                         s_mm = -max(depth, 0.0)
                         try:
                             outside = body_poly.difference(region_poly)
@@ -935,8 +1025,9 @@ def _compute_total_force(
                     if dist < 1e-8:
                         # Degenerate (e.g. concentric): fall back to the
                         # region centre, which is inward by construction.
-                        dx = region_poly.centroid.x - body_poly.centroid.x
-                        dy = region_poly.centroid.y - body_poly.centroid.y
+                        _rcx, _rcy = ctx.region_centroids[region_idx]
+                        dx = _rcx - body_poly.centroid.x
+                        dy = _rcy - body_poly.centroid.y
                         dist = math.hypot(dx, dy)
                     if dist < 1e-8:
                         continue

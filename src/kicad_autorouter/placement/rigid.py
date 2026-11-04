@@ -8,7 +8,7 @@ stable, unlike a stiff explicit rigid spring.
 from __future__ import annotations
 
 import math
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 
@@ -226,19 +226,22 @@ def _compute_footprint_pose_from_pads(
         return new_x, new_y, angle_deg
 
 
-def _rigid_pose_vertices(
-    verts: np.ndarray, orig_pos: np.ndarray, curr_pos: np.ndarray
-) -> np.ndarray:
-    """Pose local courtyard vertices by the rigid motion orig->curr pads.
+def _rigid_motion_params(
+    orig_pos: np.ndarray, curr_pos: np.ndarray
+) -> Optional[Tuple[np.ndarray, np.ndarray, float, float, float, float, float]]:
+    """Rigid-motion parameters of the pad mapping orig->curr, or None.
 
-    Translation plus rotation from the first two pads. Returns verts unchanged
-    when the pad mapping degenerates (empty or length mismatch).
+    Returns ``(oc, cc, ca, sa, tx, ty, ang)``: file-pose pad centroid,
+    current pad centroid, cos/sin of the first-two-pads rotation, the
+    translation components, and the rotation angle itself. None when the
+    mapping degenerates (empty or length mismatch). Computing the fit once
+    and applying it to many vertex sets gives identical values to one
+    :func:`_rigid_pose_vertices` call per set, with one mean/atan2.
     """
-    v = np.asarray(verts, dtype=np.float64)
     o = np.asarray(orig_pos, dtype=np.float64)
     c = np.asarray(curr_pos, dtype=np.float64)
-    if v.size == 0 or o.shape != c.shape or o.shape[0] == 0:
-        return v
+    if o.shape != c.shape or o.shape[0] == 0:
+        return None
     oc = o.mean(axis=0)
     cc = c.mean(axis=0)
     ang = 0.0
@@ -248,9 +251,37 @@ def _rigid_pose_vertices(
         ang = math.atan2(cv[1], cv[0]) - math.atan2(ov[1], ov[0])
     ca, sa = math.cos(ang), math.sin(ang)
     tx, ty = cc[0] - oc[0], cc[1] - oc[1]
+    return oc, cc, ca, sa, tx, ty, ang
+
+
+def _apply_rigid_motion(
+    verts: np.ndarray,
+    oc: np.ndarray, cc: np.ndarray,
+    ca: float, sa: float, tx: float, ty: float,
+) -> np.ndarray:
+    """Apply precomputed :func:`_rigid_motion_params` to a vertex set."""
+    v = np.asarray(verts, dtype=np.float64)
+    if v.size == 0:
+        return v
     dx = v[:, 0] - oc[0]
     dy = v[:, 1] - oc[1]
     return np.column_stack((
         dx * ca - dy * sa + oc[0] + tx,
         dx * sa + dy * ca + oc[1] + ty,
     ))
+
+
+def _rigid_pose_vertices(
+    verts: np.ndarray, orig_pos: np.ndarray, curr_pos: np.ndarray
+) -> np.ndarray:
+    """Pose local courtyard vertices by the rigid motion orig->curr pads.
+
+    Translation plus rotation from the first two pads. Returns verts unchanged
+    when the pad mapping degenerates (empty or length mismatch).
+    """
+    v = np.asarray(verts, dtype=np.float64)
+    motion = _rigid_motion_params(orig_pos, curr_pos)
+    if v.size == 0 or motion is None:
+        return v
+    oc, _cc, ca, sa, tx, ty, _ang = motion
+    return _apply_rigid_motion(v, oc, _cc, ca, sa, tx, ty)

@@ -128,6 +128,65 @@ def _classify_shape(poly: Polygon) -> Tuple[str, dict]:
     return ShapeType.POLYGON, {"polygon": poly}
 
 
+def _pose_shape_params(
+    shape_type: str,
+    shape_params: dict,
+    last_centroid: tuple,
+    last_angle: float,
+    curr_centroid: np.ndarray,
+    curr_angle: float,
+    body_poly: Polygon,
+) -> Tuple[str, dict]:
+    """Re-pose cached classification params by an incremental rigid motion.
+
+    A courtyard body is a rigid transform of fixed file-pose vertices, so
+    its shape type and rotation-invariant extents (rectangle half-extents,
+    circle radius) never change across rebuilds — only the center and angle
+    move. Reposing them from the pad-centroid shift and wrapped angle delta
+    is real-arithmetic-identical to re-posing the vertices and running
+    :func:`_classify_shape` again, without the numpy/GEOS classify cost
+    (``minimum_rotated_rectangle`` for polygon types). POLYGON bodies reuse
+    the freshly posed polygon directly.
+    """
+    dx = float(curr_centroid[0] - last_centroid[0])
+    dy = float(curr_centroid[1] - last_centroid[1])
+    dang = float(curr_angle - last_angle)
+    dang = (dang + math.pi) % (2.0 * math.pi) - math.pi
+    ca, sa = math.cos(dang), math.sin(dang)
+    lx, ly = last_centroid
+
+    def _move_center(cx: float, cy: float) -> tuple:
+        rx, ry = cx - lx, cy - ly
+        return (
+            rx * ca - ry * sa + lx + dx,
+            rx * sa + ry * ca + ly + dy,
+        )
+
+    if shape_type == ShapeType.RECTANGLE:
+        cx, cy = shape_params["center"]
+        ncx, ncy = _move_center(float(cx), float(cy))
+        angle = float(shape_params["angle"]) + dang
+        angle = (angle + math.pi / 2) % math.pi - math.pi / 2
+        hx, hy = shape_params["half_extents"]
+        return shape_type, {
+            "type": ShapeType.RECTANGLE,
+            "center": (ncx, ncy),
+            "half_extents": (float(hx), float(hy)),
+            "angle": angle,
+        }
+    if shape_type == ShapeType.CIRCLE:
+        cx, cy = shape_params["center"]
+        ncx, ncy = _move_center(float(cx), float(cy))
+        return shape_type, {
+            "type": ShapeType.CIRCLE,
+            "center": (ncx, ncy),
+            "radius": float(shape_params["radius"]),
+        }
+    if shape_type == ShapeType.POLYGON:
+        return shape_type, {"polygon": body_poly}
+    return _classify_shape(body_poly)
+
+
 def _classify_approx_rectangle(poly: Polygon) -> Optional[dict]:
     """Classify polygon as approximate rectangle using minimum rotated rectangle.
 
