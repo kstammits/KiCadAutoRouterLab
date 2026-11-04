@@ -54,6 +54,7 @@ def _prune_jobs_locked() -> None:
 
 def _run_routing_job(job_id: str) -> None:
     """Background worker: route the job's nets, then apply to STATE."""
+    from server import _routing_result_payload  # lazy: server imports this module
     with _JOBS_LOCK:
         job = _JOBS.get(job_id)
         if job is None:
@@ -168,46 +169,8 @@ def _run_routing_job(job_id: str) -> None:
             STATE.routing_model = model
         STATE.version += 1
         version = STATE.version
-    payload = {
-        "ok": True,
-        "tracks_added": result.tracks_added,
-        "arcs_added": result.arcs_added,
-        "vias_added": result.vias_added,
-        "fanout_vias_added": result.fanout_vias_added,
-        "fanout_tracks_added": result.fanout_tracks_added,
-        "nets_routed": result.nets_routed,
-        "nets_failed": result.nets_failed,
-        "drc_clean": result.drc_clean,
-        "drc_violations": result.drc_violations,
-        "stitch_vias_added": result.stitch_vias_added,
-        "stitch_tracks_added": result.stitch_tracks_added,
-        "gnd_islands_before": result.gnd_islands_before,
-        "gnd_islands_after": result.gnd_islands_after,
-        "gnd_stripped": result.gnd_stripped,
-        "cancelled": result.cancelled,
-        "expansions": result.expansions,
-        "timings": result.timings,
-        "failed_reasons": result.failed_reasons,
-        "partial_tracks": [
-            {"start": list(t.start), "end": list(t.end),
-             "width_mm": t.width_mm, "layer": t.layer,
-             "net_name": t.net_name}
-            for t in result.partial_tracks
-        ],
-        "partial_vias": [
-            {"position": list(v.position), "size_mm": v.size_mm,
-             "drill_mm": v.drill_mm, "layers": list(v.layers),
-             "net_name": v.net_name}
-            for v in result.partial_vias
-        ],
-        "partial_arcs": [
-            {"start": list(a.start), "mid": list(a.mid), "end": list(a.end),
-             "width_mm": a.width_mm, "layer": a.layer,
-             "net_name": a.net_name}
-            for a in result.partial_arcs
-        ],
-        "version": version,
-    }
+    payload = _routing_result_payload(result)
+    payload["version"] = version
     if job.get("mode_warning"):
         payload["mode_warning"] = job["mode_warning"]
     if job.get("refine"):

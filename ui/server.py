@@ -283,6 +283,107 @@ def proposal_to_json(proposal, include_frames=True) -> dict:
     return out
 
 
+def _movable_uuids_for(model, state, req_uuids):
+    """Resolve the movable footprint set for a placement request.
+
+    ``req_uuids`` is the client-supplied list (or ``None``). When ``None``,
+    derive all unlocked, non-pinned footprints. When provided, drop any pinned
+    UUIDs. Returns a set of UUIDs.
+    """
+    if req_uuids is None:
+        return {
+            fp.uuid for fp in model.footprints
+            if fp.uuid and not fp.locked and fp.uuid not in state.get_pinned_uuids()
+        }
+    pinned = state.get_pinned_uuids()
+    return {u for u in req_uuids if u not in pinned}
+
+
+def _footprint_summary(fp, pinned, selected, decaps, ghost=False):
+    """Build one /api/footprints entry, shared by the real and ghost loops.
+
+    Field order matches the historical hand-built dicts byte-for-byte.
+    """
+    nets = sorted({pad.net_name for pad in fp.pads if pad.net_name})
+    minx = miny = float("inf")
+    maxx = maxy = float("-inf")
+    for a, b in fp.courtyard:
+        minx = min(minx, a.x_mm, b.x_mm)
+        miny = min(miny, a.y_mm, b.y_mm)
+        maxx = max(maxx, a.x_mm, b.x_mm)
+        maxy = max(maxy, a.y_mm, b.y_mm)
+    if minx == float("inf"):
+        minx = miny = maxx = maxy = 0.0
+    pad_count = sum(1 for pad in fp.pads if pad.net_name is not None)
+    out = {
+        "uuid": fp.uuid,
+        "ref": fp.ref,
+        "footprint_id": fp.footprint_id,
+        "layer": fp.layer,
+        "x_mm": fp.x_mm,
+        "y_mm": fp.y_mm,
+        "angle_deg": fp.angle_deg,
+        "locked": fp.locked if not ghost else False,
+        "pinned": (fp.uuid in pinned) if not ghost else False,
+        "selected": (fp.uuid in selected) if not ghost else False,
+        "nets": nets,
+        "bbox": [minx, miny, maxx, maxy],
+        "ghost": ghost,
+    }
+    if ghost:
+        out["ghost_attractions"] = [[t, ka] for t, ka in (fp.ghost_attractions or ())]
+    out["is_decap"] = (fp.uuid in decaps) if not ghost else False
+    out["pad_count"] = pad_count
+    return out
+
+
+def _routing_result_payload(result) -> dict:
+    """Shared routing-result body core (ok through partial_arcs).
+
+    Endpoint-specific fields (version, mode_warning, candidates, debug) are
+    added by the caller so JSON field order stays byte-identical to before.
+    """
+    return {
+        "ok": True,
+        "tracks_added": result.tracks_added,
+        "arcs_added": result.arcs_added,
+        "vias_added": result.vias_added,
+        "fanout_vias_added": result.fanout_vias_added,
+        "fanout_tracks_added": result.fanout_tracks_added,
+        "nets_routed": result.nets_routed,
+        "nets_failed": result.nets_failed,
+        "drc_clean": result.drc_clean,
+        "drc_violations": result.drc_violations,
+        "stitch_vias_added": result.stitch_vias_added,
+        "stitch_tracks_added": result.stitch_tracks_added,
+        "gnd_islands_before": result.gnd_islands_before,
+        "gnd_islands_after": result.gnd_islands_after,
+        "gnd_stripped": result.gnd_stripped,
+        "cancelled": result.cancelled,
+        "expansions": result.expansions,
+        "timings": result.timings,
+        "failed_reasons": result.failed_reasons,
+        "partial_tracks": [
+            {"start": list(t.start), "end": list(t.end),
+             "width_mm": t.width_mm, "layer": t.layer,
+             "net_name": t.net_name}
+            for t in result.partial_tracks
+        ],
+        "partial_vias": [
+            {"position": list(v.position), "size_mm": v.size_mm,
+             "drill_mm": v.drill_mm, "layers": list(v.layers),
+             "net_name": v.net_name}
+            for v in result.partial_vias
+        ],
+        "partial_arcs": [
+            {"start": list(a.start), "mid": list(a.mid), "end": list(a.end),
+             "width_mm": a.width_mm, "layer": a.layer,
+             "net_name": a.net_name}
+            for a in result.partial_arcs
+        ],
+    }
+
+
 class Handler(BaseHTTPRequestHandler):
     def _send(self, code: int, body: bytes, content_type: str) -> None:
         self.send_response(code)
@@ -558,70 +659,12 @@ class Handler(BaseHTTPRequestHandler):
                     continue
                 if not fp.pads:
                     continue
-                # Collect unique net names for this footprint
-                nets = sorted({pad.net_name for pad in fp.pads if pad.net_name})
-                # Courtyard bbox
-                minx = miny = float('inf')
-                maxx = maxy = float('-inf')
-                for a, b in fp.courtyard:
-                    minx = min(minx, a.x_mm, b.x_mm)
-                    miny = min(miny, a.y_mm, b.y_mm)
-                    maxx = max(maxx, a.x_mm, b.x_mm)
-                    maxy = max(maxy, a.y_mm, b.y_mm)
-                if minx == float('inf'):
-                    minx = miny = maxx = maxy = 0.0
-                footprints_data.append({
-                    "uuid": fp.uuid,
-                    "ref": fp.ref,
-                    "footprint_id": fp.footprint_id,
-                    "layer": fp.layer,
-                    "x_mm": fp.x_mm,
-                    "y_mm": fp.y_mm,
-                    "angle_deg": fp.angle_deg,
-                    "locked": fp.locked,
-                    "pinned": fp.uuid in pinned,
-                    "selected": fp.uuid in selected,
-                    "nets": nets,
-                    "bbox": [minx, miny, maxx, maxy],
-                    "ghost": False,
-                    "is_decap": fp.uuid in decaps,
-                    # Pads with nets drive placement cost (all-pairs repulsion
-                    # is O(pads^2)); the UI pre-flight estimate uses this.
-                    # Matches _collect_pad_nodes (pad.net_name is not None).
-                    "pad_count": sum(1 for pad in fp.pads if pad.net_name is not None),
-                })
+                footprints_data.append(_footprint_summary(fp, pinned, selected, decaps))
             # Ghost footprints
             for fp in model.ghost_footprints:
                 if not fp.uuid:
                     continue
-                nets = sorted({pad.net_name for pad in fp.pads if pad.net_name})
-                minx = miny = float('inf')
-                maxx = maxy = float('-inf')
-                for a, b in fp.courtyard:
-                    minx = min(minx, a.x_mm, b.x_mm)
-                    miny = min(miny, a.y_mm, b.y_mm)
-                    maxx = max(maxx, a.x_mm, b.x_mm)
-                    maxy = max(maxy, a.y_mm, b.y_mm)
-                if minx == float('inf'):
-                    minx = miny = maxx = maxy = 0.0
-                footprints_data.append({
-                    "uuid": fp.uuid,
-                    "ref": fp.ref,
-                    "footprint_id": fp.footprint_id,
-                    "layer": fp.layer,
-                    "x_mm": fp.x_mm,
-                    "y_mm": fp.y_mm,
-                    "angle_deg": fp.angle_deg,
-                    "locked": False,  # Ghosts are never locked in the traditional sense
-                    "pinned": False,
-                    "selected": False,  # Ghosts can't be selected/pinned
-                    "nets": nets,
-                    "bbox": [minx, miny, maxx, maxy],
-                    "ghost": True,
-                    "ghost_attractions": [[t, ka] for t, ka in (fp.ghost_attractions or ())],
-                    "is_decap": False,  # Ghosts are never decaps (no physics)
-                    "pad_count": sum(1 for pad in fp.pads if pad.net_name is not None),
-                })
+                footprints_data.append(_footprint_summary(fp, pinned, selected, decaps, ghost=True))
             self._send(200, json.dumps({"ok": True, "footprints": footprints_data}).encode(), "application/json")
             return
         
@@ -1100,15 +1143,7 @@ class Handler(BaseHTTPRequestHandler):
                 record_frames = True
 
 # If movable_uuids not provided, compute as all unlocked except pinned
-            if movable_uuids is None:
-                movable_uuids = {
-                    fp.uuid for fp in model.footprints
-                    if fp.uuid and not fp.locked and fp.uuid not in STATE.get_pinned_uuids()
-                }
-            else:
-                # Filter out any pinned footprints from explicit movable_uuids
-                pinned = STATE.get_pinned_uuids()
-                movable_uuids = {u for u in movable_uuids if u not in pinned}
+            movable_uuids = _movable_uuids_for(model, STATE, movable_uuids)
             
             
             try:
@@ -1298,15 +1333,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
             # If movable_uuids not provided, compute as all unlocked except pinned
-            if movable_uuids is None:
-                movable_uuids = {
-                    fp.uuid for fp in model.footprints
-                    if fp.uuid and not fp.locked and fp.uuid not in STATE.get_pinned_uuids()
-                }
-            else:
-                # Filter out any pinned footprints from explicit movable_uuids
-                pinned = STATE.get_pinned_uuids()
-                movable_uuids = {u for u in movable_uuids if u not in pinned}
+            movable_uuids = _movable_uuids_for(model, STATE, movable_uuids)
 
             try:
                 proposal = run_placement(
@@ -2037,47 +2064,9 @@ class Handler(BaseHTTPRequestHandler):
                 STATE.version += 1
                 version = STATE.version
             
-            payload = {
-                "ok": True,
-                "tracks_added": result.tracks_added,
-                "arcs_added": result.arcs_added,
-                "vias_added": result.vias_added,
-                "fanout_vias_added": result.fanout_vias_added,
-                "fanout_tracks_added": result.fanout_tracks_added,
-                "nets_routed": result.nets_routed,
-                "nets_failed": result.nets_failed,
-                "drc_clean": result.drc_clean,
-                "drc_violations": result.drc_violations,
-                "stitch_vias_added": result.stitch_vias_added,
-                "stitch_tracks_added": result.stitch_tracks_added,
-                "gnd_islands_before": result.gnd_islands_before,
-                "gnd_islands_after": result.gnd_islands_after,
-                "gnd_stripped": result.gnd_stripped,
-                "cancelled": result.cancelled,
-                "expansions": result.expansions,
-                "timings": result.timings,
-                "failed_reasons": result.failed_reasons,
-                "partial_tracks": [
-                    {"start": list(t.start), "end": list(t.end),
-                     "width_mm": t.width_mm, "layer": t.layer,
-                     "net_name": t.net_name}
-                    for t in result.partial_tracks
-                ],
-                "partial_vias": [
-                    {"position": list(v.position), "size_mm": v.size_mm,
-                     "drill_mm": v.drill_mm, "layers": list(v.layers),
-                     "net_name": v.net_name}
-                    for v in result.partial_vias
-                ],
-                "partial_arcs": [
-                    {"start": list(a.start), "mid": list(a.mid), "end": list(a.end),
-                     "width_mm": a.width_mm, "layer": a.layer,
-                     "net_name": a.net_name}
-                    for a in result.partial_arcs
-                ],
-                "mode_warning": mode_info["warning"],
-                "version": version,
-            }
+            payload = _routing_result_payload(result)
+            payload["mode_warning"] = mode_info["warning"]
+            payload["version"] = version
             # Include debug info if requested (sync /api/routing/run)
             # Include debug info if requested
             if route_params.debug:

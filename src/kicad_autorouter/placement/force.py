@@ -420,7 +420,16 @@ def _compute_total_force(
             fp_centroids_arr = body_centroids_arr
             fp_radii_arr = body_radii_arr
 
-            def _spread(rows, cx, cy, radius, ux, uy, fx, fy):
+            def _spread_force(rows, cx, cy, radius, ux, uy, fx, fy,
+                              poly_force, tangential_force,
+                              ft_x=0.0, ft_y=0.0):
+                """Spread a normal (fx/fy) force onto poly_force and an
+                optional tangential (ft_x/ft_y) force onto tangential_force.
+
+                Both use the contact-weight projection along (ux, uy). The
+                tangential accumulator is only written when non-zero,
+                matching the prior split helpers' call guard.
+                """
                 if rows is None or len(rows) == 0:
                     return
                 r = float(radius)
@@ -429,27 +438,17 @@ def _compute_total_force(
                     if n > 0:
                         poly_force[rows, 0] += fx / n
                         poly_force[rows, 1] += fy / n
+                        if ft_x != 0.0 or ft_y != 0.0:
+                            tangential_force[rows, 0] += ft_x / n
+                            tangential_force[rows, 1] += ft_y / n
                     return
                 proj = ((pos[rows, 0] - cx) * ux + (pos[rows, 1] - cy) * uy) / r
                 w = _contact_weights(proj)
                 poly_force[rows, 0] += w * fx
                 poly_force[rows, 1] += w * fy
-
-            def _spread_tangential(rows, cx, cy, radius, nx, ny, tx, ty, ft_x, ft_y):
-                """Spread tangential force using normal direction for contact weights."""
-                if rows is None or len(rows) == 0:
-                    return
-                r = float(radius)
-                if not math.isfinite(r) or r < 1e-9:
-                    n = len(rows)
-                    if n > 0:
-                        tangential_force[rows, 0] += ft_x / n
-                        tangential_force[rows, 1] += ft_y / n
-                    return
-                proj = ((pos[rows, 0] - cx) * nx + (pos[rows, 1] - cy) * ny) / r
-                w = _contact_weights(proj)
-                tangential_force[rows, 0] += w * ft_x
-                tangential_force[rows, 1] += w * ft_y
+                if ft_x != 0.0 or ft_y != 0.0:
+                    tangential_force[rows, 0] += w * ft_x
+                    tangential_force[rows, 1] += w * ft_y
 
             def _apply_halo_push(li, lj, pi, pj, margin):
                 if margin <= 0:
@@ -475,15 +474,17 @@ def _compute_total_force(
                     ux, uy = dx / _gap, dy / _gap
                     fx, fy = strength * ux, strength * uy
                     rows_i = fp_local_to_rows[li]
-                    _spread(
+                    _spread_force(
                         rows_i, fp_centroids_arr[li, 0], fp_centroids_arr[li, 1],
                         fp_radii_arr[li], ux, uy, fx, fy,
+                        poly_force, tangential_force,
                     )
                     if fp_movable_arr[lj]:
                         rows_j = fp_local_to_rows[lj]
-                        _spread(
+                        _spread_force(
                             rows_j, fp_centroids_arr[lj, 0], fp_centroids_arr[lj, 1],
                             fp_radii_arr[lj], -ux, -uy, -fx, -fy,
+                            poly_force, tangential_force,
                         )
 
             def _fp_tangential_vel(fp_local_idx, tx, ty):
@@ -513,6 +514,45 @@ def _compute_total_force(
                         ctx.last_tangent[pair] = 1.0
                     return 1.0
                 return prev
+
+            def _apply_push(li, lj, s_mm, ux, uy, halo_reach):
+                """Apply one contact push between footprints li and lj.
+
+                Computes the wall-law force from ``s_mm``/``halo_reach``,
+                adds tangential assist, and spreads the normal force onto
+                ``poly_force`` plus the tangential force onto
+                ``tangential_force`` for footprint li (and lj when movable).
+                No-op at or beyond the halo reach.
+                """
+                if s_mm >= halo_reach:
+                    return
+                force_mag = _wall_mag(
+                    params.wall_k_N, s_mm, halo_reach,
+                    params.wall_exponent, params.wall_cap_depth_mm,
+                )
+                fx, fy = force_mag * ux, force_mag * uy
+                ft_x = ft_y = 0.0
+                if pad_vel is not None and params.contact_tangent_gamma > 0.0:
+                    tx, ty = -uy, ux
+                    v_i_t = _fp_tangential_vel(li, tx, ty)
+                    v_j_t = _fp_tangential_vel(lj, tx, ty)
+                    v_rel_t = v_i_t - v_j_t
+                    sgn = _tangent_sign((li, lj) if li < lj else (lj, li), v_rel_t)
+                    f_t = params.contact_tangent_gamma * force_mag * sgn
+                    ft_x, ft_y = f_t * tx, f_t * ty
+                rows_i = fp_local_to_rows[li]
+                _spread_force(
+                    rows_i, fp_centroids_arr[li, 0], fp_centroids_arr[li, 1],
+                    fp_radii_arr[li], ux, uy, fx, fy,
+                    poly_force, tangential_force, ft_x, ft_y,
+                )
+                if fp_movable_arr[lj]:
+                    rows_j = fp_local_to_rows[lj]
+                    _spread_force(
+                        rows_j, fp_centroids_arr[lj, 0], fp_centroids_arr[lj, 1],
+                        fp_radii_arr[lj], -ux, -uy, -fx, -fy,
+                        poly_force, tangential_force, -ft_x, -ft_y,
+                    )
 
             def _apply_contact_push(
                 li, lj, pi, pj, intersection_area, sink=None,
@@ -545,44 +585,7 @@ def _compute_total_force(
                 if sink is not None:
                     sink.append(('s', float(s_mm), ux, uy))
                     return
-                if s_mm >= halo_reach:
-                    return
-                force_mag = _wall_mag(
-                    params.wall_k_N, s_mm, halo_reach,
-                    params.wall_exponent, params.wall_cap_depth_mm,
-                )
-                fx, fy = force_mag * ux, force_mag * uy
-                # Tangential assist: works even if one footprint has no pads (wall)
-                ft_x = ft_y = 0.0
-                if pad_vel is not None and params.contact_tangent_gamma > 0.0:
-                    tx, ty = -uy, ux
-                    v_i_t = _fp_tangential_vel(li, tx, ty)
-                    v_j_t = _fp_tangential_vel(lj, tx, ty)
-                    v_rel_t = v_i_t - v_j_t
-                    sgn = _tangent_sign((li, lj) if li < lj else (lj, li), v_rel_t)
-                    f_t = params.contact_tangent_gamma * force_mag * sgn
-                    ft_x, ft_y = f_t * tx, f_t * ty
-                rows_i = fp_local_to_rows[li]
-                _spread(
-                    rows_i, fp_centroids_arr[li, 0], fp_centroids_arr[li, 1],
-                    fp_radii_arr[li], ux, uy, fx, fy,
-                )
-                if ft_x != 0.0 or ft_y != 0.0:
-                    _spread_tangential(
-                        rows_i, fp_centroids_arr[li, 0], fp_centroids_arr[li, 1],
-                        fp_radii_arr[li], ux, uy, tx, ty, ft_x, ft_y,
-                    )
-                if fp_movable_arr[lj]:
-                    rows_j = fp_local_to_rows[lj]
-                    _spread(
-                        rows_j, fp_centroids_arr[lj, 0], fp_centroids_arr[lj, 1],
-                        fp_radii_arr[lj], -ux, -uy, -fx, -fy,
-                    )
-                    if ft_x != 0.0 or ft_y != 0.0:
-                        _spread_tangential(
-                            rows_j, fp_centroids_arr[lj, 0], fp_centroids_arr[lj, 1],
-                            fp_radii_arr[lj], -ux, -uy, -tx, -ty, -ft_x, -ft_y,
-                        )
+                _apply_push(li, lj, s_mm, ux, uy, halo_reach)
 
             def _apply_contact_push_analytical(
                 li, lj, penetration, normal, is_overlap, sink=None,
@@ -598,44 +601,7 @@ def _compute_total_force(
                     if is_overlap or s_mm < halo_reach:
                         sink.append(('s', float(s_mm), ux, uy))
                     return True
-                if s_mm >= halo_reach:
-                    return True
-                force_mag = _wall_mag(
-                    params.wall_k_N, s_mm, halo_reach,
-                    params.wall_exponent, params.wall_cap_depth_mm,
-                )
-                fx, fy = force_mag * ux, force_mag * uy
-                # Tangential assist: add force along tangential direction to help parts slide
-                ft_x = ft_y = 0.0
-                if pad_vel is not None and params.contact_tangent_gamma > 0.0:
-                    tx, ty = -uy, ux  # tangential axis (perp to normal)
-                    v_i_t = _fp_tangential_vel(li, tx, ty)
-                    v_j_t = _fp_tangential_vel(lj, tx, ty)
-                    v_rel_t = v_i_t - v_j_t
-                    sgn = _tangent_sign((li, lj) if li < lj else (lj, li), v_rel_t)
-                    f_t = params.contact_tangent_gamma * force_mag * sgn
-                    ft_x, ft_y = f_t * tx, f_t * ty
-                rows_i = fp_local_to_rows[li]
-                _spread(
-                    rows_i, fp_centroids_arr[li, 0], fp_centroids_arr[li, 1],
-                    fp_radii_arr[li], ux, uy, fx, fy,
-                )
-                if ft_x != 0.0 or ft_y != 0.0:
-                    _spread_tangential(
-                        rows_i, fp_centroids_arr[li, 0], fp_centroids_arr[li, 1],
-                        fp_radii_arr[li], ux, uy, tx, ty, ft_x, ft_y,
-                    )
-                if fp_movable_arr[lj]:
-                    rows_j = fp_local_to_rows[lj]
-                    _spread(
-                        rows_j, fp_centroids_arr[lj, 0], fp_centroids_arr[lj, 1],
-                        fp_radii_arr[lj], -ux, -uy, -fx, -fy,
-                    )
-                    if ft_x != 0.0 or ft_y != 0.0:
-                        _spread_tangential(
-                            rows_j, fp_centroids_arr[lj, 0], fp_centroids_arr[lj, 1],
-                            fp_radii_arr[lj], -ux, -uy, -tx, -ty, -ft_x, -ft_y,
-                        )
+                _apply_push(li, lj, s_mm, ux, uy, halo_reach)
                 return True
 
             # Compute collision forces per footprint pair
@@ -857,40 +823,7 @@ def _compute_total_force(
                     if ctx is not None:
                         ctx.last_contact[_pair] = (_ux, _uy)
                     _halo_mm = pair_halo
-                    _mag = _wall_mag(
-                        params.wall_k_N, _s_mm, _halo_mm,
-                        params.wall_exponent, params.wall_cap_depth_mm,
-                    )
-                    _fx, _fy = _mag * _ux, _mag * _uy
-                    # Tangential assist for aggregated contact
-                    _ft_x = _ft_y = 0.0
-                    if pad_vel is not None and params.contact_tangent_gamma > 0.0:
-                        _tx, _ty = -_uy, _ux
-                        _v_rel_t = _fp_tangential_vel(i, _tx, _ty) - _fp_tangential_vel(j, _tx, _ty)
-                        _sgn = _tangent_sign((i, j) if i < j else (j, i), _v_rel_t)
-                        _f_t = params.contact_tangent_gamma * _mag * _sgn
-                        _ft_x, _ft_y = _f_t * _tx, _f_t * _ty
-                    rows_i = fp_local_to_rows[i]
-                    _spread(
-                        rows_i, fp_centroids_arr[i, 0], fp_centroids_arr[i, 1],
-                        fp_radii_arr[i], _ux, _uy, _fx, _fy,
-                    )
-                    if _ft_x != 0.0 or _ft_y != 0.0:
-                        _spread_tangential(
-                            rows_i, fp_centroids_arr[i, 0], fp_centroids_arr[i, 1],
-                            fp_radii_arr[i], _ux, _uy, _tx, _ty, _ft_x, _ft_y,
-                        )
-                    if fp_movable_arr[j]:
-                        rows_j = fp_local_to_rows[j]
-                        _spread(
-                            rows_j, fp_centroids_arr[j, 0], fp_centroids_arr[j, 1],
-                            fp_radii_arr[j], -_ux, -_uy, -_fx, -_fy,
-                        )
-                        if _ft_x != 0.0 or _ft_y != 0.0:
-                            _spread_tangential(
-                                rows_j, fp_centroids_arr[j, 0], fp_centroids_arr[j, 1],
-                                fp_radii_arr[j], -_ux, -_uy, -_tx, -_ty, -_ft_x, -_ft_y,
-                            )
+                    _apply_push(i, j, _s_mm, _ux, _uy, _halo_mm)
 
             # Drop blended normals for pairs no longer in contact range so a
             # part that leaves and returns doesn't mix with a stale direction.
@@ -1019,15 +952,11 @@ def _compute_total_force(
                         ft_x, ft_y = f_t * tx, f_t * ty
                     rows = ctx.fp_local_to_rows[fp_local_idx]
                     if rows is not None and len(rows) > 0:
-                        _spread(
+                        _spread_force(
                             rows, fp_centroids_arr[fp_local_idx, 0], fp_centroids_arr[fp_local_idx, 1],
                             fp_radii_arr[fp_local_idx], ux, uy, fx, fy,
+                            poly_force, tangential_force, ft_x, ft_y,
                         )
-                        if ft_x != 0.0 or ft_y != 0.0:
-                            _spread_tangential(
-                                rows, fp_centroids_arr[fp_local_idx, 0], fp_centroids_arr[fp_local_idx, 1],
-                                fp_radii_arr[fp_local_idx], ux, uy, tx, ty, ft_x, ft_y,
-                            )
 
             force += poly_force
     force += tangential_force

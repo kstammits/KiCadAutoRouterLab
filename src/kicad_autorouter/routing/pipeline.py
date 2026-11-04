@@ -523,6 +523,91 @@ def _check_chunk_coverage(
     return None
 
 
+def _resume_progress(grouped_chunks, group_progress: Dict[int, List[NetRouteResult]]) -> int:
+    """Recompute ``done_base`` so a retry continues where it stopped.
+
+    Counts pair-work for chunks already routed in each region group, so the
+    progress window reflects prior copper rather than restarting at zero.
+    """
+    return sum(
+        len(c) * (len(c) - 1) // 2
+        for ri, chunks in grouped_chunks
+        for c in chunks[:len(group_progress.get(ri, []))]
+    )
+
+
+def _route_chunk(
+    router, term_set, region_secondary, progress_cb, should_cancel,
+    seed_cells, cost_grid, routing_grid, corridor, soft_mask,
+    clearance_radius, region_blocked_mask, fit_arcs, max_radius_mm,
+    min_leg_mm, sample_mm, keep_min_radius_mm, params, model, timings,
+    net_name, tag="",
+):
+    """Route+smooth+stamp one terminal set within its region.
+
+    Mirrors the former ``_fly`` closure: one A* flight, then smoothing,
+    board-escape check, and corridor stamp. Returns
+    ``(result|None, failure|None)`` where failure is ``("budget", reason)``
+    on deterministic budget exhaustion or ``("open", reason)`` otherwise.
+
+    Expansion accounting and progress reporting are owned by the caller
+    (``progress_cb`` plus post-route ``expansions``/_report bookkeeping), so
+    retry/resume semantics and observable outputs are unchanged.
+    """
+    pinned = {(c, r) for c, r, _ in term_set}
+    t_astar = time.perf_counter()
+    res = router.route(
+        list(term_set), region_secondary,
+        progress_cb=progress_cb,
+        should_cancel=should_cancel,
+        seed_cells=seed_cells,
+    )
+    timings["astar_s"] = timings.get("astar_s", 0.0) + (
+        time.perf_counter() - t_astar
+    )
+    if params.debug and res.debug_attempts:
+        key = f"debug_attempts_{net_name}"
+        timings[key] = timings.get(key, []) + [dict(a) for a in res.debug_attempts]
+    if res.success:
+        t_smooth = time.perf_counter()
+        res = _smooth_result(
+            res, cost_grid, routing_grid, corridor,
+            pinned=pinned, soft_mask=soft_mask,
+            clearance_radius=clearance_radius,
+            blocked_mask=region_blocked_mask,
+            angle_step_rad=math.pi / 18,
+            fit_arcs=fit_arcs,
+            max_radius_mm=max_radius_mm,
+            min_leg_mm=min_leg_mm,
+            sample_mm=sample_mm,
+            keep_min_radius_mm=keep_min_radius_mm,
+        )
+        timings["smooth_s"] = timings.get("smooth_s", 0.0) + (
+            time.perf_counter() - t_smooth
+        )
+        if _route_escapes_board(res, routing_grid, model, term_set):
+            return None, ("open", f"{tag}route left board outline")
+        _apply_route_to_grid(
+            res, cost_grid, routing_grid, corridor,
+            extra_radius=clearance_radius,
+            via_clearance_cells=router.via_clearance_cells,
+        )
+        return res, None
+    if (
+        params.max_expansions_per_net > 0
+        and res.expansions >= params.max_expansions_per_net
+    ):
+        reason = (
+            f"{tag}expansion budget exhausted ({res.expansions} >= "
+            f"max_expansions_per_net={params.max_expansions_per_net}): "
+            f"no DRC-clean path found within budget — try a narrower "
+            f"track width, smaller piecemeal chunks, or a "
+            f"coarser grid"
+        )
+        return None, ("budget", reason)
+    return None, ("open", f"{tag}no path found")
+
+
 def _route_escapes_board(result, grid, model, term_set=None) -> bool:
     """True when any routed branch cell lies outside every board polygon.
 
@@ -562,7 +647,8 @@ def _smooth_result(result, cost_grid, routing_grid, corridor: int, blocked_thres
                    pinned=None, soft_mask=None, clearance_radius: int = 0,
                    blocked_mask=None, angle_step_rad: float = math.pi / 18,
                    fit_arcs: bool = False, max_radius_mm: float = 1.0,
-                   min_leg_mm: float = 0.3, sample_mm: float = 0.05):
+                   min_leg_mm: float = 0.3, sample_mm: float = 0.05,
+                   keep_min_radius_mm: float = 0.0):
     """String-pull a successful route before corridor reservation.
 
     Smoothing runs against the pre-route grid (which must NOT yet contain
@@ -578,6 +664,12 @@ def _smooth_result(result, cost_grid, routing_grid, corridor: int, blocked_thres
     clearance gate, where the runs live); fitted arc chains ride on
     ``result.arc_pieces`` for arc-aware reservation/emission. Topology
     stays the smoother's job — arcs only round corners, never move them.
+
+    ``keep_min_radius_mm > 0`` additionally spares open corners admitting
+    at least that fillet radius from the pull-string (same gate the
+    fitter uses, so kept corners always become arcs). Staircases keep
+    collapsing — only corners with roomy legs survive. ``0`` keeps legacy
+    shortcut-everything smoothing.
 
     The shortcut footprint covers ``max(corridor - 1, clearance_radius)``
     so smoothed copper keeps clearance to neighboring tracks, and
@@ -624,6 +716,8 @@ def _smooth_result(result, cost_grid, routing_grid, corridor: int, blocked_thres
                 max_radius_cells=max_r_cells,
                 min_leg_cells=min_leg_mm / res_mm,
                 sample_spacing_cells=max(sample_mm / res_mm, 0.25),
+                keep_min_radius_cells=(keep_min_radius_mm / res_mm
+                                        if res_mm > 0 else 0.0),
             )
             new_branches.append(smoothed)
             new_pieces.append(tuple(pieces))
@@ -1150,70 +1244,6 @@ def route_raw(
         fatal = False
         region_results: List[NetRouteResult] = []
 
-        def _fly(term_set, done_base: int, pairs_grand: int,
-                 tag: str, seed, region_secondary, region_blocked_mask) -> tuple:
-            """Route+smooth+stamp one terminal set within its region.
-
-            Returns (result|None, fail_kind|None) with fail_kind "budget"
-            on deterministic budget exhaustion, "open" otherwise.
-            """
-            nonlocal expansions_total
-
-            def _pair_cb(done: int, total: int, exp: int) -> None:
-                _report(net_name, done_base + done, pairs_grand,
-                        expansions_total + exp)
-
-            t_astar = time.perf_counter()
-            res = router.route(
-                list(term_set), region_secondary,
-                progress_cb=_pair_cb if progress_cb is not None else None,
-                should_cancel=should_cancel,
-                seed_cells=seed,
-            )
-            timings["astar_s"] = timings.get("astar_s", 0.0) + (time.perf_counter() - t_astar)
-            expansions_total += res.expansions
-            if params.debug and res.debug_attempts:
-                key = f"debug_attempts_{net_name}"
-                timings[key] = timings.get(key, []) + [
-                    dict(a) for a in res.debug_attempts
-                ]
-            chunk_pairs = len(term_set) * (len(term_set) - 1) // 2
-            _report(net_name, done_base + chunk_pairs, pairs_grand, expansions_total)
-            if res.success:
-                t_smooth = time.perf_counter()
-                pinned = {(c, r) for c, r, _ in term_set}
-                res = _smooth_result(
-                    res, cost_grid, routing_grid, corridor,
-                    pinned=pinned, soft_mask=soft_mask,
-                    clearance_radius=clearance_radius,
-                    blocked_mask=region_blocked_mask,
-                    angle_step_rad=math.pi / 18,
-                    fit_arcs=params.arc_fillets,
-                    max_radius_mm=params.arc_max_radius_mm,
-                    min_leg_mm=params.arc_min_leg_mm,
-                    sample_mm=params.arc_sample_mm,
-                )
-                timings["smooth_s"] = timings.get("smooth_s", 0.0) + (time.perf_counter() - t_smooth)
-                if _route_escapes_board(res, routing_grid, model, term_set):
-                    return None, ("open", f"{tag}route left board outline")
-                _apply_route_to_grid(
-                    res, cost_grid, routing_grid, corridor,
-                    extra_radius=clearance_radius,
-                    via_clearance_cells=router.via_clearance_cells,
-                )
-                return res, None
-            if (params.max_expansions_per_net > 0
-                    and res.expansions >= params.max_expansions_per_net):
-                reason = (
-                    f"{tag}expansion budget exhausted ({res.expansions} >= "
-                    f"max_expansions_per_net={params.max_expansions_per_net}): "
-                    f"no DRC-clean path found within budget — try a narrower "
-                    f"track width, smaller piecemeal chunks, or a "
-                    f"coarser grid"
-                )
-                return None, ("budget", reason)
-            return None, ("open", f"{tag}no path found")
-
         routed_regions: Set[int] = set()
         # Per-group routed chunks persist across attempts so a retry reruns
         # only the failed chunk onward (prior copper stays stamped as both
@@ -1224,11 +1254,7 @@ def route_raw(
                 raise RoutingCancelled(f"cancelled before attempt for {net_name}")
             # Resume after already-routed chunks: recompute progress so a
             # retry continues where the previous attempt stopped.
-            done_base = sum(
-                len(c) * (len(c) - 1) // 2
-                for ri, chunks in grouped_chunks
-                for c in chunks[:len(group_progress.get(ri, []))]
-            )
+            done_base = _resume_progress(grouped_chunks, group_progress)
             # Route each region group independently; seeds stay within the
             # same region so kept copper never pulls a search across the gap.
             for region_idx, chunks in grouped_chunks:
@@ -1248,12 +1274,29 @@ def route_raw(
                     region_secondary, region_blocked = _secondary_for_region(
                         region_idx, chunk
                     )
-                    result, failure = _fly(chunk, done_base, pairs_total, tag, seed,
-                                           region_secondary, region_blocked)
+                    chunk_pairs = len(chunk) * (len(chunk) - 1) // 2
+
+                    def _pair_cb(done: int, total: int, exp: int) -> None:
+                        _report(net_name, done_base + done, pairs_total,
+                                expansions_total + exp)
+
+                    result, failure = _route_chunk(
+                        router, chunk, region_secondary, _pair_cb, should_cancel,
+                        seed, cost_grid, routing_grid, corridor, soft_mask,
+                        clearance_radius, region_blocked,
+                        params.arc_fillets, params.arc_max_radius_mm,
+                        params.arc_min_leg_mm, params.arc_sample_mm,
+                        params.arc_keep_min_radius_mm, params, model, timings,
+                        net_name, tag,
+                    )
+                    if result is not None:
+                        expansions_total += result.expansions
+                    _report(net_name, done_base + chunk_pairs, pairs_total,
+                            expansions_total)
                     if failure is None:
                         assert result is not None
                         chunk_results.append(result)
-                        done_base += len(chunk) * (len(chunk) - 1) // 2
+                        done_base += chunk_pairs
                         continue
                     kind, reason = failure
                     ripup.record_failure(net_name, reason)
