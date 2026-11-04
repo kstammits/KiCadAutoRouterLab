@@ -65,9 +65,10 @@ def test_refine_explores_seeds_and_picks_best():
     result, _, _ = refine_routing(
         model, ["X1", "X2"], set(), params=_params(refine_seeds=3, refine_seed=7),
         original_pcb_tree=tree)
-    assert len(result.candidates) == 4  # baseline + 3 shuffles
-    assert [c["seed"] for c in result.candidates] == [-1, 7, 8, 9]
-    assert result.winner_seed in (-1, 7, 8, 9)
+    assert [c["seed"] for c in result.candidates] == [7, 8, 9]
+    # Trial 0 runs the input order; later trials permute the tangle group.
+    assert result.candidates[0]["order"] == ["X1", "X2"]
+    assert result.winner_seed in (7, 8, 9)
     best = _winner(result.candidates)
     assert result.winner_seed == best["seed"]
     assert result.nets_routed + result.nets_failed == 2
@@ -92,10 +93,26 @@ def test_refine_never_worse_than_current():
     result, _, _ = refine_routing(
         model, ["X1", "X2"], set(), params=_params(refine_seeds=3, refine_seed=1),
         original_pcb_tree=tree)
-    baseline = next(c for c in result.candidates if c["seed"] == -1)
     winner = next(c for c in result.candidates if c["seed"] == result.winner_seed)
-    assert (winner["nets_routed"], -winner["score"]) >= \
-           (baseline["nets_routed"], -baseline["score"])
+    if result.winner_seed != -1:
+        assert result.nets_routed == winner["nets_routed"]
+    for c in result.candidates:
+        if c["seed"] == result.winner_seed:
+            continue
+        assert (winner["nets_routed"], -winner["score"]) >= \
+               (c["nets_routed"], -c["score"])
+
+
+def test_refine_keeps_current_when_all_trials_fail():
+    tree, model = _xcross_model()
+    result, cost_grid, routing_grid = refine_routing(
+        model, ["X1", "X2"], set(),
+        params=_params(refine_seeds=2, refine_seed=0, max_expansions_per_net=1),
+        original_pcb_tree=tree)
+    assert result.winner_seed == -1
+    assert result.tracks_added == 0 and result.vias_added == 0
+    assert len(result.candidates) == 2  # trials ran, all failed
+    assert cost_grid is None and routing_grid is None
 
 
 def test_refine_refuses_protected_and_overcap():
@@ -139,28 +156,41 @@ def test_refine_cancel_keeps_current():
 
 def test_refine_picks_best_order_with_stubbed_router(monkeypatch):
     """Winner rule: most nets routed wins; ties break on lowest score."""
+    from kicad_autorouter.routing.pipeline import RawRoutes
     calls = []
 
-    def _fake_route_nets(**kw):
+    def _fake_route_raw(**kw):
         order = tuple(kw["net_names"])
         calls.append(order)
-        # Seed 5->(A,B,C), 6->(B,A,C), 7->(C,A,B): the cheap routed-1
-        # candidate must lose to routed-2 on count; among routed-2 the
-        # cheaper score wins.
+        # Seed 5->identity (A,B,C); 6->(B,A,C); 7->(C,A,B): the cheap
+        # routed-1 candidate must lose to routed-2 on count; among routed-2
+        # the cheaper score wins.
         routed = 1 if order[0] == "C" else 2
         score = 0.5 if order[0] == "C" else (5.0 if order == ("B", "A", "C") else 10.0)
-        return RoutingResult(
-            tracks_added=2, vias_added=1, nets_routed=routed,
-            nets_failed=0, drc_clean=True, drc_violations=0,
-            pcb_tree="TREE", total_wire_mm=score,
-        ), "CG", "RG"
+        return RawRoutes(model=kw["model"], nets_routed=routed,
+                         nets_failed=3 - routed, total_wire_mm=score,
+                         expansions_total=100), "CG", "RG"
 
-    monkeypatch.setattr(pipeline, "route_nets", _fake_route_nets)
+    finished = []
+
+    def _fake_finish(raw, params):
+        finished.append(raw)
+        return RoutingResult(
+            tracks_added=9, vias_added=0, nets_routed=raw.nets_routed,
+            nets_failed=0, drc_clean=True, drc_violations=0,
+            pcb_tree="TREE"), "CG", "RG"
+
+    monkeypatch.setattr(pipeline, "route_raw", _fake_route_raw)
+    monkeypatch.setattr(pipeline, "finish_routes", _fake_finish)
+    monkeypatch.setattr(pipeline, "_tangle_groups",
+                        lambda nets, model: [list(nets)])
     _, model = _xcross_model()
     result, cost_grid, routing_grid = refine_routing(
         model, ["A", "B", "C"], set(), params=_params(refine_seeds=3, refine_seed=5))
     assert result.winner_seed == 6
-    assert calls[-1] == ("B", "A", "C")  # final replay uses the winner order
+    assert calls[0] == ("A", "B", "C")  # trial 0 runs the input order
+    assert finished[0].total_wire_mm == 5.0  # winner goes to finish
+    assert result.expansions == 300
     assert (cost_grid, routing_grid) == ("CG", "RG")
     assert result.pcb_tree == "TREE"
 
@@ -174,3 +204,36 @@ def test_refine_params_validation():
         RoutingParams.from_dict({"refine_seeds": 9})
     with pytest.raises(ValueError, match="must be >= 0"):
         RoutingParams.from_dict({"refine_seed": -1})
+
+
+def test_tangle_groups_clusters_overlapping_nets():
+    from kicad_autorouter.routing.pipeline import _refine_order, _tangle_groups
+    _, model = _xcross_model()
+    # Diagonal X nets span the same board area: one tangle group.
+    assert _tangle_groups(["X1", "X2"], model) == [["X1", "X2"]]
+    # Unknown (pad-less) nets never merge: singleton groups hold position.
+    assert _tangle_groups(["X1", "NOPE"], model) == [["X1"], ["NOPE"]]
+    assert _refine_order(["A", "X1", "B"], [["X1"]], 3) == ["A", "X1", "B"]
+    assert _refine_order(["A", "X1", "B"], [["X1"]], 99) == ["A", "X1", "B"]
+    # Multi-net groups permute deterministically.
+    o = _refine_order(["X1", "X2"], [["X1", "X2"]], 6)
+    assert sorted(o) == ["X1", "X2"]
+    assert o == _refine_order(["X1", "X2"], [["X1", "X2"]], 6)
+
+
+def test_split_route_raw_finish_matches_route_nets():
+    """Stage split guard: route_nets == finish_routes(route_raw(...))."""
+    from kicad_autorouter.routing.pipeline import finish_routes, route_raw
+    from kicad_autorouter.sexpr import to_sexpr
+    tree, model = _xcross_model()
+    kw = dict(net_names=["X1", "X2"], protected_nets=set(),
+               params=_params(), original_pcb_tree=tree)
+    r1, _, _ = pipeline.route_nets(model, **kw)
+    raw, _, _ = route_raw(model, **kw)
+    r2, _, _ = finish_routes(raw, _params())
+    assert to_sexpr(r1.pcb_tree) == to_sexpr(r2.pcb_tree)
+    for field in ("tracks_added", "vias_added", "nets_routed", "nets_failed",
+                  "total_wire_mm", "expansions", "stitch_vias_added",
+                  "stitch_tracks_added", "arcs_added", "fanout_vias_added",
+                  "gnd_islands_before", "gnd_islands_after", "gnd_stripped"):
+        assert getattr(r1, field) == getattr(r2, field), field

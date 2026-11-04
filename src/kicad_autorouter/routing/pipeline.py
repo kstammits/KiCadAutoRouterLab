@@ -32,6 +32,7 @@ from .smooth import own_net_soft_mask, smooth_branch_pieces, smooth_grid_path, s
 from .router import SECONDARY_BLOCKED
 from .router import RouteResult as NetRouteResult
 from .power import identify_power_nets
+from .dsu import DisjointSet
 from .grid import RoutingGrid, board_to_grid, grid_to_board, mm_to_cells
 from .pour import pour_corridors, pour_net_names, severance_cost
 from .stitch import plan_stitches
@@ -706,7 +707,43 @@ def _stamp_fitted_pieces(layer_grid, pieces, radius: int) -> None:
                 layer_grid[r, c] = BLOCKED
 
 
-def route_nets(
+@dataclass
+class RawRoutes:
+    """Unfinished routing: raw copper before stitching/tree-writeback/DRC.
+
+    Bundle threading stage A (``route_raw``: rip, grids, routing, track
+    conversion) into stage B (``finish_routes``: GND stitching, tree
+    writeback, zone refill, DRC, result assembly). Lets refine trials score
+    raw copper and finish only the winner — no re-route replay.
+    """
+
+    model: BoardModel  # ripped model (local replace() copies)
+    pcb_tree: Optional = None  # ripped input tree (rebound local)
+    cost_grid: Optional[np.ndarray] = None  # stamped BLOCKED through 10a
+    routing_grid: Optional[RoutingGrid] = None
+    all_results: Dict[str, NetRouteResult] = field(default_factory=dict)
+    partial_results: Dict[str, NetRouteResult] = field(default_factory=dict)
+    width_map: Dict[str, float] = field(default_factory=dict)
+    plane_tracks: List[OutputTrack] = field(default_factory=list)
+    plane_vias: List[OutputVia] = field(default_factory=list)
+    ripup: Optional[RipUpManager] = None
+    nets_routed: int = 0
+    nets_failed: int = 0
+    cancelled: bool = False
+    expansions_total: int = 0
+    timings: Dict[str, float] = field(default_factory=dict)
+    t_total: float = 0.0
+    gnd_stripped: int = 0
+    tracks: List[OutputTrack] = field(default_factory=list)
+    vias: List[OutputVia] = field(default_factory=list)
+    route_arcs: List[OutputArc] = field(default_factory=list)
+    partial_tracks: List[OutputTrack] = field(default_factory=list)
+    partial_vias: List[OutputVia] = field(default_factory=list)
+    partial_arcs: List[OutputArc] = field(default_factory=list)
+    total_wire_mm: float = 0.0
+
+
+def route_raw(
     model: BoardModel,
     net_names: List[str],
     protected_nets: Set[str],
@@ -717,34 +754,14 @@ def route_nets(
     extra_power_nets: Collection[str] = (),
     progress_cb=None,  # fn(net_name, pairs_done, pairs_total, expansions) — best-effort
     should_cancel=None,  # fn() -> bool — checked between nets/attempts/pairs
-) -> Tuple[RoutingResult, np.ndarray, RoutingGrid]:
-    """Route a specific list of nets.
+) -> Tuple[RawRoutes, np.ndarray, RoutingGrid]:
+    """Route nets to raw copper (no stitching, tree writeback, refill, DRC).
 
-    This function supports incremental routing by accepting and returning
-    the cost_grid and routing_grid, allowing them to be persisted between calls.
+    Steps 0–10a of the pipeline; same signature as :func:`route_nets`.
+    Returns the :class:`RawRoutes` bundle plus grids for :func:`finish_routes`.
 
-    Args:
-        model: BoardModel with footprints, nets, tracks, vias
-        net_names: List of net names to route (in priority order)
-        protected_nets: Set of net names that are protected from rip-up
-        cost_grid: Pre-built occupancy grid (optional, will be built if None)
-        routing_grid: Pre-built routing grid (optional, will be built if None)
-        params: RoutingParams configuration (optional, uses defaults if None)
-        original_pcb_tree: Original PCB S-expression tree for writeback
-        extra_power_nets: User-marked power membership (app nets table,
-            seeded from power-named KiCad netclasses on load). Marked nets
-            route first with wide tracks and join the protected family via
-            the caller's protected set.
-        progress_cb: Optional per-pair progress hook for job UIs. Called as
-            ``progress_cb(net_name, pairs_done, pairs_total, expansions)``.
-            Exceptions are swallowed (reporting must never break routing).
-        should_cancel: Optional cooperative-cancel predicate. Checked
-            between nets, between retry attempts, and inside A* (every 4096
-            expansions). Firing sets ``RoutingResult.cancelled`` and stops
-            with partial results — already-routed nets are kept.
-
-    Returns:
-        Tuple of (RoutingResult, updated_cost_grid, routing_grid)
+    Accepts and returns the cost_grid and routing_grid, allowing them to be
+    persisted between calls. Args mirror :func:`route_nets`.
     """
     if params is None:
         params = RoutingParams()
@@ -1376,6 +1393,51 @@ def route_nets(
         for a in route_arcs
     )
 
+    raw = RawRoutes(
+        model=model,
+        pcb_tree=original_pcb_tree,
+        cost_grid=cost_grid,
+        routing_grid=routing_grid,
+        all_results=all_results,
+        partial_results=partial_results,
+        width_map=width_map,
+        plane_tracks=plane_tracks,
+        plane_vias=plane_vias,
+        ripup=ripup,
+        nets_routed=nets_routed,
+        nets_failed=nets_failed,
+        cancelled=cancelled,
+        expansions_total=expansions_total,
+        timings=timings,
+        t_total=t_total,
+        gnd_stripped=gnd_stripped,
+        tracks=tracks,
+        vias=vias,
+        route_arcs=route_arcs,
+        partial_tracks=partial_tracks,
+        partial_vias=partial_vias,
+        partial_arcs=partial_arcs,
+        total_wire_mm=total_wire_mm,
+    )
+    return raw, cost_grid, routing_grid
+
+
+def finish_routes(
+    raw: RawRoutes,
+    params: RoutingParams,
+) -> Tuple[RoutingResult, np.ndarray, RoutingGrid]:
+    """Finish raw copper: GND stitching, tree writeback, refill, DRC.
+
+    Steps 10b–12 of the pipeline; consumes a :class:`RawRoutes` bundle from
+    :func:`route_raw` (single trial or refine winner alike).
+    """
+    model = raw.model
+    routing_grid = raw.routing_grid
+    cost_grid = raw.cost_grid
+    tracks = list(raw.tracks)
+    vias = list(raw.vias)
+    route_arcs = list(raw.route_arcs)
+
     # 10b. Automatic GND continuity repair (stitching vias + bridge tracks).
     # Runs on the routed board: newly routed copper joins the island model,
     # so fresh fragments get repaired in the same call. Appends standard
@@ -1435,8 +1497,8 @@ def route_nets(
 
     # 11. Apply routes to PCB tree
     pcb_tree = None
-    if original_pcb_tree is not None:
-        pcb_tree = apply_routes_to_tree(original_pcb_tree, tracks, vias, route_arcs)
+    if raw.pcb_tree is not None:
+        pcb_tree = apply_routes_to_tree(raw.pcb_tree, tracks, vias, route_arcs)
 
     # 11b. Refill zones if requested (requires kicad-cli).
     # Runs on a temp copy so the in-memory tree is only replaced when
@@ -1458,13 +1520,14 @@ def route_nets(
     if params.run_drc and pcb_tree is not None:
         drc_result = run_drc_on_tree(pcb_tree, prefix="route_")
 
-    timings["expansions"] = float(expansions_total)
-    timings["total_s"] = time.perf_counter() - t_total
+    timings = dict(raw.timings)
+    timings["expansions"] = float(raw.expansions_total)
+    timings["total_s"] = time.perf_counter() - raw.t_total
     return RoutingResult(
         tracks_added=len(tracks),
         vias_added=len(vias),
-        nets_routed=nets_routed,
-        nets_failed=nets_failed,
+        nets_routed=raw.nets_routed,
+        nets_failed=raw.nets_failed,
         drc_clean=drc_result.clean if drc_result else True,
         drc_violations=drc_result.total_issues if drc_result else 0,
         drc_result=drc_result,
@@ -1473,20 +1536,77 @@ def route_nets(
         stitch_tracks_added=stitch_tracks_added,
         gnd_islands_before=islands_before,
         gnd_islands_after=islands_after,
-        gnd_stripped=gnd_stripped,
-        cancelled=cancelled,
-        expansions=expansions_total,
+        gnd_stripped=raw.gnd_stripped,
+        cancelled=raw.cancelled,
+        expansions=raw.expansions_total,
         timings=timings,
         refill_zones_done=refill_done,
-        fanout_vias_added=len(plane_vias),
-        fanout_tracks_added=len(plane_tracks),
-        failed_reasons=dict(ripup.net_failures),
-        partial_tracks=tuple(partial_tracks),
-        partial_vias=tuple(partial_vias),
-        partial_arcs=tuple(partial_arcs),
+        fanout_vias_added=len(raw.plane_vias),
+        fanout_tracks_added=len(raw.plane_tracks),
+        failed_reasons=dict(raw.ripup.net_failures),
+        partial_tracks=tuple(raw.partial_tracks),
+        partial_vias=tuple(raw.partial_vias),
+        partial_arcs=tuple(raw.partial_arcs),
         arcs_added=len(route_arcs),
-        total_wire_mm=total_wire_mm,
+        total_wire_mm=raw.total_wire_mm,
     ), cost_grid, routing_grid
+
+
+def route_nets(
+    model: BoardModel,
+    net_names: List[str],
+    protected_nets: Set[str],
+    cost_grid: Optional[np.ndarray] = None,
+    routing_grid: Optional[RoutingGrid] = None,
+    params: Optional[RoutingParams] = None,
+    original_pcb_tree: Optional = None,
+    extra_power_nets: Collection[str] = (),
+    progress_cb=None,  # fn(net_name, pairs_done, pairs_total, expansions) — best-effort
+    should_cancel=None,  # fn() -> bool — checked between nets/attempts/pairs
+) -> Tuple[RoutingResult, np.ndarray, RoutingGrid]:
+    """Route a specific list of nets.
+
+    This function supports incremental routing by accepting and returning
+    the cost_grid and routing_grid, allowing them to be persisted between calls.
+
+    Args:
+        model: BoardModel with footprints, nets, tracks, vias
+        net_names: List of net names to route (in priority order)
+        protected_nets: Set of net names that are protected from rip-up
+        cost_grid: Pre-built occupancy grid (optional, will be built if None)
+        routing_grid: Pre-built routing grid (optional, will be built if None)
+        params: RoutingParams configuration (optional, uses defaults if None)
+        original_pcb_tree: Original PCB S-expression tree for writeback
+        extra_power_nets: User-marked power membership (app nets table,
+            seeded from power-named KiCad netclasses on load). Marked nets
+            route first with wide tracks and join the protected family via
+            the caller's protected set.
+        progress_cb: Optional per-pair progress hook for job UIs. Called as
+            ``progress_cb(net_name, pairs_done, pairs_total, expansions)``.
+            Exceptions are swallowed (reporting must never break routing).
+        should_cancel: Optional cooperative-cancel predicate. Checked
+            between nets, between retry attempts, and inside A* (every 4096
+            expansions). Firing sets ``RoutingResult.cancelled`` and stops
+            with partial results — already-routed nets are kept.
+
+    Returns:
+        Tuple of (RoutingResult, updated_cost_grid, routing_grid)
+    """
+    raw, cost_grid, routing_grid = route_raw(
+        model=model,
+        net_names=net_names,
+        protected_nets=protected_nets,
+        cost_grid=cost_grid,
+        routing_grid=routing_grid,
+        params=params,
+        original_pcb_tree=original_pcb_tree,
+        extra_power_nets=extra_power_nets,
+        progress_cb=progress_cb,
+        should_cancel=should_cancel,
+    )
+    if params is None:
+        params = RoutingParams()
+    return finish_routes(raw, params)
 
 
 def refine_routing(
@@ -1505,12 +1625,13 @@ def refine_routing(
     """Order-space search: re-route the nets under several seeded orders.
 
     Sequential routing is order-dependent — an early track can wall off a
-    later net. This tries ``params.refine_seeds`` shuffled orders (plus the
-    pre-refine copper as contestant ``seed -1``) and commits only the best
-    by (nets routed, then ``total_wire_mm + via_cost_mm * vias``). Stitching
-    runs once on the winner, never per candidate, so trials compare raw
-    routing alone. Never makes things worse: ties or total failure keep
-    the incoming copper untouched.
+    later net. Trial 0 runs the input order; trials 1..N permute within
+    tangle groups (nets whose pad boxes overlap; isolated nets hold their
+    positions). The best trial by (nets routed, then ``total_wire_mm +
+    via_cost_mm * vias``) goes straight to ``finish_routes`` — no re-route
+    replay. Stitching runs once on the winner, never per trial, so trials
+    compare raw routing alone. If every trial fails to route anything, the
+    incoming copper is kept untouched (``winner_seed == -1``).
 
     Refused nets (protected, or over ``max_terminals_per_net``) are left
     untouched and reported in ``failed_reasons``.
@@ -1551,63 +1672,37 @@ def refine_routing(
         else:
             eligible.append(name)
 
-    def _current_score() -> Tuple[int, float]:
-        """(nets with copper, wire + via_cost * vias) of pre-refine copper."""
-        en = set(eligible)
-        wire = 0.0
-        nvias = 0
-        have: Set[str] = set()
-        for t in model.tracks:
-            if t.net_name in en:
-                wire += math.hypot(
-                    t.end.x_mm - t.start.x_mm, t.end.y_mm - t.start.y_mm)
-                have.add(t.net_name)
-        for a in model.arcs:
-            if a.net_name in en:
-                wire += math.hypot(
-                    a.mid.x_mm - a.start.x_mm, a.mid.y_mm - a.start.y_mm)
-                wire += math.hypot(
-                    a.end.x_mm - a.mid.x_mm, a.end.y_mm - a.mid.y_mm)
-                have.add(a.net_name)
-        for v in model.vias:
-            if v.net_name in en:
-                nvias += 1
-                have.add(v.net_name)
-        return len(have), wire + params.via_cost_mm * nvias
-
-    cur_routed, cur_score = _current_score()
-    candidates: List[dict] = [{
-        "seed": -1, "order": list(eligible), "nets_routed": cur_routed,
-        "nets_failed": len(eligible) - cur_routed,
-        "score": round(cur_score, 3), "expansions": 0,
-    }]
-    best_seed = -1
-    best_routed, best_score = cur_routed, cur_score
-    best_expansions = 0
-    cancelled = False
-
-    # Trials run stitch/DRC/refill-free (raw copper only); the winner gets
-    # one full pass afterwards. Fresh cost grid per trial — rebuilt from the
-    # same ripped model, so only the order varies.
+    # Trials run stitch/DRC/refill-free (raw copper only); the winner goes
+    # straight to finish_routes. Fresh cost grid per trial — rebuilt from
+    # the same ripped model, so only the order varies.
     cand_params = replace(
         params, stitch_gnd_vias=False, run_drc=False, refill_zones=False)
+    groups = _tangle_groups(eligible, model)
+    candidates: List[dict] = []
+    best_raw: Optional[RawRoutes] = None
+    best_seed = -1
+    best_routed, best_score = 0, math.inf
+    best_expansions = 0
+    cancelled = False
     for k in range(seeds):
         if should_cancel is not None and should_cancel():
             cancelled = True
             break
-        seed = base_seed + k
-        order = list(eligible)
-        random.Random(seed).shuffle(order)
+        if k == 0:
+            seed, order = base_seed, list(eligible)  # identity trial
+        else:
+            seed = base_seed + k
+            order = _refine_order(eligible, groups, seed)
         _report_stage(k + 1, seeds)
         try:
-            res, _, _ = route_nets(
+            raw, _, _ = route_raw(
                 model=model,
                 net_names=order,
                 protected_nets=protected,
                 cost_grid=None,
                 routing_grid=routing_grid,
                 params=cand_params,
-                original_pcb_tree=None,
+                original_pcb_tree=original_pcb_tree,
                 extra_power_nets=extra_power_nets,
                 progress_cb=progress_cb,
                 should_cancel=should_cancel,
@@ -1615,20 +1710,23 @@ def refine_routing(
         except RoutingCancelled:
             cancelled = True
             break
-        score = (res.total_wire_mm
-                 + params.via_cost_mm * (res.vias_added + res.fanout_vias_added))
+        score = (raw.total_wire_mm
+                 + params.via_cost_mm * (len(raw.vias) + len(raw.plane_vias)))
         candidates.append({
-            "seed": seed, "order": order, "nets_routed": res.nets_routed,
-            "nets_failed": res.nets_failed, "score": round(score, 3),
-            "expansions": res.expansions,
+            "seed": seed, "order": order, "nets_routed": raw.nets_routed,
+            "nets_failed": raw.nets_failed, "score": round(score, 3),
+            "expansions": raw.expansions_total,
         })
-        best_expansions += res.expansions
-        if (res.nets_routed, -score) > (best_routed, -best_score):
-            best_seed = seed
-            best_routed, best_score = res.nets_routed, score
+        best_expansions += raw.expansions_total
+        if raw.nets_routed > 0 and (raw.nets_routed, -score) > (
+            best_routed, -best_score
+        ):
+            best_raw, best_seed = raw, seed
+            best_routed, best_score = raw.nets_routed, score
 
-    if best_seed == -1:
-        # Baseline kept: nothing re-routed, incoming grids/tree untouched.
+    if best_raw is None:
+        # Every fresh trial failed to route anything: incoming grids/tree
+        # untouched, prior copper kept.
         kept = RoutingResult(
             tracks_added=0, vias_added=0, nets_routed=0,
             nets_failed=len(refused), drc_clean=True, drc_violations=0,
@@ -1638,30 +1736,86 @@ def refine_routing(
         )
         return kept, cost_grid, routing_grid
 
-    # Winner replay with full params: deterministic A* reproduces the trial
-    # copper, then stitch/refill/DRC run once on the best layout.
-    winner_order = next(
-        c["order"] for c in candidates if c["seed"] == best_seed)
+    # Winner goes straight to the finish stage (stitch/tree/refill/DRC) —
+    # no replay pass.
     _report_stage(seeds + 1, seeds + 1)
-    final, final_cost, final_grid = route_nets(
-        model=model,
-        net_names=winner_order,
-        protected_nets=protected,
-        cost_grid=None,
-        routing_grid=routing_grid,
-        params=params,
-        original_pcb_tree=original_pcb_tree,
-        extra_power_nets=extra_power_nets,
-        progress_cb=progress_cb,
-        should_cancel=should_cancel,
-    )
+    final, final_cost, final_grid = finish_routes(best_raw, params)
     final.failed_reasons.update(refused)
     final.nets_failed += len(refused)
     final.candidates = tuple(candidates)
     final.winner_seed = best_seed
-    final.expansions += best_expansions
+    final.expansions = best_expansions
     final.cancelled = final.cancelled or cancelled
     return final, final_cost, final_grid
+
+
+def _tangle_groups(
+    net_names: List[str], model: BoardModel
+) -> List[List[str]]:
+    """Group nets whose pad bounding boxes overlap (tangle candidates).
+
+    Only nets that can physically interact reward order permutation;
+    isolated nets keep their relative order in every trial. Groups come in
+    first-appearance order; members follow ``net_names`` order. Pad-less
+    (unknown) nets each form a singleton.
+    """
+    boxes: Dict[str, Tuple[float, float, float, float]] = {}
+    wanted = set(net_names)
+    for fp in model.footprints:
+        for pad in fp.pads:
+            if pad.net_name and pad.net_name in wanted:
+                x, y = pad.position.x_mm, pad.position.y_mm
+                if pad.net_name in boxes:
+                    x0, y0, x1, y1 = boxes[pad.net_name]
+                    boxes[pad.net_name] = (
+                        min(x0, x), min(y0, y), max(x1, x), max(y1, y))
+                else:
+                    boxes[pad.net_name] = (x, y, x, y)
+    ds = DisjointSet(net_names)
+    names = [n for n in net_names if n in boxes]
+    for i, a in enumerate(names):
+        ax0, ay0, ax1, ay1 = boxes[a]
+        for b in names[i + 1:]:
+            bx0, by0, bx1, by1 = boxes[b]
+            if ax0 <= bx1 and bx0 <= ax1 and ay0 <= by1 and by0 <= ay1:
+                ds.union(a, b)
+    groups: Dict[str, List[str]] = {}
+    for name in net_names:
+        groups.setdefault(ds.find(name), []).append(name)
+    # First-appearance order of the group's earliest member.
+    return sorted(groups.values(), key=lambda g: net_names.index(g[0]))
+
+
+def _refine_order(
+    net_names: List[str], groups: List[List[str]], seed: int
+) -> List[str]:
+    """Permute within tangle groups; isolated nets hold their positions.
+
+    Deterministic for a given seed (single ``random.Random`` stream over
+    groups in order); singleton groups pass through untouched.
+    """
+    rng = random.Random(seed)
+    shuffled: Dict[str, List[str]] = {}
+    for group in groups:
+        if len(group) > 1:
+            members = list(group)
+            rng.shuffle(members)
+            for name in group:
+                shuffled[name] = members
+    order: List[str] = []
+    emitted: Set[str] = set()
+    for name in net_names:
+        if name in emitted:
+            continue
+        if name in shuffled:
+            for member in shuffled[name]:
+                if member not in emitted:
+                    order.append(member)
+                    emitted.add(member)
+        else:
+            order.append(name)
+            emitted.add(name)
+    return order
 
 
 def _tht_sites_by_net(model, grid) -> dict:

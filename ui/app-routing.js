@@ -697,14 +697,13 @@ async function startRefineJob(nets, params) {
 
 function formatRefineSummary(r) {
   const cands = r.candidates || [];
-  const candTxt = cands.map(c => c.seed === -1
-    ? `kept:${c.nets_routed}r`
-    : `s${c.seed}:${c.nets_routed}r/${c.score}mm`).join(" ");
+  const candTxt = cands.map(c => (c.seed === -1 ? "kept" : `s${c.seed}`) +
+    `:${c.nets_routed} routed/${c.score}mm`).join(" · ");
   return `best of ${cands.length} (seed ${r.winner_seed}): ` +
     `v${r.version} — ${r.tracks_added} tracks` +
     (r.arcs_added ? `, ${r.arcs_added} arcs` : "") + `, ${r.vias_added} vias, ` +
     `${r.nets_routed} routed, ${r.nets_failed} failed ` +
-    `(expansions ${fmtExpansions(r.expansions)}) [${candTxt}]`;
+    `(${fmtExpansions(r.expansions)}) [${candTxt}]`;
 }
 
 async function refineSelectedNets() {

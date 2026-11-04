@@ -211,6 +211,11 @@ function updateNetSelectionUI() {
     ripBtn.disabled = count === 0;
     ripBtn.textContent = count > 0 ? `Rip Selected (${count})` : "Rip Selected Nets";
   }
+  const refineBtn = el("refine-btn");
+  if (refineBtn) {
+    refineBtn.disabled = count === 0;
+    refineBtn.textContent = count > 0 ? `Refine Order (${count})` : "Refine Order";
+  }
 }
 
 // Bulk table wiring (lived after diagnostics; moved home).
