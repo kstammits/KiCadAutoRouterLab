@@ -8,21 +8,8 @@ from typing import List, Tuple
 import numpy as np
 
 from ..board_model import BoardModel, Footprint, Pad, sample_circular_arc
-from .grid import RoutingGrid, board_to_grid
-
-try:
-    from numba import njit
-except ImportError:  # pragma: no cover - Numba is a hard dependency.
-
-    def njit(*args, **kwargs):
-        """No-op fallback when Numba is unavailable (slow but correct)."""
-        if len(args) == 1 and callable(args[0]) and not kwargs:
-            return args[0]
-
-        def wrap(fn):
-            return fn
-
-        return wrap
+from ._numba import njit
+from .grid import RoutingGrid, board_to_grid, mm_to_cells
 
 
 # Cell cost values (int8)
@@ -101,6 +88,12 @@ def build_occupancy_grid(
         clearance_mm = clr * grid.resolution_mm
         _mark_track(cost_grid, grid, track, clearance_mm)
 
+    # 3b. Existing track arcs -> sampled polyline, same width+clearance halo.
+    for arc in model.arcs:
+        clr = clearance_cells.get(arc.net_name, default_clearance_cells) if arc.net_name else default_clearance_cells
+        clearance_mm = clr * grid.resolution_mm
+        _mark_arc(cost_grid, grid, arc, clearance_mm)
+
     # 4. Vias -> blocked on both layers with full copper+clearance halo
     for via in model.vias:
         clr = clearance_cells.get(via.net_name, default_clearance_cells) if via.net_name else default_clearance_cells
@@ -119,6 +112,13 @@ def build_occupancy_grid(
 
     # 6. Edge cuts -> edge keepout zone (using actual Edge.Cuts lines)
     _mark_edge_keepout(cost_grid, grid, model, keepout_mm=0.5)
+
+    # 6b. Hard outside-board block: cells outside every board polygon are
+    # impassable, so copper can never hug the outline from the outside
+    # (e.g. tube111 C2TubeOut ran left/below the region-2 edge at +40/cell
+    # because EDGE_KEEPOUT is only a toll). The 2 mm grid margin stays for
+    # halo math, but those cells are now BLOCKED.
+    _mark_outside_board_blocked(cost_grid, grid, model)
 
     # 7. Keepout zones -> blocked on their layers (unless tracks allowed)
     for kz in getattr(model, "keepout_zones", ()):
@@ -176,7 +176,7 @@ def build_fanout_cost(
 
     outer_extra = pad_halo_radius_cells(0.0, clearance_mm, 0.0, res_mm)
     if extra_margin_mm > 0:
-        outer_extra += max(0, int(math.ceil(extra_margin_mm / res_mm)))
+        outer_extra += mm_to_cells(extra_margin_mm, res_mm, 0)
     outer_extra_mm = outer_extra * res_mm
     for fp in model.footprints:
         for pad in fp.pads:
@@ -348,18 +348,15 @@ def pad_halo_radius_cells(
     Single spelling of the ``max(1, ceil(...))`` formula used at pad-stamping
     call sites.
     """
-    if res_mm <= 0:
-        return 1
-    return max(1, int(math.ceil(
-        (pad_half_extent_mm + clearance_mm + track_half_mm) / res_mm
-    )))
+    return mm_to_cells(
+        pad_half_extent_mm + clearance_mm + track_half_mm, res_mm)
 
 
 def drill_radius_cells(drill_mm: float, res_mm: float) -> int:
     """Drill-hole radius in cells (the copper-free free-hop disc)."""
-    if res_mm <= 0 or drill_mm <= 0:
+    if drill_mm <= 0:
         return 1
-    return max(1, int(math.ceil((drill_mm / 2.0) / res_mm)))
+    return mm_to_cells(drill_mm / 2.0, res_mm)
 
 
 def via_halo_radius_cells(
@@ -375,11 +372,8 @@ def via_halo_radius_cells(
     ``clearance_mm + track_half_mm`` beyond the annulus edge. Same
     ``max(1, ceil(...))`` spelling as :func:`pad_halo_radius_cells`.
     """
-    if res_mm <= 0:
-        return 1
-    return max(1, int(math.ceil(
-        (via_size_mm / 2.0 + clearance_mm + track_half_mm) / res_mm
-    )))
+    return mm_to_cells(
+        via_size_mm / 2.0 + clearance_mm + track_half_mm, res_mm)
 
 
 def track_corridor_radius_cells(
@@ -395,9 +389,7 @@ def track_corridor_radius_cells(
     if res_mm <= 0:
         return 1
     half_width = max(1, int(math.ceil(width_mm / res_mm / 2.0)))
-    clearance_radius = max(0, int(math.ceil(
-        (clearance_mm + width_mm / 2.0) / res_mm
-    )))
+    clearance_radius = mm_to_cells(clearance_mm + width_mm / 2.0, res_mm, 0)
     return max(max(0, half_width - 1), clearance_radius)
 
 
@@ -713,6 +705,40 @@ def _mark_track(cost_grid: np.ndarray, grid, track, clearance_mm: float = 0.2):
                 layer_grid[r, c] = BLOCKED
 
 
+def _mark_arc(cost_grid: np.ndarray, grid, arc, clearance_mm: float = 0.2):
+    """Mark a copper track arc as blocked via its sampled polyline.
+
+    Circular arcs have no closed-form rasterizer here, so the arc is
+    sampled (16 segments, matching edge-cut arcs) and each chord is
+    stamped with the same width + clearance halo as straight tracks.
+    Layers outside the routing grid are skipped, like ``_mark_track``.
+    Degenerate arcs (start == end: zero copper, invisible to analysis
+    and emission) stamp nothing — no phantom blockers.
+    """
+    if abs(arc.start.x_mm - arc.end.x_mm) < 1e-9 and abs(arc.start.y_mm - arc.end.y_mm) < 1e-9:
+        return
+    layer_idx = grid.layer_to_idx.get(arc.layer)
+    if layer_idx is None or layer_idx >= cost_grid.shape[0]:
+        return
+    radius = track_corridor_radius_cells(arc.width_mm, clearance_mm, grid.resolution_mm)
+    pts = list(sample_circular_arc(
+        (arc.start.x_mm, arc.start.y_mm),
+        (arc.mid.x_mm, arc.mid.y_mm),
+        (arc.end.x_mm, arc.end.y_mm),
+        16,
+    ))
+    layer_grid = cost_grid[layer_idx]
+    for (x1, y1), (x2, y2) in zip(pts, pts[1:]):
+        c1, r1 = board_to_grid(grid, x1, y1)
+        c2, r2 = board_to_grid(grid, x2, y2)
+        for c, r in bresenham_cells(c1, r1, c2, r2):
+            if 0 <= r < layer_grid.shape[0] and 0 <= c < layer_grid.shape[1]:
+                if radius:
+                    stamp_square(layer_grid, r, c, radius, BLOCKED)
+                else:
+                    layer_grid[r, c] = BLOCKED
+
+
 def _mark_via(
     cost_grid: np.ndarray,
     grid,
@@ -832,6 +858,52 @@ def _mark_edge_keepout(cost_grid: np.ndarray, grid, model, keepout_mm: float = 0
         )
         cost_grid[layer_idx, :, -keepout_cells:] = np.maximum(
             cost_grid[layer_idx, :, -keepout_cells:], EDGE_KEEPOUT
+        )
+
+
+def inside_board_mask(grid, model) -> "np.ndarray | None":
+    """Bool (H, W) mask of cells inside any board polygon (None = no outline).
+
+    Union over ``model.board_regions`` polygons; rectangular bbox fallback
+    per region when the polygon is degenerate. Callers treat None as
+    unconstrained (single-board legacy path with no Edge.Cuts).
+    """
+    import numpy as _np
+
+    regions = getattr(model, "board_regions", ())
+    if not regions:
+        return None
+    H, W = grid.height_cells, grid.width_cells
+    inside = _np.zeros((H, W), dtype=bool)
+    for region in regions:
+        poly = getattr(region, "polygon", ())
+        if poly and len(poly) >= 3:
+            pts = [
+                (row, col)
+                for (col, row) in (board_to_grid(grid, p.x_mm, p.y_mm) for p in poly)
+            ]
+            tmp = _np.zeros((H, W), dtype=_np.uint8)
+            _fill_polygon(tmp, pts, 1)
+            inside |= tmp.astype(bool)
+        else:
+            try:
+                min_x, max_x, min_y, max_y = region.bbox
+            except Exception:
+                continue
+            c0, r0 = board_to_grid(grid, min_x, min_y)
+            c1, r1 = board_to_grid(grid, max_x, max_y)
+            inside[max(0, r0):r1 + 1, max(0, c0):c1 + 1] = True
+    return inside
+
+
+def _mark_outside_board_blocked(cost_grid: np.ndarray, grid, model) -> None:
+    """Stamp BLOCKED on every routing layer outside all board polygons."""
+    inside = inside_board_mask(grid, model)
+    if inside is None or bool(inside.any()) is False:
+        return
+    for layer_idx in range(cost_grid.shape[0]):
+        cost_grid[layer_idx][~inside] = np.maximum(
+            cost_grid[layer_idx][~inside], BLOCKED
         )
 
 

@@ -11,7 +11,11 @@ from typing import Dict
 
 from kicad_autorouter.board_model import board_model
 from kicad_autorouter.drc import TMP_DIR, run_drc_on_tree
-from kicad_autorouter.routing.pipeline import RoutingParams, route_nets
+from kicad_autorouter.routing.pipeline import (
+    RoutingParams,
+    refine_routing,
+    route_nets,
+)
 
 from debug_grids import _cost_grid_to_debug
 
@@ -76,7 +80,7 @@ def _run_routing_job(job_id: str) -> None:
             j = _JOBS.get(job_id)
             if j is None:
                 return
-            j["progress"] = {
+            prog = {
                 "stage": "astar",
                 "net": net_name,
                 "pairs_done": done,
@@ -84,6 +88,19 @@ def _run_routing_job(job_id: str) -> None:
                 "expansions": expansions,
                 "elapsed_s": round(time.perf_counter() - t0, 1),
             }
+            if j.get("refine"):
+                prog["stage"] = "refine"
+                prog["candidate"] = j.get("refine_candidate", 0)
+                prog["candidates"] = j.get("refine_total", 0)
+            j["progress"] = prog
+
+    def _on_stage(idx: int, total: int) -> None:
+        with _JOBS_LOCK:
+            j = _JOBS.get(job_id)
+            if j is None:
+                return
+            j["refine_candidate"] = idx
+            j["refine_total"] = total
 
     try:
         route_params = RoutingParams.from_dict(params_dict)
@@ -95,7 +112,11 @@ def _run_routing_job(job_id: str) -> None:
         _ROUTING_JOB_LOCK.release()
         return
     try:
-        result, cost_grid, routing_grid = route_nets(
+        route_fn = refine_routing if job.get("refine") else route_nets
+        kwargs = {}
+        if job.get("refine"):
+            kwargs["stage_cb"] = _on_stage
+        result, cost_grid, routing_grid = route_fn(
             model=model,
             net_names=net_names,
             protected_nets=protected_nets,
@@ -106,6 +127,7 @@ def _run_routing_job(job_id: str) -> None:
             extra_power_nets=extra_power,
             progress_cb=_on_progress,
             should_cancel=_should_cancel,
+            **kwargs,
         )
     except ValueError as exc:
         with _JOBS_LOCK:
@@ -149,6 +171,7 @@ def _run_routing_job(job_id: str) -> None:
     payload = {
         "ok": True,
         "tracks_added": result.tracks_added,
+        "arcs_added": result.arcs_added,
         "vias_added": result.vias_added,
         "fanout_vias_added": result.fanout_vias_added,
         "fanout_tracks_added": result.fanout_tracks_added,
@@ -177,10 +200,22 @@ def _run_routing_job(job_id: str) -> None:
              "net_name": v.net_name}
             for v in result.partial_vias
         ],
+        "partial_arcs": [
+            {"start": list(a.start), "mid": list(a.mid), "end": list(a.end),
+             "width_mm": a.width_mm, "layer": a.layer,
+             "net_name": a.net_name}
+            for a in result.partial_arcs
+        ],
         "version": version,
     }
     if job.get("mode_warning"):
         payload["mode_warning"] = job["mode_warning"]
+    if job.get("refine"):
+        payload["candidates"] = [
+            {k: (list(v) if k == "order" else v) for k, v in c.items()}
+            for c in result.candidates
+        ]
+        payload["winner_seed"] = result.winner_seed
     if route_params.debug:
         payload["debug"] = _cost_grid_to_debug(cost_grid, routing_grid)
     with _JOBS_LOCK:

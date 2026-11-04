@@ -165,51 +165,50 @@ class BoardState:
         with self._lock:
             return self.proposal
 
-    def set_proposal(self, proposal) -> int:
+    def _get_copied(self, field, coerce):
+        """Return ``coerce(getattr(self, field))`` under lock (copy-out getter)."""
         with self._lock:
-            self.proposal = proposal
-            self.version += 1
-            return self.version
+            return coerce(getattr(self, field))
+
+    def _set_versioned(self, field, value, coerce, counter="version"):
+        """Store ``coerce(value)``, bump ``counter``, return the new count."""
+        with self._lock:
+            setattr(self, field, coerce(value))
+            new = getattr(self, counter) + 1
+            setattr(self, counter, new)
+            return new
+
+    def set_proposal(self, proposal) -> int:
+        return self._set_versioned("proposal", proposal, lambda v: v)
 
     def get_pinned_uuids(self) -> set[str]:
-        with self._lock:
-            return self.pinned_uuids.copy()
+        return self._get_copied("pinned_uuids", set.copy)
 
     def get_selected_uuids(self) -> set[str]:
-        with self._lock:
-            return self.selected_uuids.copy()
+        return self._get_copied("selected_uuids", set.copy)
 
     def get_forces(self) -> Dict[str, Tuple[float, float]]:
-        with self._lock:
-            return self.forces.copy()
+        return self._get_copied("forces", dict.copy)
 
     def set_forces(self, forces: Dict[str, Tuple[float, float]]) -> int:
-        with self._lock:
-            self.forces = forces.copy()
-            self.version += 1
-            return self.version
+        return self._set_versioned("forces", forces, dict.copy)
 
     def get_force_components(self) -> Dict[str, Dict[str, Tuple[float, float]]]:
-        with self._lock:
-            return {u: dict(c) for u, c in self.force_components.items()}
+        return self._get_copied(
+            "force_components", lambda d: {u: dict(c) for u, c in d.items()})
 
     def set_force_components(
         self, components: Dict[str, Dict[str, Tuple[float, float]]]
     ) -> int:
-        with self._lock:
-            self.force_components = {u: dict(c) for u, c in components.items()}
-            self.version += 1
-            return self.version
+        return self._set_versioned(
+            "force_components", components,
+            lambda d: {u: dict(c) for u, c in d.items()})
 
     def get_drc_violations(self) -> list[dict]:
-        with self._lock:
-            return self.drc_violations.copy()
+        return self._get_copied("drc_violations", list.copy)
 
     def set_drc_violations(self, violations: list[dict]) -> int:
-        with self._lock:
-            self.drc_violations = violations.copy()
-            self.version += 1
-            return self.version
+        return self._set_versioned("drc_violations", violations, list.copy)
 
     def snapshot_pcb(self):
         """Return (pcb_tree, version) under a single lock acquisition."""
@@ -256,23 +255,17 @@ class BoardState:
             return self.selection_version
 
     def set_pinned_uuids(self, uuids: set[str]) -> int:
-        with self._lock:
-            self.pinned_uuids = uuids.copy()
-            self.selection_version += 1
-            return self.selection_version
+        return self._set_versioned(
+            "pinned_uuids", uuids, set.copy, "selection_version")
 
     def set_selected_uuids(self, uuids: set[str]) -> int:
-        with self._lock:
-            self.selected_uuids = uuids.copy()
-            self.selection_version += 1
-            return self.selection_version
+        return self._set_versioned(
+            "selected_uuids", uuids, set.copy, "selection_version")
 
     def replace_selection(self, uuids: set[str]) -> int:
         """Replace the whole selection set (bulk ops, single-select)."""
-        with self._lock:
-            self.selected_uuids = set(uuids)
-            self.selection_version += 1
-            return self.selection_version
+        return self._set_versioned(
+            "selected_uuids", uuids, set, "selection_version")
 
     def set_selected(self, uuid: str, selected: bool) -> int:
         """Idempotent single-uuid set (no toggle quirk for optimistic UI)."""
@@ -327,15 +320,11 @@ class BoardState:
 
     def get_protected_nets(self) -> set[str]:
         """Return copy of protected nets set."""
-        with self._lock:
-            return self.protected_nets.copy()
+        return self._get_copied("protected_nets", set.copy)
 
     def set_protected_nets(self, nets: set[str]) -> int:
         """Replace the entire protected nets set."""
-        with self._lock:
-            self.protected_nets = set(nets)
-            self.version += 1
-            return self.version
+        return self._set_versioned("protected_nets", nets, set)
 
     def toggle_protected_net(self, net_name: str) -> int:
         """Toggle a net's protected status."""
@@ -349,8 +338,7 @@ class BoardState:
 
     def get_power_override_nets(self) -> set[str]:
         """Return copy of the user-marked power-membership set."""
-        with self._lock:
-            return set(self.power_override_nets)
+        return self._get_copied("power_override_nets", set)
 
     def set_power_override_net(self, net_name: str, is_power: bool) -> int:
         """Explicitly mark/unmark a net as power (no toggle quirk)."""
@@ -578,6 +566,7 @@ class BoardState:
             # Copper counts before (model = authoritative, tree should match)
             from collections import Counter as _Counter
             tracks_before = _Counter(t.net_name for t in self.model.tracks if t.net_name)
+            arcs_before = _Counter(a.net_name for a in self.model.arcs if a.net_name)
             vias_before = _Counter(v.net_name for v in self.model.vias if v.net_name)
             # Apply to BoardModel: move footprints + rip up tracks/vias on affected nets
             self.model = commit_placement(self.model, self.proposal.deltas, protected_nets)
@@ -588,13 +577,15 @@ class BoardState:
                     self.pcb_tree = nudge_footprint_by_uuid(self.pcb_tree, uuid, dx, dy, da)
             # Copper counts after -> per-net ripped report
             tracks_after = _Counter(t.net_name for t in self.model.tracks if t.net_name)
+            arcs_after = _Counter(a.net_name for a in self.model.arcs if a.net_name)
             vias_after = _Counter(v.net_name for v in self.model.vias if v.net_name)
             ripped: dict = {}
             for net in sorted(affected_nets - protected_nets):
                 dt = tracks_before.get(net, 0) - tracks_after.get(net, 0)
+                da = arcs_before.get(net, 0) - arcs_after.get(net, 0)
                 dv = vias_before.get(net, 0) - vias_after.get(net, 0)
-                if dt or dv:
-                    ripped[net] = {"tracks": dt, "vias": dv}
+                if dt or da or dv:
+                    ripped[net] = {"tracks": dt, "arcs": da, "vias": dv}
             self.last_accept_report = {
                 "moved": len(moved_uuids),
                 "iterations": proposal_iterations,

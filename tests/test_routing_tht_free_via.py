@@ -273,11 +273,11 @@ def test_suppression_only_on_own_tht_site():
     grid = RoutingGrid(resolution_mm=RES, layers=("F.Cu", "B.Cu"),
                        origin_mm=(0.0, 0.0), width_cells=10, height_cells=10)
     hop = RouteResult(path=[(2, 2, 0), (2, 2, 1)], wire_mm=0.0, via_count=1, cost=0.0, success=True)
-    _, vias = routes_to_tracks_vias({"N": hop}, grid, tht_sites={"N": {(2, 2)}})
+    _, vias, _ = routes_to_tracks_vias({"N": hop}, grid, tht_sites={"N": {(2, 2)}})
     assert vias == [], "own-hole hop must not drill"
-    _, vias = routes_to_tracks_vias({"N": hop}, grid, tht_sites={"OTHER": {(2, 2)}})
+    _, vias, _ = routes_to_tracks_vias({"N": hop}, grid, tht_sites={"OTHER": {(2, 2)}})
     assert len(vias) == 1, "foreign-hole hop still drills (router should avoid it)"
-    _, vias = routes_to_tracks_vias({"N": hop}, grid)
+    _, vias, _ = routes_to_tracks_vias({"N": hop}, grid)
     assert len(vias) == 1, "no sites: legacy behavior"
 
 

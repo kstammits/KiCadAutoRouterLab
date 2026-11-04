@@ -11,23 +11,7 @@ import pytest
 from kicad_autorouter.board_model import BoardModel, Point, apply_deltas
 from kicad_autorouter.placement import PlacementParams, run_placement
 
-from .helpers import make_fp, overlap_area
-
-
-def _board(fps, edge=30.0):
-    return BoardModel(
-        footprints=tuple(fps),
-        keepout_zones=(),
-        nets={},
-        by_ref={fp.ref: fp for fp in fps},
-        edge_cuts=(
-            (Point(-edge, -edge), Point(edge, -edge)),
-            (Point(edge, -edge), Point(edge, edge)),
-            (Point(edge, edge), Point(-edge, edge)),
-            (Point(-edge, edge), Point(-edge, -edge)),
-        ),
-        footprint_region={fp.uuid: 0 for fp in fps},
-    )
+from .helpers import make_board, make_fp, overlap_area
 
 
 def _pair_overlap(model, deltas, a="uuid-a", b="uuid-b"):
@@ -50,7 +34,7 @@ def test_deep_overlap_resolves():
     fb = make_fp("B", "uuid-b", 1.0, 0.0, ("N3", "N4"),
                  footprint_id="test:R", hw=3.0, hh=2.0,
                  pad_layers=("F.Cu",), pad_shape="circle")
-    model = _board([fa, fb])
+    model = make_board([fa, fb])
     before = _pair_overlap(model, {})
     assert before > 15.0
     prop = run_placement(
@@ -77,7 +61,7 @@ def test_three_part_linear_squeeze():
     mid = make_fp("M", "uuid-m", 1.0, 0.0, ("M1", "M2"),
                   footprint_id="test:R", hw=2.5, hh=1.5,
                   pad_layers=("F.Cu",), pad_shape="circle")
-    model = _board([left, right, mid])
+    model = make_board([left, right, mid])
     prop = run_placement(
         model,
         PlacementParams(max_iterations=500, convergence_eps_m=1e-15,
@@ -107,7 +91,7 @@ def test_depenetration_round_shrinks_overlap():
     fb = make_fp("B", "uuid-b", 2.0, 0.0, ("N3", "N4"),
                  footprint_id="test:R", hw=3.0, hh=2.0,
                  pad_layers=("F.Cu",), pad_shape="circle")
-    model = _board([fa, fb])
+    model = make_board([fa, fb])
     before = _pair_overlap(model, {})
     assert before > 1.0
     prop = run_placement(
@@ -133,7 +117,7 @@ def test_corner_wedge_escapes():
     mob = make_fp("M", "uuid-m", -2.0, -2.0, ("M1", "M2"),
                   footprint_id="test:R", hw=2.0, hh=1.5,
                   pad_layers=("F.Cu",), pad_shape="circle")
-    model = _board([wall_h, wall_v, mob])
+    model = make_board([wall_h, wall_v, mob])
     before = overlap_area(model, {}, uuids=("uuid-h", "uuid-m")) + \
         overlap_area(model, {}, uuids=("uuid-v", "uuid-m"))
     prop = run_placement(
@@ -165,7 +149,7 @@ def test_corridor_settles_without_overlap():
     mob = make_fp("M", "uuid-m", 0.0, 0.5, ("M1", "M2"),
                   footprint_id="test:R", hw=2.0, hh=1.0,
                   pad_layers=("F.Cu",), pad_shape="circle")
-    model = _board([top, bot, mob])
+    model = make_board([top, bot, mob])
     prop = run_placement(
         model,
         PlacementParams(max_iterations=100, convergence_eps_m=1e-15,
@@ -290,7 +274,7 @@ def test_capped_deep_overlap_still_resolves():
     fb = make_fp("B", "uuid-b", 1.0, 0.0, ("N3", "N4"),
                  footprint_id="test:R", hw=3.0, hh=2.0,
                  pad_layers=("F.Cu",), pad_shape="circle")
-    model = _board([fa, fb])
+    model = make_board([fa, fb])
     before = _pair_overlap(model, {})
     assert before > 15.0
     prop = run_placement(
@@ -319,7 +303,7 @@ def test_shear_torque_sign_consistent():
     locked = make_fp("L", "uuid-l", 1.0, 0.3, ("N9",),
                      footprint_id="test:R", hw=1.5, hh=1.0,
                      pad_layers=("F.Cu",), pad_shape="circle", locked=True)
-    model = _board([mover, locked])
+    model = make_board([mover, locked])
     prop = run_placement(
         model,
         PlacementParams(max_iterations=10, convergence_eps_m=1e-15,
@@ -353,7 +337,7 @@ def test_mtv_tie_no_sustained_spin():
     fb = make_fp("B", "uuid-b", 1.0, 0.0, ("N3", "N4"),
                  footprint_id="test:R", hw=2.0, hh=2.0,
                  pad_layers=("F.Cu",), pad_shape="circle")
-    model = _board([fa, fb])
+    model = make_board([fa, fb])
     prop = run_placement(
         model,
         PlacementParams(max_iterations=200, convergence_eps_m=1e-15,

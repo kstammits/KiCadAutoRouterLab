@@ -19,6 +19,7 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "ui"))
 import server  # noqa: E402
+from tests.helpers import post_fixture
 
 
 def _serve():
@@ -62,8 +63,7 @@ def _get(url):
 
 
 def _load(board_base, name="minimal.kicad_pcb", data=None):
-    return _post(f"{board_base}/api/load?name={name}",
-                 data=data or (FIXTURES / "minimal.kicad_pcb").read_bytes())
+    return post_fixture(board_base, "minimal.kicad_pcb", name, data)
 
 
 def _grafted_four_layer_bytes():

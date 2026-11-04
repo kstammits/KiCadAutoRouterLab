@@ -16,8 +16,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "ui"))
 
 import server  # noqa: E402
-
-FIXTURES = Path(__file__).parent / "fixtures"
+from tests.helpers import post_fixture
 
 
 @pytest.fixture()
@@ -47,10 +46,7 @@ def _post(base, path, payload):
 
 
 def _load(base, name="minimal.kicad_pcb"):
-    data = (FIXTURES / "minimal.kicad_pcb").read_bytes()
-    req = urllib.request.Request(f"{base}/api/load?name={name}", data=data, method="POST")
-    with urllib.request.urlopen(req) as r:
-        return json.loads(r.read())
+    return post_fixture(base, "minimal.kicad_pcb", name)
 
 
 def _code(base, path, payload):

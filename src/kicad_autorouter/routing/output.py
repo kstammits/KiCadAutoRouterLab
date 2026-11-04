@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Collection, List, Tuple
 
@@ -30,6 +31,17 @@ class Via:
     net_name: str
 
 
+@dataclass
+class Arc:
+    """KiCad track arc (start/mid/end are ON the arc)."""
+    start: Tuple[float, float]  # (x_mm, y_mm)
+    mid: Tuple[float, float]
+    end: Tuple[float, float]
+    width_mm: float
+    layer: str
+    net_name: str
+
+
 def routes_to_tracks_vias(
     routes: dict[str, RouteResult],
     grid: RoutingGrid,
@@ -40,8 +52,8 @@ def routes_to_tracks_vias(
     via_drill_mm: float = 0.4,
     tht_sites: dict = None,
     extra_power: Collection[str] = (),
-) -> Tuple[List[Track], List[Via]]:
-    """Convert routing results to KiCad tracks and vias.
+) -> Tuple[List[Track], List[Via], List[Arc]]:
+    """Convert routing results to KiCad tracks, vias and track arcs.
 
     ``tht_sites`` maps net name -> grid ``{(col, row)}`` cells covered by
     that net's own through-hole drill holes. A layer transition on one of
@@ -58,6 +70,7 @@ def routes_to_tracks_vias(
     
     tracks = []
     vias = []
+    arcs_out: List[Arc] = []
     
     # Default widths per net class
     width_map = net_class_widths or {}
@@ -82,14 +95,80 @@ def routes_to_tracks_vias(
         else:
             branches = [result.path]
 
-        for path in branches:
+        # Fitted arc chains replace chord emission branch by branch
+        # (vias still come from the grid-path layer transitions below).
+        fitted = getattr(result, "arc_pieces", ())
+        use_fitted = bool(fitted) and len(fitted) == len(branches)
+        ox, oy = grid.origin_mm
+        res = grid.resolution_mm
+
+        def _to_board_mm(c: float, r: float) -> Tuple[float, float]:
+            return (ox + (c + 0.5) * res, oy + (r + 0.5) * res)
+
+        for bi, path in enumerate(branches):
             if len(path) < 2:
                 continue
 
             # Convert grid path to board coordinates
             board_path = grid_segment_to_board(grid, path)
 
-            # Process segments
+            # Vias from layer transitions (fitter never touches these).
+            for i in range(len(board_path) - 1):
+                c1, r1, l1 = path[i]
+                c2, r2, l2 = path[i + 1]
+                if l1 == l2:
+                    continue
+                # Layer transition: a hop on the net's own THT drill hole
+                # reuses the plated barrel — no new via drilled. (Hops
+                # never move within a cell: c1 == c2 and r1 == r2 here.)
+                if tht_sites and (c1, r1) in tht_sites.get(net_name, ()):
+                    continue
+                x1, y1 = board_path[i][0], board_path[i][1]
+                x2, y2 = board_path[i + 1][0], board_path[i + 1][1]
+                via_x = (x1 + x2) / 2
+                via_y = (y1 + y2) / 2
+                vias.append(Via(
+                    position=(via_x, via_y),
+                    size_mm=via_size_mm,
+                    drill_mm=via_drill_mm,
+                    layers=(grid.layers[0], grid.layers[-1]),
+                    net_name=net_name,
+                ))
+
+            # Copper: fitted pieces when present, else legacy chords.
+            if use_fitted and fitted[bi]:
+                for p in fitted[bi]:
+                    if p[0] == "via":
+                        continue
+                    if p[0] == "seg":
+                        x1, y1 = _to_board_mm(p[1], p[2])
+                        x2, y2 = _to_board_mm(p[3], p[4])
+                        if x1 == x2 and y1 == y2:
+                            continue
+                        tracks.append(Track(
+                            start=(x1, y1),
+                            end=(x2, y2),
+                            width_mm=track_width,
+                            layer=grid.layers[p[5]],
+                            net_name=net_name,
+                        ))
+                    elif p[0] == "arc":
+                        xs, ys = _to_board_mm(p[1], p[2])
+                        xm, ym = _to_board_mm(p[3], p[4])
+                        xe, ye = _to_board_mm(p[5], p[6])
+                        if xs == xe and ys == ye:
+                            continue
+                        arcs_out.append(Arc(
+                            start=(xs, ys),
+                            mid=(xm, ym),
+                            end=(xe, ye),
+                            width_mm=track_width,
+                            layer=grid.layers[p[7]],
+                            net_name=net_name,
+                        ))
+                continue
+
+            # Legacy straight-chord emission.
             for i in range(len(board_path) - 1):
                 c1, r1, l1 = path[i]
                 c2, r2, l2 = path[i + 1]
@@ -97,7 +176,6 @@ def routes_to_tracks_vias(
                 x1, y1 = board_path[i][0], board_path[i][1]
                 x2, y2 = board_path[i + 1][0], board_path[i + 1][1]
                 layer1 = board_path[i][2]
-                layer2 = board_path[i + 1][2]
 
                 if l1 == l2:
                     # Same layer - track segment
@@ -108,21 +186,6 @@ def routes_to_tracks_vias(
                         end=(x2, y2),
                         width_mm=track_width,
                         layer=layer1,
-                        net_name=net_name,
-                    ))
-                else:
-                    # Layer transition: a hop on the net's own THT drill hole
-                    # reuses the plated barrel — no new via drilled. (Hops
-                    # never move within a cell: c1 == c2 and r1 == r2 here.)
-                    if tht_sites and (c1, r1) in tht_sites.get(net_name, ()):
-                        continue
-                    via_x = (x1 + x2) / 2
-                    via_y = (y1 + y2) / 2
-                    vias.append(Via(
-                        position=(via_x, via_y),
-                        size_mm=via_size_mm,
-                        drill_mm=via_drill_mm,
-                        layers=(grid.layers[0], grid.layers[-1]),
                         net_name=net_name,
                     ))
 
@@ -140,76 +203,96 @@ def routes_to_tracks_vias(
     
     # Merge collinear track segments
     tracks = _merge_collinear_tracks(tracks)
-    
-    return tracks, vias
+
+    return tracks, vias, arcs_out
 
 
 def _merge_collinear_tracks(tracks: List[Track], tolerance: float = 1e-6) -> List[Track]:
-    """Merge adjacent collinear track segments on same layer/net."""
+    """Merge collinear track segments sharing an endpoint (same layer/net).
+
+    Chains head-to-tail (the normal smoother output) collapse to one
+    segment; any pair sharing an endpoint on the same line merges to the
+    min/max projection, which is exactly their union. Pairs sharing no
+    endpoint never merge, so T-junction spokes are preserved.
+    """
     if not tracks:
         return []
-    
-    # Group by (layer, net_name)
+
+    # Group by (layer, net_name, width).
     groups = {}
     for t in tracks:
         key = (t.layer, t.net_name, t.width_mm)
         groups.setdefault(key, []).append(t)
-    
+
     merged = []
     for key, group in groups.items():
-        # Sort by start position
-        group.sort(key=lambda t: (t.start[0], t.start[1]))
-        
-        current = group[0]
-        for next_t in group[1:]:
-            # Check if collinear and adjacent
-            if _segments_adjacent(current, next_t, tolerance):
-                # Extend current
-                current = Track(
-                    start=current.start,
-                    end=next_t.end,
-                    width_mm=current.width_mm,
-                    layer=current.layer,
-                    net_name=current.net_name,
-                )
+        # Greedy chaining: merge one partner per pass, re-scan until the
+        # chain collapses fully, then emit and start the next chain.
+        rest = list(group)
+        while rest:
+            current = rest.pop(0)
+            for i, other in enumerate(rest):
+                if _shared_endpoint(current, other, tolerance) and _collinear(current, other, tolerance):
+                    current = _union_segment(current, other)
+                    rest.pop(i)
+                    rest.insert(0, current)
+                    break
             else:
                 merged.append(current)
-                current = next_t
-        merged.append(current)
-    
     return merged
 
 
-def _segments_adjacent(t1: Track, t2: Track, tolerance: float) -> bool:
-    """Check if two track segments are collinear and share an endpoint."""
-    # Check same line
-    x1, y1 = t1.start
-    x2, y2 = t1.end
-    x3, y3 = t2.start
-    x4, y4 = t2.end
-    
-    # Check if they share an endpoint
-    same_start = abs(x1 - x3) < tolerance and abs(y1 - y3) < tolerance
-    same_end = abs(x2 - x4) < tolerance and abs(y2 - y4) < tolerance
-    if not (same_start or same_end):
-        return False
-    
-    # Check collinear (cross product = 0)
-    dx1, dy1 = x2 - x1, y2 - y1
-    dx2, dy2 = x4 - x3, y4 - y3
-    
-    cross = dx1 * dy2 - dy1 * dx2
-    return abs(cross) < tolerance
+def _shared_endpoint(t1: Track, t2: Track, tolerance: float) -> bool:
+    """True when the segments share any endpoint (False otherwise)."""
+    for p in (t1.start, t1.end):
+        for q in (t2.start, t2.end):
+            if abs(p[0] - q[0]) < tolerance and abs(p[1] - q[1]) < tolerance:
+                return True
+    return False
+
+
+def _collinear(t1: Track, t2: Track, tolerance: float) -> bool:
+    """True when both segments lie on the same line (normalized cross)."""
+    dx1, dy1 = t1.end[0] - t1.start[0], t1.end[1] - t1.start[1]
+    dx2, dy2 = t2.end[0] - t2.start[0], t2.end[1] - t2.start[1]
+    n1 = math.hypot(dx1, dy1)
+    n2 = math.hypot(dx2, dy2)
+    if n1 == 0.0 or n2 == 0.0:
+        return True  # degenerate point: union with shared endpoint is safe
+    return abs(dx1 * dy2 - dy1 * dx2) / (n1 * n2) < tolerance
+
+
+def _union_segment(t1: Track, t2: Track) -> Track:
+    """Min/max projection of both segments' endpoints onto their line."""
+    dx = t1.end[0] - t1.start[0]
+    dy = t1.end[1] - t1.start[1]
+    n = math.hypot(dx, dy)
+    if n == 0.0:
+        return t2
+    ux, uy = dx / n, dy / n
+    pts = (t1.start, t1.end, t2.start, t2.end)
+    proj = [p[0] * ux + p[1] * uy for p in pts]
+    lo, hi = min(proj), max(proj)
+    base = pts[proj.index(lo)]
+    return Track(
+        start=(base[0], base[1]),
+        end=(base[0] + ux * (hi - lo), base[1] + uy * (hi - lo)),
+        width_mm=t1.width_mm,
+        layer=t1.layer,
+        net_name=t1.net_name,
+    )
 
 
 def apply_routes_to_tree(
     tree,
     tracks: List[Track],
     vias: List[Via],
+    arcs=(),
 ):
-    """Insert tracks and vias into a PCB S-expression tree.
-    
-    Returns a new tree with the routes added (SExpr is immutable).
+    """Insert tracks, track arcs and vias into a PCB S-expression tree.
+
+    ``arcs`` accepts model ``ArcTrack`` (``start``/``mid``/``end`` Points)
+    or output-style tuples. Returns a new tree (SExpr is immutable).
     """
     from ..sexpr import SExpr
     
@@ -226,6 +309,27 @@ def apply_routes_to_tree(
         ))
         new_args.append(seg)
     
+    # Add track arcs (KiCad start/mid/end are three points ON the arc).
+    for a in arcs:
+        start = a.start if hasattr(a.start, "x_mm") else a.start
+        mid = a.mid if hasattr(a.mid, "x_mm") else a.mid
+        end = a.end if hasattr(a.end, "x_mm") else a.end
+        sx, sy = (start.x_mm, start.y_mm) if hasattr(start, "x_mm") else tuple(start)
+        mx, my = (mid.x_mm, mid.y_mm) if hasattr(mid, "x_mm") else tuple(mid)
+        ex, ey = (end.x_mm, end.y_mm) if hasattr(end, "x_mm") else tuple(end)
+        width = a.width_mm if hasattr(a, "width_mm") else a[3]
+        layer = a.layer if hasattr(a, "layer") else a[4]
+        net = a.net_name if hasattr(a, "net_name") else a[5]
+        arc = SExpr("arc", (
+            SExpr("start", (round(sx, 3), round(sy, 3))),
+            SExpr("mid", (round(mx, 3), round(my, 3))),
+            SExpr("end", (round(ex, 3), round(ey, 3))),
+            SExpr("width", (round(width, 3),)),
+            SExpr("layer", (layer,)),
+            SExpr("net", (net,)),
+        ))
+        new_args.append(arc)
+
     # Add vias
     for v in vias:
         via = SExpr("via", (

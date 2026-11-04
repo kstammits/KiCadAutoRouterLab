@@ -7,7 +7,7 @@
 
 // Collapsed route sections persist across reloads like other display-only
 // prefs (layer visibility, overlay toggles). State keys are UI-only.
-for (const id of ["impedance-details", "bridges-details"]) {
+for (const id of ["impedance-details", "bridges-details", "routing-advanced-details"]) {
   const sec = el(id);
   if (!sec) continue;
   try {

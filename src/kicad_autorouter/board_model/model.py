@@ -141,6 +141,22 @@ class Track:
     net_name: Optional[str] = None
 
 @dataclass(frozen=True)
+class ArcTrack:
+    """A copper track arc in board millimeters (KiCad ``(arc)`` node).
+
+    ``start``/``mid``/``end`` are three points ON the arc (KiCad semantics,
+    not Bezier controls). Single circular arcs are constant-curvature;
+    freeform curvature is expressed as tangent-joined chains of these.
+    """
+
+    start: Point
+    mid: Point
+    end: Point
+    width_mm: float
+    layer: str
+    net_name: Optional[str] = None
+
+@dataclass(frozen=True)
 class Via:
     """A via in board millimeters; ``size_mm`` is the outer diameter."""
 
@@ -286,6 +302,7 @@ class BoardModel:
     by_ref: Dict[str, Footprint]
     ghost_footprints: Tuple[Footprint, ...] = ()
     tracks: Tuple[Track, ...] = ()
+    arcs: Tuple[ArcTrack, ...] = ()
     vias: Tuple[Via, ...] = ()
     zones: Tuple[Zone, ...] = ()
     edge_cuts: Tuple[Segment, ...] = ()

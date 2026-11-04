@@ -1724,7 +1724,9 @@ acceptBtn?.addEventListener("click", async () => {
     const ripped = r.ripped || {};
     const rippedNames = Object.keys(ripped);
     const rippedTxt = rippedNames.length
-      ? rippedNames.map(n => `${n}: ${ripped[n].tracks || 0} tracks/${ripped[n].vias || 0} vias`).join(", ")
+      ? rippedNames.map(n => `${n}: ${ripped[n].tracks || 0} tracks` +
+          ((ripped[n].arcs || 0) ? `/${ripped[n].arcs} arcs` : "") +
+          `/${ripped[n].vias || 0} vias`).join(", ")
       : "no copper ripped";
     const skipped = (r.skipped_protected || []).join(", ");
     const moveTxt = r.moved != null ? `${r.moved} moved` : "";
@@ -1817,12 +1819,13 @@ on("download-btn", "click", async () => {
       if (prev.ok) {
         const r = await prev.json();
         const rep = r.report || {};
-        const changed = (rep.tracks_removed || 0) + (rep.vias_converted || 0)
+        const changed = (rep.tracks_removed || 0) + (rep.arcs_removed || 0) + (rep.vias_converted || 0)
           + (rep.zones_removed || 0) + (rep.zones_restricted || 0);
         if (changed > 0) {
           const ok = confirm(
             `Two-layer export collapses inner copper (original untouched):\n` +
-            `− ${rep.tracks_removed} inner tracks removed\n` +
+            `− ${rep.tracks_removed} inner tracks removed` +
+            ((rep.arcs_removed || 0) ? `, ${rep.arcs_removed} inner arcs removed` : "") + `\n` +
             `− ${rep.vias_converted} vias restacked to through (F.Cu–B.Cu)\n` +
             `− ${rep.zones_removed} zones deleted, ${rep.zones_restricted} restricted\n` +
             `${rep.impedance_note || ""}\n\nDownload the collapsed 2-layer file?`

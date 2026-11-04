@@ -43,8 +43,8 @@ import math
 from dataclasses import dataclass, field
 from typing import Collection, Dict, List, Optional, Sequence, Set, Tuple
 
-from ..board_model import BoardModel, is_ground_net
-from .grid import RoutingGrid, board_to_grid, create_grid_from_model
+from ..board_model import BoardModel, copper_tracks, is_ground_net
+from .grid import RoutingGrid, board_to_grid, create_grid_from_model, mm_to_cells
 from .pour import labeled_copper
 
 RHO_CU_OHM_M = 1.68e-8
@@ -231,27 +231,6 @@ def _snap_key(x_mm: float, y_mm: float, layer: str) -> str:
     return f"pt:{layer}:{round(x_mm / SNAP_MM):d}:{round(y_mm / SNAP_MM):d}"
 
 
-def _dijkstra(adj: Dict[str, List[Tuple[str, float, int, str, int]]],
-              source: str,
-              banned: frozenset = frozenset()) -> Tuple[Dict[str, float], Dict[str, Tuple[str, int, str, int]]]:
-    dist: Dict[str, float] = {source: 0.0}
-    prev: Dict[str, Tuple[str, int, str, int]] = {}
-    heap: List[Tuple[float, str]] = [(0.0, source)]
-    while heap:
-        d, u = heapq.heappop(heap)
-        if d > dist.get(u, math.inf):
-            continue
-        for v, w, via_inc, kind, eid in adj.get(u, ()):
-            if eid in banned:
-                continue
-            nd = d + w
-            if nd < dist.get(v, math.inf) - 1e-12:
-                dist[v] = nd
-                prev[v] = (u, via_inc, kind, eid)
-                heapq.heappush(heap, (nd, v))
-    return dist, prev
-
-
 def _reconstruct(prev: Dict[str, Tuple[str, int, str, int]], source: str,
                  target: str) -> Tuple[List[str], int, List[str], frozenset, frozenset]:
     """Rebuild the path; return (nodes, via_hops, kinds, ban_set, spare).
@@ -308,7 +287,7 @@ def _island_at(labels, copper, grid: RoutingGrid, x_mm: float, y_mm: float) -> i
         return int(labels[r, c])
     # Snap-window probe: pads/vias near (not exactly on) island copper
     # after sliver removal still tap the pour.
-    rad = max(1, int(math.ceil(SNAP_MM / grid.resolution_mm)))
+    rad = mm_to_cells(SNAP_MM, grid.resolution_mm)
     r0, r1 = max(0, r - rad), min(H, r + rad + 1)
     c0, c1 = max(0, c - rad), min(W, c + rad + 1)
     win_lab = labels[r0:r1, c0:c1]
@@ -728,7 +707,7 @@ def _build_graph(model: BoardModel, grid: RoutingGrid,
             for layer in layers:
                 tap_points.setdefault((layer, via.net_name), []).append(
                     (via.position.x_mm, via.position.y_mm))
-    for track in model.tracks:
+    for track in copper_tracks(model):
         if track.net_name not in nets_set:
             continue
         x1, y1 = track.start.x_mm, track.start.y_mm
@@ -814,7 +793,7 @@ def _build_graph(model: BoardModel, grid: RoutingGrid,
         pad_layers = [fp.layer] if not pad.is_through_hole else list(layers)
         for layer in pad_layers:
             _tap_island(pad.net_name, pad.position.x_mm, pad.position.y_mm, layer, key)
-    for track in model.tracks:
+    for track in copper_tracks(model):
         if track.net_name not in nets_set:
             continue
         for (x, y) in ((track.start.x_mm, track.start.y_mm),

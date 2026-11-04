@@ -188,57 +188,53 @@ from server_jobs import (
 )
 
 
-def load_params() -> PlacementParams:
-    """Effective params: defaults overlaid with placement.json when present."""
+def _read_params_file() -> dict:
+    """placement.json as a dict; missing/corrupt/non-dict reads as {}."""
     if PARAMS_PATH.is_file():
         try:
             data = json.loads(PARAMS_PATH.read_text(encoding="utf-8"))
-            return PlacementParams.from_dict(data)
-        except (ValueError, json.JSONDecodeError):
+        except ValueError:
             pass  # corrupt file falls back to defaults; next save overwrites it
-    return PlacementParams()
+        else:
+            if isinstance(data, dict):
+                return data
+    return {}
+
+
+def _write_params_file(data: dict) -> None:
+    PARAMS_PATH.write_text(
+        json.dumps(data, indent=2) + "\n", encoding="utf-8"
+    )
+
+
+def load_params() -> PlacementParams:
+    """Effective params: defaults overlaid with placement.json when present."""
+    try:
+        return PlacementParams.from_dict(_read_params_file())
+    except ValueError:
+        return PlacementParams()
 
 
 def load_routing_params() -> RoutingParams:
     """Load routing params from placement.json routing section."""
-    if PARAMS_PATH.is_file():
-        try:
-            data = json.loads(PARAMS_PATH.read_text(encoding="utf-8"))
-            routing_data = data.get("routing", {})
-            return RoutingParams.from_dict(routing_data)
-        except (ValueError, json.JSONDecodeError):
-            pass
-    return RoutingParams()
+    try:
+        return RoutingParams.from_dict(_read_params_file().get("routing", {}))
+    except ValueError:
+        return RoutingParams()
 
 
 def save_params(params: PlacementParams) -> None:
     # Load existing data to preserve routing section
-    existing = {}
-    if PARAMS_PATH.is_file():
-        try:
-            existing = json.loads(PARAMS_PATH.read_text(encoding="utf-8"))
-        except (ValueError, json.JSONDecodeError):
-            pass
-    # Update placement params
+    existing = _read_params_file()
     existing.update(params.to_dict())
-    PARAMS_PATH.write_text(
-        json.dumps(existing, indent=2) + "\n", encoding="utf-8"
-    )
+    _write_params_file(existing)
 
 
 def save_routing_params(params: RoutingParams) -> None:
     # Load existing data to preserve placement section
-    existing = {}
-    if PARAMS_PATH.is_file():
-        try:
-            existing = json.loads(PARAMS_PATH.read_text(encoding="utf-8"))
-        except (ValueError, json.JSONDecodeError):
-            pass
-    # Update routing params
+    existing = _read_params_file()
     existing["routing"] = params.to_dict()
-    PARAMS_PATH.write_text(
-        json.dumps(existing, indent=2) + "\n", encoding="utf-8"
-    )
+    _write_params_file(existing)
 
 
 # NOTE: _cost_grid_to_debug + _secondary_to_debug live in ui.debug_grids
@@ -637,12 +633,17 @@ class Handler(BaseHTTPRequestHandler):
             protected = STATE.get_protected_nets()
             extra_power = STATE.get_power_override_nets()
             rp = load_routing_params()
-            # Count existing tracks/vias per net
+            # Count existing tracks/arcs/vias per net (arcs are separate:
+            # the nets table shows both columns).
             track_counts = {}
+            arc_counts = {}
             via_counts = {}
             for t in model.tracks:
                 if t.net_name:
                     track_counts[t.net_name] = track_counts.get(t.net_name, 0) + 1
+            for a in model.arcs:
+                if a.net_name:
+                    arc_counts[a.net_name] = arc_counts.get(a.net_name, 0) + 1
             for v in model.vias:
                 if v.net_name:
                     via_counts[v.net_name] = via_counts.get(v.net_name, 0) + 1
@@ -697,6 +698,7 @@ class Handler(BaseHTTPRequestHandler):
                     "pad_count": len(conns),
                     "footprint_count": len(footprint_refs),
                     "track_count": track_counts.get(net_name, 0),
+                    "arc_count": arc_counts.get(net_name, 0),
                     "via_count": via_counts.get(net_name, 0),
                     "protected": net_name in protected,
                     "is_power": is_power_net_effective(net_name, extra_power),
@@ -1847,7 +1849,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, b"params must be an object", "text/plain")
                 return
             try:
-                params = RoutingParams.from_dict(req)
+                # Partial-update merge (same as placement): overlay incoming
+                # keys onto the saved routing params so API-only knobs
+                # (hidden UI sliders, script-tuned budgets) survive a POST
+                # that only carries visible inputs.
+                merged = load_routing_params().to_dict()
+                merged.update(req)
+                params = RoutingParams.from_dict(merged)
             except (ValueError, TypeError) as exc:
                 self._send(400, f"bad routing params: {exc}".encode(), "text/plain")
                 return
@@ -1906,6 +1914,7 @@ class Handler(BaseHTTPRequestHandler):
                     "state": "queued",
                     "net_names": clean_names,
                     "params_dict": params_dict,
+                    "refine": bool(req.get("refine", False)),
                     "mode": mode_info["mode"],
                     "mode_warning": mode_info["warning"],
                     "cancel_requested": False,
@@ -2031,6 +2040,7 @@ class Handler(BaseHTTPRequestHandler):
             payload = {
                 "ok": True,
                 "tracks_added": result.tracks_added,
+                "arcs_added": result.arcs_added,
                 "vias_added": result.vias_added,
                 "fanout_vias_added": result.fanout_vias_added,
                 "fanout_tracks_added": result.fanout_tracks_added,
@@ -2058,6 +2068,12 @@ class Handler(BaseHTTPRequestHandler):
                      "drill_mm": v.drill_mm, "layers": list(v.layers),
                      "net_name": v.net_name}
                     for v in result.partial_vias
+                ],
+                "partial_arcs": [
+                    {"start": list(a.start), "mid": list(a.mid), "end": list(a.end),
+                     "width_mm": a.width_mm, "layer": a.layer,
+                     "net_name": a.net_name}
+                    for a in result.partial_arcs
                 ],
                 "mode_warning": mode_info["warning"],
                 "version": version,
@@ -2107,6 +2123,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             from collections import Counter as _Counter
             tracks_before = _Counter(t.net_name for t in model.tracks if t.net_name)
+            arcs_before = _Counter(a.net_name for a in model.arcs if a.net_name)
             vias_before = _Counter(v.net_name for v in model.vias if v.net_name)
             STATE.push_undo()
             with STATE._lock:
@@ -2126,13 +2143,15 @@ class Handler(BaseHTTPRequestHandler):
                 version = STATE.version
                 new_model = STATE.model
             tracks_after = _Counter(t.net_name for t in new_model.tracks if t.net_name)
+            arcs_after = _Counter(a.net_name for a in new_model.arcs if a.net_name)
             vias_after = _Counter(v.net_name for v in new_model.vias if v.net_name)
             ripped: dict = {}
             for net in rippable:
                 dt = tracks_before.get(net, 0) - tracks_after.get(net, 0)
+                da = arcs_before.get(net, 0) - arcs_after.get(net, 0)
                 dv = vias_before.get(net, 0) - vias_after.get(net, 0)
-                if dt or dv:
-                    ripped[net] = {"tracks": dt, "vias": dv}
+                if dt or da or dv:
+                    ripped[net] = {"tracks": dt, "arcs": da, "vias": dv}
             payload = {
                 "ok": True,
                 "ripped": ripped,

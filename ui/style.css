@@ -216,6 +216,12 @@
   .params { display:grid; grid-template-columns:1fr 1fr; gap:.4rem .8rem; padding:.6rem .7rem; font-size:.7rem; }
   .param { display:flex; flex-direction:column; gap:.2rem; color:#9fb0c0; }
   .param .row { display:flex; gap:.4rem; align-items:center; }
+  /* 4-layer-only routing knobs (e.g. pour severance): amber left border +
+     badge so they read as mode-scoped, matching the #mode-warn chip. */
+  .param-4l { border-left:2px solid #fbbf24; padding-left:.45rem; }
+  .mode4l-badge { display:inline-block; font-size:.55rem; font-weight:700; color:#fbbf24;
+    border:1px solid rgba(251,191,36,.5); background:rgba(251,191,36,.1);
+    border-radius:3px; padding:0 .3rem; margin-left:.3rem; vertical-align:middle; }
   .param input[type=range] { flex:1; min-width:0; }
   .param input[type=number] { width:5rem; background:#161c22; border:1px solid #3a4a5a; color:#d7e0e9; border-radius:3px; padding:.1rem .25rem; font-family:inherit; font-size:.7rem; }
 .param input[type=number]::-webkit-inner-spin-button,

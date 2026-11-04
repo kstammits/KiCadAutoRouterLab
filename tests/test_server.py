@@ -16,6 +16,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "ui"))
 
 import server  # noqa: E402
+from tests.helpers import post_fixture
 
 
 @pytest.fixture(autouse=True)
@@ -40,10 +41,7 @@ def _client():
 def test_load_state_and_svg():
     httpd, base = _client()
     try:
-        data = (Path(__file__).parent / "fixtures" / "minimal.kicad_pcb").read_bytes()
-        req = urllib.request.Request(f"{base}/api/load?name=minimal", data=data, method="POST")
-        with urllib.request.urlopen(req) as r:
-            assert json.load(r)["ok"] is True
+        assert post_fixture(base)["ok"] is True
         with urllib.request.urlopen(f"{base}/api/state") as r:
             st = json.load(r)
         assert st["loaded"] and st["name"] == "minimal" and st["version"] >= 1
@@ -80,21 +78,12 @@ def test_params_roundtrip():
         httpd.shutdown()
 
 
-def _load_minimal(base):
-    data = (Path(__file__).parent / "fixtures" / "minimal.kicad_pcb").read_bytes()
-    req = urllib.request.Request(
-        f"{base}/api/load?name=minimal", data=data, method="POST"
-    )
-    with urllib.request.urlopen(req) as r:
-        return json.load(r)["version"]
-
-
 @pytest.mark.server
 @pytest.mark.minimal
 def test_run_and_clear_proposal():
     httpd, base = _client()
     try:
-        version = _load_minimal(base)
+        version = post_fixture(base)["version"]
         req = urllib.request.Request(f"{base}/api/placement/run", method="POST")
         with urllib.request.urlopen(req) as r:
             run = json.load(r)
@@ -138,7 +127,7 @@ def test_run_with_json_body_iterations():
     """Test /api/placement/run accepts JSON body with iterations parameter."""
     httpd, base = _client()
     try:
-        _load_minimal(base)
+        post_fixture(base)
         req = urllib.request.Request(
             f"{base}/api/placement/run",
             data=json.dumps({"iterations": 10}).encode(),
@@ -159,7 +148,7 @@ def test_run_with_movable_uuids():
     """Test /api/placement/run accepts movable_uuids to restrict movement."""
     httpd, base = _client()
     try:
-        _load_minimal(base)
+        post_fixture(base)
         req = urllib.request.Request(f"{base}/api/placement/run", method="POST")
         with urllib.request.urlopen(req) as r:
             run = json.load(r)
@@ -182,10 +171,7 @@ def test_forces_include_components():
     """POST /api/placement/forces returns per-cause breakdown summing to totals."""
     httpd, base = _client()
     try:
-        data = (Path(__file__).parent / "fixtures" / "DCCF.sved.kicad_pcb").read_bytes()
-        req = urllib.request.Request(f"{base}/api/load?name=dccf", data=data, method="POST")
-        with urllib.request.urlopen(req) as r:
-            assert json.load(r)["ok"] is True
+        assert post_fixture(base, "DCCF.sved.kicad_pcb", "dccf")["ok"] is True
         req = urllib.request.Request(
             f"{base}/api/placement/forces",
             data=json.dumps({}).encode(),
@@ -219,10 +205,7 @@ def test_accept_proposal():
     """Test /api/placement/accept applies a physics proposal to the model."""
     httpd, base = _client()
     try:
-        data = (Path(__file__).parent / "fixtures" / "DCCF.sved.kicad_pcb").read_bytes()
-        req = urllib.request.Request(f"{base}/api/load?name=dccf", data=data, method="POST")
-        with urllib.request.urlopen(req) as r:
-            assert json.load(r)["ok"] is True
+        assert post_fixture(base, "DCCF.sved.kicad_pcb", "dccf")["ok"] is True
         req = urllib.request.Request(
             f"{base}/api/placement/run",
             data=json.dumps({"iterations": 5}).encode(),
@@ -257,7 +240,7 @@ def test_accept_no_proposal_returns_400():
     """Test /api/placement/accept returns 400 when no proposal exists."""
     httpd, base = _client()
     try:
-        _load_minimal(base)
+        post_fixture(base)
         req = urllib.request.Request(f"{base}/api/placement/accept", method="POST")
         with pytest.raises(urllib.error.HTTPError) as ei:
             urllib.request.urlopen(req)
