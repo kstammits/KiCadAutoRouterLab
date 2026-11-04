@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import heapq
+import itertools
 import math
 import time
 from collections import defaultdict
@@ -727,22 +729,22 @@ class SingleNetRouter:
         if goal_mask is not None and goal_mask[sl, sr, sc]:
             return RouteResult([start], 0.0, 0, 0.0, True)
 
-        # A* with (f, spread, h, g, seq, col, row, layer, parent)
+        # A* with (f, spread, h, g, seq, col, row, layer)
         # f = g + h. Ties (the common case on open ground, where every
         # goal-ward step costs the same) break toward the diagonal:
         # ``spread`` (the larger remaining axis) prefers shrinking the
         # long axis first, so raw paths come out as diagonal-hugging
         # stairs instead of single-axis L runs. Tie-breaks never
         # override f, so optimality is unchanged; ``seq`` keeps entries
-        # totally ordered so heapq never compares parent tuples.
+        # totally ordered so heapq never reaches the coordinates.
+        # Parents live in the ``parent`` dict only (not duplicated in
+        # heap entries) to keep pushes small.
         open_set = []
-        import heapq
-        import itertools
         seq = itertools.count()
         start_h = heuristic(sc, sr, sl)
         start_spread = max(abs(sc - gc), abs(sr - gr))
         start_h_unweighted = abs(sc - gc) + abs(sr - gr) + abs(sl - gl)
-        heapq.heappush(open_set, (start_h, start_spread, start_h_unweighted, 0, next(seq), sc, sr, sl, None))
+        heapq.heappush(open_set, (start_h, start_spread, start_h_unweighted, 0, next(seq), sc, sr, sl))
 
         # g_score array clipped to the window: [layer, row - r0, col - c0].
         # Small windows shrink both the allocation and the expansion flood.
@@ -756,14 +758,39 @@ class SingleNetRouter:
         )
         g_score[sl, sr - r0, sc - c0] = 0
 
+        # Local bindings for the hot expansion loop: per-neighbor method
+        # calls and ``self.`` attribute lookups dominate A* runtime, so
+        # bind everything the loop touches once up front. The inlined
+        # blocked/cost/secondary checks below match
+        # _is_blocked/_cell_cost/_secondary_blocked/_secondary_at exactly;
+        # windows are always board-clipped (for_pair/grow/full_board), so
+        # the redundant bounds checks inside those helpers are dead here.
+        cost_grid = self.cost_grid
+        n_layers = self.n_layers
+        blocked_threshold = self.cost_map.blocked_threshold
+        base_cost = self.cost_map.base_cost
+        edge_keepout_penalty = self.cost_map.edge_keepout_penalty
+        high_cost_penalty = self.cost_map.high_cost_penalty
+        pour_penalty = self.cost_map.pour_penalty
+        courtyard_penalty = self.cost_map.courtyard_penalty
+        pour_cells = POUR
+        secondary_blocked = SECONDARY_BLOCKED
+        tht_via_mask = self.tht_via_mask
+        via_block_mask = self.via_block_mask
+        via_cost_cells = self._via_cost_cells
+        max_expansions = self.max_expansions
+        has_secondary = secondary is not None
+        heappop = heapq.heappop
+        heappush = heapq.heappush
+
         # Parent pointers for path reconstruction
         parent = {}
 
         expansions = 0
         while open_set:
-            f, _, _, g, _, c, r, l, p = heapq.heappop(open_set)
+            f, _, _, g, _, c, r, l = heappop(open_set)
             expansions += 1
-            if expansions > self.max_expansions:
+            if expansions > max_expansions:
                 return RouteResult([], 0.0, 0, 0.0, False, expansions)
             if expansion_allowance is not None and expansions >= expansion_allowance:
                 return RouteResult([], 0.0, 0, 0.0, False, expansions)
@@ -782,18 +809,20 @@ class SingleNetRouter:
             if goal_mask is not None and goal_mask[l, r, c]:
                 # Reconstruct path to this goal cell
                 path = [(c, r, l)]
+                p = parent.get((c, r, l))
                 while p is not None:
-                    path.append(p[:3])
-                    p = parent.get(p[:3])
+                    path.append(p)
+                    p = parent.get(p)
                 path.reverse()
                 return RouteResult(path, 0.0, 0, g, True, expansions)
 
             if (c, r, l) == (gc, gr, gl):
                 # Reconstruct path
                 path = [(c, r, l)]
+                p = parent.get((c, r, l))
                 while p is not None:
-                    path.append(p[:3])
-                    p = parent.get(p[:3])
+                    path.append(p)
+                    p = parent.get(p)
                 path.reverse()
                 return RouteResult(path, 0.0, 0, g, True, expansions)
 
@@ -807,13 +836,24 @@ class SingleNetRouter:
                     continue
                 if allow_mask is not None and not allow_mask[nr, nc]:
                     continue
-                if self._is_blocked(nr, nc, l) and not (
+                cell_val = cost_grid[l, nr, nc]
+                if cell_val >= blocked_threshold and not (
                         passable is not None and passable[l, nr, nc]):
                     continue
-                if self._secondary_blocked(secondary, nr, nc, l) and not (
+                if has_secondary and int(secondary[l, nr, nc]) >= secondary_blocked and not (
                         passable is not None and passable[l, nr, nc]):
                     continue
-                cell_cost = self._cell_cost(nr, nc, l) + self._secondary_at(secondary, nr, nc, l)
+                cell_cost = base_cost
+                if cell_val >= 80:  # EDGE_KEEPOUT
+                    cell_cost += edge_keepout_penalty
+                elif cell_val >= 50:  # HIGH_COST
+                    cell_cost += high_cost_penalty
+                elif cell_val >= pour_cells:  # POUR
+                    cell_cost += pour_penalty
+                elif cell_val >= 25:  # COURTYARD
+                    cell_cost += courtyard_penalty
+                if has_secondary:
+                    cell_cost += int(secondary[l, nr, nc])
                 ng = g + cell_cost
                 if ng < g_score[l, nr - r0, nc - c0]:
                     g_score[l, nr - r0, nc - c0] = ng
@@ -821,18 +861,18 @@ class SingleNetRouter:
                     nf = ng + heuristic(nc, nr, l)
                     nh = abs(nc - gc) + abs(nr - gr) + abs(l - gl)
                     nspread = max(abs(nc - gc), abs(nr - gr))
-                    heapq.heappush(open_set, (nf, nspread, nh, ng, next(seq), nc, nr, l, (c, r, l)))
+                    heappush(open_set, (nf, nspread, nh, ng, next(seq), nc, nr, l))
 
             # Via transitions (up/down)
             for nl in [l - 1, l + 1]:
-                if 0 <= nl < self.n_layers:
+                if 0 <= nl < n_layers:
                     # Check same cell on other layer
                     if allow_mask is not None and not allow_mask[r, c]:
                         continue
-                    if self._is_blocked(r, c, nl) and not (
+                    if cost_grid[nl, r, c] >= blocked_threshold and not (
                             passable is not None and passable[nl, r, c]):
                         continue
-                    if self._secondary_blocked(secondary, r, c, nl) and not (
+                    if has_secondary and int(secondary[nl, r, c]) >= secondary_blocked and not (
                             passable is not None and passable[nl, r, c]):
                         continue
                     # Landing on kept same-net copper is always legal (the
@@ -841,23 +881,24 @@ class SingleNetRouter:
                     target_kept = passable is not None and passable[nl, r, c]
                     # Via cost: free at THT pad locations; forbidden inside
                     # SMD pad solder/fanout areas (THT wins ties).
-                    if self.tht_via_mask[r, c]:
+                    if tht_via_mask[r, c]:
                         cell_cost = 0
-                    elif self.via_block_mask[r, c] and not target_kept:
+                    elif via_block_mask[r, c] and not target_kept:
                         continue
                     elif via_ok is not None:
                         # Precomputed clearance halo (same disc semantics as
                         # _via_landing_blocked, evaluated once per net).
                         if not via_ok[r, c] and not target_kept:
                             continue
-                        cell_cost = self._via_cost_cells
+                        cell_cost = via_cost_cells
                     else:
                         # Fallback for direct _a_star callers without a mask:
                         # scan the halo now (slow, exact).
                         if self._via_landing_blocked(r, c, secondary):
                             continue
-                        cell_cost = self._via_cost_cells
-                    cell_cost += self._secondary_at(secondary, r, c, nl)
+                        cell_cost = via_cost_cells
+                    if has_secondary:
+                        cell_cost += int(secondary[nl, r, c])
                     ng = g + cell_cost
                     if ng < g_score[nl, r - r0, c - c0]:
                         g_score[nl, r - r0, c - c0] = ng
@@ -865,7 +906,7 @@ class SingleNetRouter:
                         nf = ng + heuristic(c, r, nl)
                         nh = abs(c - gc) + abs(r - gr) + abs(nl - gl)
                         nspread = max(abs(c - gc), abs(r - gr))
-                        heapq.heappush(open_set, (nf, nspread, nh, ng, next(seq), c, r, nl, (c, r, l)))
+                        heappush(open_set, (nf, nspread, nh, ng, next(seq), c, r, nl))
 
         return RouteResult([], 0.0, 0, 0.0, False, expansions)
 

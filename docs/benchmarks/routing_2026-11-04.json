@@ -48,11 +48,11 @@
       "grid_cells_M": 9.58,
       "net": "B1",
       "via_radius_cells": 8,
-      "occupancy_s": 0.193,
-      "tht_mask_s": 0.104,
+      "occupancy_s": 0.196,
+      "tht_mask_s": 0.123,
       "via_block_mask_s": 0.001,
-      "fanout_s": 0.051,
-      "via_ok_mask_s": 0.552,
+      "fanout_s": 0.053,
+      "via_ok_mask_s": 0.566,
       "via_ok_frac": 0.763
     },
     {
@@ -63,8 +63,8 @@
       "occupancy_s": 0.255,
       "tht_mask_s": 0.0,
       "via_block_mask_s": 0.0,
-      "fanout_s": 0.044,
-      "via_ok_mask_s": 0.069,
+      "fanout_s": 0.043,
+      "via_ok_mask_s": 0.071,
       "via_ok_frac": 0.283
     },
     {
@@ -91,13 +91,13 @@
       "nets_routed": 2,
       "nets_failed": 0,
       "expansions": 22857,
-      "total_s": 2.923,
-      "route_s": 1.081,
-      "astar_s": 0.694,
+      "total_s": 2.972,
+      "route_s": 1.071,
+      "astar_s": 0.677,
       "smooth_s": 0.007,
-      "occupancy_s": 0.195,
-      "s_per_net": 1.462,
-      "ms_per_kexp": 127.9
+      "occupancy_s": 0.198,
+      "s_per_net": 1.486,
+      "ms_per_kexp": 130.0
     },
     {
       "board": "tube111",
@@ -108,13 +108,13 @@
       "nets_routed": 1,
       "nets_failed": 0,
       "expansions": 56014,
-      "total_s": 1.268,
-      "route_s": 0.423,
-      "astar_s": 0.318,
+      "total_s": 1.151,
+      "route_s": 0.34,
+      "astar_s": 0.235,
       "smooth_s": 0.004,
-      "occupancy_s": 0.272,
-      "s_per_net": 1.268,
-      "ms_per_kexp": 22.6
+      "occupancy_s": 0.256,
+      "s_per_net": 1.151,
+      "ms_per_kexp": 20.6
     },
     {
       "board": "DCCF_power",
@@ -125,13 +125,13 @@
       "nets_routed": 1,
       "nets_failed": 0,
       "expansions": 591517,
-      "total_s": 6.107,
-      "route_s": 4.235,
-      "astar_s": 3.884,
-      "smooth_s": 0.152,
-      "occupancy_s": 0.198,
-      "s_per_net": 6.107,
-      "ms_per_kexp": 10.3
+      "total_s": 5.287,
+      "route_s": 3.358,
+      "astar_s": 3.003,
+      "smooth_s": 0.153,
+      "occupancy_s": 0.197,
+      "s_per_net": 5.287,
+      "ms_per_kexp": 8.9
     }
   ],
   "stitch_case": null
