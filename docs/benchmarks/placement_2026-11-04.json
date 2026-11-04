@@ -1,0 +1,200 @@
+{
+  "cases": [
+    {
+      "board": "minimal",
+      "footprints": 4,
+      "pads": 4,
+      "fixed_budget_iters": 0,
+      "fixed_s": 0.0,
+      "ms_per_iter": 0.05,
+      "converged_iters": 0,
+      "converged_s": 0.0,
+      "moved": 0
+    },
+    {
+      "board": "tube111",
+      "footprints": 105,
+      "pads": 272,
+      "fixed_budget_iters": 50,
+      "fixed_s": 1.806,
+      "ms_per_iter": 36.115,
+      "converged_iters": 1000,
+      "converged_s": 31.204,
+      "moved": 95
+    },
+    {
+      "board": "synthetic_8fp",
+      "footprints": 8,
+      "pads": 32,
+      "fixed_budget_iters": 50,
+      "fixed_s": 0.088,
+      "ms_per_iter": 1.766,
+      "converged_iters": 1000,
+      "converged_s": 0.991,
+      "moved": 8
+    },
+    {
+      "board": "synthetic_16fp",
+      "footprints": 16,
+      "pads": 64,
+      "fixed_budget_iters": 50,
+      "fixed_s": 0.192,
+      "ms_per_iter": 3.849,
+      "converged_iters": 1000,
+      "converged_s": 2.123,
+      "moved": 16
+    },
+    {
+      "board": "synthetic_32fp",
+      "footprints": 32,
+      "pads": 128,
+      "fixed_budget_iters": 50,
+      "fixed_s": 0.416,
+      "ms_per_iter": 8.323,
+      "converged_iters": 1000,
+      "converged_s": 5.014,
+      "moved": 32
+    },
+    {
+      "board": "synthetic_64fp",
+      "footprints": 64,
+      "pads": 256,
+      "fixed_budget_iters": 50,
+      "fixed_s": 0.925,
+      "ms_per_iter": 18.507,
+      "converged_iters": 1000,
+      "converged_s": 12.608,
+      "moved": 64
+    }
+  ],
+  "formula": {
+    "ms_per_iter = a*pads^2 + b*fps^2 + c": {
+      "a": 0.00011689791693159425,
+      "b": 0.0023150594810072036,
+      "c": 1.9383773584760629
+    },
+    "max_abs_err_ms": 2.0987462619653208
+  },
+  "profile_top": [
+    {
+      "func": "runner.py:79:run_placement",
+      "calls": 1,
+      "tottime": 0.0007,
+      "cumtime": 1.6484
+    },
+    {
+      "func": "region.py:63:_run_region_simulation",
+      "calls": 3,
+      "tottime": 0.0124,
+      "cumtime": 1.4456
+    },
+    {
+      "func": "force.py:120:_compute_total_force",
+      "calls": 66,
+      "tottime": 0.3019,
+      "cumtime": 1.1294
+    },
+    {
+      "func": "decorators.py:182:wrapper",
+      "calls": 38186,
+      "tottime": 0.0218,
+      "cumtime": 0.2537
+    },
+    {
+      "func": "contact.py:110:_classify_shape",
+      "calls": 1992,
+      "tottime": 0.0054,
+      "cumtime": 0.2241
+    },
+    {
+      "func": "force.py:523:_apply_push",
+      "calls": 5030,
+      "tottime": 0.012,
+      "cumtime": 0.2028
+    },
+    {
+      "func": "contact.py:36:_classify_rectangle",
+      "calls": 1992,
+      "tottime": 0.0299,
+      "cumtime": 0.1844
+    },
+    {
+      "func": "legality.py:319:check_legality",
+      "calls": 1,
+      "tottime": 0.0,
+      "cumtime": 0.1815
+    },
+    {
+      "func": "force.py:427:_spread_force",
+      "calls": 11663,
+      "tottime": 0.1216,
+      "cumtime": 0.1563
+    },
+    {
+      "func": "~:0:<method 'mean' of 'numpy.ndarray' objects>",
+      "calls": 32204,
+      "tottime": 0.007,
+      "cumtime": 0.1282
+    },
+    {
+      "func": "legality.py:133:_check_pairwise_overlaps",
+      "calls": 1,
+      "tottime": 0.0025,
+      "cumtime": 0.1244
+    },
+    {
+      "func": "_methods.py:115:_mean",
+      "calls": 32374,
+      "tottime": 0.0593,
+      "cumtime": 0.1218
+    },
+    {
+      "func": "legality.py:98:_cross_layer_pin_overlap",
+      "calls": 650,
+      "tottime": 0.0019,
+      "cumtime": 0.119
+    },
+    {
+      "func": "contact.py:386:pad_copper_polygon",
+      "calls": 4422,
+      "tottime": 0.0091,
+      "cumtime": 0.1168
+    },
+    {
+      "func": "contact.py:582:_footprint_courtyard_polygon",
+      "calls": 197,
+      "tottime": 0.0006,
+      "cumtime": 0.1025
+    },
+    {
+      "func": "base.py:473:buffer",
+      "calls": 6120,
+      "tottime": 0.0083,
+      "cumtime": 0.1
+    },
+    {
+      "func": "rigid.py:229:_rigid_pose_vertices",
+      "calls": 4813,
+      "tottime": 0.0415,
+      "cumtime": 0.0986
+    },
+    {
+      "func": "numeric.py:2384:isclose",
+      "calls": 5428,
+      "tottime": 0.0396,
+      "cumtime": 0.0939
+    },
+    {
+      "func": "legality.py:119:<listcomp>",
+      "calls": 1300,
+      "tottime": 0.0022,
+      "cumtime": 0.0817
+    },
+    {
+      "func": "constructive.py:136:buffer",
+      "calls": 6120,
+      "tottime": 0.0588,
+      "cumtime": 0.0779
+    }
+  ]
+}
