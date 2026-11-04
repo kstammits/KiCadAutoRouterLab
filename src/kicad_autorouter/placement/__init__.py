@@ -3,7 +3,7 @@
 Public API:
 PlacementParams, PlacementProposal, run_placement.
 
-Submodules: params, model, rigid, contact, force, legality, runner.
+Submodules: params, model, rigid, contact, force, legality, runner, proposal, depenetrate, region.
 
 The private-helper re-exports below exist for backward compatibility:
 tests and scripts import names like ``_wall_mag`` or ``_collect_pad_nodes``
