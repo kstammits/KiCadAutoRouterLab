@@ -152,6 +152,10 @@ class SingleNetRouter:
         # ~n-1 pair-searches × window-growth retries that make massive
         # nets burn tens of millions of expansions.
         self.max_expansions_per_net = max(0, int(max_expansions_per_net))
+        # Obstacle-cache entry for incremental via-landing dilation
+        # (obstacles._ObstacleEntry). Set by the pipeline when a cache is
+        # in use; None keeps the one-shot build_via_ok_mask path.
+        self.via_ok_entry = None
 
     def _budget_spent(self, expansions_total: int) -> bool:
         """True when the net-level expansion budget is exhausted."""
@@ -211,15 +215,25 @@ class SingleNetRouter:
 
         via_ok = None
         if self.via_clearance_cells > 0:
-            via_ok = build_via_ok_mask(
-                self.cost_grid,
-                self.via_block_mask,
-                self.tht_via_mask,
-                secondary,
-                self.via_clearance_cells,
-                self.cost_map.blocked_threshold,
-                SECONDARY_BLOCKED,
-            )
+            if self.via_ok_entry is not None:
+                via_ok = build_via_ok_cached(
+                    self.via_ok_entry,
+                    self.cost_grid,
+                    secondary,
+                    self.via_clearance_cells,
+                    self.cost_map.blocked_threshold,
+                    SECONDARY_BLOCKED,
+                )
+            else:
+                via_ok = build_via_ok_mask(
+                    self.cost_grid,
+                    self.via_block_mask,
+                    self.tht_via_mask,
+                    secondary,
+                    self.via_clearance_cells,
+                    self.cost_map.blocked_threshold,
+                    SECONDARY_BLOCKED,
+                )
 
         def _search_pair(i: int, j: int, goal_mask: Optional[np.ndarray] = None):
             """Windowed A* with growth + full-board fallback; (ok, path, cost).
@@ -1114,6 +1128,52 @@ def build_via_ok_mask(
     # Drilled holes stay legal hop sites (the barrel already exists).
     ok |= np.asarray(tht_via_mask, dtype=bool)
     return ok
+
+
+def build_via_ok_cached(
+    entry,
+    cost_grid: np.ndarray,
+    secondary,
+    radius: int,
+    blocked_threshold: int,
+    secondary_blocked: int,
+) -> np.ndarray:
+    """Content-memoized twin of :func:`build_via_ok_mask` over a cache entry.
+
+    ``entry`` is an ``obstacles._ObstacleEntry`` carrying the static
+    via-block/THT masks plus a bounded memo of computed masks keyed by
+    content digests. Misses run the original single-dilation body (never
+    slower than the uncached path); hits serve retries, chunk loops, and
+    trial replays with identical inputs in milliseconds.
+    """
+    n_layers, H, W = cost_grid.shape
+    blocked2d = np.zeros((H, W), dtype=bool)
+    for l in range(n_layers):
+        blocked2d |= cost_grid[l] >= blocked_threshold
+    blocked2d |= np.asarray(entry.via_block_mask, dtype=bool)
+    key = (
+        hash(blocked2d.tobytes()),
+        hash(secondary.tobytes()) if secondary is not None else None,
+        max(0, int(radius)),
+    )
+    memo = entry.via_ok_memo
+    hit = memo.get(key)
+    if hit is not None and hit.shape == (H, W):
+        return hit.copy()
+    ok = build_via_ok_mask(
+        cost_grid,
+        entry.via_block_mask,
+        entry.tht_via_mask,
+        secondary,
+        radius,
+        blocked_threshold,
+        secondary_blocked,
+    )
+    if len(memo) >= 4:
+        memo.clear()
+    memo[key] = ok
+    # Hand out a private copy: the memoized array must stay pristine.
+    return ok.copy()
 
 
 # ---------------------------------------------------------------------------

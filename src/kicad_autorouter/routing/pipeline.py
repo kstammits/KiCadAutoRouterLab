@@ -107,6 +107,7 @@ def route_nets(
     protected_nets: Set[str],
     cost_grid: Optional[np.ndarray] = None,
     routing_grid: Optional[RoutingGrid] = None,
+    obstacle_cache=None,
     params: Optional[RoutingParams] = None,
     original_pcb_tree: Optional = None,
     extra_power_nets: Collection[str] = (),
@@ -124,6 +125,8 @@ def route_nets(
         protected_nets: Set of net names that are protected from rip-up
         cost_grid: Pre-built occupancy grid (optional, will be built if None)
         routing_grid: Pre-built routing grid (optional, will be built if None)
+        obstacle_cache: Optional ``obstacles.ObstacleCache`` for incremental
+            mask re-raster (optional, legacy full rebuilds if None)
         params: RoutingParams configuration (optional, uses defaults if None)
         original_pcb_tree: Original PCB S-expression tree for writeback
         extra_power_nets: User-marked power membership (app nets table,
@@ -147,6 +150,7 @@ def route_nets(
         protected_nets=protected_nets,
         cost_grid=cost_grid,
         routing_grid=routing_grid,
+        obstacle_cache=obstacle_cache,
         params=params,
         original_pcb_tree=original_pcb_tree,
         extra_power_nets=extra_power_nets,

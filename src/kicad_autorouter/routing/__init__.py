@@ -17,6 +17,7 @@ from .router import (
     manhattan,
     ordered_pairs,
 )
+from .smooth import own_net_soft_mask, smooth_grid_path, smoothed_wire_mm
 
 __all__ = [
     "RoutingGrid",

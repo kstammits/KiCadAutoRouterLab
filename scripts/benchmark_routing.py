@@ -35,6 +35,7 @@ from kicad_autorouter.routing import (  # noqa: E402
     build_occupancy_grid,
     create_grid_from_model,
 )
+from kicad_autorouter.routing.obstacles import ObstacleCache  # noqa: E402
 from kicad_autorouter.routing.obstacles import (  # noqa: E402
     build_fanout_cost,
     build_via_block_mask,
@@ -222,12 +223,18 @@ def time_case(
     net_names: list[str],
     params: RoutingParams,
     label: str | None = None,
+    cache=None,
 ) -> dict:
-    """Route the first ``len(net_names)`` nets end-to-end via ``route_nets``."""
+    """Route the first ``len(net_names)`` nets end-to-end via ``route_nets``.
+
+    ``cache`` is an optional per-board :class:`ObstacleCache` reused across
+    cases, measuring the incremental re-raster path production uses.
+    """
     model = load_board(board_name)
     result, _, grid = route_nets(
         model, net_names, set(),
         params=params,
+        obstacle_cache=cache,
         progress_cb=None,
         should_cancel=None,
     )
@@ -246,6 +253,7 @@ def time_case(
         "astar_s": round(t.get("astar_s", 0.0), 3),
         "smooth_s": round(t.get("smooth_s", 0.0), 3),
         "occupancy_s": round(t.get("occupancy_s", 0.0), 3),
+        "occupancy_cached": round(t.get("occupancy_cached", 0.0), 1),
         "s_per_net": round(total / max(n, 1), 3),
         "ms_per_kexp": (
             round(total / max(result.expansions, 1) * 1e6, 1)
@@ -298,22 +306,26 @@ def main() -> None:
               f"{m['via_block_mask_s']:>8.3f}{m['fanout_s']:>8.3f}"
               f"{m['via_ok_mask_s']:>8.3f}")
 
-    # Scaling runs: route first-k signal nets fresh each time.
+    # Scaling runs: route first-k signal nets fresh each time. A per-board
+    # mask cache is reused across cases (the incremental production path).
     rows = []
+    caches: dict = {}
     for board_name, counts in plan:
         model = load_board(board_name)
+        cache = caches.setdefault(board_name, ObstacleCache())
         for k in counts:
             nets = pick_nets(model, k)
             if nets:
-                rows.append(time_case(board_name, nets, params))
+                rows.append(time_case(board_name, nets, params, cache=cache))
 
     # Power net scaling runs (wide tracks, different clearances).
     for board_name, counts in power_plan:
         model = load_board(board_name)
+        cache = caches.setdefault(board_name, ObstacleCache())
         for k in counts:
             nets = pick_power_nets(model, k)
             if nets:
-                rows.append(time_case(board_name, nets, params, label=f"{board_name}_power"))
+                rows.append(time_case(board_name, nets, params, label=f"{board_name}_power", cache=cache))
 
     print(f"\n{'board':<16}{'nets':>5}{'routed':>7}{'failed':>7}"
           f"{'expans':>9}{'total_s':>9}{'astar_s':>9}{'smooth_s':>9}"
@@ -337,7 +349,8 @@ def main() -> None:
             run_drc=False,
         )
         stitch_row = time_case("DCCF", nets, stitch_params,
-                                label="DCCF+stitch")
+                                label="DCCF+stitch",
+                                cache=caches.get("DCCF"))
         print(f"\nwith stitch: {stitch_row['total_s']:.3f}s total "
               f"({stitch_row['route_s']:.3f}s route) for "
               f"{stitch_row['nets_requested']} nets")

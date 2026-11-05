@@ -365,6 +365,7 @@ def _handle_run(body):
             protected_nets=protected_nets,
             cost_grid=STATE.cost_grid,
             routing_grid=STATE.routing_grid,
+            obstacle_cache=STATE.obstacle_cache,
             params=route_params,
             original_pcb_tree=STATE.pcb_tree,
             extra_power_nets=STATE.get_power_override_nets(),

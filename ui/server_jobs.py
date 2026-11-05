@@ -40,7 +40,8 @@ DRC_REPORT_PATH = TMP_DIR / "drc_report_current.json"
 # job (the UI routes one net per job); GET polls progress; POST .../cancel
 # sets a cooperative flag honored between nets/attempts/pairs and inside A*
 # (every 4096 expansions). Only one routing job runs at a time — a second
-# start gets 409 busy — because jobs share STATE.cost_grid/routing_grid.
+# start gets 409 busy — because jobs share STATE.cost_grid/routing_grid
+# and the obstacle cache.
 # The synchronous POST /api/routing/run is unchanged for back-compat/tests.
 _JOBS: Dict[str, dict] = {}
 _JOBS_LOCK = threading.Lock()
@@ -131,6 +132,7 @@ def _run_routing_job(job_id: str) -> None:
             protected_nets=protected_nets,
             cost_grid=STATE.cost_grid,
             routing_grid=STATE.routing_grid,
+            obstacle_cache=STATE.obstacle_cache,
             params=route_params,
             original_pcb_tree=tree,
             extra_power_nets=extra_power,

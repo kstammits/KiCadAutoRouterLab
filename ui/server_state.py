@@ -24,6 +24,7 @@ from kicad_autorouter.io import (
     resize_ghost_in_tree,
     rip_up_nets,
 )
+from kicad_autorouter.routing.obstacles import ObstacleCache
 from kicad_autorouter.routing.power import identify_power_nets
 from kicad_autorouter.sexpr import parse
 from kicad_autorouter.strategy import infer_mode, mode_warning
@@ -77,6 +78,7 @@ class BoardState:
         # seeded from power-named KiCad netclasses on load, in-memory only
         # (per-board net names must not leak into the global params file).
         self.cost_grid: Optional[np.ndarray] = None  # Persistent occupancy grid for incremental routing
+        self.obstacle_cache: ObstacleCache = ObstacleCache()  # Mask cache keyed by board/grid/params
         self.routing_grid: Optional[Any] = None  # Persistent RoutingGrid for reuse
         self.routing_model: Optional[Any] = None  # Updated BoardModel after routing
         self.last_accept_report: dict = {}  # Report from most recent accept (for UI diag)
@@ -128,6 +130,7 @@ class BoardState:
                 self.drc_error = None
                 # Reset routing state
                 self.cost_grid = None
+                self.obstacle_cache = ObstacleCache()  # new board drops mask state
                 self.routing_grid = None
                 self.routing_model = None
                 # Inlet anchors reference pads on this board; a new board clears them.

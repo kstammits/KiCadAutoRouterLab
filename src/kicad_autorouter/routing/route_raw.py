@@ -41,7 +41,7 @@ from .grid import RoutingGrid, board_to_grid, grid_to_board, mm_to_cells
 from .pour import pour_corridors, pour_net_names, severance_cost
 from .stitch import plan_stitches
 from .stitch import _region_masks as _board_region_masks
-from .obstacles import BLOCKED, bresenham_cells, build_fanout_cost, build_via_block_mask, drill_radius_cells, stamp_discs, stamp_square, tht_drill_cells, track_corridor_radius_cells, via_halo_radius_cells
+from .obstacles import BLOCKED, ObstacleCache, bresenham_cells, build_fanout_cost, build_via_block_mask, drill_radius_cells, stamp_discs, stamp_square, tht_drill_cells, track_corridor_radius_cells, via_halo_radius_cells, _build_tht_via_mask
 from .params import (
     MAX_GRID_CELLS_TOTAL,
     RoutingParams,
@@ -813,6 +813,7 @@ def route_raw(
     protected_nets: Set[str],
     cost_grid: Optional[np.ndarray] = None,
     routing_grid: Optional[RoutingGrid] = None,
+    obstacle_cache: Optional[ObstacleCache] = None,
     params: Optional[RoutingParams] = None,
     original_pcb_tree: Optional = None,
     extra_power_nets: Collection[str] = (),
@@ -928,7 +929,26 @@ def route_raw(
     # single batched call would (measured ~5% fewer tracks on 3 DCCF nets;
     # routed/failed sets identical). Making rebuilds width-aware belongs
     # with the GND-continuity work (docs/roadmap.md).
-    if cost_grid is None or cost_grid.shape != (
+    if obstacle_cache is not None:
+        # Incremental re-raster: sync the cached base grid (static obstacles
+        # + current copper) instead of rebuilding the full occupancy from
+        # the ripped model. Content is identical to a fresh build, so the
+        # caller's grid just copies it.
+        t_occ = time.perf_counter()
+        fresh = obstacle_cache.sync(
+            model, routing_grid,
+            clearance_mm=params.clearance_mm,
+            track_half_mm=params.track_width_mm / 2.0,
+        )
+        timings["occupancy_s"] = time.perf_counter() - t_occ
+        timings["occupancy_cached"] = (
+            1.0 if obstacle_cache.last_hit else 0.0
+        )
+        if cost_grid is not None and cost_grid.shape == fresh.shape:
+            cost_grid[:] = fresh
+        else:
+            cost_grid = fresh.copy()
+    elif cost_grid is None or cost_grid.shape != (
         len(routing_grid.layers), routing_grid.height_cells, routing_grid.width_cells
     ):
         t_occ = time.perf_counter()
@@ -948,15 +968,19 @@ def route_raw(
     timings["blocked_frac"] = float(blocked.mean())
     timings["occupied_frac"] = float((cost_grid > 0).mean())
     timings["tolled_frac"] = float(((cost_grid > 0) & (cost_grid < BLOCKED)).mean())
-    # 3. Create THT via mask for free layer transitions at through-hole pads
-    tht_via_mask = _build_tht_via_mask(model, routing_grid)
+    if obstacle_cache is not None:
+        # Footprint-only inputs, already keyed by the sync above.
+        tht_via_mask, via_block_mask = obstacle_cache.masks()
+    else:
+        # 3. Create THT via mask for free layer transitions at through-hole pads
+        tht_via_mask = _build_tht_via_mask(model, routing_grid)
 
-    # 3b. Via-block mask: no vias inside SMD pad solder/fanout areas
-    via_block_mask = build_via_block_mask(
-        model, routing_grid,
-        clearance_mm=params.clearance_mm,
-        track_half_mm=params.track_width_mm / 2.0,
-    )
+        # 3b. Via-block mask: no vias inside SMD pad solder/fanout areas
+        via_block_mask = build_via_block_mask(
+            model, routing_grid,
+            clearance_mm=params.clearance_mm,
+            track_half_mm=params.track_width_mm / 2.0,
+        )
 
     # 4. Create router (via price in mm; the router scales to cells)
     cost_map = CostMap(
@@ -975,6 +999,8 @@ def route_raw(
         debug=params.debug,
         max_expansions_per_net=params.max_expansions_per_net,
     )
+    if obstacle_cache is not None:
+        router.via_ok_entry = obstacle_cache.active_entry()
 
     # 5. Identify net classes (user-marked power membership included)
     power_nets, ground_nets, signal_nets = identify_power_nets(model, extra_power_nets)
@@ -1448,34 +1474,6 @@ def _tht_sites_by_net(model, grid) -> dict:
             if pad.is_through_hole and pad.net_name:
                 sites.setdefault(pad.net_name, set()).update(tht_drill_cells(pad, grid))
     return sites
-
-
-def _build_tht_via_mask(model, grid) -> np.ndarray:
-    """Build a 2D boolean mask of free layer-transition sites at THT holes.
-
-    Each through-hole pad contributes a disc of drill radius (the copper-
-    free hole the barrel already provides), not just its center cell, so
-    the free hop is hittable at fine grids too. The surrounding copper
-    annulus stays protected by the per-net exclusion ring in the secondary
-    grid (foreign nets) — this mask only zeroes the transition price.
-
-    Returns (H, W) boolean array where True = free transition site.
-    """
-    H, W = grid.height_cells, grid.width_cells
-    res_mm = grid.resolution_mm
-    mask = np.zeros((H, W), dtype=bool)
-    rows, cols, radii = [], [], []
-    for fp in model.footprints:
-        for pad in fp.pads:
-            if pad.is_through_hole:
-                col, row = board_to_grid(
-                    grid, pad.position.x_mm, pad.position.y_mm
-                )
-                rows.append(row)
-                cols.append(col)
-                radii.append(drill_radius_cells(pad.drill_mm, res_mm))
-    stamp_discs(mask, rows, cols, radii, True)
-    return mask
 
 
 def _rip_up_nets_from_model(model: BoardModel, net_names: List[str]) -> BoardModel:
