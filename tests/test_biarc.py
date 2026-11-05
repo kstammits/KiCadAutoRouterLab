@@ -8,6 +8,7 @@ import pytest
 from kicad_autorouter.routing.biarc import (
     _corner_arc,
     fit_branch_arcs,
+    fit_branch_arcs_with_sweeps,
     pieces_wire_cells,
     simplify_waypoints,
 )
@@ -159,12 +160,11 @@ def test_fillet_tangent_measures_roominess():
 
 
 def test_greedy_prefers_roomier_corner_on_tie():
-    """Fillet-aware ranking: a distance+angle tie breaks on fillet radius.
+    """Fillet-aware ranking: a distance tie breaks on fillet radius.
 
     From M=(10,10) with committed incoming P=(0,12), A=(18,16) and
-    B=(18,4) sit at equal distance (hypot 10) and mirrored angles
-    (+/-36.9 deg, same distance to a 10-degree multiple), so legacy
-    keeps first-found B. Ranked prefers A, whose admitted fillet
+    B=(18,4) sit at equal distance (hypot 10), so legacy keeps
+    first-found B. Ranked prefers A, whose admitted fillet
     radius (2.24 cells) beats B's (1.13): the tie-break that matters
     is turn sharpness, which only radius sees. Blockers pin every
     other chord dead (X=(10,2) is reachable from neither P nor M), so
@@ -494,3 +494,231 @@ def test_keep_rule_pipeline_broad_arc_on_tube111():
             n += ang >= 80
         return n
     assert _sharp90(kept) <= _sharp90(legacy)
+
+
+# ---------------------------------------------------------------------------
+# Broad sweeps: one arc across a noisy region (fit_branch_arcs_with_sweeps).
+# ---------------------------------------------------------------------------
+
+def _faceted_quarter_arc(n=25, radius=20.0, origin=5, size=60):
+    """Dense faceted 90-degree bend: every joint too short to fillet."""
+    pts = []
+    for k in range(n):
+        t = math.pi * 0.5 * k / (n - 1)
+        pts.append((int(round(origin + radius * math.cos(t))),
+                    int(round(origin + radius * math.sin(t))), 0))
+    run = [pts[0]]
+    for p in pts[1:]:
+        if (p[0], p[1]) != (run[-1][0], run[-1][1]):
+            run.append(p)
+    return run, np.zeros((1, size, size), dtype=np.int16)
+
+
+def _spans_full(pieces, run):
+    """True when one arc piece spans the whole run end to end."""
+    ax, ay = float(run[0][0]), float(run[0][1])
+    bx, by = float(run[-1][0]), float(run[-1][1])
+    return any(
+        p[0] == "arc"
+        and math.hypot(p[1] - ax, p[2] - ay) < 1e-9
+        and math.hypot(p[5] - bx, p[6] - by) < 1e-9
+        for p in pieces
+    )
+
+
+@pytest.mark.unit
+def test_broad_sweep_collapses_faceted_arc():
+    """Dense cell-scale joints the tangent fitter leaves sharp become one arc."""
+    run, grid = _faceted_quarter_arc()
+    legacy = fit_branch_arcs(run, grid[0], None, 100, 1,
+                             max_radius_cells=10.0, min_leg_cells=3.0)
+    assert not any(p[0] == "arc" for p in legacy)  # short legs: all sharp
+    swept = fit_branch_arcs_with_sweeps(run, grid[0], None, 100, 1,
+                                        max_radius_cells=10.0, min_leg_cells=3.0)
+    assert _spans_full(swept, run)
+    assert len(swept) < len(legacy)
+
+
+@pytest.mark.unit
+def test_broad_sweep_never_spans_pinned():
+    """A pinned joint inside the noise survives: no sweep erases it."""
+    run, grid = _faceted_quarter_arc()
+    mid = run[len(run) // 2]
+    pinned = {(mid[0], mid[1])}
+    swept = fit_branch_arcs_with_sweeps(run, grid[0], None, 100, 1,
+                                        pinned=pinned,
+                                        max_radius_cells=10.0, min_leg_cells=3.0)
+    assert not _spans_full(swept, run)
+    flat = [c for p in swept for c in
+            ([(p[1], p[2]), (p[5], p[6])] if p[0] == "arc"
+             else [(p[1], p[2]), (p[3], p[4])])]
+    assert any(math.hypot(c[0] - mid[0], c[1] - mid[1]) < 1e-9 for c in flat)
+
+
+@pytest.mark.unit
+def test_broad_sweep_vetoed_by_blockage():
+    """A BLOCKED cell on the sweep band kills the full-span arc."""
+    run, grid = _faceted_quarter_arc()
+    mid = run[len(run) // 2]
+    grid[0, mid[1], mid[0]] = 100  # apex of the sweep band
+    swept = fit_branch_arcs_with_sweeps(run, grid[0], None, 100, 1,
+                                        max_radius_cells=10.0, min_leg_cells=3.0)
+    assert not _spans_full(swept, run)
+
+
+@pytest.mark.unit
+def test_sweep_matches_legacy_on_clean_geometry():
+    """Sparse chains that already fillet well come out byte-identical."""
+    grid = _clear()
+    runs = [
+        [(5, 5, 0), (15, 5, 0), (15, 15, 0)],
+        [(5, 5, 0), (15, 5, 0), (15, 15, 0), (25, 15, 0), (25, 25, 0)],
+        [(5, 5, 0), (6, 5, 0), (6, 6, 0)],
+    ]
+    for run in runs:
+        kwargs = dict(max_radius_cells=10.0, min_leg_cells=3.0)
+        assert (
+            fit_branch_arcs_with_sweeps(run, grid, None, 100, 1, **kwargs)
+            == fit_branch_arcs(run, grid, None, 100, 1, **kwargs)
+        )
+    pinned = {(15, 5)}
+    run = [(5, 5, 0), (15, 5, 0), (15, 15, 0)]
+    assert (
+        fit_branch_arcs_with_sweeps(run, grid, None, 100, 1, pinned=pinned,
+                                    max_radius_cells=10.0, min_leg_cells=3.0)
+        == fit_branch_arcs(run, grid, None, 100, 1, pinned=pinned,
+                           max_radius_cells=10.0, min_leg_cells=3.0)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Non-90-degree tangent regression: the emission-radius fix.
+# Every fillet test above sits at exactly 90 degrees, where the inverted
+# radius formula coincides with the true tangent one — so a kink on every
+# other angle shipped unnoticed. These tests assert G1 continuity (arc
+# meets stub with matching direction) across a battery of turn angles and
+# leg asymmetries, on both fitters. Sharp joints (vetoed fillets) stay
+# legal; only arc joints must be tangent.
+# ---------------------------------------------------------------------------
+
+def _circumcenter(s, m, e):
+    (x1, y1), (x2, y2), (x3, y3) = s, m, e
+    d = 2.0 * (x1 * (y2 - y3) + x2 * (y3 - y1) + x3 * (y1 - y2))
+    if abs(d) < 1e-12:
+        return None
+    q1, q2, q3 = x1 * x1 + y1 * y1, x2 * x2 + y2 * y2, x3 * x3 + y3 * y3
+    ux = (q1 * (y2 - y3) + q2 * (y3 - y1) + q3 * (y1 - y2)) / d
+    uy = (q1 * (x3 - x2) + q2 * (x1 - x3) + q3 * (x2 - x1)) / d
+    return ux, uy
+
+
+def _arc_tangent_at(s, m, e, at_start):
+    """Unit tangent of the circumcircle through (s, m, e) at an endpoint,
+    oriented along travel s -> e."""
+    c = _circumcenter(s, m, e)
+    assert c is not None, "arc points must not be collinear"
+    p = s if at_start else e
+    t = (-(p[1] - c[1]), p[0] - c[0])
+    n = math.hypot(*t)
+    assert n > 1e-12
+    t = (t[0] / n, t[1] / n)
+    fwd = (e[0] - s[0], e[1] - s[1])
+    if t[0] * fwd[0] + t[1] * fwd[1] < 0:
+        t = (-t[0], -t[1])
+    return t
+
+
+def _dir(a, b):
+    d = (b[0] - a[0], b[1] - a[1])
+    n = math.hypot(*d)
+    assert n > 1e-9, f"degenerate piece leg: {a} -> {b}"
+    return d[0] / n, d[1] / n
+
+
+def _angle_between(u, v):
+    return math.degrees(math.acos(max(-1.0, min(1.0, u[0] * v[0] + u[1] * v[1]))))
+
+
+def assert_g1_pieces(pieces, tol_deg=0.5):
+    """Every arc joint in fitted pieces must be direction-continuous.
+
+    seg->arc: stub direction vs arc start tangent; arc->seg: arc end
+    tangent vs stub direction; arc->arc: tangent vs tangent. seg->seg
+    joints are sharp corners (fillet vetoed) and are always legal.
+    """
+    pts = []
+    for p in pieces:
+        if p[0] == "seg":
+            pts.append(("seg", (p[1], p[2]), (p[3], p[4])))
+        elif p[0] == "arc":
+            pts.append(("arc", (p[1], p[2]), (p[3], p[4]), (p[5], p[6])))
+    for k in range(len(pts) - 1):
+        a, b = pts[k], pts[k + 1]
+        if a[0] == "seg" and b[0] == "seg":
+            continue  # sharp joint: legal
+        if a[0] == "seg" and b[0] == "arc":
+            joint_err = _angle_between(_dir(a[1], a[2]),
+                                       _arc_tangent_at(b[1], b[2], b[3], True))
+        elif a[0] == "arc" and b[0] == "seg":
+            joint_err = _angle_between(_arc_tangent_at(a[1], a[2], a[3], False),
+                                       _dir(b[1], b[2]))
+        else:  # arc -> arc (touching fillets)
+            joint_err = _angle_between(_arc_tangent_at(a[1], a[2], a[3], False),
+                                       _arc_tangent_at(b[1], b[2], b[3], True))
+        assert joint_err <= tol_deg, \
+            f"kink {joint_err:.2f}deg between {a} and {b}"
+
+
+def _corner_run(turn_deg, d1=12.0, d2=8.0):
+    """Single corner: incoming along +x, outgoing rotated by turn_deg.
+
+    Offset to y=5: the clearance gate vetos arcs whose footprint leaves
+    the grid, so corners must not hug row 0.
+    """
+    rad = math.radians(turn_deg)
+    p2 = (round(12.0 + d2 * math.cos(rad)), round(5.0 + d2 * math.sin(rad)))
+    return [(0, 5, 0), (12, 5, 0), (p2[0], p2[1], 0)]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("turn", [25, 30, 45, 60, 71.6, 90, 120, 135])
+def test_fillet_g1_across_turn_angles(turn):
+    """Fillets meet their stubs tangentially at any turn angle."""
+    run = _corner_run(turn)
+    for fit in (fit_branch_arcs, fit_branch_arcs_with_sweeps):
+        pieces = fit(run, _clear(60), None, 100, 1,
+                     max_radius_cells=10.0, min_leg_cells=0.6)
+        assert any(p[0] == "arc" for p in pieces), f"turn {turn}: no fillet"
+        assert_g1_pieces(pieces)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("turn", [45, 71.6, 120])
+def test_fillet_g1_asymmetric_legs(turn):
+    """Long leg + nub leg (DCCF bend shape): tangent, no overlap."""
+    run = _corner_run(turn, d1=11.0, d2=3.16)
+    pieces = fit_branch_arcs_with_sweeps(run, _clear(60), None, 100, 1,
+                                         max_radius_cells=20.0,
+                                         min_leg_cells=0.6)
+    assert any(p[0] == "arc" for p in pieces), f"turn {turn}: no fillet"
+    assert_g1_pieces(pieces)
+    sharp = sum(math.hypot(b[0] - a[0], b[1] - a[1])
+                for a, b, _ in zip(run, run[1:], range(len(run))))
+    assert pieces_wire_cells(pieces) < sharp  # arc shortens the corner
+
+
+@pytest.mark.unit
+def test_fillet_g1_multi_joint_runs():
+    """S-curves, shallow zigzags, obtuse chains: every arc joint tangent."""
+    runs = [
+        [(0, 5, 0), (10, 5, 0), (15, 10, 0), (25, 10, 0)],    # S, +/-45
+        [(0, 5, 0), (10, 6, 0), (20, 5, 0), (30, 6, 0)],      # shallow zigzag
+        [(0, 5, 0), (12, 5, 0), (18, 15, 0), (14, 25, 0)],    # obtuse chain
+        [(0, 5, 0), (11, 5, 0), (12, 8, 0)],                  # DCCF nub shape
+        [(5, 5, 0), (15, 5, 0), (15, 15, 0), (25, 15, 0)],    # elbow pair
+    ]
+    for run in runs:
+        for fit in (fit_branch_arcs, fit_branch_arcs_with_sweeps):
+            pieces = fit(run, _clear(60), None, 100, 1,
+                         max_radius_cells=20.0, min_leg_cells=0.6)
+            assert_g1_pieces(pieces)

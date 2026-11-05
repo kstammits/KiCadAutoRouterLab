@@ -203,7 +203,12 @@ def _corner_arc(
     params = _corner_params(p0, p1, p2, max_radius)
     if params is None:
         return None
-    t, radius, ax, ay, bx, by, half = params
+    t, _radius, ax, ay, bx, by, half = params
+    # True tangent radius: the tangent points sit ``t`` from the apex, so
+    # R = t*tan(half) centers the circle on both legs. (The ``radius`` in
+    # ``params`` is the ranking-scale reciprocal; using it here bows the
+    # arc off the stubs with a kink on every non-90-degree corner.)
+    radius = t * math.tan(half)
     # Bisector from the corner toward the arc.
     nx, ny = ax + bx, ay + by
     nl = math.hypot(nx, ny)
@@ -328,6 +333,265 @@ def fit_branch_arcs(
             cursor = pts[i]
     if _dist(cursor, pts[-1]) > _EPS:
         pieces.append(("seg", cursor[0], cursor[1], pts[-1][0], pts[-1][1], layer))
+    return pieces
+
+
+# ---------------------------------------------------------------------------
+# Broad sweeps: one arc across a jagged window (short legs, long span).
+#
+# Single-corner `_corner_arc` fillets stay the degenerate case (a 2-edge
+# window): tangent by construction, wire-shortening, and the parity anchor
+# for every existing test. Broad collapse attempts windows spanning >=3
+# edges that contain a jagged step — a leg much shorter than the window
+# chord — regardless of whether the tangent fitter would round every
+# corner. The candidate is the circumcircle through the window endpoints
+# and its middle waypoint (no new tangency claim at the window joints);
+# the identical `_arc_walkable` clearance gate applies, and surviving
+# window joints get their usual tangent fillets in a second pass
+# ("pass twice" to walk around corners).
+# ---------------------------------------------------------------------------
+
+# Minimum edges a broad window must span (single corners stay tangent).
+_BROAD_MIN_EDGES = 3
+# A window is jagged when its shortest leg is well below its chord:
+# uniform staircases (leg ~ chord/edges) and clean elbows (leg ~ chord)
+# never qualify; dense wiggles and mixed step runs do. Scale-invariant
+# (pure ratio), so it holds across grid resolutions.
+_BROAD_JAGGED_FRACTION = 0.25
+# Upper bounds keep the O(n * span) scan and the arc sample count (which
+# grows with chord/spacing) bounded; an inch of stroke at 0.1mm grid is
+# ~254 cells, inside the chord cap.
+_BROAD_MAX_EDGES = 128
+_BROAD_MAX_CHORD_CELLS = 300.0
+_BROAD_SWEEPS = 3
+
+
+def _circumradius(
+    a: Tuple[float, float],
+    m: Tuple[float, float],
+    b: Tuple[float, float],
+) -> Optional[float]:
+    """Circumradius of the circle through ``a, m, b`` (pure geometry).
+
+    None for degenerate (coincident) or collinear triples — no sweep worth.
+    """
+    ab = _dist(a, b)
+    am = _dist(a, m)
+    mb = _dist(m, b)
+    if am < _EPS or mb < _EPS or ab < _EPS:
+        return None
+    cross = abs((m[0] - a[0]) * (b[1] - a[1]) - (m[1] - a[1]) * (b[0] - a[0]))
+    area = cross / 2.0
+    if area < _EPS:
+        return None
+    return (am * mb * ab) / (4.0 * area)
+
+
+def broad_arc_for_window(
+    a: Tuple[float, float],
+    m: Tuple[float, float],
+    b: Tuple[float, float],
+    min_radius_cells: float = 0.0,
+) -> Optional[Tuple[Tuple[float, float], Tuple[float, float], Tuple[float, float]]]:
+    """Candidate broad sweep ``(start, mid, end)`` through a noisy window.
+
+    Pure geometry (no grid access): rejects straight/hairpin triples via the
+    same cosine thresholds as `_corner_frame`, and nubs below
+    ``min_radius_cells`` so only visibly broad arcs are attempted. The
+    clearance gate stays the caller's job (`_arc_walkable`, same as fillets).
+    """
+    if _corner_frame(a, m, b) is None:
+        return None
+    radius = _circumradius(a, m, b)
+    if radius is None:
+        return None
+    if radius < min_radius_cells:
+        return None
+    return a, m, b
+
+
+def collapse_noisy_windows(
+    pts: List[Tuple[float, float]],
+    pinned: Set[Tuple[float, float]],
+    cost_layer,
+    soft_layer,
+    blocked_threshold: int,
+    corridor_radius: int,
+    blocked_layer=None,
+    hard_radius: Optional[int] = None,
+    sample_spacing_cells: float = 0.5,
+    min_radius_cells: float = 0.0,
+    min_leg_cells: float = 0.0,
+    max_radius_cells: float = 0.0,
+) -> Tuple[List[Tuple[float, float]], Dict[Tuple[Tuple[float, float], Tuple[float, float]], Tuple[float, float]]]:
+    """Collapse jagged runs into window-spanning sweeps.
+
+    Returns ``(new_pts, broad_mid)`` where ``broad_mid[(A, B)] = M`` records
+    each accepted sweep so the stitcher can emit ``("arc", A, M, B)``
+    instead of a straight stub. Interior pinned waypoints are never spanned;
+    endpoints may be pinned (the arc starts/ends there without removing
+    them). Every candidate pays `_arc_walkable` with the caller's masks and
+    spacing before the splice.
+
+    Candidacy is density-driven, not fillet-failure-driven: a window must
+    span >=3 edges and contain a jagged step (shortest leg well below the
+    window chord). Clean sparse chains — roomy kept corners and tidy elbows
+    with legs on the chord scale — are never respanned and keep their
+    tangent fillets exactly.
+    """
+    pts = list(pts)
+    broad_mid: Dict[
+        Tuple[Tuple[float, float], Tuple[float, float]], Tuple[float, float]
+    ] = {}
+    if len(pts) < _BROAD_MIN_EDGES + 1:
+        return pts, broad_mid
+    pin_f = set(pinned or set())
+    for _ in range(_BROAD_SWEEPS):
+        # Leg lengths once per pass; the per-window jagged test is a
+        # C-speed min() over the window legs.
+        legs = [_dist(pts[k], pts[k + 1]) for k in range(len(pts) - 1)]
+        changed = False
+        i = 0
+        while i < len(pts) - _BROAD_MIN_EDGES:
+            # Longest-first window from anchor i.
+            best_j: Optional[int] = None
+            best_m: Optional[Tuple[float, float]] = None
+            j_cap = min(len(pts) - 1, i + _BROAD_MAX_EDGES)
+            for j in range(j_cap, i + _BROAD_MIN_EDGES - 1, -1):
+                a, b = pts[i], pts[j]
+                straight = _dist(a, b)
+                if straight > _BROAD_MAX_CHORD_CELLS:
+                    continue
+                if straight < _EPS:
+                    continue  # no span to sweep
+                if any(p in pin_f for p in pts[i + 1:j]):
+                    continue  # would erase a pinned joint
+                if min(legs[i:j]) >= _BROAD_JAGGED_FRACTION * straight:
+                    continue  # clean span — leave it alone
+                m = pts[(i + j) // 2]
+                cand = broad_arc_for_window(a, m, b, min_radius_cells)
+                if cand is None:
+                    continue
+                _, mid, _ = cand
+                if not _arc_walkable(
+                    a, mid, b, cost_layer, soft_layer, blocked_threshold,
+                    corridor_radius, blocked_layer, hard_radius,
+                    sample_spacing_cells,
+                ):
+                    continue
+                best_j, best_m = j, mid
+                break  # longest walkable wins from this anchor
+            if best_j is not None and best_m is not None:
+                a, b = pts[i], pts[best_j]
+                broad_mid[(a, b)] = best_m
+                pts = pts[: i + 1] + pts[best_j:]
+                changed = True
+                i += 1
+            else:
+                i += 1
+        if not changed:
+            break
+    return pts, broad_mid
+
+
+def fit_branch_arcs_with_sweeps(
+    run: List[Tuple[int, int, int]],
+    cost_layer,
+    soft_layer,
+    blocked_threshold: int,
+    corridor_radius: int,
+    blocked_layer=None,
+    hard_radius: Optional[int] = None,
+    pinned: Optional[Set[Tuple[int, int]]] = None,
+    max_radius_cells: float = 10.0,
+    min_leg_cells: float = 3.0,
+    sample_spacing_cells: float = 0.5,
+    broad_min_radius_cells: float = 0.0,
+) -> List[tuple]:
+    """Smooth-branch fitter: broad sweeps first, tangent fillets second.
+
+    Same output contract as :func:`fit_branch_arcs` (ordered ``seg``/``arc``
+    pieces, vias/pins untouched). Broad collapse spans windows of >=3 edges
+    containing a jagged step with one circumcircle arc each
+    (clearance-gated); whatever sharp joints remain get the usual
+    single-corner tangent fillets in the same pass
+    ("pass twice" to walk around corners). A 2-edge window is exactly the
+    single-corner case, so isolated elbows fillet identically to
+    :func:`fit_branch_arcs` — the old pointy corners are subsumed, not
+    regressed. Broad endpoints never fillet (no overlapping trims).
+    """
+    pts: List[Tuple[float, float]] = [(float(c), float(r)) for c, r, _ in run]
+    layer = run[0][2]
+    if len(pts) < 3:
+        return [("seg", pts[0][0], pts[0][1], pts[-1][0], pts[-1][1], layer)] if len(pts) == 2 else []
+    pin_f = {(float(c), float(r)) for c, r in (pinned or set())}
+    pts = simplify_waypoints(pts, pin_f)
+    if len(pts) < 3:
+        pieces: List[tuple] = []
+        for a, b in zip(pts, pts[1:]):
+            pieces.append(("seg", a[0], a[1], b[0], b[1], layer))
+        return pieces
+    collapsed, broad_mid = collapse_noisy_windows(
+        pts, pin_f, cost_layer, soft_layer, blocked_threshold,
+        corridor_radius, blocked_layer, hard_radius,
+        sample_spacing_cells, broad_min_radius_cells,
+        min_leg_cells, max_radius_cells,
+    )
+    broad_endpoints: Set[Tuple[float, float]] = set()
+    for (a, b) in broad_mid:
+        broad_endpoints.add(a)
+        broad_endpoints.add(b)
+    # Tangent fillets on the collapsed chain (broad endpoints excluded).
+    fillets: Dict[int, tuple] = {}
+    for i in range(1, len(collapsed) - 1):
+        if collapsed[i] in pin_f or collapsed[i] in broad_endpoints:
+            continue
+        d1 = _dist(collapsed[i - 1], collapsed[i])
+        d2 = _dist(collapsed[i], collapsed[i + 1])
+        if min(d1, d2) < min_leg_cells:
+            continue
+        arc = _corner_arc(
+            collapsed[i - 1], collapsed[i], collapsed[i + 1], max_radius_cells
+        )
+        if arc is None:
+            continue
+        t1, mid, t2 = arc
+        if not _arc_walkable(
+            t1, mid, t2, cost_layer, soft_layer, blocked_threshold,
+            corridor_radius, blocked_layer, hard_radius, sample_spacing_cells,
+        ):
+            continue
+        fillets[i] = (t1, mid, t2)
+    # Stitch in corner order (mirrors fit_branch_arcs): each step first
+    # closes the incoming edge (broad sweep or straight stub), then rounds
+    # the corner itself if it filleted. Broad endpoints never fillet, so a
+    # sweep arc and a tangent fillet can never claim the same copper.
+    pieces: List[tuple] = []
+    cursor = collapsed[0]
+    n = len(collapsed)
+    for i in range(1, n):
+        prev, cur = collapsed[i - 1], collapsed[i]
+        if (prev, cur) in broad_mid:
+            m = broad_mid[(prev, cur)]
+            if _dist(cursor, prev) > _EPS:
+                pieces.append(("seg", cursor[0], cursor[1], prev[0], prev[1], layer))
+            pieces.append(("arc", prev[0], prev[1], m[0], m[1], cur[0], cur[1], layer))
+            cursor = cur
+            continue
+        if i == n - 1:
+            if _dist(cursor, cur) > _EPS:
+                pieces.append(("seg", cursor[0], cursor[1], cur[0], cur[1], layer))
+            cursor = cur
+        elif i in fillets:
+            t1, mid, t2 = fillets[i]
+            if _dist(cursor, t1) > _EPS:
+                pieces.append(("seg", cursor[0], cursor[1], t1[0], t1[1], layer))
+            pieces.append(("arc", t1[0], t1[1], mid[0], mid[1], t2[0], t2[1], layer))
+            cursor = t2
+        else:
+            if _dist(cursor, cur) > _EPS:
+                pieces.append(("seg", cursor[0], cursor[1], cur[0], cur[1], layer))
+            cursor = cur
     return pieces
 
 

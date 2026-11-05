@@ -42,6 +42,30 @@ def test_blocked_wall_prevents_shortcut():
     assert len(smoothed) > 2
 
 
+def test_wall_hugging_staircase_survives_and_is_fixpoint():
+    """A run hugging a blocked wall keeps its stairsteps (DRC protection).
+
+    Regression for the "stairsteps after string pull" report: pair-skip
+    chords along the wall clip hard copper, so no pull — first, second,
+    or angle-snapped — may take them. Locks in that smoothing is already
+    at fixpoint here (another string-pull attempt is a no-op).
+    """
+    grid = _open(size=40)
+    grid[0, :, 20] = 100  # blocked wall one cell east of the run
+    path = [(19, r, 0) for r in range(5, 15)]
+    smoothed = smooth_grid_path(path, grid, corridor_radius=1)
+    assert smoothed[0] == path[0]
+    assert smoothed[-1] == path[-1]
+    # The wall-hugging steps survive: every longer chord clips the wall.
+    assert len(smoothed) > 2
+    assert not _line_walkable(
+        smoothed[0][0], smoothed[0][1], smoothed[-1][0], smoothed[-1][1],
+        grid[0], None, 100, 1,
+    )
+    # Second pull with identical gates changes nothing.
+    assert smooth_grid_path(smoothed, grid, corridor_radius=1) == smoothed
+
+
 def test_via_nodes_never_moved_or_removed():
     grid = _open(layers=2)
     path = [(5, 5, 0), (8, 5, 0), (8, 5, 1), (12, 8, 1)]

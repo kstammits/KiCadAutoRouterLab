@@ -660,7 +660,9 @@ def _tracks_svg(model: BoardModel, colors: Dict[str, str],
                 color_mode: str = "net") -> List[str]:
     out = []
     layers = _copper_layers_of(model)
-    for layer in layers:
+    # Emit back-to-front (reverse stackup): SVG paints in document order,
+    # so the front group lands last and covers back copper at crossings.
+    for layer in reversed(layers):
         layer_tracks = [t for t in model.tracks if t.layer == layer]
         layer_arcs = [a for a in model.arcs if a.layer == layer]
         if not layer_tracks and not layer_arcs:

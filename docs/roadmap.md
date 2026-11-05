@@ -46,7 +46,10 @@ Open work only. Completed changes belong in git history, not here.
   phase (B-spline or clothoid) while preserving clearance. Landed subset:
   tangent-arc corner fillets (`arc_fillets`, default on) — the smoother
   ranks distance/angle ties by admitted fillet radius and the biarc fitter
-  rounds clearance-gated corners into native `(arc)` copper. Open: curved
+  rounds clearance-gated corners into native `(arc)` copper. Landed
+  follow-up: broad sweeps — dense noisy windows collapse into one
+  circumcircle arc first (tangent fillets second, same clearance gate;
+  default cap 10mm tangent length, inch-scale via API). Open: curved
   *paths* (arcs as search primitives, not post-pass), push-aside.
 - **R10 push-and-shove**: move already-routed nets to make room for later
   nets, with finite violation costs and iterative improvement.

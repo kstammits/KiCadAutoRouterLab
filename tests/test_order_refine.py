@@ -65,14 +65,73 @@ def test_refine_explores_seeds_and_picks_best():
     result, _, _ = refine_routing(
         model, ["X1", "X2"], set(), params=_params(refine_seeds=3, refine_seed=7),
         original_pcb_tree=tree)
-    assert [c["seed"] for c in result.candidates] == [7, 8, 9]
+    # Seed 9 shuffles back to the identity order, so it is skipped silently.
+    assert [c["seed"] for c in result.candidates] == [7, 8]
     # Trial 0 runs the input order; later trials permute the tangle group.
     assert result.candidates[0]["order"] == ["X1", "X2"]
-    assert result.winner_seed in (7, 8, 9)
+    assert result.winner_seed in (7, 8)
     best = _winner(result.candidates)
     assert result.winner_seed == best["seed"]
     assert result.nets_routed + result.nets_failed == 2
     assert result.pcb_tree is not None
+
+
+def test_refine_dedupes_two_net_orders(monkeypatch):
+    """Five seeds on two nets collapse to at most two unique orders."""
+    from kicad_autorouter.routing.pipeline import RawRoutes
+    calls = []
+
+    def _fake_route_raw(**kw):
+        calls.append(tuple(kw["net_names"]))
+        return RawRoutes(model=kw["model"], nets_routed=2, nets_failed=0,
+                         total_wire_mm=1.0,
+                         expansions_total=10), "CG", "RG"
+
+    def _fake_finish(raw, params):
+        return RoutingResult(
+            tracks_added=1, vias_added=0, nets_routed=raw.nets_routed,
+            nets_failed=0, drc_clean=True, drc_violations=0,
+            pcb_tree="TREE"), "CG", "RG"
+
+    monkeypatch.setattr(pipeline, "route_raw", _fake_route_raw)
+    monkeypatch.setattr(pipeline, "finish_routes", _fake_finish)
+    _, model = _xcross_model()
+    result, _, _ = refine_routing(
+        model, ["X1", "X2"], set(),
+        params=_params(refine_seeds=5, refine_seed=0))
+    assert len(result.candidates) <= 2
+    assert len({tuple(c["order"]) for c in result.candidates}) == len(
+        result.candidates)
+    assert len(calls) == len(result.candidates)  # no wasted re-routes
+
+
+def test_refine_singleton_groups_route_once(monkeypatch):
+    """Isolated nets never permute: one routing call regardless of seeds."""
+    from kicad_autorouter.routing.pipeline import RawRoutes
+    calls = []
+
+    def _fake_route_raw(**kw):
+        calls.append(tuple(kw["net_names"]))
+        return RawRoutes(model=kw["model"], nets_routed=1, nets_failed=0,
+                         total_wire_mm=1.0,
+                         expansions_total=10), "CG", "RG"
+
+    def _fake_finish(raw, params):
+        return RoutingResult(
+            tracks_added=1, vias_added=0, nets_routed=raw.nets_routed,
+            nets_failed=0, drc_clean=True, drc_violations=0,
+            pcb_tree="TREE"), "CG", "RG"
+
+    monkeypatch.setattr(pipeline, "route_raw", _fake_route_raw)
+    monkeypatch.setattr(pipeline, "finish_routes", _fake_finish)
+    monkeypatch.setattr(pipeline, "_tangle_groups",
+                        lambda nets, model: [[n] for n in nets])
+    _, model = _xcross_model()
+    result, _, _ = refine_routing(
+        model, ["X1", "X2"], set(),
+        params=_params(refine_seeds=5, refine_seed=0))
+    assert [c["order"] for c in result.candidates] == [["X1", "X2"]]
+    assert len(calls) == 1
 
 
 def test_refine_deterministic_same_seeds():

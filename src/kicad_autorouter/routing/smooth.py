@@ -385,7 +385,6 @@ def _greedy_pass(
     corridor_radius: int,
     blocked_layer=None,
     hard_radius: Optional[int] = None,
-    angle_step_rad: float = math.pi / 18,
     rank_radius_cells: float = 0.0,
     keep_min_radius_cells: float = 0.0,
     keep_max_radius_cells: float = 0.0,
@@ -396,11 +395,10 @@ def _greedy_pass(
 
     Furthest reachable node wins (fewest, longest segments). With
     ``rank_radius_cells > 0``, distance ties (within a cell) break by
-    angle penalty, then by admitted fillet radius at the current corner
-    (the joint the fillet would replace — bigger means more sweep per
-    fillet). Ranking is pure geometry (no grid access); acceptance
-    still needs the clearance gate downstream. ``0`` keeps the legacy
-    distance/angle comparison exactly.
+    admitted fillet radius at the current corner (the joint the fillet
+    would replace — bigger means more sweep per fillet). Ranking is pure
+    geometry (no grid access); acceptance still needs the clearance gate
+    downstream. ``0`` keeps legacy distance-only comparison exactly.
 
     With ``keep_min_radius_cells > 0``, a winning chord that would erase
     a keep-worthy corner is cut short at the first such corner along its
@@ -425,7 +423,6 @@ def _greedy_pass(
     while i < n - 1:
         j = n - 1
         best_j = None
-        best_penalty = float('inf')
         best_radius = -1.0
         while j > i + 1:
             if _line_walkable(
@@ -434,13 +431,12 @@ def _greedy_pass(
                 blocked_layer, hard_radius,
             ):
                 dist = math.hypot(run[j][0] - run[i][0], run[j][1] - run[i][1])
-                penalty = _angle_penalty(run[i][0], run[i][1], run[j][0], run[j][1], angle_step_rad)
                 if corner_radius is not None:
                     # Corner at run[i]: incoming leg is the committed
                     # out[-2] -> run[i] (earlier nodes may be skipped;
                     # out[-1] IS run[i], so it would be degenerate).
                     # Candidate leg is run[i] -> run[j]. Radius is the
-                    # third key (distance, then angle): tangent length
+                    # tie-breaker (distance, then radius): tangent length
                     # ties whenever distances tie, so only radius — which
                     # grows with the turn the fillet would replace —
                     # discriminates here. Prefer the bigger fillet: that
@@ -458,22 +454,15 @@ def _greedy_pass(
                         or dist > best_dist + _RANK_EPS_CELLS
                         or (
                             abs(dist - best_dist) <= _RANK_EPS_CELLS
-                            and (
-                                penalty < best_penalty - 1e-9
-                                or (
-                                    abs(penalty - best_penalty) <= 1e-9
-                                    and radius > best_radius
-                                )
-                            )
+                            and radius > best_radius
                         )
                     )
                 else:
                     radius = -1.0
-                    take = best_j is None or dist > best_dist or (dist == best_dist and penalty < best_penalty)
+                    take = best_j is None or dist > best_dist
                 if take:
                     best_j = j
                     best_dist = dist
-                    best_penalty = penalty
                     best_radius = radius
             j -= 1
         if best_j is None:
@@ -507,11 +496,118 @@ def _greedy_pass(
     return out
 
 
-def _angle_penalty(c1: int, r1: int, c2: int, r2: int, step_rad: float) -> float:
-    """Distance of a leg's angle to the nearest step_rad multiple, in radians."""
-    ang = math.atan2(r2 - r1, c2 - c1)
-    nearest = round(ang / step_rad) * step_rad
-    return abs(ang - nearest)
+def _repair_lumps(
+    run: List[Tuple[int, int, int]],
+    cost_layer,
+    soft_layer,
+    blocked_threshold: int,
+    corridor_radius: int,
+    blocked_layer=None,
+    hard_radius: Optional[int] = None,
+    keep_min_radius_cells: float = 0.0,
+    keep_max_radius_cells: float = 0.0,
+    keep_min_leg_cells: float = 0.0,
+    keep_sample_spacing_cells: float = 0.5,
+) -> List[Tuple[int, int, int]]:
+    """Replace residual stairstep lumps with outward 2–3 leg detours.
+
+    Operates on one greedy-smoothed run: any window [i, j] with >=8 nodes
+    whose direct chord is unwalkable is a lump the subset pass cannot fix.
+    Tries each bbox-corner Steiner candidate P (A→P→B), scoring pure
+    length (shortest wins); falls back to the best single candidate pair
+    (A→P→Q→B). Every inserted leg is fully walkability-checked with the
+    same conservative corridor, so clearance is preserved — vertices only
+    move outward, never into foreign copper. New waypoints are grid cells,
+    so output stays straight ``(segment)`` tracks.
+    """
+    nodes = list(run)
+    if len(nodes) < 9:
+        return nodes
+    H, W = cost_layer.shape
+    changed = True
+    sweeps = 0
+    while changed and sweeps < 3:
+        changed = False
+        sweeps += 1
+        i = 0
+        while i < len(nodes) - 8:
+            # Extend j while the window looks like an un-smoothable lump:
+            # many nodes, short straight-line span.
+            j = i + 8
+            while j + 1 < len(nodes) and (j + 1 - i) <= 64:
+                straight = math.hypot(nodes[j + 1][0] - nodes[i][0], nodes[j + 1][1] - nodes[i][1])
+                if straight > (j + 1 - i) * 1.5:
+                    break  # already sparse — not a lump
+                j += 1
+            a_c, a_r = nodes[i][0], nodes[i][1]
+            b_c, b_r = nodes[j][0], nodes[j][1]
+            if _line_walkable(a_c, a_r, b_c, b_r, cost_layer, soft_layer,
+                              blocked_threshold, corridor_radius, blocked_layer, hard_radius):
+                i += 1
+                continue  # greedy should have taken this; move on
+            cands = _steiner_candidates(a_c, a_r, b_c, b_r, cost_layer, soft_layer,
+                                        blocked_layer, corridor_radius, H, W, hard_radius)
+            best = None  # (score, [waypoints])
+            for pc, pr in cands:
+                if not _point_clear(pc, pr, cost_layer, soft_layer, blocked_threshold,
+                                    corridor_radius, blocked_layer, hard_radius):
+                    continue
+                if not _line_walkable(a_c, a_r, pc, pr, cost_layer, soft_layer,
+                                      blocked_threshold, corridor_radius, blocked_layer, hard_radius):
+                    continue
+                if not _line_walkable(pc, pr, b_c, b_r, cost_layer, soft_layer,
+                                      blocked_threshold, corridor_radius, blocked_layer, hard_radius):
+                    continue
+                length = (math.hypot(pc - a_c, pr - a_r) + math.hypot(b_c - pc, b_r - pr))
+                score = length
+                if best is None or score < best[0]:
+                    best = (score, [(pc, pr)])
+            if best is None and len(cands) >= 2:
+                # Two-corner fallback (cap: 6 most central candidates).
+                short = cands[:6]
+                for ai in range(len(short)):
+                    pc, pr = short[ai]
+                    if not _point_clear(pc, pr, cost_layer, soft_layer, blocked_threshold,
+                                        corridor_radius, blocked_layer, hard_radius):
+                        continue
+                    if not _line_walkable(a_c, a_r, pc, pr, cost_layer, soft_layer,
+                                          blocked_threshold, corridor_radius, blocked_layer, hard_radius):
+                        continue
+                    for bi in range(len(short)):
+                        if bi == ai:
+                            continue
+                        qc, qr = short[bi]
+                        if not _point_clear(qc, qr, cost_layer, soft_layer, blocked_threshold,
+                                            corridor_radius, blocked_layer, hard_radius):
+                            continue
+                        if not _line_walkable(pc, pr, qc, qr, cost_layer, soft_layer,
+                                              blocked_threshold, corridor_radius, blocked_layer, hard_radius):
+                            continue
+                        if not _line_walkable(qc, qr, b_c, b_r, cost_layer, soft_layer,
+                                              blocked_threshold, corridor_radius, blocked_layer, hard_radius):
+                            continue
+                        length = (math.hypot(pc - a_c, pr - a_r)
+                                  + math.hypot(qc - pc, qr - pr)
+                                  + math.hypot(b_c - qc, b_r - qr))
+                        score = length
+                        if best is None or score < best[0]:
+                            best = (score, [(pc, pr), (qc, qr)])
+            if best is not None:
+                layer = nodes[i][2]
+                waypoints = [(pc, pr, layer) for pc, pr in best[1]]
+                nodes = nodes[:i + 1] + waypoints + nodes[j:]
+                changed = True
+                # Re-collapse around the insertion; restart scan just after.
+                # Keep-rule params ride along so repair never erases a corner
+                # the main passes preserved.
+                nodes = _greedy_pass(nodes, cost_layer, soft_layer, blocked_threshold,
+                                     corridor_radius, blocked_layer, hard_radius,
+                                     0.0, keep_min_radius_cells, keep_max_radius_cells,
+                                     keep_min_leg_cells, keep_sample_spacing_cells)
+                i += 1
+            else:
+                i += 1
+    return nodes
 
 
 # Minimum direction change a kept corner must carry. Shallower joints keep
@@ -646,123 +742,7 @@ def _steiner_candidates(
     return out
 
 
-def _repair_lumps(
-    run: List[Tuple[int, int, int]],
-    cost_layer,
-    soft_layer,
-    blocked_threshold: int,
-    corridor_radius: int,
-    blocked_layer=None,
-    hard_radius: Optional[int] = None,
-    angle_step_rad: float = math.pi / 18,
-    keep_min_radius_cells: float = 0.0,
-    keep_max_radius_cells: float = 0.0,
-    keep_min_leg_cells: float = 0.0,
-    keep_sample_spacing_cells: float = 0.5,
-) -> List[Tuple[int, int, int]]:
-    """Replace residual stairstep lumps with outward 2–3 leg detours.
-
-    Operates on one greedy-smoothed run: any window [i, j] with >=8 nodes
-    whose direct chord is unwalkable is a lump the subset pass cannot fix.
-    Tries each bbox-corner Steiner candidate P (A→P→B), scoring
-    length + small 45°-alignment bonus so ties prefer KiCad-style angles;
-    falls back to the best single candidate pair (A→P→Q→B). Every inserted
-    leg is fully walkability-checked with the same conservative corridor,
-    so clearance is preserved — vertices only move outward, never into
-    foreign copper. New waypoints are grid cells, so output stays straight
-    ``(segment)`` tracks.
-    """
-    nodes = list(run)
-    if len(nodes) < 9:
-        return nodes
-    H, W = cost_layer.shape
-    changed = True
-    sweeps = 0
-    while changed and sweeps < 3:
-        changed = False
-        sweeps += 1
-        i = 0
-        while i < len(nodes) - 8:
-            # Extend j while the window looks like an un-smoothable lump:
-            # many nodes, short straight-line span.
-            j = i + 8
-            while j + 1 < len(nodes) and (j + 1 - i) <= 64:
-                straight = math.hypot(nodes[j + 1][0] - nodes[i][0], nodes[j + 1][1] - nodes[i][1])
-                if straight > (j + 1 - i) * 1.5:
-                    break  # already sparse — not a lump
-                j += 1
-            a_c, a_r = nodes[i][0], nodes[i][1]
-            b_c, b_r = nodes[j][0], nodes[j][1]
-            if _line_walkable(a_c, a_r, b_c, b_r, cost_layer, soft_layer,
-                              blocked_threshold, corridor_radius, blocked_layer, hard_radius):
-                i += 1
-                continue  # greedy should have taken this; move on
-            cands = _steiner_candidates(a_c, a_r, b_c, b_r, cost_layer, soft_layer,
-                                        blocked_layer, corridor_radius, H, W, hard_radius)
-            best = None  # (score, [waypoints])
-            for pc, pr in cands:
-                if not _point_clear(pc, pr, cost_layer, soft_layer, blocked_threshold,
-                                    corridor_radius, blocked_layer, hard_radius):
-                    continue
-                if not _line_walkable(a_c, a_r, pc, pr, cost_layer, soft_layer,
-                                      blocked_threshold, corridor_radius, blocked_layer, hard_radius):
-                    continue
-                if not _line_walkable(pc, pr, b_c, b_r, cost_layer, soft_layer,
-                                      blocked_threshold, corridor_radius, blocked_layer, hard_radius):
-                    continue
-                length = (math.hypot(pc - a_c, pr - a_r) + math.hypot(b_c - pc, b_r - pr))
-                score = length + 0.5 * (_angle_penalty(a_c, a_r, pc, pr, angle_step_rad)
-                                        + _angle_penalty(pc, pr, b_c, b_r, angle_step_rad))
-                if best is None or score < best[0]:
-                    best = (score, [(pc, pr)])
-            if best is None and len(cands) >= 2:
-                # Two-corner fallback (cap: 6 most central candidates).
-                short = cands[:6]
-                for ai in range(len(short)):
-                    pc, pr = short[ai]
-                    if not _point_clear(pc, pr, cost_layer, soft_layer, blocked_threshold,
-                                        corridor_radius, blocked_layer, hard_radius):
-                        continue
-                    if not _line_walkable(a_c, a_r, pc, pr, cost_layer, soft_layer,
-                                          blocked_threshold, corridor_radius, blocked_layer, hard_radius):
-                        continue
-                    for bi in range(len(short)):
-                        if bi == ai:
-                            continue
-                        qc, qr = short[bi]
-                        if not _point_clear(qc, qr, cost_layer, soft_layer, blocked_threshold,
-                                            corridor_radius, blocked_layer, hard_radius):
-                            continue
-                        if not _line_walkable(pc, pr, qc, qr, cost_layer, soft_layer,
-                                              blocked_threshold, corridor_radius, blocked_layer, hard_radius):
-                            continue
-                        if not _line_walkable(qc, qr, b_c, b_r, cost_layer, soft_layer,
-                                              blocked_threshold, corridor_radius, blocked_layer, hard_radius):
-                            continue
-                        length = (math.hypot(pc - a_c, pr - a_r)
-                                  + math.hypot(qc - pc, qr - pr)
-                                  + math.hypot(b_c - qc, b_r - qr))
-                        score = length + 0.5 * (_angle_penalty(a_c, a_r, pc, pr, angle_step_rad)
-                                                + _angle_penalty(pc, pr, qc, qr, angle_step_rad)
-                                                + _angle_penalty(qc, qr, b_c, b_r, angle_step_rad))
-                        if best is None or score < best[0]:
-                            best = (score, [(pc, pr), (qc, qr)])
-            if best is not None:
-                layer = nodes[i][2]
-                waypoints = [(pc, pr, layer) for pc, pr in best[1]]
-                nodes = nodes[:i + 1] + waypoints + nodes[j:]
-                changed = True
-                # Re-collapse around the insertion; restart scan just after.
-                # Keep-rule params ride along so repair never erases a corner
-                # the main passes preserved.
-                nodes = _greedy_pass(nodes, cost_layer, soft_layer, blocked_threshold,
-                                     corridor_radius, blocked_layer, hard_radius, angle_step_rad,
-                                     0.0, keep_min_radius_cells, keep_max_radius_cells,
-                                     keep_min_leg_cells, keep_sample_spacing_cells)
-                i += 1
-            else:
-                i += 1
-    return nodes
+    return out
 
 
 def _smooth_run(
@@ -773,7 +753,6 @@ def _smooth_run(
     corridor_radius: int,
     blocked_layer=None,
     hard_radius: Optional[int] = None,
-    angle_step_rad: float = math.pi / 18,
     rank_radius_cells: float = 0.0,
     keep_min_radius_cells: float = 0.0,
     keep_max_radius_cells: float = 0.0,
@@ -800,12 +779,12 @@ def _smooth_run(
     keep = (keep_min_radius_cells, keep_max_radius_cells,
             keep_min_leg_cells, keep_sample_spacing_cells)
     cur = _greedy_pass(run, cost_layer, soft_layer, blocked_threshold,
-                       corridor_radius, blocked_layer, hard_radius, angle_step_rad,
+                       corridor_radius, blocked_layer, hard_radius,
                        rank_radius_cells, *keep)
     for _ in range(3):
         rev = list(reversed(cur))
         back = _greedy_pass(rev, cost_layer, soft_layer, blocked_threshold,
-                            corridor_radius, blocked_layer, hard_radius, angle_step_rad,
+                            corridor_radius, blocked_layer, hard_radius,
                             rank_radius_cells, *keep)
         nxt = list(reversed(back))
         if len(nxt) >= len(cur):
@@ -813,7 +792,7 @@ def _smooth_run(
             break
         cur = nxt
     cur = _repair_lumps(cur, cost_layer, soft_layer, blocked_threshold,
-                        corridor_radius, blocked_layer, hard_radius, angle_step_rad,
+                        corridor_radius, blocked_layer, hard_radius,
                         *keep)
     return cur
 
@@ -853,7 +832,6 @@ def smooth_grid_path(
     soft_mask=None,
     blocked_mask=None,
     hard_radius: Optional[int] = None,
-    angle_step_rad: float = math.pi / 18,
     rank_radius_cells: float = 0.0,
 ) -> List[Tuple[int, int, int]]:
     """Shortcut a routed grid path within each same-layer run.
@@ -901,7 +879,7 @@ def smooth_grid_path(
             blocked_layer = blocked_mask[layer] if blocked_mask is not None else None
             new_run = _smooth_run(run, cost_layer, soft_layer, blocked_threshold, max(0, corridor_radius), blocked_layer,
                                    max(0, corridor_radius) if hard_radius is None else max(0, hard_radius),
-                                   angle_step_rad, rank_radius_cells)
+                                   rank_radius_cells)
         if smoothed and new_run and new_run[0] == smoothed[-1]:
             # Shared pinned node: dedupe. (Via boundaries are disjoint
             # node pairs, so they are never merged here.)
@@ -919,7 +897,6 @@ def smooth_branch_pieces(
     soft_mask=None,
     blocked_mask=None,
     hard_radius: Optional[int] = None,
-    angle_step_rad: float = math.pi / 18,
     rank_radius_cells: float = 0.0,
     max_radius_cells: float = 10.0,
     min_leg_cells: float = 3.0,
@@ -930,18 +907,22 @@ def smooth_branch_pieces(
 
     Same topology pass as :func:`smooth_grid_path` (same-layer runs, via
     and pinned boundaries preserved), but each smoothed run is additionally
-    filleted in place: interior unpinned corners get tangent arcs through
-    the biarc clearance gate, rejected corners keep sharp joints. Returns
-    ``(smoothed_path, pieces)`` where pieces is the flat arc-chain for the
-    whole branch (``("seg"/"arc", ..., layer)`` plus ``("via", ...)``
-    markers at layer transitions) for arc-aware reservation/emission.
+    fitted in place: dense noisy windows collapse into broad circumcircle
+    sweeps first, then remaining interior unpinned corners get tangent arcs
+    — both through the same biarc clearance gate, rejected candidates keep
+    sharp joints. Returns ``(smoothed_path, pieces)`` where pieces is the
+    flat arc-chain for the whole branch (``("seg"/"arc", ..., layer)`` plus
+    ``("via", ...)`` markers at layer transitions) for arc-aware
+    reservation/emission.
 
     ``keep_min_radius_cells > 0`` spares open corners admitting at least
     that fillet radius from the pull-string (same clearance gate the
     fitter uses, so kept corners always become arcs). ``0`` keeps legacy
-    shortcut-everything smoothing exactly.
+    shortcut-everything smoothing exactly. The broad floor reuses the same
+    value, so sweeps stay visibly broad; ``0`` still gates on walkability
+    and non-straight geometry only.
     """
-    from .biarc import fit_branch_arcs  # lazy: biarc gates via this module
+    from .biarc import fit_branch_arcs_with_sweeps  # lazy: biarc gates via this module
     if not path:
         return [], []
     if len(path) < 3:
@@ -971,14 +952,15 @@ def smooth_branch_pieces(
             blocked_layer = blocked_mask[layer] if blocked_mask is not None else None
             new_run = _smooth_run(run, cost_layer, soft_layer, blocked_threshold, max(0, corridor_radius), blocked_layer,
                                    max(0, corridor_radius) if hard_radius is None else max(0, hard_radius),
-                                   angle_step_rad, rank_radius_cells,
+                                   rank_radius_cells,
                                    keep_min_radius_cells, max_radius_cells,
                                    min_leg_cells, sample_spacing_cells)
-            run_pieces = fit_branch_arcs(
+            run_pieces = fit_branch_arcs_with_sweeps(
                 new_run, cost_layer, soft_layer, blocked_threshold,
                 max(0, corridor_radius), blocked_layer,
                 max(0, corridor_radius) if hard_radius is None else max(0, hard_radius),
                 pinned, max_radius_cells, min_leg_cells, sample_spacing_cells,
+                keep_min_radius_cells,
             )
             pieces.extend(run_pieces)
         if smoothed and new_run and new_run[0] == smoothed[-1]:

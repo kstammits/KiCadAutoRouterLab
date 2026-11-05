@@ -112,6 +112,7 @@ def refine_routing(
     best_routed, best_score = 0, math.inf
     best_expansions = 0
     cancelled = False
+    seen_orders: Set[Tuple[str, ...]] = set()
     for k in range(seeds):
         if should_cancel is not None and should_cancel():
             cancelled = True
@@ -122,6 +123,10 @@ def refine_routing(
             seed = base_seed + k
             order = _refine_order(eligible, groups, seed)
         _report_stage(k + 1, seeds)
+        key = tuple(order)
+        if key in seen_orders:
+            continue  # duplicate order: routing is deterministic per order
+        seen_orders.add(key)
         try:
             raw, _, _ = _route_raw(
                 model=model,

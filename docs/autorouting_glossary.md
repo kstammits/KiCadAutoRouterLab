@@ -298,8 +298,8 @@ Key facts that shape the algorithm choice:
   nodes where straight line-of-sight is walkable. The 4-directional A* produces staircases;
   smoothing replaces them with fewer, longer any-angle tracks. Our implementation uses
   iterative bidirectional greedy passes + outward Steiner detour repair around blocking
-  lumps. Configurable **angle granularity** (`angle_step_rad`, default 10° = π/18)
-  replaces hardcoded 45° multiples, giving 36 angle options for shallower routes.
+  lumps. Greedy takes the furthest walkable node (fewest, longest segments);
+  ties break by admitted fillet radius, so the rounder corner wins ties.
 - Secondary objectives that conflict with shortest path: crosstalk, via count, metal
   density, timing.
 
@@ -310,15 +310,22 @@ also legal copper, and arcs round sharp corners without the extra length of a
 chamfer. When `RoutingParams.arc_fillets` is on (Route panel → Arc fillets +
 max radius / min leg), each smoothed run is filleted in place:
 
-- **Fitter** (`routing/biarc.py:fit_branch_arcs`): tangent arc per interior
-  corner, tangent length capped at half each leg (adjacent fillets never
-  overlap) and at `arc_max_radius_mm`; legs shorter than `arc_min_leg_mm`
-  keep the sharp joint.
+- **Fitter** (`routing/biarc.py:fit_branch_arcs_with_sweeps`): broad
+  sweeps first, tangent arcs second. Jagged windows (≥3 edges with a leg
+  well below the window chord) collapse into one circumcircle sweep through
+  the window endpoints and middle waypoint; whatever sharp joints remain get
+  one tangent arc per interior corner, tangent length capped at half each leg
+  (adjacent fillets never overlap) and at `arc_max_radius_mm` (default
+  10mm; the knob caps tangent length, radius follows `R = t/tan(phi/2)`,
+  inch-scale values accepted via API). Legs shorter than `arc_min_leg_mm`
+  keep the sharp joint. A 2-edge window is exactly the single-corner case,
+  so isolated elbows fillet identically to the legacy per-corner fitter;
+  clean sparse chains are never respanned.
 - **Clearance gate** (`_arc_walkable`): the arc is sampled at
   `arc_sample_mm` with the same width + clearance halo as tracks; end
   samples sit on routed copper and are exempt, own-net soft mask applies,
   foreign-THT hard exclusion has no exemption. Fail the gate → sharp joint.
-- **Ranking**: the pull-string breaks distance/angle ties by admitted fillet
+- **Ranking**: the pull-string breaks distance ties by admitted fillet
   radius (`corner_radius` — the turn sharpness only radius sees), so the
   rounder corner wins ties.
 - **Emission**: fitted chains replace chord emission branch by branch
@@ -447,5 +454,5 @@ max radius / min leg), each smoothed run is filleted in place:
 | [KiCad: project files and folders](https://docs.kicad.org/10.0/en/kicad/kicad.html) | `.kicad_*` file types, S-expression formats |
 | [KiCad: PCB editor manual](https://docs.kicad.org/10.0/en/pcbnew/pcbnew.html) | Footprints, pads, nets, tracks, zones, DRC in the PCB editor |
 | [KiCad: CLI reference](https://docs.kicad.org/10.0/en/cli/cli.html) | `kicad-cli pcb drc` / `sch erc` JSON reports and exit codes |
-| [`src/kicad_autorouter/routing/smooth.py`](src/kicad_autorouter/routing/smooth.py) | String-pulling smoothing with configurable angle_step_rad (10° default), bidirectional greedy + Steiner detour repair |
+| [`src/kicad_autorouter/routing/smooth.py`](src/kicad_autorouter/routing/smooth.py) | String-pulling smoothing with bidirectional greedy + Steiner detour repair |
 | [`tests/test_analytical_contact.py`](tests/test_analytical_contact.py) | SAT courtyard collision test suite (rectangle/circle SAT) |

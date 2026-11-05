@@ -77,7 +77,7 @@ class RoutingParams:
     # When True, smoothed branches get sharp interior corners replaced with
     # tangent circular arcs (clearance-gated, vias/pins untouched) and emit
     # KiCad (arc) copper. False = straight-segment output (prior behavior).
-    arc_max_radius_mm: float = 1.0  # Fillet tangent-length cap (also bounds radius)
+    arc_max_radius_mm: float = 10.0  # Tangent-length cap for corner fillets; R = t / tan(phi/2). API/POST accepts larger (e.g. 25.4 for a full inch); radii sliders stay hidden, set-and-forget at calibrated default.
     arc_min_leg_mm: float = 0.3  # Corners with a shorter leg keep the sharp joint
     arc_sample_mm: float = 0.05  # Arc clearance-gate sample spacing
     arc_keep_min_radius_mm: float = 0.5  # Spare open corners admitting >= this fillet radius from the pull-string

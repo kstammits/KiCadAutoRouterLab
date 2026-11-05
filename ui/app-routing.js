@@ -760,8 +760,11 @@ async function refineSelectedNets() {
         diag.textContent = formatRefineSummary(r) + ` (${elapsed()})`;
         diag.title = diag.textContent;
         // Advance the base seed past the tried range so the next Refine
-        // explores fresh orders instead of replaying these.
-        const tried = (r.candidates || []).filter(c => c.seed >= 0).length;
+        // explores fresh orders instead of replaying these. Uses the
+        // requested count (not candidates.length) since duplicate orders
+        // are skipped silently and return fewer candidates.
+        const tried = Number(params.refine_seeds || 0) ||
+          (r.candidates || []).filter(c => c.seed >= 0).length;
         if (tried > 0) {
           const nextSeed = Number(params.refine_seed || 0) + tried;
           for (const id of ["routing-params-grid", "routing-advanced-params-grid"]) {

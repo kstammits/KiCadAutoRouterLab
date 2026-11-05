@@ -236,7 +236,6 @@ def profile_routing(fixture_name: str, net_names: list[str], resolution_mm: floa
                     pinned=pinned, soft_mask=soft_mask,
                     hard_radius=max(0, corridor - 1),
                     blocked_mask=blocked_mask,
-                    angle_step_rad=3.14159 / 18,
                 )
                 for b in branches
             ]
