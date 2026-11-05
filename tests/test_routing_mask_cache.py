@@ -10,11 +10,13 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from kicad_autorouter.board_model import Point, Track, board_model
-from kicad_autorouter.routing.grid import create_grid_from_model
+from kicad_autorouter.board_model import ArcTrack, Point, Track, board_model
+from kicad_autorouter.routing.grid import RoutingGrid, create_grid_from_model
 from kicad_autorouter.routing.obstacles import (
+    BLOCKED,
     ObstacleCache,
     _build_tht_via_mask,
+    _stamp_copper_region,
     build_fanout_cost,
     build_occupancy_grid,
     build_via_block_mask,
@@ -162,3 +164,22 @@ def test_cache_end_to_end_routing_parity():
     )
     assert cached.expansions == plain.expansions
     assert cached.timings.get("occupancy_cached") == 0.0  # first call: miss
+
+
+@pytest.mark.unit
+def test_stamp_copper_region_arc_does_not_subscript_generator():
+    # Regression: _stamp_copper_region consumed sample_circular_arc (a
+    # generator) via zip(pts, pts[1:]), raising "generator object is not
+    # subscriptable" on any recompute covering an arc. Materializing to a
+    # list matches _mark_arc.
+    grid = RoutingGrid(
+        resolution_mm=0.1, layers=("F.Cu",),
+        origin_mm=(0.0, 0.0), width_cells=60, height_cells=60,
+    )
+    tile = np.zeros((1, 60, 60), dtype=np.int16)
+    arc = ArcTrack(
+        start=Point(1.0, 1.0), mid=Point(1.5, 1.6), end=Point(2.0, 1.0),
+        width_mm=0.25, layer="F.Cu", net_name="X",
+    )
+    _stamp_copper_region(tile, grid, arc, 0.2, 0, 0)
+    assert int(tile.max()) == BLOCKED

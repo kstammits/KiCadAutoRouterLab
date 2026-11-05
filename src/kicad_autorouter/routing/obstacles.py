@@ -1426,12 +1426,13 @@ def _stamp_copper_region(tile, grid, item, clearance_mm, ro, co) -> None:
             return
         radius = track_corridor_radius_cells(
             item.width_mm, clearance_mm, res)
-        pts = sample_circular_arc(
+        # sample_circular_arc is a generator; materialize before subscripting.
+        pts = list(sample_circular_arc(
             (item.start.x_mm, item.start.y_mm),
             (item.mid.x_mm, item.mid.y_mm),
             (item.end.x_mm, item.end.y_mm),
             16,
-        )
+        ))
         layer_grid = tile[layer]
         for (x1, y1), (x2, y2) in zip(pts, pts[1:]):
             c1, r1 = board_to_grid(grid, x1, y1)
