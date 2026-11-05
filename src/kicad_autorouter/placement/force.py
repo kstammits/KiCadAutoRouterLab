@@ -25,6 +25,7 @@ from shapely import points as _shapely_points
 from shapely.geometry import Point, Polygon
 from shapely.ops import nearest_points
 
+from .align import apply_align_forces
 from .contact import (
     ShapeType,
     _analytical_collision,
@@ -155,12 +156,16 @@ def _compute_total_force(
     return_components: bool = False,
     ctx: Optional[ForceContext] = None,
     pad_velocities: Optional[np.ndarray] = None,
+    align_targets: Optional[Dict[int, Tuple[Optional[float], float, float]]] = None,
+    align_ref_axes: Optional[Dict[int, Tuple[int, int, float]]] = None,
 ) -> Tuple[np.ndarray, Optional[Dict[str, np.ndarray]]]:
     """Compute total force on each pad at given positions.
 
     With ``return_components`` also returns the per-cause breakdown
     ``{cause: (n_pads, 2)}`` for repulsion/attraction/ghost/courtyard
-    (courtyard includes the board wall).
+    (courtyard includes the board wall), plus ``align`` when the
+    orientation-consensus regime is active (either stiffness > 0 with
+    targets present).
 
     ``edge_sides`` optionally marks attraction edges as one-sided
     (0 = symmetric, 1 = src only, 2 = dst only). Decap-incident edges are
@@ -230,7 +235,28 @@ def _compute_total_force(
                 for pad_idx in target_pad_indices:
                     ghost_attr_force[pad_idx] += force_per_pad
 
-    force = repulsion + attraction + ghost_attr_force
+    # ------------------------------------------------------------------
+    # Alignment: orientation-consensus couples + weak position hold
+    # (Tidy regime). Zero net torque-free force when off; wall law below
+    # vets every rotation the same iteration it happens.
+    # ------------------------------------------------------------------
+    align_active = (
+        (params.align_angle_k_N > 0.0 or params.align_pos_k_N_m > 0.0)
+        and align_targets is not None
+        and align_ref_axes is not None
+        and ctx is not None
+    )
+    if align_active:
+        align_force = apply_align_forces(
+            pos, ctx.fp_local_to_rows, ctx.fp_movable_arr,
+            align_ref_axes, align_targets,
+            angle_k_N=params.align_angle_k_N,
+            pos_k_N_m=params.align_pos_k_N_m,
+        )
+    else:
+        align_force = np.zeros((n_pads, 2), dtype=np.float64)
+
+    force = repulsion + attraction + ghost_attr_force + align_force
 
     # Courtyard force accumulator
     n_pads_local = pos.shape[0]
@@ -1072,6 +1098,10 @@ def _compute_total_force(
         "courtyard": np.nan_to_num(poly_force, nan=0.0, posinf=0.0, neginf=0.0),
         "tangential": np.nan_to_num(tangential_force, nan=0.0, posinf=0.0, neginf=0.0),
     }
+    if align_active:
+        # Present only when the regime is active, so off-regime
+        # breakdowns keep their exact cause set.
+        components["align"] = np.nan_to_num(align_force, nan=0.0, posinf=0.0, neginf=0.0)
     for comp in components.values():
         comp[~pad_movable] = 0.0
     return force, components

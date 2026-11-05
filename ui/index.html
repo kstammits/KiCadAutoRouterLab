@@ -161,6 +161,7 @@
           <span><i style="display:inline-block; width:1.2rem; border-top:2px solid #f472b6;"></i> courtyard+wall</span>
           <span><i style="display:inline-block; width:1.2rem; border-top:2px dotted #c4b5fd;"></i> ghost</span>
           <span><i style="display:inline-block; width:1.2rem; border-top:2px solid #eab308;"></i> tangential</span>
+          <span><i style="display:inline-block; width:1.2rem; border-top:2px solid #fb923c;"></i> align</span>
         </span>
         <label class="chk" title="Show poured-zone outlines and fills"><input type="checkbox" id="zones-toggle" checked> Zones</label>
         <label class="chk" title="Show KiCad's cached zone fills (stale after edits; use --refill-zones to refresh)"><input type="checkbox" id="zones-fill-toggle"> Zone fills (cached)</label>
@@ -218,7 +219,6 @@
       <div class="panel-tabs">
         <button id="place-tab-btn" class="tab-btn active" title="Placement panel">Place</button>
         <button id="route-tab-btn" class="tab-btn" title="Routing panel">Route</button>
-        <button id="tidy-tab-btn" class="tab-btn" title="Tidy panel">Tidy</button>
         <button id="docs-tab-btn" class="tab-btn" title="Docs panel">Docs</button>
         <button id="side-panel-toggle" class="panel-toggle" title="Collapse panel">◀</button>
       </div>
@@ -258,6 +258,7 @@
             <span class="num">Regime</span>
             <button id="regime-cluster-btn" title="Scattered-start clustering: stronger attraction, softer walls (attraction ~0.05, wall ~0.025, damping 0.08, dt 2ms)">Scatter start</button>
             <button id="regime-legalize-btn" title="Placed-board polish: gentle attraction, firm walls, 4mm halo (attraction ~0.008, wall ~0.08, damping 0.12, dt 1ms)">Placed-board polish</button>
+            <button id="regime-tidy-btn" title="Orientation consensus on a legalize base: outlier parts rotate toward their local neighbor median (deadband 10 deg, diagonals kept) with a weak position hold. Accept/Clear like any placement run.">Tidy (align)</button>
           </div>
           <details id="advanced-params-details">
             <summary title="Power, decap, ghost, and convergence knobs hidden from the main panel">Advanced</summary>
@@ -282,6 +283,15 @@
             <span id="route-diag"></span>
             <span id="route-est" title="Work estimate for this batch"></span>
           </div>
+          <div class="bar">
+            <span class="num">Shuffle</span>
+            <button id="shuffle-btn" title="Silly slot machine: rip and re-route a random routable net. Set ×N to queue a run of them.">🎲 Shuffle</button><label class="chk" title="How many random re-routes to queue (1–50)">×<input type="number" id="shuffle-count" value="10" min="1" max="50" step="1" style="width:3rem;"></label>
+            <button id="shuffle-cancel-btn" hidden title="Stop after the current roll (already-routed nets are kept)">Cancel</button>
+            <progress id="shuffle-progress" hidden max="1" value="0" style="width:8rem;" title="Shuffle queue progress"></progress>
+            <span id="shuffle-diag"></span>
+          </div>
+          <p class="section-hint">Random re-route: picks a routable net (2+ pads, unprotected), rips its copper and routes it fresh. Queue ×N rolls and watch the totals below move.</p>
+          <div id="route-metrics" style="font-size:.72rem;padding:.2rem .7rem;" title="Board totals: routed nets, copper counts, DRC cache state">no board loaded</div>
           <div id="gnd-islands-results" style="font-size:.72rem;padding:.2rem .7rem;" hidden></div>
           <details class="route-section" id="impedance-details">
             <summary title="DC-resistance screening for GND + power nets. Report only — never changes copper.">Power integrity (report only)</summary>
@@ -349,36 +359,6 @@
           </div>
         </div>
 
-        <!-- Tidy panel -->
-        <div id="tidy-panel" hidden>
-          <div class="bar">
-            <span class="num">Tidy</span>
-            <button id="tidy-run-btn" class="primary" title="Straighten angles and even out gaps. Never adds overlaps; the result lands in the Place proposal for review.">Run Tidy</button>
-            <button id="tidy-goto-place" title="Switch to the Place tab to review the tidy result and Accept it">Review in Place</button>
-            <span id="tidy-diag"></span>
-          </div>
-          <p class="section-hint">Neatens rows: straightens angles, evens gaps. Never adds overlaps. The result lands in the Place proposal — review and Accept there.</p>
-          <div class="bar">
-            <span id="tidy-scope" class="zoom-info" title="A selection limits what moves; the whole board (minus ghosts) stays alignment context.">No selection — all movable parts move.</span>
-          </div>
-          <div class="bar" id="tidy-presets-bar" title="Strength presets: how far parts blend toward their neighbors">
-            <span class="zoom-info">Strength:</span>
-            <button data-tidy-preset="0.3" title="Gentle nudge toward neighbor angles and gaps">Subtle</button>
-            <button data-tidy-preset="0.6" title="Balanced neat pass (recommended starting point)">Default</button>
-            <button data-tidy-preset="1" title="Full blend toward neighbor angles and gaps">Strong</button>
-          </div>
-          <div class="params" id="tidy-params-grid"></div>
-          <div class="bar">
-            <span class="num">Shuffle</span>
-            <button id="shuffle-btn" title="Silly slot machine: rip and re-route a random routable net. Set ×N to queue a run of them.">🎲 Shuffle</button><label class="chk" title="How many random re-routes to queue (1–50)">×<input type="number" id="shuffle-count" value="10" min="1" max="50" step="1" style="width:3rem;"></label>
-            <button id="shuffle-cancel-btn" hidden title="Stop after the current roll (already-routed nets are kept)">Cancel</button>
-            <progress id="shuffle-progress" hidden max="1" value="0" style="width:8rem;" title="Shuffle queue progress"></progress>
-            <span id="shuffle-diag"></span>
-          </div>
-          <p class="section-hint">Random re-route: picks a routable net (2+ pads, unprotected), rips its copper and routes it fresh. Queue ×N rolls and watch the totals below move.</p>
-          <div id="tidy-metrics" style="font-size:.72rem;padding:.2rem .7rem;" title="Board totals: routed nets, copper counts, DRC cache state">no board loaded</div>
-        </div>
-
         <!-- Docs panel -->
         <div id="docs-panel" hidden>
           <div class="bar">
@@ -403,7 +383,6 @@
 <script src="app-context.js"></script>
 <script src="app-diagnostics.js"></script>
 <script src="app-placement.js"></script>
-<script src="app-tidy.js"></script>
 <script src="app.js"></script>
 <script src="app-docs.js"></script>
 </body>

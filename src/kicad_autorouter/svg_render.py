@@ -772,8 +772,9 @@ FORCE_CAUSE_COLORS = {
     "courtyard": "#f472b6",  # pink (part contact + board wall)
     "ghost": "#c4b5fd",  # pale lavender, dotted
     "tangential": "#eab308",  # yellow (sliding assist along contact)
+    "align": "#fb923c",  # orange (orientation-consensus tidy regime)
 }
-FORCE_CAUSE_ORDER = ("repulsion", "attraction", "courtyard", "ghost", "tangential")
+FORCE_CAUSE_ORDER = ("repulsion", "attraction", "courtyard", "ghost", "tangential", "align")
 FORCE_CAUSE_DASH = {
     "ghost": ' stroke-dasharray="1 1.2"',
 }

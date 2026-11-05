@@ -128,6 +128,14 @@ ingest and result reporting). Normative formulas:
   15 mm; bulk and distant caps stay global-only), overpowering rail
   fanout; global rail edges are never boosted; 0 also removes the decap
   GND-side exception (`PlacementParams.decap_link`).
+- **Alignment** (`align_angle_k_N`, N; `align_pos_k_N_m`, N/m): Tidy-regime
+  orientation consensus — a constant-magnitude tangential couple on each
+  outlier's longest pad-pair axis, signed toward the local neighbor median
+  (deadband `align_deadband_deg`, hysteresis release at half; diagonals
+  hold, no axis snap), plus a weak leash to the last recompute pose
+  (`align_radius_m` neighbor graph, refreshed every 25 iterations). Wall
+  stiffness dominates, so misfits eject instead of overlapping; 0 disables
+  (`PlacementParams.align_*`).
 - **Fanout scaling**: power edges weigh `power_scale/(fanout−1)` so a
   shared rail pulls each pad about as hard in total as one signal edge —
   rails minimize wirelength without collapsing the board

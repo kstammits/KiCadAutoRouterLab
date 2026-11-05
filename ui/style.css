@@ -86,7 +86,7 @@
 
   /* Main content area */
   .main-content { flex:1; display:flex; flex-direction:column; overflow:hidden; min-width:0; }
-  /* Top bar wraps between atomic groups only (2-3 tidy rows): items never
+  /* Top bar wraps between atomic groups only (2-3 rows): items never
      wrap mid-group, so rows break at group boundaries instead of shattering
      per item. The file group grows; the board name absorbs slack and pushes
      a clean break via its min-width. */
@@ -272,6 +272,11 @@
   .footprint.fp-pinned line { stroke: #e0a458; stroke-dasharray: 4 2; }
   .footprint.fp-selected line { stroke: #7ee0a0; stroke-width: 0.3; }
   .footprint.fp-selected line.sel-halo { stroke: #7ee0a0; stroke-width: 0.8; opacity: 0.3; }
+  /* Server bakes the selection glow inline (stroke + sel-halo nodes), so a
+     client-side deselect leaves orphaned green halo lines behind. Hide them
+     whenever the group is not selected; the core lines fall back to the
+     fp-movable / inline paint via updateFootprintVisuals. */
+  .footprint:not(.fp-selected) line.sel-halo { display: none; }
   .footprint.fp-movable line { stroke: #5b6b7a; stroke-width: 0.1; opacity: 0.45; }
   .footprint.fp-locked text { fill: #e06c75; }
   .footprint.fp-pinned text { fill: #e0a458; }
@@ -294,6 +299,7 @@
   .footprint g.motion-force-vectors line.force-courtyard { stroke: #f472b6; }
   .footprint g.motion-force-vectors line.force-ghost { stroke: #c4b5fd; stroke-dasharray: 1 1.2; }
   .footprint g.motion-force-vectors line.force-tangential { stroke: #eab308; }
+  .footprint g.motion-force-vectors line.force-align { stroke: #fb923c; }
 
   /* Decap footprints: server paints the courtyard halo (teal, svg_render
      DECAP_HALO_COLOR) and adds .fp-decap to the group; no override needed.

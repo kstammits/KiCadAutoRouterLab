@@ -23,6 +23,11 @@ from .contact import (
     _footprint_courtyard_polygon,
     courtyard_is_degenerate,
 )
+from .align import (
+    ALIGN_RECOMPUTE_ITERS,
+    build_align_ref_axes,
+    compute_align_targets,
+)
 from .depenetrate import _depenetrate_positions
 from .force import ForceContext, _compute_total_force
 from .model import (
@@ -440,6 +445,47 @@ def _run_region_simulation(
     positions = pad_positions.copy()
     prev_positions = pad_positions.copy()
 
+    # Orientation-consensus regime (Tidy): reference axes from the
+    # committed pose, targets refreshed every N iterations. Off unless a
+    # stiffness is set, so cluster/legalize trajectories are untouched.
+    align_active = (
+        params.align_angle_k_N > 0.0 or params.align_pos_k_N_m > 0.0
+    )
+    _ghost_uuids = {
+        fp.uuid for fp in model.ghost_footprints if fp.uuid
+    }
+    _ghost_local = {
+        fp_uuid_to_local_idx[u] for u in _ghost_uuids
+        if u in fp_uuid_to_local_idx
+    }
+    _fp_layers = [
+        getattr(fp_by_uuid.get(u), "layer", "") or "" for u in fp_uuids
+    ]
+    _committed_angles = {
+        fp_uuid_to_local_idx[fp.uuid]: float(fp.angle_deg)
+        for fp in list(model.footprints) + list(model.ghost_footprints)
+        if fp.uuid and fp.uuid in fp_uuid_to_local_idx
+    }
+    _align_ref_axes = (
+        build_align_ref_axes(fp_local_to_rows, pad_positions)
+        if align_active else {}
+    )
+
+    def _refresh_align_targets(
+        prev: Optional[dict] = None,
+    ) -> dict:
+        if not align_active:
+            return {}
+        return compute_align_targets(
+            positions, fp_local_to_rows, fp_movable_arr,
+            _fp_layers, _ghost_local, _committed_angles, _align_ref_axes,
+            radius_mm=params.align_radius_m * 1000.0,
+            deadband_deg=params.align_deadband_deg,
+            prev_targets=prev,
+        )
+
+    _align_targets = _refresh_align_targets()
+
     # Polygon cache for courtyard collision - persists across iterations.
     # Rebuild thresholds are TIGHT (20µm/0.02°): a stale body polygon snaps
     # the contact winner discretely when it refreshes, which reads as force
@@ -500,6 +546,8 @@ def _run_region_simulation(
         return_components=True,
         ctx=fctx,
         pad_velocities=_vel,
+        align_targets=_align_targets,
+        align_ref_axes=_align_ref_axes,
     )
 
     # ---- Trajectory frames (opt-in motion viz) ----
@@ -547,6 +595,8 @@ def _run_region_simulation(
             return_components=True,
             ctx=fctx,
             pad_velocities=_vel,
+            align_targets=_align_targets,
+            align_ref_axes=_align_ref_axes,
         )
         force_frame: Dict[str, Dict[str, Tuple[float, float]]] = {}
         for _fp, _pi in _frame_fps:
@@ -613,6 +663,9 @@ def _run_region_simulation(
     stall_n = 0
 
     for iteration in range(params.max_iterations):
+        # Consensus refresh: quasi-static targets that track drift.
+        if align_active and iteration > 0 and iteration % ALIGN_RECOMPUTE_ITERS == 0:
+            _align_targets = _refresh_align_targets(_align_targets)
         # Update context with current velocities for tangential assist
         fctx.pad_velocities = _vel
         force, _ = _compute_total_force(
@@ -623,6 +676,8 @@ def _run_region_simulation(
             edge_sides=edge_sides,
             ctx=fctx,
             pad_velocities=_vel,
+            align_targets=_align_targets,
+            align_ref_axes=_align_ref_axes,
         )
 
         # --- debug: per-iteration snapshot of positions + raw forces ---
@@ -801,6 +856,8 @@ def _run_region_simulation(
         return_components=True,
         ctx=fctx,
         pad_velocities=_vel,
+        align_targets=_align_targets,
+        align_ref_axes=_align_ref_axes,
     )
 
     for fp in model.footprints:

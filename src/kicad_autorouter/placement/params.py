@@ -127,13 +127,29 @@ class PlacementParams:
     # dict to the proposal with per-iteration per-pad forces/positions and
     # depen-pass diagnostics. Off by default (zero overhead in production).
     debug: bool = False
-    # Tidy-tab geometric refine (post-pass, not part of the force dynamics):
-    # neighbor-median angle alignment + median-gap equalization. 0 = off.
-    refine_strength: float = 0.0
-    # Neighbor search radius for the refine pass (meters, SI like the rest of
-    # this dataclass; the Tidy tab displays millimeters). Only the k-nearest
-    # (k=6) parts inside this radius count as neighbors.
-    refine_radius_m: float = 0.020
+    # In-dynamics orientation consensus (Tidy regime): neighbor-median
+    # angle alignment as pad-force couples plus a weak position hold.
+    # Stiffnesses are 0 = off (cluster/legalize presets pin them at 0).
+    # Spacing stays fully force-driven; there is no gap equalization.
+    # Diagonals are fine — consensus is local, never axis-snapped.
+    # Orientation consensus stiffness: constant-magnitude tangential
+    # couple (N), signed by the consensus error. Outliers rotate toward
+    # their neighbors at a steady rate until the error is inside the
+    # deadband; parts within the deadband feel nothing. Constant (not
+    # proportional) because proportional torque stalls under viscous
+    # damping before the error closes. Must clear dry friction and the
+    # ~2.4 mN convergence-crawl floor at legalize damping.
+    align_angle_k_N: float = 0.0
+    # Position-hold stiffness (N/m): weak leash toward the pose held at the
+    # last consensus recompute, so a rotating body settles instead of
+    # drifting. Anchors refresh as the board moves; sustained wall pressure
+    # still ejects (wall_k >> align hold).
+    align_pos_k_N_m: float = 0.0
+    # Consensus error below this (degrees) is not an outlier: no torque.
+    align_deadband_deg: float = 10.0
+    # Neighbor search radius for the consensus graph (meters, SI; the UI
+    # displays millimeters). Only the k-nearest (k=6) parts inside count.
+    align_radius_m: float = 0.020
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -195,8 +211,10 @@ def _validate(params: PlacementParams) -> None:
         "wall_cap_depth_mm",
         "overlap_tolerance_mm2",
         "wall_tolerance_mm",
-        "refine_strength",
-        "refine_radius_m",
+        "align_angle_k_N",
+        "align_pos_k_N_m",
+        "align_deadband_deg",
+        "align_radius_m",
     )
     for name in numeric:
         value = getattr(params, name)
@@ -206,11 +224,11 @@ def _validate(params: PlacementParams) -> None:
             raise ValueError(f"{name} must be finite")
         if value < 0:
             raise ValueError(f"{name} must be >= 0")
-    for name in ("dt_s", "dt_min_s", "dt_max_s", "vmax_m_s", "wall_halo_m", "refine_radius_m"):
+    for name in ("dt_s", "dt_min_s", "dt_max_s", "vmax_m_s", "wall_halo_m", "align_radius_m"):
         if getattr(params, name) <= 0:
             raise ValueError(f"{name} must be > 0")
-    if not (0.0 <= params.refine_strength <= 1.0):
-        raise ValueError("refine_strength must be in [0.0, 1.0]")
+    if not (0.0 <= params.align_deadband_deg <= 90.0):
+        raise ValueError("align_deadband_deg must be in [0.0, 90.0]")
     if params.dt_min_s > params.dt_s:
         raise ValueError("dt_min_s must be <= dt_s")
     if params.dt_s > params.dt_max_s:

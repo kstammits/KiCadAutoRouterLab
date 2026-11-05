@@ -3,7 +3,7 @@
 Public API:
 PlacementParams, PlacementProposal, run_placement.
 
-Submodules: params, model, rigid, contact, force, legality, runner, proposal, depenetrate, region.
+Submodules: params, model, rigid, contact, force, align, legality, runner, proposal, depenetrate, region.
 
 The private-helper re-exports below exist for backward compatibility:
 tests and scripts import names like ``_wall_mag`` or ``_collect_pad_nodes``
@@ -36,7 +36,6 @@ from .params import (
 )
 from .rigid import _clamp_rigid_step, _rigid_pose_vertices
 from .legality import LegalityReport, check_legality
-from .refine import refine_placement, refine_placement_with_report
 
 __all__ = [
     "PlacementParams",
@@ -44,8 +43,6 @@ __all__ = [
     "run_placement",
     "LegalityReport",
     "check_legality",
-    "refine_placement",
-    "refine_placement_with_report",
     # Backward-compat re-exports (import from submodules in new code):
     "FRAME_ANGLE_DECIMALS",
     "FRAME_XY_DECIMALS",

@@ -111,10 +111,15 @@ Open work only. Completed changes belong in git history, not here.
   path-cost parity before changing the default.
 - **Routing time estimator**: replace the GUI `2 + 1.2·n` model with the
   per-net pad-count pair estimate plus a failed-net allowance.
-- **Track-tidy mode, deferred**: Tidy tab is placement-only today
-  (footprint angle/gap refine, merges into Place → Accept), so routed-track
-  cleanup has no home and users cannot tell when Tidy applies. Proposed:
-  a track-tidy section in the Tidy tab operating on selected routed nets,
+- **Tidy-regime calibration**: the Tidy regime (orientation consensus +
+  weak hold in the dynamics, `align_*` params) ships with starting-point
+  stiffnesses (`align_angle_k_N` 5e-3, `align_pos_k_N_m` 3.0). Gate them on
+  a sweep: outlier counts down on tube111/DCCF with no overlap/iteration/
+  wirelength regression vs the legalize baseline, then publish the JSON
+  under `docs/benchmarks/`.
+- **Track-tidy mode, deferred**: the old Tidy tab is gone (replaced by the
+  Tidy placement regime), so routed-track cleanup has no home. Proposed:
+  a track-tidy section in the Route panel operating on selected routed nets,
   proposal-based (nothing auto-applies): robust collinear merge, spike /
   double-back strip, via-pair → tee collapse (e.g. power track going up
   one via and down another where one tee suffices), corner-cut, stub
@@ -122,7 +127,7 @@ Open work only. Completed changes belong in git history, not here.
   footprint, own-pads exempt; `drc_ok=false` proposals shown but never
   applied). Needs `routing/tidy_tracks.py` proposal generator +
   `POST /api/tidy/tracks` (propose) / `/apply` (subset commit, DRC-gated)
-  + proposal cards in `app-tidy.js`. Parked — do other work first.
+  + proposal cards in `app-routing.js`. Parked — do other work first.
 
 ## GND pours and stitching
 
@@ -202,10 +207,11 @@ Counts are additive (`fanout_vias_added` / `fanout_tracks_added`).
   commit, `./scripts/check_js.sh` (`node --check`) green throughout. The
   4000-line rule now holds for every file; revisit only if a domain file
   itself approaches the budget.
-- **Aesthetic row-alignment regime**: third placement pass that refines
-  eligible parts into straight rows (axis snap on position + coarse angle
-  quantization for opted-in refs), scored so legality still dominates —
-  rows never win over DRC-clean.
+- **Aesthetic row-alignment regime**: superseded — the Tidy regime does
+  orientation consensus in the dynamics instead of a post-pass (no rows,
+  no axis snap; diagonals hold). Rows were dropped as actively harmful to
+  the force-directed layout; do not revive without a subcircuit-scoped
+  design.
 - **THT-vs-opposite-SMD overlap**: re-audit courtyard accounting for a THT
   part facing an SMD on the opposite layer — through-hole pins occupy both
   sides, so opposite-side overlap may undercount. Needs a fixture pair +

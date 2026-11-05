@@ -11,14 +11,20 @@ function setConnected(ok) {
 
 // Route/rip buttons share one busy state: all four disable, the two
 // route buttons show the spinner. (ripSelectedNets manages ripBtn's own
-// spinner; route tails rely on updateNetSelectionUI for final enable.)
+// spinner; route tails rely on updateNetSelectionUI for final enable).
+// Reference-counted: nested runs (route-all delegates to route-selected)
+// and double-clicks pair every acquire with a release, so an imbalance
+// from one path can't wedge the buttons on forever.
+let routeBusyCount = 0;
 function setRouteBusy(on) {
+  routeBusyCount = Math.max(0, routeBusyCount + (on ? 1 : -1));
+  const busy = routeBusyCount > 0;
   const btns = ["route-selected-btn", "route-all-btn", "select-unrouted-btn", "rip-selected-btn", "refine-btn", "shuffle-btn"]
     .map(id => el(id));
-  for (const b of btns) if (b) b.disabled = on;
-  for (const b of btns.slice(0, 2)) if (b) b.classList.toggle("loading", on);
+  for (const b of btns) if (b) b.disabled = busy;
+  for (const b of btns.slice(0, 2)) if (b) b.classList.toggle("loading", busy);
   const shuffleCount = el("shuffle-count");
-  if (shuffleCount) shuffleCount.disabled = on;
+  if (shuffleCount) shuffleCount.disabled = busy;
 }
 
 // Inlet/bridge state lives in one endpoint; read-modify-write callers
@@ -410,8 +416,6 @@ function updateSelectionUI() {
       ? `${selectedUuids.size} selected → Step/Run targets selection`
       : "nothing selected → Step/Run targets all movable";
   }
-  // Tidy scope line mirrors the same selection (move subset vs all).
-  if (typeof syncTidyScope === "function") syncTidyScope();
   // Nudge pad mirrors the placement selection (ghosts excluded).
   const nudgeCount = el("nudge-count");
   if (nudgeCount) nudgeCount.textContent = String(selectedUuids.size);
@@ -447,8 +451,19 @@ function updateFootprintVisuals() {
   svg.querySelectorAll(".footprint").forEach(el => {
     const uuid = el.dataset.fpUuid;
     if (!uuid) return;
-    el.classList.toggle("fp-selected", selectedUuids.has(uuid) || uuid === selectedGhostUuid);
-    el.classList.toggle("fp-pinned", pinnedUuids.has(uuid));
+    const sel = selectedUuids.has(uuid) || uuid === selectedGhostUuid;
+    el.classList.toggle("fp-selected", sel);
+    const pinned = pinnedUuids.has(uuid);
+    el.classList.toggle("fp-pinned", pinned);
+    // Reconcile fp-movable like the server render does (movable, unpinned,
+    // unselected): without it a deselected group keeps its stale inline
+    // selected-green stroke, since no CSS rule overrides it back to gray.
+    // Ghosts keep their purple paint — never mark them movable.
+    if (!el.classList.contains("fp-ghost")) {
+      const fp = allFootprints.find(f => f.uuid === uuid);
+      const locked = fp ? !!fp.locked : el.classList.contains("fp-locked");
+      el.classList.toggle("fp-movable", !locked && !pinned && !sel);
+    }
   });
 }
 
@@ -615,9 +630,21 @@ async function replaceSelectionBulk(uuids, { zoom = false } = {}) {
   }
 }
 
-// Click handler on SVG for footprint selection
+// Click handler on SVG: pads are copper (net select), courtyard
+// background / ref text is the part (footprint select). Pads live inside
+// .footprint groups, so they must be tested first — otherwise a track
+// click that lands on a pad "selects" an arbitrary nearby part.
 viewport?.addEventListener("click", e => {
   if (isPanning) return; // Don't select while panning
+  const padEl = e.target.closest("[data-pad]");
+  if (padEl && padEl.closest(".footprint")) {
+    const net = padEl.dataset.net;
+    if (net) {
+      selectNetFromCopper(net, e.shiftKey || e.ctrlKey || e.metaKey);
+      return;
+    }
+    // Unnetted pad: fall through to footprint selection below.
+  }
   const fpEl = e.target.closest(".footprint");
   if (fpEl) {
     const uuid = fpEl.dataset.fpUuid;
@@ -1339,7 +1366,7 @@ function motionFpNode(uuid) {
 
 // Force cause order (paint lives in CSS: .motion-force-vectors line.force-<cause>).
 // Keep server svg_render.FORCE_CAUSE_COLORS and the #forces-legend chips in sync.
-const FORCE_CAUSE_ORDER = ["repulsion", "attraction", "courtyard", "ghost", "tangential"];
+const FORCE_CAUSE_ORDER = ["repulsion", "attraction", "courtyard", "ghost", "tangential", "align"];
 
 function drawForceVectors(svg, frameIdx) {
   // Remove existing motion force vectors from footprint groups

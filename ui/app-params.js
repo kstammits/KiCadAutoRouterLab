@@ -1,12 +1,13 @@
 // app-params.js — placement settings panel, presets, URL presets.
 // Needs core (el/api/toast) at load; placement reads params at runtime.
 //
-// Calibrated behavior knobs get main-panel sliders; power/decap/ghost and
-// the convergence threshold live under Advanced. Everything else
-// (repulsion, solver internals, mass fallbacks) stays API-only at
+// Calibrated behavior knobs get main-panel sliders; power/decap/ghost,
+// alignment, and the convergence threshold live under Advanced. Everything
+// else (repulsion, solver internals, mass fallbacks) stays API-only at
 // calibrated defaults — POST /api/placement/params merges, so hidden keys
 // in placement.json survive GUI saves.
-// Ranges cover both Cluster (scattered starts) and Legalize (placed boards) regimes.
+// Ranges cover Cluster (scattered starts), Legalize (placed boards), and
+// Tidy (orientation consensus + weak hold) regimes.
 
 const PARAM_DEFS = [
   { key: "attraction_k_N", label: "Attraction k (N)", min: 1e-4, max: 2e-1, step: 1e-4, log: true },
@@ -15,6 +16,8 @@ const PARAM_DEFS = [
   { key: "wall_halo_m", label: "Wall halo (mm)", min: 0, max: 0.015, step: 0.0005,
     display: { unit: "mm", scale: 1000, step: 0.5 } },
   { key: "damping_Ns_m", label: "Damping (N·s/m)", min: 1e-3, max: 1, step: 1e-4, log: true },
+  { key: "align_angle_k_N", label: "Align angle k (N)", min: 1e-6, max: 1e-2, step: 1e-6, log: true },
+  { key: "align_pos_k_N_m", label: "Align hold k (N/m)", min: 1e-3, max: 10, step: 1e-3, log: true },
   { key: "max_iterations", label: "Max iterations", min: 1, max: 20000, step: 10 },
 ];
 
@@ -29,6 +32,9 @@ const ADVANCED_PARAM_DEFS = [
   { key: "contact_tangent_gamma", label: "Contact tangent γ", min: 0.0, max: 0.5, step: 0.01 },
   { key: "convergence_eps_m", label: "Convergence eps (mm)", min: 1e-7, max: 1e-3, step: 1e-7, log: true,
     display: { unit: "mm", scale: 1000, step: 0.0001 } },
+  { key: "align_deadband_deg", label: "Align deadband (deg)", min: 0, max: 45, step: 1 },
+  { key: "align_radius_m", label: "Align radius (mm)", min: 0.001, max: 0.05, step: 0.001,
+    display: { unit: "mm", scale: 1000, step: 1 } },
   { key: "vmax_m_s", label: "Max speed (mm/s)", min: 0.01, max: 5.0, step: 0.01,
     display: { unit: "mm/s", scale: 1000, step: 10 } },
   { key: "dt_s", label: "Timestep (ms)", min: 2e-4, max: 2e-3, step: 1e-4,
@@ -56,6 +62,10 @@ const PARAM_DESC = {
   vmax_m_s: "Speed ceiling for pad velocities and rigid-step clamp (m/s). Higher allows faster movement but less stable. Default 1.0 m/s.",
   dt_s: "Simulation timestep: 0.2-2ms, bounded by the dt_min/dt_max solver guards (wider values fail validation). Adaptive guard halves on energy rise, regrows on fall. Default 1ms.",
   friction_N: "Dry-friction deadband (newtons). Whole footprint freezes when all pad forces below this. Default 1e-6 N.",
+  align_angle_k_N: "Orientation-consensus stiffness: constant-magnitude tangential couple (N), signed by the neighbor-median error. Outliers rotate at a steady rate until inside the deadband; parts within feel nothing. 0 = off. Tidy: 5e-3. Log scale.",
+  align_pos_k_N_m: "Weak position leash (N/m) toward the pose held at the last consensus recompute, so rotating bodies settle instead of drifting. Anchors refresh as the board moves; wall pressure still ejects. 0 = off. Tidy: 3.0. Log scale.",
+  align_deadband_deg: "Consensus error below this (degrees) is not an outlier: no torque. Diagonals and neat neighborhoods are never churned. Tidy: 10.",
+  align_radius_m: "Neighbor search radius for the orientation consensus. Shown in mm; stored in meters. Only the 6 nearest parts inside count as neighbors. Tidy: 20mm.",
 };
 
 // Display-unit conversion: defs with `display: {scale}` show scaled values
@@ -211,16 +221,20 @@ async function loadParams(defaultsOnly = false) {
 }
 
 // Regime presets from docs/si_force_laws.md §3: no single ratio clusters
-// AND legalizes, so offer the two calibrated starting points. dt_s, vmax,
+// AND legalizes, so offer the calibrated starting points. dt_s, vmax,
 // friction ride along via the merge-POST even though they have no main-panel sliders.
 // Calibrated values: Cluster uses a 6mm halo; Legalize uses 4mm so dense
 // neighbor fields do not overpower a part's own wall. wall_exponent=2.0 and
-// convergence_eps_m=2e-5 ride along via merge-POST. Both pin
+// convergence_eps_m=2e-5 ride along via merge-POST. All three pin
 // cross_layer_pin_halo_m=0.7mm so a stale saved value cannot silently
 // diverge from calibration (far-side solder clearance is regime-independent).
+// Cluster/Legalize pin both align stiffnesses at 0 (off); Tidy is Legalize
+// plus orientation consensus with a weak hold. Tidy stiffness defaults are
+// starting points pending a calibration sweep (see roadmap).
 const REGIME_PRESETS = {
-  cluster: { attraction_k_N: 0.05, wall_k_N: 0.025, damping_Ns_m: 0.08, dt_s: 2e-3, vmax_m_s: 1.0, friction_N: 1e-6, wall_halo_m: 0.006, cross_layer_pin_halo_m: 0.0007, wall_exponent: 1.0, convergence_eps_m: 2e-5 },
-  legalize: { attraction_k_N: 0.008, wall_k_N: 0.1, damping_Ns_m: 0.12, dt_s: 1e-3, vmax_m_s: 1.0, friction_N: 1e-6, wall_halo_m: 0.004, cross_layer_pin_halo_m: 0.0007, wall_exponent: 2.0, convergence_eps_m: 2e-5 },
+  cluster: { attraction_k_N: 0.05, wall_k_N: 0.025, damping_Ns_m: 0.08, dt_s: 2e-3, vmax_m_s: 1.0, friction_N: 1e-6, wall_halo_m: 0.006, cross_layer_pin_halo_m: 0.0007, wall_exponent: 1.0, convergence_eps_m: 2e-5, align_angle_k_N: 0, align_pos_k_N_m: 0, align_deadband_deg: 10, align_radius_m: 0.020 },
+  legalize: { attraction_k_N: 0.008, wall_k_N: 0.1, damping_Ns_m: 0.12, dt_s: 1e-3, vmax_m_s: 1.0, friction_N: 1e-6, wall_halo_m: 0.004, cross_layer_pin_halo_m: 0.0007, wall_exponent: 2.0, convergence_eps_m: 2e-5, align_angle_k_N: 0, align_pos_k_N_m: 0, align_deadband_deg: 10, align_radius_m: 0.020 },
+  tidy: { attraction_k_N: 0.008, wall_k_N: 0.1, damping_Ns_m: 0.12, dt_s: 1e-3, vmax_m_s: 1.0, friction_N: 1e-6, wall_halo_m: 0.004, cross_layer_pin_halo_m: 0.0007, wall_exponent: 2.0, convergence_eps_m: 2e-5, align_angle_k_N: 5e-3, align_pos_k_N_m: 3.0, align_deadband_deg: 10, align_radius_m: 0.020 },
 };
 
 async function applyRegimePreset(name) {
@@ -242,6 +256,11 @@ on("regime-cluster-btn", "click", async () => {
 });
 on("regime-legalize-btn", "click", async () => {
   try { await applyRegimePreset("legalize"); }
+  catch (err) { if (diagEl) diagEl.textContent = `preset failed: ${err.message}`; }
+});
+
+on("regime-tidy-btn", "click", async () => {
+  try { await applyRegimePreset("tidy"); }
   catch (err) { if (diagEl) diagEl.textContent = `preset failed: ${err.message}`; }
 });
 

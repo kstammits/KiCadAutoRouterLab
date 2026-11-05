@@ -31,7 +31,7 @@ fast loop. Deselect slow via `-m "not slow"`; deselect all DCCF via
 | `test_placement_tight` | 12 | Tight-quarters corpus + rotation-in-squeeze regressions, one full-DCCF audit |
 | `test_placement_layers` | 10 | Layer gating: same-side collides, opposite SMD stacks, THT pins collide cross-layer |
 | `test_placement_frames` | 6 | SVG motion-player frames: downsample + rounding |
-| `test_placement_refine` | 20 | Tidy refine pass (synthetic + minimal) |
+| `test_placement_align` | 20 | Tidy regime: in-dynamics orientation consensus + weak hold (synthetic + minimal) |
 | `test_placement_degenerate` | 16 | Debris courtyards (Fab pin-dots), pad-hull fallback, no-net mounts as geometry-only nodes |
 | `test_courtyard_behavior` | 18 | Courtyard parsing (RV1 reversed edge, micro-gaps), overlap force, RV1 resistor scenarios |
 | `test_analytical_contact` | 10 | SAT rect/rect, circle/circle, rect/circle vs shapely fallback |

@@ -574,23 +574,28 @@ async function routeSelectedNets() {
   }
 
   // Re-fetch nets to update track/via counts.
-  await fetchNets();
-  // Board refreshes wipe SVG overlays; re-render partials last so failed
-  // nets stay reviewable (cost grid + per-net secondary stay available via
-  // the Debug checkbox and /api/routing/debug/cost-grid?net=).
-  renderPartialCopperOverlay();
+  // finally-guaranteed: a throw anywhere below (overlay render, summary
+  // format) must never wedge the route buttons busy — that stuck state
+  // was observed after a failed refine run.
+  try {
+    await fetchNets();
+    // Board refreshes wipe SVG overlays; re-render partials last so failed
+    // nets stay reviewable (cost grid + per-net secondary stay available via
+    // the Debug checkbox and /api/routing/debug/cost-grid?net=).
+    renderPartialCopperOverlay();
 
-  diag.textContent = formatTotalsDiag({
-    totals, failures, doneCount, netCount: nets.length, lastBoardVersion,
-    elapsedTxt: elapsed(), cancelled: routeCancelRequested,
-  });
-  diag.title = diag.textContent;
-  if (routeEst) routeEst.textContent = `done in ${elapsed()} (est ≈${Math.round(est.seconds)}s) · ${est.pairs} pair-searches`;
-
-  setRouteBusy(false);
-  cancelBtn.hidden = true;
-  progress.hidden = true;
-  updateNetSelectionUI();
+    diag.textContent = formatTotalsDiag({
+      totals, failures, doneCount, netCount: nets.length, lastBoardVersion,
+      elapsedTxt: elapsed(), cancelled: routeCancelRequested,
+    });
+    diag.title = diag.textContent;
+    if (routeEst) routeEst.textContent = `done in ${elapsed()} (est ≈${Math.round(est.seconds)}s) · ${est.pairs} pair-searches`;
+  } finally {
+    setRouteBusy(false);
+    if (cancelBtn) cancelBtn.hidden = true;
+    progress.hidden = true;
+    updateNetSelectionUI();
+  }
 }
 
 // Rip up selected nets: remove their copper without re-routing.
@@ -798,14 +803,67 @@ async function refineSelectedNets() {
   }
 }
 
-// Shuffle lives in the Tidy tab: rip and re-route random routable nets,
+// Shuffle lives in the Route panel: rip and re-route random routable nets,
 // N times in a queue. Picks each net uniformly from unprotected 2+ pad
 // nets (repeats allowed, so a "lucky" net can roll again). Single-net
 // routing jobs already strip that net's copper first (pipeline stage 0a),
 // so no explicit rip-up call is needed. Own diag/progress/cancel in the
-// Tidy panel; the shared route busy-state still locks the Route buttons
+// Shuffle bar; the shared route busy-state still locks the Route buttons
 // (single-flight server jobs). Per-net failures don't abort the queue
 // (except HTTP 400, which would fail every net identically).
+// `rolls` is the per-roll log from the last shuffle run (kept across
+// refreshes so reopening the panel doesn't lose it).
+let lastShuffleRolls = [];
+async function refreshRouteMetrics(rolls) {
+  if (Array.isArray(rolls)) lastShuffleRolls = rolls;
+  const box = el("route-metrics");
+  if (!box) return;
+  if (typeof lastVersion === "undefined" || !lastVersion) {
+    box.textContent = "no board loaded";
+    return;
+  }
+  let nets;
+  try {
+    const data = await apiJson("/api/nets");
+    nets = data.nets || [];
+  } catch (err) {
+    box.textContent = `metrics unavailable: ${err.message}`;
+    return;
+  }
+  let drc = null;
+  try {
+    drc = await apiJson("/api/drc/status");
+  } catch { drc = null; }
+  const copper = (n) => (n.track_count || 0) + (n.arc_count || 0) + (n.via_count || 0);
+  const routable = nets.filter((n) => (n.pad_count || 0) >= 2);
+  const routed = routable.filter((n) => copper(n) > 0).length;
+  const tracks = nets.reduce((s, n) => s + (n.track_count || 0), 0);
+  const arcs = nets.reduce((s, n) => s + (n.arc_count || 0), 0);
+  const vias = nets.reduce((s, n) => s + (n.via_count || 0), 0);
+  const prot = nets.filter((n) => n.protected).length;
+  let drcTxt;
+  if (!drc) drcTxt = "DRC unknown";
+  else if (drc.running) drcTxt = "DRC running…";
+  else if (drc.error) drcTxt = `DRC error: ${drc.error}`;
+  else if (drc.for_version == null) drcTxt = "DRC never run";
+  else drcTxt = `DRC ${drc.stale ? "stale" : "cached"}: ${drc.violations} violations, ${drc.unconnected} unconnected`;
+  let txt = `Board v${lastVersion} · nets ${routed}/${routable.length} routed` +
+    ` · ${routable.length - routed} unrouted · ${prot} protected` +
+    ` · copper ${tracks} tracks, ${arcs} arcs, ${vias} vias · ${drcTxt}`;
+  if (lastShuffleRolls.length) {
+    const rollTxt = lastShuffleRolls.map((r) => {
+      if (!r.ok) return `${r.net} failed${r.note ? ` (${r.note})` : ""}`;
+      const bits = [];
+      if (r.tracks) bits.push(`+${r.tracks}t`);
+      if (r.arcs) bits.push(`+${r.arcs}a`);
+      if (r.vias) bits.push(`+${r.vias}v`);
+      return `${r.net} ok${bits.length ? ` (${bits.join("/")})` : ""}`;
+    }).join(", ");
+    txt += ` · last shuffle: ${rollTxt}`;
+  }
+  box.textContent = txt;
+  box.title = txt;
+}
 async function shuffleRandomNets() {
   const diag = el("shuffle-diag");
   const cancelBtn = el("shuffle-cancel-btn");
@@ -927,9 +985,7 @@ async function shuffleRandomNets() {
 
   await fetchNets();
   renderPartialCopperOverlay();
-  if (typeof refreshTidyMetrics === "function") {
-    try { await refreshTidyMetrics(perRoll); } catch { /* metrics are best-effort */ }
-  }
+  try { await refreshRouteMetrics(perRoll); } catch { /* metrics are best-effort */ }
   diag.textContent = `shuffled ${doneCount}/${queue.length} (${queue.slice(0, doneCount).join(", ")}) — ` +
     formatTotalsDiag({
       totals, failures, doneCount, netCount: queue.length, lastBoardVersion,

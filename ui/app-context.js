@@ -273,10 +273,22 @@ async function ctxLoadContextFile(file) {
     }
     const nTracks = partials.reduce((n, p) => n + (p.tracks || []).length + (p.arcs || []).length, 0);
     const savedDiag = bundle.attempt?.diag || "";
+    // Name the restored selections so a repainted highlight reads as what
+    // it is (saved placement/net selection) instead of a mystery glow.
+    const restoredFp = (bundle.placement_state?.selected || []).map(u => {
+      const fp = (typeof allFootprints !== "undefined" ? allFootprints : []).find(f => f.uuid === u);
+      return (fp && fp.ref) || (u || "").slice(-8);
+    }).filter(Boolean);
+    const restoredNets = [...(typeof selectedNets !== "undefined" ? selectedNets : [])];
+    const restoredTxt =
+      (restoredFp.length ? `placement: ${restoredFp.slice(0, 5).join(", ")}${restoredFp.length > 5 ? ` +${restoredFp.length - 5}` : ""}` : "") +
+      ((restoredFp.length && restoredNets.length) ? "; " : "") +
+      (restoredNets.length ? `nets: ${restoredNets.slice(0, 5).join(", ")}${restoredNets.length > 5 ? ` +${restoredNets.length - 5}` : ""}` : "");
     if (diag) {
       diag.textContent = `[context ${bundle.board.name} v${bundle.board.for_version}` +
         ` — review only, re-route to rebuild] ` +
-        (savedDiag || `${partials.length} partial net(s), ${nTracks} partial tracks`);
+        (savedDiag || `${partials.length} partial net(s), ${nTracks} partial tracks`) +
+        (restoredTxt ? ` — restored selection: ${restoredTxt}` : "");
       diag.title = diag.textContent;
     }
     toast(`context loaded: ${partials.length} partial net(s), ${nTracks} partial tracks (review only)`, true);

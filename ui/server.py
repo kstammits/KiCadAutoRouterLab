@@ -55,8 +55,6 @@ from kicad_autorouter.placement import (
     PlacementParams,
     PlacementProposal,
     check_legality,
-    refine_placement,
-    refine_placement_with_report,
     run_placement,
 )
 from kicad_autorouter.placement.model import (
