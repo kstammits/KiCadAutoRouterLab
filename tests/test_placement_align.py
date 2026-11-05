@@ -180,18 +180,53 @@ class TestAlignConsensus:
         prop = run_placement(model, _align_only(), {"uuid-a", "uuid-b", "uuid-c"})
         assert prop.deltas.get("uuid-b", (0.0, 0.0, 0.0))[2] == 0.0
 
-    def test_scattered_neighborhood_no_mode_agreement_no_torque(self):
-        # Parts at +-70 sit far from both modes with no agreeing
-        # neighborhood, so nothing moves (the mode-0 member holds too).
+    def test_scattered_neighborhood_bootstraps_to_modes(self):
+        # No coherent thread exists (+-70 scattered), so the coherence gate
+        # lets every off-mode part snap to its own nearest mode instead of
+        # deadlocking. Plenty of iterations: the whole board must finish
+        # on-mode, with no spins.
         a = _placed_fp("R1", "uuid-a", 0.0, 70.0)
         b = _placed_fp("R2", "uuid-b", 10.0, 0.0, nets=("N3", "N4"))
         c = _placed_fp("R3", "uuid-c", 20.0, -70.0, nets=("N5", "N6"))
         d = _placed_fp("R4", "uuid-d", 30.0, 70.0, nets=("N7", "N8"))
         e = _placed_fp("R5", "uuid-e", 40.0, -70.0, nets=("N9", "N10"))
-        model = _model([a, b, c, d, e])
-        uuids = {fp.uuid for fp in (a, b, c, d, e)}
-        prop = run_placement(model, _align_only(), uuids)
-        assert prop.deltas == {}
+        fps = [a, b, c, d, e]
+        committed = {fp.uuid: fp.angle_deg for fp in fps}
+        model = _model(fps)
+        uuids = {fp.uuid for fp in fps}
+        prop = run_placement(
+            model, _align_only(max_iterations=3000), uuids)
+        assert prop.deltas, "disordered board must engage, not deadlock"
+        for fp in fps:
+            final = committed[fp.uuid] + prop.deltas.get(fp.uuid, (0, 0, 0))[2]
+            off_mode = min(
+                abs(((final - m + 90.0) % 180.0) - 90.0)
+                for m in (0.0, 90.0)
+            )
+            assert off_mode <= 11.0, f"{fp.ref} finished {off_mode:.1f} deg off-mode"
+        assert all(abs(d[2]) <= 90.0 for d in prop.deltas.values())
+
+    def test_disordered_board_settles_at_shipped_stiffness(self):
+        # Screenshot-mirror angles at the shipped 3e-3 N (not maxed):
+        # bootstrap must not need heroic torque. Plenty of iterations.
+        angles = [35.0, -50.0, 60.0, -25.0, 45.0, -60.0, 20.0]
+        fps = [
+            _placed_fp(f"R{i + 1}", f"uuid-{i}", i * 10.0, a,
+                       nets=(f"N{2 * i + 1}", f"N{2 * i + 2}"))
+            for i, a in enumerate(angles)
+        ]
+        committed = {fp.uuid: fp.angle_deg for fp in fps}
+        model = _model(fps)
+        prop = run_placement(
+            model, _align_only(max_iterations=3000), {fp.uuid for fp in fps})
+        assert prop.deltas, "disordered board must engage, not deadlock"
+        for fp in fps:
+            final = committed[fp.uuid] + prop.deltas.get(fp.uuid, (0, 0, 0))[2]
+            off_mode = min(
+                abs(((final - m + 90.0) % 180.0) - 90.0)
+                for m in (0.0, 90.0)
+            )
+            assert off_mode <= 11.0, f"{fp.ref} finished {off_mode:.1f} deg off-mode"
 
     def test_frozen_target_survives_neighbor_churn(self):
         # Direct: engage against agreeing neighbors, then scatter them with
@@ -231,10 +266,12 @@ class TestAlignConsensus:
             pos_churn, rows, movable, layers, set(), {}, ref_axes,
             prev_targets=first, **kw)
         assert second[1][0] == pytest.approx(0.0)
-        # Fresh read without history finds no mode agreement.
+        # Fresh read without history snaps the middle to its own mode:
+        # the churned neighborhood is incoherent (no thread to protect),
+        # so the coherence gate frees it instead of deadlocking.
         fresh = compute_align_targets(
             pos_churn, rows, movable, layers, set(), {}, ref_axes, **kw)
-        assert fresh[1][0] is None
+        assert fresh[1][0] == pytest.approx(0.0)
 
     def test_locked_anchor_never_moves_but_votes(self):
         a = make_test_fp("R1", "uuid-a", 0.0, nets=("N1", "N2"))

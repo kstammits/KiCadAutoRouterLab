@@ -68,16 +68,24 @@ def _mode_dist_deg(axis_deg: float, mode_deg: float) -> float:
 
 
 def _nearest_mode(axis_deg: float) -> float:
-    """Nearest compass mode (0 or 90) under 180-degree symmetry."""
-    if _mode_dist_deg(axis_deg, 0.0) <= _mode_dist_deg(axis_deg, 90.0):
+    """Nearest compass mode (0 or 90) under 180-degree symmetry.
+
+    Exact ties (axis at 45 deg) read 0: float noise in the axis otherwise
+    flips the snap direction run to run.
+    """
+    if _mode_dist_deg(axis_deg, 0.0) <= _mode_dist_deg(axis_deg, 90.0) + 1e-9:
         return 0.0
     return 90.0
 
 
-# Mode-agreement fraction: engage only when at least half the in-radius
-# neighbors already sit near the target mode, else a lone part straightens
-# against its thread and pays in wirelength.
-_MODE_AGREE_FRAC = 0.5
+# Mode-agreement fraction: engage when at least a quarter of the in-radius
+# neighbors already sit near the target mode. Full-half agreement deadlocks
+# on disordered boards (nothing is near any mode, so nothing ever moves);
+# a quarter lets a partial thread start the straightening while a lone
+# part against a settled thread still holds off. Agreement is directional
+# (2x deadband): neighbors must read the same way, not precisely.
+_MODE_AGREE_FRAC = 0.25
+_MODE_AGREE_TOL_MULT = 2.0
 
 
 def build_align_ref_axes(
@@ -181,12 +189,16 @@ def compute_align_targets(
     full spins. Anchors still refresh (position hold is a leash, not a
     lock).
 
-    Mode-agreement gate: snapping a lone part while its thread sits
-    elsewhere breaks nets for no board-level gain. Engage only when at
-    least half the in-radius neighbors already sit near the target mode
-    (within the deadband). No agreement, no torque — the anchor holds.
-    Threads far from any mode therefore keep their angle: every member
-    sees zero agreement and nobody moves.
+    Coherence-inverted gate: a coherent neighborhood (mutual spread
+    within twice the deadband) is a thread worth protecting — engage only
+    with directional agreement (a quarter of neighbors within twice the
+    deadband of the target mode). An incoherent neighborhood is no thread
+    at all, so the part snaps freely to its own nearest mode (bounded
+    <=45 deg, frozen at engagement). This bootstraps disordered boards
+    where pure agreement deadlocks: nothing is near any mode yet, so
+    nothing may move. Uniform threads far from every mode still hold —
+    coherent, with zero agreement, so nobody moves.
+    No thread and no snap case — the anchor holds.
     """
     centroids, cur_angles = _part_poses(
         positions, fp_local_to_rows, ghost_local, ref_axes, committed_angles)
@@ -230,12 +242,27 @@ def compute_align_targets(
                 mode = _nearest_mode(cur_angles[li])
                 err = _wrap90(mode - cur_angles[li])
                 if abs(err) > deadband_deg + 1e-9:
-                    agree = sum(
-                        1 for a in neighbor_angles
-                        if _mode_dist_deg(a, mode) <= deadband_deg + 1e-9
-                    )
-                    if agree >= _MODE_AGREE_FRAC * len(neighbor_angles) - 1e-9:
+                    spread = 0.0
+                    for i in range(len(neighbor_angles)):
+                        for j in range(i + 1, len(neighbor_angles)):
+                            d = _mode_dist_deg(
+                                neighbor_angles[i], neighbor_angles[j])
+                            if d > spread:
+                                spread = d
+                    if spread > 2.0 * deadband_deg + 1e-9:
+                        # No coherent thread among the neighbors: nothing to
+                        # break, so snap freely to the part's own nearest
+                        # mode. Bounded (<=45 deg) and frozen, so this
+                        # bootstraps disordered boards instead of chasing.
                         angle_target = mode
+                    else:
+                        tol = _MODE_AGREE_TOL_MULT * deadband_deg
+                        agree = sum(
+                            1 for a in neighbor_angles
+                            if _mode_dist_deg(a, mode) <= tol + 1e-9
+                        )
+                        if agree >= _MODE_AGREE_FRAC * len(neighbor_angles) - 1e-9:
+                            angle_target = mode
         targets[li] = (angle_target, ax, ay)
     return targets
 

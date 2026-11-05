@@ -133,9 +133,12 @@ ingest and result reporting). Normative formulas:
   outlier's longest pad-pair axis, signed toward the nearest compass mode
   (0/90 under 180-degree pad-pair symmetry, so at most a 45-degree turn;
   deadband `align_deadband_deg`, hysteresis release at half, frozen at
-  engagement). Engagement needs mode agreement (half the in-radius
-  neighbors already near the mode), so diagonal threads far from any mode
-  are left alone. Plus a weak leash to the last recompute pose
+  engagement). Engagement needs a coherent neighborhood (mutual spread
+  within twice the deadband) plus directional agreement — or, when the
+  neighborhood is incoherent, snaps freely to the part's own mode, so
+  disordered boards bootstrap instead of deadlocking. Uniform diagonal
+  threads far from any mode are still left alone. Plus a weak leash to
+  the last recompute pose
   (`align_radius_m` neighbor graph, refreshed every 25 iterations).
   Row-engaged parts carry frozen baseline/pitch targets in place of the
   leash anchor (median body edge, median pitch, recentered; deadband-gated

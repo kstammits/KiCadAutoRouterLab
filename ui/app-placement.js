@@ -1330,19 +1330,16 @@ function motionEls() {
     first: el("motion-first-btn"),
     prev: el("motion-prev-btn"),
     next: el("motion-next-btn"),
-    last: el("motion-last-btn"),
-    speed: el("motion-speed"),
-    trails: el("motion-trails"),
     reset: el("motion-reset-btn"),
   };
 }
 
 function motionSetEnabled(on) {
-  const { slider, playBtn, first, prev, next, last } = motionEls();
+  const { slider, playBtn, first, prev, next } = motionEls();
   const canPlay = on && motion.frames.length > 1;
   if (slider) slider.disabled = !on;
   if (playBtn) playBtn.disabled = !canPlay;
-  for (const b of [first, prev, next, last]) if (b) b.disabled = !on;
+  for (const b of [first, prev, next]) if (b) b.disabled = !on;
 }
 
 function motionReadout() {
@@ -1470,7 +1467,7 @@ function drawMotionTrails() {
   const svg = viewport?.querySelector("svg");
   if (!svg) return;
   svg.querySelector("#motion-trails")?.remove();
-  if (!motionEls().trails?.checked || !motion.frames.length || motion.idx < 1) return;
+  if (!motion.frames.length || motion.idx < 1) return;
   const NS = "http://www.w3.org/2000/svg";
   const g = document.createElementNS(NS, "g");
   g.setAttribute("id", "motion-trails");
@@ -1543,8 +1540,9 @@ function toggleMotionPlay() {
   const btn = motionEls().playBtn;
   btn.textContent = "⏸";
   btn.title = "Pause";
-  // Slow on purpose: at most 4 fps so single-frame jumps stay visible.
-  const fps = Math.min(4, Math.max(1, parseInt(motionEls().speed.value, 10) || 2));
+  // Fixed 4 fps: frames are stride-sampled iterations, not wall-clock
+  // video, and faster playback hides single-frame jumps.
+  const fps = 4;
   motion.timer = setInterval(() => {
     if (motion.idx >= motion.frames.length - 1) { pauseMotion(); return; }
     applyMotionFrame(motion.idx + 1);
@@ -1621,7 +1619,6 @@ on("motion-play-btn", "click", toggleMotionPlay);
 on("motion-prev-btn", "click", () => stepMotion(-1));
 on("motion-next-btn", "click", () => stepMotion(1));
 on("motion-first-btn", "click", () => { pauseMotion(); applyMotionFrame(0); });
-on("motion-last-btn", "click", () => { pauseMotion(); applyMotionFrame(motion.frames.length - 1); });
 on("motion-reset-btn", "click", () => {
   pauseMotion();
   clearMotionView();
@@ -1643,7 +1640,6 @@ on("motion-slider", "input", (e) => {
     applyMotionFrame(motion._scrubValue);
   });
 });
-on("motion-trails", "change", drawMotionTrails);
 motionSetEnabled(false);
 
 // Pure string builder for the placement result line (button state and

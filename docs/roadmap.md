@@ -120,15 +120,18 @@ Open work only. Completed changes belong in git history, not here.
 - **Tidy-regime calibration**: the Tidy regime (Manhattan snap + weak
   hold in the dynamics, `align_*` params) ships with starting-point
   stiffnesses (`align_angle_k_N` 3e-3, `align_pos_k_N_m` 0.5, deadband 10,
-  mode-agreement gate, short 150-iter budget). Known so far (tube111
+  coherence-inverted gate, short 150-iter budget). Known so far (tube111
   probes): the committed board is illegal (9 pairs + 7 walls), so every
   run opens with wall-eject churn — that drift is baseline, not align.
   Axis errors wrap to ±90 (pad pairs are 180-ambiguous); the old 180 wrap
-  spun near-mode parts the long way around. The agreement gate + frozen
-  targets keep align's footprint near zero new pairs. Gate the defaults
-  on a sweep: outlier counts down on tube111/DCCF with no
-  overlap/iteration/wirelength regression vs the legalize baseline
-  (wirelength is the real cost metric for straightening), then publish
+  spun near-mode parts the long way around. Pure agreement deadlocked on
+  disordered boards (screenshot: random angles, zero rotation at 0.1 N),
+  so incoherent neighborhoods now snap freely to the part's own mode
+  while coherent threads keep agreement protection; spin count fell
+  5 → 1, walls 3 → 2, pairs 0. Gate the defaults on a sweep: outlier
+  counts down on tube111/DCCF with no overlap/iteration/wirelength
+  regression vs the legalize baseline (wirelength is the real cost
+  metric for straightening), then publish
   the JSON under `docs/benchmarks/`.
 - **Track-tidy mode, deferred**: the old Tidy tab is gone (replaced by the
   Tidy placement regime), so routed-track cleanup has no home. Proposed:
