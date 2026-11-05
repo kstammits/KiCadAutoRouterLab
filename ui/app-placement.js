@@ -213,7 +213,7 @@ function applyLayerVisibility() {
   const legend = el("layer-legend");
   if (legend) {
     const layersArr = [...layers.keys()];
-    if (layersArr.length) renderLayerLegend(layersArr);
+    if (layersArr.length) renderLayerLegend(layersArr, effectiveColorMode());
   }
 }
 

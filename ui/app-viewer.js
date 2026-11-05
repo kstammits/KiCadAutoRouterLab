@@ -38,7 +38,7 @@ function renderLayerToggles(copperLayers) {
   for (const layer of layers) {
     const label = document.createElement("label");
     label.className = "chk";
-    label.title = layer === "F.Cu" ? "Front copper (solid)" : layer === "B.Cu" ? "Back copper (dashed 3 2)" : "Inner copper (dashed, stackup order)";
+    label.title = layer === "F.Cu" ? "Front copper (solid)" : layer === "B.Cu" ? "Back copper (dashed 2 1)" : "Inner copper (dashed, stackup order)";
     const input = document.createElement("input");
     input.type = "checkbox";
     input.dataset.layer = layer;
@@ -64,12 +64,51 @@ function renderLayerToggles(copperLayers) {
   all.textContent = "all";
   all.title = "Show all copper layers (display-only)";
   all.addEventListener("click", (e) => { e.preventDefault(); setSoloLayer(null); });
-  layerTogglesEl.appendChild(all);
-  renderLayerLegend(layers);
-}
+    layerTogglesEl.appendChild(all);
+    renderLayerLegend(layers, effectiveColorMode());
+  }
 
 // Solo isolate state: null = follow checkboxes, otherwise only that layer.
 let soloLayer = null;
+
+// Copper color mode: "auto" (Route tab → layer colors, Place tab → net
+// colors) / "net" (per-net hues) / "layer" (solid front/rear/inner colors).
+// Persisted; a manual Net/Layer choice overrides the panel auto-switch.
+let copperColorMode = "auto";
+try {
+  const saved = localStorage.getItem("copper-color-mode");
+  if (saved === "auto" || saved === "net" || saved === "layer") copperColorMode = saved;
+} catch { /* private mode: default auto */ }
+
+function isRoutePanelActive() {
+  return !!(typeof routingPanel !== "undefined" && routingPanel && !routingPanel.hidden);
+}
+
+function effectiveColorMode() {
+  if (copperColorMode !== "auto") return copperColorMode;
+  return isRoutePanelActive() ? "layer" : "net";
+}
+
+function updateColorModeButtons() {
+  for (const b of document.querySelectorAll("#color-mode-group button")) {
+    const m = b.dataset.colorMode;
+    const active = copperColorMode !== "auto"
+      ? m === copperColorMode
+      : m === "auto";
+    b.classList.toggle("active", active);
+    b.setAttribute("aria-pressed", active ? "true" : "false");
+  }
+}
+
+function setColorMode(mode) {
+  copperColorMode = mode;
+  try { localStorage.setItem("copper-color-mode", mode); } catch { /* ignore */ }
+  updateColorModeButtons();
+  // Repaint immediately so the new copper colors land on the next frame.
+  if (viewport?.querySelector("svg") && typeof fetchAndInjectSVG === "function") {
+    fetchAndInjectSVG(lastVersion);
+  }
+}
 
 function setSoloLayer(layer) {
   soloLayer = layer;
@@ -81,9 +120,20 @@ function toggleSoloLayer(layer) {
   applyLayerVisibility();
 }
 
-// Copper legend mirroring svg_render.py: F red solid, B green "3 2", inners
+// Color-mode buttons: manual choice overrides the panel auto-switch.
+document.querySelectorAll("#color-mode-group button").forEach(btn => {
+  btn.addEventListener("click", (e) => {
+    e.preventDefault();
+    setColorMode(btn.dataset.colorMode);
+  });
+});
+updateColorModeButtons();
+
+// Copper legend mirroring svg_render.py: F red solid, B green "2 1", inners
 // cycle teal/violet/amber/blue with dashes "5 2 / 2 2 / 7 2 2 2 / 4 1".
-function renderLayerLegend(layers) {
+// In layer color-mode the legend swatches match track/via/pad stroke; in net
+// mode they describe zone fills + track dash cues only.
+function renderLayerLegend(layers, mode) {
   // Optional element (created here on first render): direct lookup to avoid
   // a "missing" warning from the shared el() helper on a fresh board.
   let legend = document.getElementById("layer-legend");
@@ -97,16 +147,19 @@ function renderLayerLegend(layers) {
   const INNER_FILLS = ["#2dd4bf", "#a78bfa", "#f5a623", "#59a7f5"];
   const INNER_DASHES = ["5 2", "2 2", "7 2 2 2", "4 1"];
   const inners = layers.filter(l => l !== "F.Cu" && l !== "B.Cu");
+  const modeHint = mode === "layer"
+    ? " · tracks/vias/pads: solid layer colors"
+    : " · tracks: net hues + layer dashes";
   legend.innerHTML = layers.map(l => {
     let color, dash;
     if (l === "F.Cu") { color = FILL["F.Cu"]; dash = "solid"; }
-    else if (l === "B.Cu") { color = FILL["B.Cu"]; dash = "3 2"; }
+    else if (l === "B.Cu") { color = FILL["B.Cu"]; dash = "2 1"; }
     else { const p = inners.indexOf(l); color = INNER_FILLS[p % INNER_FILLS.length]; dash = INNER_DASHES[p % INNER_DASHES.length]; }
     const border = dash === "solid" ? `border-top:2px solid ${color};` : `border-top:2px dashed ${color};`;
     const soloMark = (soloLayer === l) ? " ★" : "";
     const safe = escapeHtml(l);
-    return `<span title="${safe} ${dash}${soloMark}"><i style="display:inline-block;width:1.2rem;${border}"></i> ${safe}${soloMark}</span>`;
-  }).join("");
+    return `<span title="${safe} ${dash}${soloMark}${modeHint}"><i style="display:inline-block;width:1.2rem;${border}"></i> ${safe}${soloMark}</span>`;
+  }).join("") + `<span style="opacity:.65;font-size:.62rem;margin-left:.25rem;">${modeHint}</span>`;
 }
 
 const zonesToggle = el("zones-toggle");
@@ -124,11 +177,12 @@ function boardSrc(version) {
   const forcesOn = forcesToggle?.checked ?? false;
   const drcOn = drcToggle?.checked ?? false;
   const fillsOn = zonesFillToggle?.checked ?? false;
+  const colors = effectiveColorMode();
   const layers = layerToggleState();
   const fcuOn = layers.get("F.Cu") ?? true;
   const bcuOn = layers.get("B.Cu") ?? true;
   const visible = [...layers.entries()].filter(([, on]) => on).map(([l]) => l).join(",");
-  return `/api/board.svg?v=${version}&overlay=${overlayOn ? 1 : 0}&forces=${forcesOn ? 1 : 0}&drc=${drcOn ? 1 : 0}&fills=${fillsOn ? 1 : 0}&fcu=${fcuOn ? 1 : 0}&bcu=${bcuOn ? 1 : 0}&layers=${encodeURIComponent(visible)}`;
+  return `/api/board.svg?v=${version}&overlay=${overlayOn ? 1 : 0}&forces=${forcesOn ? 1 : 0}&drc=${drcOn ? 1 : 0}&fills=${fillsOn ? 1 : 0}&colors=${colors}&fcu=${fcuOn ? 1 : 0}&bcu=${bcuOn ? 1 : 0}&layers=${encodeURIComponent(visible)}`;
 }
 
 function updateZoomInfo() {

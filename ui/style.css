@@ -179,6 +179,8 @@
   .tab-btn { background:#1a222a; border-color:#3a4a5a; color:#9fb0c0; padding:.2rem .5rem; font-size:.65rem; }
   .tab-btn:hover:not(:disabled) { border-color:#7ee0a0; color:#d7e0e9; }
   .tab-btn.active { background:#1a3a1a; border-color:#2e6b45; color:#7ee0a0; }
+  /* Color-mode segmented control: one of Auto/Net/Layer is pressed. */
+  .color-mode-btn.active { background:#1a3a1a; border-color:#2e6b45; color:#7ee0a0; }
   .btn-mini { font-size:.65rem; padding:.05rem .35rem; }
   /* Docs panel rendering (minimal client-side markdown subset) */
   #docs-content h1, #docs-content h2, #docs-content h3 { color:#d7e0e9; margin:.6em 0 .3em; }

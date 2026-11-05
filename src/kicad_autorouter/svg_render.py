@@ -47,7 +47,7 @@ FILL_BCU_COLOR = "#2ecc71"  # green
 FILL_INNER_COLORS = ("#2dd4bf", "#a78bfa", "#f5a623", "#59a7f5")  # teal, violet, amber, blue
 
 # Inner-layer track dashes, cycled in stackup order (outer layers keep
-# their historic styles: F.Cu solid, B.Cu "3 2").
+# their historic styles: F.Cu solid, B.Cu "2 1").
 _INNER_DASHES = ("5 2", "2 2", "7 2 2 2", "4 1")
 
 
@@ -80,7 +80,7 @@ def _layer_track_style(layer: str, layers: Tuple[str, ...]) -> Tuple[str, str]:
     if layer == "F.Cu":
         return "1.0", ""
     if layer == "B.Cu":
-        return "0.7", ' stroke-dasharray="3 2"'
+        return "0.7", ' stroke-dasharray="2 1"'
     inners = [name for name in layers if name not in ("F.Cu", "B.Cu")]
     pos = inners.index(layer) if layer in inners else 0
     opacity = f"{max(0.55, 0.9 - 0.05 * pos):.2f}"
@@ -96,6 +96,15 @@ def _layer_fill_color(layer: str, layers: Tuple[str, ...]) -> str:
     inners = [name for name in layers if name not in ("F.Cu", "B.Cu")]
     pos = inners.index(layer) if layer in inners else 0
     return FILL_INNER_COLORS[pos % len(FILL_INNER_COLORS)]
+
+
+def _layer_solid_color(layer: str, layers: Tuple[str, ...]) -> str:
+    """Solid stroke/fill color for a copper layer (reuse zone-fill palette).
+
+    F.Cu red, B.Cu green, inners cycle teal/violet/amber/blue — identical to
+    the zone-fill legend so fills, tracks, vias and pads agree per layer.
+    """
+    return _layer_fill_color(layer, layers)
 
 
 def _tint_track_color(color: str, layer: str, layers: Tuple[str, ...]) -> str:
@@ -398,11 +407,18 @@ def _footprint_pads_svg(
     flip: bool,
     fp_angle_deg: float,
     extra_power: Collection[str] = (),
+    color_mode: str = "net",
+    layers: Tuple[str, ...] = (),
 ) -> str:
     """Generate pad elements for a single footprint."""
     out = []
     for pad in fp.pads:
-        color = colors.get(pad.net_name or "", NO_NET)
+        if color_mode == "layer":
+            # Pads sit on the footprint's side layer (F.Cu / B.Cu): color by
+            # side so front/rear copper reads distinctly in routing mode.
+            color = _layer_solid_color("B.Cu" if flip else "F.Cu", layers)
+        else:
+            color = colors.get(pad.net_name or "", NO_NET)
         net = pad.net_name or ""
         net_attr = f' data-net="{html.escape(net)}"' if net else ""
         ident = (f' data-ref="{html.escape(fp.ref or "")}"'
@@ -509,6 +525,7 @@ def _footprints_svg(
     pinned_uuids: Set[str],
     selected_uuids: Set[str],
     extra_power: Collection[str] = (),
+    color_mode: str = "net",
 ) -> List[str]:
     """Generate all footprint elements (courtyards, pads, refs) grouped by footprint.
 
@@ -519,6 +536,7 @@ def _footprints_svg(
     group-transform approximation.
     """
     decaps = decap_fp_uuids(model, extra_power)
+    layers = _copper_layers_of(model)
     out = []
     for fp in model.footprints:
         # Graphical-only parts (no pads) are hidden: their imputed Fab/Silk
@@ -552,7 +570,8 @@ def _footprints_svg(
         fp_group = [
             f'<g class="{cls}" data-fp-uuid="{fp.uuid}">',
             _footprint_courtyard_svg(fp, is_locked, is_pinned, is_selected, is_movable, is_decap),
-            _footprint_pads_svg(fp, colors, flip, fp.angle_deg, extra_power),
+            _footprint_pads_svg(fp, colors, flip, fp.angle_deg, extra_power,
+                                color_mode=color_mode, layers=layers),
             _footprint_ref_svg(fp),
             "</g>",
         ]
@@ -637,7 +656,8 @@ def _ghost_footprints_svg(
     return out
 
 
-def _tracks_svg(model: BoardModel, colors: Dict[str, str]) -> List[str]:
+def _tracks_svg(model: BoardModel, colors: Dict[str, str],
+                color_mode: str = "net") -> List[str]:
     out = []
     layers = _copper_layers_of(model)
     for layer in layers:
@@ -646,9 +666,15 @@ def _tracks_svg(model: BoardModel, colors: Dict[str, str]) -> List[str]:
         if not layer_tracks and not layer_arcs:
             continue
         opacity, dash = _layer_track_style(layer, layers)
+        if color_mode == "layer":
+            # Color alone distinguishes front/rear/inner: no hatching, full
+            # opacity on every layer (net mode keeps the historic dash cues).
+            opacity = "1.0"
+            dash = ""
         out.append(f'<g id="layer-{layer}-tracks" fill="none" stroke-linecap="round" opacity="{opacity}">')
         for t in layer_tracks:
-            color = _tint_track_color(colors.get(t.net_name or "", NO_NET), layer, layers)
+            color = _layer_solid_color(layer, layers) if color_mode == "layer" \
+                else _tint_track_color(colors.get(t.net_name or "", NO_NET), layer, layers)
             net_attr = html.escape(t.net_name or "", quote=True)
             title = html.escape(
                 f"{t.net_name or '(no net)'} · {t.layer} · {t.width_mm:.2f}mm",
@@ -661,7 +687,8 @@ def _tracks_svg(model: BoardModel, colors: Dict[str, str]) -> List[str]:
                 f"<title>{title}</title></line>"
             )
         for a in layer_arcs:
-            color = _tint_track_color(colors.get(a.net_name or "", NO_NET), layer, layers)
+            color = _layer_solid_color(layer, layers) if color_mode == "layer" \
+                else _tint_track_color(colors.get(a.net_name or "", NO_NET), layer, layers)
             net_attr = html.escape(a.net_name or "", quote=True)
             title = html.escape(
                 f"{a.net_name or '(no net)'} · {a.layer} · {a.width_mm:.2f}mm · arc",
@@ -683,10 +710,24 @@ def _tracks_svg(model: BoardModel, colors: Dict[str, str]) -> List[str]:
     return out
 
 
-def _vias_svg(model: BoardModel, colors: Dict[str, str]) -> List[str]:
+def _vias_svg(model: BoardModel, colors: Dict[str, str],
+              color_mode: str = "net") -> List[str]:
     out = ['<g id="layer-vias">']
+    layers = _copper_layers_of(model)
     for v in model.vias:
-        color = colors.get(v.net_name or "", NO_NET)
+        span = list(getattr(v, "layers", ()) or ("F.Cu", "B.Cu"))
+        if color_mode == "layer":
+            if set(span) == {"F.Cu", "B.Cu"}:
+                # Through via spans both outers: neutral ring so it reads as a
+                # connector between sides, not as owned by one net's color.
+                color = "#e8edf2"
+            elif len(span) == 1:
+                color = _layer_solid_color(span[0], layers)
+            else:
+                # Blind/bury across inners or mixed span: ambiguous ownership.
+                color = "#e8edf2"
+        else:
+            color = colors.get(v.net_name or "", NO_NET)
         r = v.size_mm / 2.0
         x, y = _fmt(v.position.x_mm), _fmt(v.position.y_mm)
         net_attr = html.escape(v.net_name or "", quote=True)
@@ -951,6 +992,7 @@ def render_board_svg(
     include_force_markers: bool = False,
     extra_power_nets: Collection[str] = (),
     show_fills: bool = False,
+    color_mode: str = "net",
 ) -> str:
     """Build the full SVG document for ``model`` (millimeter user units).
 
@@ -977,7 +1019,11 @@ def render_board_svg(
         extra_power_nets: user-marked power membership (rail colors, rail
             pad labels, decap halos follow it).
         show_fills: draw KiCad's cached ``filled_polygon`` islands inside
-            each zone (stale after edits; visualization only).
+            each zone (stale after edits; use --refill-zones to refresh).
+        color_mode: ``"net"`` (default) colors copper per net; ``"layer"``
+            colors tracks/arcs/vias/pads solid by copper layer for front/rear
+            (and inner) distinction in routing mode. Net identity is preserved
+            via ``data-net`` / ``<title>`` in both modes.
     """
     colors = net_colors(model, extra_power_nets)
     moved = bool(proposal is not None and proposal.deltas)
@@ -1024,10 +1070,11 @@ def render_board_svg(
 
     parts.extend(_edge_cuts_svg(model))
     parts.extend(_zones_svg(model, extra_power_nets, show_fills=show_fills))
-    parts.extend(_footprints_svg(view, colors, locked_uuids, pinned, selected, extra_power_nets))
+    parts.extend(_footprints_svg(view, colors, locked_uuids, pinned, selected, extra_power_nets,
+                                 color_mode=color_mode))
     parts.extend(_ghost_footprints_svg(view, colors))
-    parts.extend(_tracks_svg(model, colors))
-    parts.extend(_vias_svg(model, colors))
+    parts.extend(_tracks_svg(model, colors, color_mode=color_mode))
+    parts.extend(_vias_svg(model, colors, color_mode=color_mode))
     if moved:
         parts.extend(_proposal_overlay(model, proposal))
     if proposal is not None and show_forces:

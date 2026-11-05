@@ -9,6 +9,8 @@ import pytest
 from kicad_autorouter.board_model import (
     BoardModel,
     Point,
+    Track,
+    Via,
     apply_deltas,
     board_model,
 )
@@ -343,3 +345,70 @@ def test_zone_fills_render_without_stroke():
     # Outline wash (no cached fills / fills off) keeps its stroke.
     wash = render_board_svg(model, show_fills=False)
     assert 'stroke="none"' not in wash
+
+
+def test_layer_color_mode_colors_copper_by_layer():
+    """In routing (layer) mode tracks/arcs/vias/pads read solid by copper
+    layer while net identity stays in data-net / <title>."""
+    from dataclasses import replace
+
+    fp = make_fp("U1", "uuid-u1", 0.0, 0.0, ("VCC", "GND"), layer="F.Cu")
+    model = BoardModel(
+        footprints=(fp,),
+        keepout_zones=(),
+        nets={"VCC": None, "GND": None},
+        by_ref={"U1": fp},
+        tracks=(
+            Track(start=Point(0, 0), end=Point(10, 0), width_mm=0.25,
+                  layer="F.Cu", net_name="VCC"),
+            Track(start=Point(0, 1), end=Point(10, 1), width_mm=0.25,
+                  layer="B.Cu", net_name="VCC"),
+            Track(start=Point(0, 2), end=Point(10, 2), width_mm=0.25,
+                  layer="In1.Cu", net_name="VCC"),
+        ),
+        vias=(
+            Via(position=Point(5, 5), size_mm=0.8, drill_mm=0.4,
+                layers=("F.Cu", "B.Cu"), net_name="VCC"),  # through -> neutral
+        ),
+    )
+
+    net_mode = render_board_svg(model)
+    layer_mode = render_board_svg(model, color_mode="layer")
+
+    # Default (net mode) is unchanged by the new param.
+    assert net_mode == render_board_svg(model, color_mode="net")
+
+    # Layer mode: solid layer colors on F / B / In1 tracks, no hatching.
+    assert re.search(
+        r'<line class="track"[^>]*data-net="VCC"[^>]*data-layer="F\.Cu"[^>]*stroke="#e74c3c"',
+        layer_mode,
+    ), "F.Cu track should be solid red (#e74c3c) in layer mode"
+    assert re.search(
+        r'<line class="track"[^>]*data-net="VCC"[^>]*data-layer="B\.Cu"[^>]*stroke="#2ecc71"',
+        layer_mode,
+    ), "B.Cu track should be solid green (#2ecc71) in layer mode"
+    assert re.search(
+        r'<line class="track"[^>]*data-net="VCC"[^>]*data-layer="In1\.Cu"[^>]*stroke="#2dd4bf"',
+        layer_mode,
+    ), "In1.Cu track should be solid teal (#2dd4bf) in layer mode"
+
+    # No hatching in layer mode: every track group is solid, full opacity.
+    assert 'stroke-dasharray="3 2"' not in layer_mode
+    assert 'opacity="1.0"' in layer_mode
+
+    # Net identity survives: data-net + title still name the net.
+    assert 'data-net="VCC"' in layer_mode
+    assert "<title>VCC · F.Cu · 0.25mm</title>" in layer_mode
+
+    # Net mode is per-net (VCC is power -> amber), never the layer red.
+    assert 'stroke="#e74c3c"' not in net_mode
+    assert net_mode != layer_mode
+
+    # Through via (F.Cu+B.Cu) reads neutral, not net-colored, in layer mode.
+    assert re.search(
+        r'<g class="via"[^>]*data-net="VCC"[^>]*data-layers="F\.Cu B\.Cu">.*?stroke="#e8edf2"',
+        layer_mode, re.DOTALL,
+    ), "through via should be neutral (#e8edf2) in layer mode"
+
+    # Pads read by footprint side (F.Cu -> red) in layer mode.
+    assert 'fill="#e74c3c"' in layer_mode, "F-side pads red in layer mode"

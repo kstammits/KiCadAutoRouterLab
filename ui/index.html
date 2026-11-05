@@ -174,6 +174,11 @@
         <label class="chk"><input type="checkbox" data-layer="F.Cu" checked> F.Cu</label>
         <label class="chk"><input type="checkbox" data-layer="B.Cu" checked> B.Cu</label>
       </span>
+      <span class="top-group" id="color-mode-group" title="Copper color mode: net hues (placement) vs solid layer colors (front/rear/inner distinction for routing)">
+        <button class="tab-btn btn-mini color-mode-btn" data-color-mode="auto" title="Auto: layer colors on the Route tab, net colors elsewhere">Auto</button>
+        <button class="tab-btn btn-mini color-mode-btn" data-color-mode="net" title="Net hues — each net keeps its own color (placement default)">Net</button>
+        <button class="tab-btn btn-mini color-mode-btn" data-color-mode="layer" title="Solid layer colors — F.Cu red, B.Cu green, inners teal/violet/amber/blue">Layer</button>
+      </span>
       <span class="top-group">
         <span class="zoom-info" id="zoom-info">100%</span>
         <button id="fit-btn" title="Fit board to view">Fit</button>

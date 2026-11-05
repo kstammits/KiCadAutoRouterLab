@@ -150,6 +150,9 @@ def _handle_board_svg(qs):
     forces_on = qs.get("forces", ["0"])[0] != "0"
     drc_on = qs.get("drc", ["0"])[0] != "0"
     fills_on = qs.get("fills", ["0"])[0] != "0"
+    colors = qs.get("colors", ["net"])[0]
+    if colors not in ("net", "layer"):
+        colors = "net"
     proposal = STATE.current_proposal if overlay_on else None
     pinned = STATE.get_pinned_uuids()
     selected = STATE.get_selected_uuids()
@@ -202,9 +205,10 @@ def _handle_board_svg(qs):
                            show_forces=forces_on,
                            drc_violations=drc_violations,
                            drc_stale=drc_stale,
-                           include_force_markers=include_force_markers,
-                           extra_power_nets=STATE.get_power_override_nets(),
-                           show_fills=fills_on).encode()
+                            include_force_markers=include_force_markers,
+                            extra_power_nets=STATE.get_power_override_nets(),
+                            show_fills=fills_on,
+                            color_mode=colors).encode()
     return 200, svg, "image/svg+xml"
 
 

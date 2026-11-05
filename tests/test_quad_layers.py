@@ -148,6 +148,41 @@ def test_server_state_reports_copper_layers():
         server.STATE.version = 0
 
 
+@pytest.mark.minimal
+@pytest.mark.server
+def test_board_svg_colors_param_accepted():
+    import json
+    import sys
+    import threading
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "ui"))
+    import server
+
+    server.STATE.model = None
+    server.STATE.version = 0
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        data = (FIXTURES / "minimal.kicad_pcb").read_bytes()
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{httpd.server_address[1]}/api/load?name=minimal",
+            data=data, method="POST")
+        with urllib.request.urlopen(req):
+            pass
+        for colors in ("net", "layer"):
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{httpd.server_address[1]}/api/board.svg?colors={colors}"
+            ) as r:
+                assert r.status == 200
+                assert r.headers.get("Content-Type") == "image/svg+xml"
+    finally:
+        httpd.shutdown()
+        server.STATE.model = None
+        server.STATE.version = 0
+
+
 def test_board_model_preserves_copper_layers_on_ripup():
     from kicad_autorouter.routing.pipeline import _rip_up_nets_from_model
 

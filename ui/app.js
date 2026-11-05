@@ -34,6 +34,15 @@ function setActivePanel(which) {
   el("route-tab-btn")?.classList.toggle("active", which === "route");
   el("tidy-tab-btn")?.classList.toggle("active", which === "tidy");
   el("docs-tab-btn")?.classList.toggle("active", which === "docs");
+
+  // Panel auto-switch of copper color mode: Route tab → layer colors,
+  // Place tab → net colors. Only when the user hasn't manually pinned
+  // Net/Layer (copperColorMode === "auto"). Repaint immediately.
+  if (copperColorMode === "auto" && (which === "place" || which === "route")
+      && typeof fetchAndInjectSVG === "function"
+      && viewport?.querySelector("svg")) {
+    fetchAndInjectSVG(lastVersion);
+  }
 }
 
 // Tab switching for Place/Route/Docs panels

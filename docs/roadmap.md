@@ -149,7 +149,7 @@ Counts are additive (`fanout_vias_added` / `fanout_tracks_added`).
 - **Phase A viewer (landed)**: per-layer checkboxes + Solo/All isolate and a
   copper legend through `applyLayerVisibility` (`display:none`-only, no
   refetch). Dashes/colors mirror `_INNER_DASHES` / `FILL_INNER_COLORS`
-  including the B-outer `3 2` dash.
+  including the B-outer `2 1` dash.
 - **Remaining**: Phase B nets-table widths/clearances, Phase C per-net
   `net_allowed_layers`, full Phase D `routing/fanout.py` (GND-only SMD
   hardening, stitcher-predicate extraction, `size/2 + clearance` vs
