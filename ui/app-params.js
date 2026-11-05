@@ -7,7 +7,7 @@
 // calibrated defaults — POST /api/placement/params merges, so hidden keys
 // in placement.json survive GUI saves.
 // Ranges cover Cluster (scattered starts), Legalize (placed boards), and
-// Tidy (orientation consensus + weak hold) regimes.
+// Tidy (Manhattan snap + weak hold) regimes.
 
 const PARAM_DEFS = [
   { key: "attraction_k_N", label: "Attraction k (N)", min: 1e-4, max: 2e-1, step: 1e-4, log: true },
@@ -62,10 +62,10 @@ const PARAM_DESC = {
   vmax_m_s: "Speed ceiling for pad velocities and rigid-step clamp (m/s). Higher allows faster movement but less stable. Default 1.0 m/s.",
   dt_s: "Simulation timestep: 0.2-2ms, bounded by the dt_min/dt_max solver guards (wider values fail validation). Adaptive guard halves on energy rise, regrows on fall. Default 1ms.",
   friction_N: "Dry-friction deadband (newtons). Whole footprint freezes when all pad forces below this. Default 1e-6 N.",
-  align_angle_k_N: "Orientation-consensus stiffness: constant-magnitude tangential couple (N), signed by the neighbor-median error. Outliers rotate at a steady rate until inside the deadband; parts within feel nothing. 0 = off. Tidy: 5e-3. Log scale.",
-  align_pos_k_N_m: "Weak position leash (N/m) toward the pose held at the last consensus recompute, so rotating bodies settle instead of drifting. Anchors refresh as the board moves; wall pressure still ejects. 0 = off. Tidy: 3.0. Log scale.",
+  align_angle_k_N: "Manhattan-snap stiffness: constant-magnitude tangential couple (N), signed toward the nearest compass mode (0/90). Outliers rotate at a steady rate until inside the deadband; parts on a mode feel nothing. 0 = off. Tidy: 3e-3. Log scale.",
+  align_pos_k_N_m: "Weak position leash (N/m) toward the pose held at the last align recompute — or the frozen row baseline/pitch frame for row-engaged parts — so rotating bodies settle instead of drifting. Anchors refresh as the board moves; wall pressure still ejects. 0 = off (also disables rows). Tidy: 0.5. Log scale.",
   align_deadband_deg: "Consensus error below this (degrees) is not an outlier: no torque. Diagonals and neat neighborhoods are never churned. Tidy: 10.",
-  align_radius_m: "Neighbor search radius for the orientation consensus. Shown in mm; stored in meters. Only the 6 nearest parts inside count as neighbors. Tidy: 20mm.",
+  align_radius_m: "Neighbor search radius for mode agreement. Shown in mm; stored in meters. Only the 6 nearest parts inside count as neighbors. Tidy: 20mm.",
 };
 
 // Display-unit conversion: defs with `display: {scale}` show scaled values
@@ -228,13 +228,21 @@ async function loadParams(defaultsOnly = false) {
 // convergence_eps_m=2e-5 ride along via merge-POST. All three pin
 // cross_layer_pin_halo_m=0.7mm so a stale saved value cannot silently
 // diverge from calibration (far-side solder clearance is regime-independent).
-// Cluster/Legalize pin both align stiffnesses at 0 (off); Tidy is Legalize
-// plus orientation consensus with a weak hold. Tidy stiffness defaults are
-// starting points pending a calibration sweep (see roadmap).
+// Cluster/Legalize pin both align stiffnesses at 0 (off); Tidy is a calm
+// short polish pass: low attraction (no restructuring), firm walls,
+// higher friction so only strong forces move parts, plus weak orientation
+// snap with a weak hold. Angle k sits just above the viscous stall
+// floor (~2.4 mN at legalize damping); the mode-agreement gate (half the
+// neighbors must already sit near the mode) keeps lone parts from
+// straightening against their thread mid-churn. Row hold reuses the leash
+// spring with frozen baseline/pitch anchors (median edge, median pitch,
+// deadband-gated, released past the radius). Short budget: angles
+// converge in ~60-100 iterations; longer runs just churn positions.
+// Starting points pending a calibration sweep (see roadmap).
 const REGIME_PRESETS = {
   cluster: { attraction_k_N: 0.05, wall_k_N: 0.025, damping_Ns_m: 0.08, dt_s: 2e-3, vmax_m_s: 1.0, friction_N: 1e-6, wall_halo_m: 0.006, cross_layer_pin_halo_m: 0.0007, wall_exponent: 1.0, convergence_eps_m: 2e-5, align_angle_k_N: 0, align_pos_k_N_m: 0, align_deadband_deg: 10, align_radius_m: 0.020 },
   legalize: { attraction_k_N: 0.008, wall_k_N: 0.1, damping_Ns_m: 0.12, dt_s: 1e-3, vmax_m_s: 1.0, friction_N: 1e-6, wall_halo_m: 0.004, cross_layer_pin_halo_m: 0.0007, wall_exponent: 2.0, convergence_eps_m: 2e-5, align_angle_k_N: 0, align_pos_k_N_m: 0, align_deadband_deg: 10, align_radius_m: 0.020 },
-  tidy: { attraction_k_N: 0.008, wall_k_N: 0.1, damping_Ns_m: 0.12, dt_s: 1e-3, vmax_m_s: 1.0, friction_N: 1e-6, wall_halo_m: 0.004, cross_layer_pin_halo_m: 0.0007, wall_exponent: 2.0, convergence_eps_m: 2e-5, align_angle_k_N: 5e-3, align_pos_k_N_m: 3.0, align_deadband_deg: 10, align_radius_m: 0.020 },
+  tidy: { attraction_k_N: 0.002, wall_k_N: 0.1, damping_Ns_m: 0.12, dt_s: 1e-3, vmax_m_s: 1.0, friction_N: 1e-5, wall_halo_m: 0.004, cross_layer_pin_halo_m: 0.0007, wall_exponent: 2.0, convergence_eps_m: 2e-5, align_angle_k_N: 3e-3, align_pos_k_N_m: 0.5, align_deadband_deg: 10, align_radius_m: 0.020, max_iterations: 150 },
 };
 
 async function applyRegimePreset(name) {

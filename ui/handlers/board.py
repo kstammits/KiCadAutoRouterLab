@@ -29,6 +29,7 @@ from ui.server import (
 
 from kicad_autorouter.board_model import copper_layers as tree_copper_layers
 from kicad_autorouter.io import collapse_to_two_layer
+from kicad_autorouter.placement import PlacementProposal
 from kicad_autorouter.sexpr import parse_file, to_sexpr
 from kicad_autorouter.svg_render import render_board_svg
 from kicad_autorouter.validate import refill_zones
@@ -158,7 +159,6 @@ def _handle_board_svg(qs):
     selected = STATE.get_selected_uuids()
 
     if forces_on and proposal is None:
-        from kicad_autorouter.placement import PlacementProposal
         proposal = PlacementProposal(
             deltas={},
             iterations=0,

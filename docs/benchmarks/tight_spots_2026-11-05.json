@@ -1,0 +1,151 @@
+{
+  "budget": 100000,
+  "retries": 2,
+  "spot_facts": {
+    "DCCF_VIN": {
+      "net": "VIN",
+      "terminals": 3,
+      "terminal": [
+        1383,
+        1376,
+        0
+      ],
+      "own_cell_secondary": 800,
+      "own_cell_via_blocked": true
+    }
+  },
+  "cases": [
+    {
+      "case": "DCCF_pair-control(C6-Q1)",
+      "config": "w=3.0 halo=1.0",
+      "pairs": 2,
+      "success": true,
+      "expansions": 43430,
+      "time_s": 0.92,
+      "cost": 2340.0,
+      "path_len": 191,
+      "exp_per_s": 47218.2
+    },
+    {
+      "case": "DCCF_pair-control(C6-Q1)",
+      "config": "w=1.0 halo=1.0",
+      "pairs": 2,
+      "success": true,
+      "expansions": 44313,
+      "time_s": 0.878,
+      "cost": 2340.0,
+      "path_len": 191,
+      "exp_per_s": 50473.9
+    },
+    {
+      "case": "DCCF_pair-control(C6-Q1)",
+      "config": "w=3.0 halo=0.3",
+      "pairs": 2,
+      "success": true,
+      "expansions": 44228,
+      "time_s": 0.906,
+      "cost": 2340.0,
+      "path_len": 191,
+      "exp_per_s": 48811.4
+    },
+    {
+      "case": "DCCF_pair-control(C6-Q1)",
+      "config": "w=1.0 halo=0.3",
+      "pairs": 2,
+      "success": true,
+      "expansions": 45295,
+      "time_s": 0.924,
+      "cost": 2340.0,
+      "path_len": 191,
+      "exp_per_s": 49006.3
+    },
+    {
+      "case": "DCCF_pair-tight(Q1-Q2)",
+      "config": "w=3.0 halo=1.0",
+      "pairs": 2,
+      "success": true,
+      "expansions": 147302,
+      "time_s": 1.393,
+      "cost": 12189.0,
+      "path_len": 1002,
+      "exp_per_s": 105772.5
+    },
+    {
+      "case": "DCCF_pair-tight(Q1-Q2)",
+      "config": "w=1.0 halo=1.0",
+      "pairs": 2,
+      "success": true,
+      "expansions": 147302,
+      "time_s": 1.389,
+      "cost": 12189.0,
+      "path_len": 1002,
+      "exp_per_s": 106057.3
+    },
+    {
+      "case": "DCCF_pair-tight(Q1-Q2)",
+      "config": "w=3.0 halo=0.3",
+      "pairs": 2,
+      "success": true,
+      "expansions": 148005,
+      "time_s": 1.444,
+      "cost": 11559.0,
+      "path_len": 1002,
+      "exp_per_s": 102470.9
+    },
+    {
+      "case": "DCCF_pair-tight(Q1-Q2)",
+      "config": "w=1.0 halo=0.3",
+      "pairs": 2,
+      "success": true,
+      "expansions": 148005,
+      "time_s": 1.416,
+      "cost": 11559.0,
+      "path_len": 1002,
+      "exp_per_s": 104558.5
+    },
+    {
+      "case": "DCCF_full-VIN",
+      "config": "w=3.0 halo=1.0",
+      "pairs": 3,
+      "success": true,
+      "expansions": 190732,
+      "time_s": 1.655,
+      "cost": 14529.0,
+      "path_len": 1192,
+      "exp_per_s": 115260.7
+    },
+    {
+      "case": "DCCF_full-VIN",
+      "config": "w=1.0 halo=1.0",
+      "pairs": 3,
+      "success": true,
+      "expansions": 191615,
+      "time_s": 1.57,
+      "cost": 14529.0,
+      "path_len": 1192,
+      "exp_per_s": 122039.3
+    },
+    {
+      "case": "DCCF_full-VIN",
+      "config": "w=3.0 halo=0.3",
+      "pairs": 3,
+      "success": true,
+      "expansions": 192233,
+      "time_s": 1.56,
+      "cost": 13899.0,
+      "path_len": 1192,
+      "exp_per_s": 123225.0
+    },
+    {
+      "case": "DCCF_full-VIN",
+      "config": "w=1.0 halo=0.3",
+      "pairs": 3,
+      "success": true,
+      "expansions": 193300,
+      "time_s": 1.568,
+      "cost": 13899.0,
+      "path_len": 1192,
+      "exp_per_s": 123317.2
+    }
+  ]
+}

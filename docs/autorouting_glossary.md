@@ -129,11 +129,18 @@ ingest and result reporting). Normative formulas:
   fanout; global rail edges are never boosted; 0 also removes the decap
   GND-side exception (`PlacementParams.decap_link`).
 - **Alignment** (`align_angle_k_N`, N; `align_pos_k_N_m`, N/m): Tidy-regime
-  orientation consensus — a constant-magnitude tangential couple on each
-  outlier's longest pad-pair axis, signed toward the local neighbor median
-  (deadband `align_deadband_deg`, hysteresis release at half; diagonals
-  hold, no axis snap), plus a weak leash to the last recompute pose
-  (`align_radius_m` neighbor graph, refreshed every 25 iterations). Wall
+  Manhattan snap — a constant-magnitude tangential couple on each
+  outlier's longest pad-pair axis, signed toward the nearest compass mode
+  (0/90 under 180-degree pad-pair symmetry, so at most a 45-degree turn;
+  deadband `align_deadband_deg`, hysteresis release at half, frozen at
+  engagement). Engagement needs mode agreement (half the in-radius
+  neighbors already near the mode), so diagonal threads far from any mode
+  are left alone. Plus a weak leash to the last recompute pose
+  (`align_radius_m` neighbor graph, refreshed every 25 iterations).
+  Row-engaged parts carry frozen baseline/pitch targets in place of the
+  leash anchor (median body edge, median pitch, recentered; deadband-gated
+  at 1.0/1.5 mm, released inside half or when ejected past the radius),
+  so the same weak spring evens rows with no separate force term. Wall
   stiffness dominates, so misfits eject instead of overlapping; 0 disables
   (`PlacementParams.align_*`).
 - **Fanout scaling**: power edges weigh `power_scale/(fanout−1)` so a
@@ -315,8 +322,9 @@ Key facts that shape the algorithm choice:
 
 KiCad copper tracks are `(segment)`/`(via)` only — but `(arc start mid end)` is
 also legal copper, and arcs round sharp corners without the extra length of a
-chamfer. When `RoutingParams.arc_fillets` is on (Route panel → Arc fillets +
-max radius / min leg), each smoothed run is filleted in place:
+chamfer. When `RoutingParams.arc_fillets` is on (always on from the UI;
+max radius / min leg stay adjustable), each smoothed run is filleted in
+place:
 
 - **Fitter** (`routing/biarc.py:fit_branch_arcs_with_sweeps`): broad
   sweeps first, tangent arcs second. Jagged windows (≥3 edges with a leg

@@ -130,11 +130,9 @@ function renderRoutingParams(params, modeOwned = [], modePreset = {}, mode = nul
   // Option flags share one full-width row below the sliders (not one
   // grid cell per checkbox) to save vertical space.
   const debugChecked = params.debug ? "checked" : "";
-  const arcsChecked = params.arc_fillets ? "checked" : "";
   const stitchChecked = params.stitch_gnd_vias ?? true ? "checked" : "";
   const stripChecked = params.strip_gnd_blockers ?? true ? "checked" : "";
   const refillChecked = params.refill_zones ? "checked" : "";
-  const corridorChecked = params.corridor ?? true ? "checked" : "";
   const runDrcChecked = params.run_drc ? "checked" : "";
   const fanoutChecked = params.fanout_planes ? "checked" : "";
   const stitchManaged = modeOwned.includes("stitch_gnd_vias");
@@ -150,9 +148,6 @@ function renderRoutingParams(params, modeOwned = [], modePreset = {}, mode = nul
     <div class="param param-flags" style="grid-column:1/-1;">
       <span>Options</span>
       <div class="row" style="gap:.9rem; flex-wrap:wrap;">
-        <label class="chk" style="margin:0;" title="Round sharp corners into tangent copper arcs (clearance-gated; sharp joints kept where legs are short or copper is near)">
-          <input type="checkbox" data-key="arc_fillets" ${arcsChecked}> Arc fillets
-        </label>
         <label class="chk" style="margin:0;" title="${stitchManaged ? "Managed by mode" : "Auto-repair GND pour continuity after routing (stitching vias + bridge tracks)"}">
           <input type="checkbox" data-key="stitch_gnd_vias" ${stitchChecked} ${stitchManaged ? "disabled" : ""}> GND stitching${stitchManaged ? " (mode)" : ""}
         </label>
@@ -173,9 +168,6 @@ function renderRoutingParams(params, modeOwned = [], modePreset = {}, mode = nul
     <div class="param param-flags" style="grid-column:1/-1;">
       <span>Search options</span>
       <div class="row" style="gap:.9rem; flex-wrap:wrap;">
-        <label class="chk" style="margin:0;" title="Attempt coarse corridor guidance when the initial window fails (slower but escapes tight spots)">
-          <input type="checkbox" data-key="corridor" ${corridorChecked}> Corridor guidance
-        </label>
         <label class="chk" style="margin:0;" title="${fanoutManaged ? "Managed by mode" : "Satisfy plane-owned nets with short outer stubs + through-vias tapping the inner plane instead of long outer tracks"}">
           <input type="checkbox" data-key="fanout_planes" ${fanoutChecked} ${fanoutManaged ? "disabled" : ""}> Plane fanout${fanoutManaged ? " (mode)" : ""}
         </label>

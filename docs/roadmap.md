@@ -93,8 +93,14 @@ Open work only. Completed changes belong in git history, not here.
   tight cluster needs the search-side fixes below. Failed nets now return
   their routed chunks as display-only partial copper (orange overlay, never
   written back) with per-chunk reasons in the route diag, so the stuck
-  region is reviewable alongside the debug cost grid. Publish no new
-  corridor JSON until power rows finish in reasonable time again.
+   region is reviewable alongside the debug cost grid. Corridor
+   re-verified 2026-11-05 (`corridor_2026-11-05.json`): near-neutral on
+   broad configs (9 triggers in the whole sweep, 1 use, ±0.2 s BFS
+   overhead, identical routed/failed everywhere), but load-bearing on
+   the VIN tight spot — corridor on routes it in 5.8 s / 592k expansions
+   (corridor used 1×), off fails after ~20 s. Verdict: keep the feature
+   (tight-spot fallback), keep it off the UI (checkbox removed, default
+   on). No retune needed: it only runs when window0 already failed.
   Quantified 2026-10-26: softening all hard secondary rings to toll level
   restores +12V in 8.2 s / 1.29M expansions (Oct-21 parity), but DRC on
   that board jumps 174 → 481 violations (+229 clearance) — Oct-21-era
@@ -111,12 +117,19 @@ Open work only. Completed changes belong in git history, not here.
   path-cost parity before changing the default.
 - **Routing time estimator**: replace the GUI `2 + 1.2·n` model with the
   per-net pad-count pair estimate plus a failed-net allowance.
-- **Tidy-regime calibration**: the Tidy regime (orientation consensus +
-  weak hold in the dynamics, `align_*` params) ships with starting-point
-  stiffnesses (`align_angle_k_N` 5e-3, `align_pos_k_N_m` 3.0). Gate them on
-  a sweep: outlier counts down on tube111/DCCF with no overlap/iteration/
-  wirelength regression vs the legalize baseline, then publish the JSON
-  under `docs/benchmarks/`.
+- **Tidy-regime calibration**: the Tidy regime (Manhattan snap + weak
+  hold in the dynamics, `align_*` params) ships with starting-point
+  stiffnesses (`align_angle_k_N` 3e-3, `align_pos_k_N_m` 0.5, deadband 10,
+  mode-agreement gate, short 150-iter budget). Known so far (tube111
+  probes): the committed board is illegal (9 pairs + 7 walls), so every
+  run opens with wall-eject churn — that drift is baseline, not align.
+  Axis errors wrap to ±90 (pad pairs are 180-ambiguous); the old 180 wrap
+  spun near-mode parts the long way around. The agreement gate + frozen
+  targets keep align's footprint near zero new pairs. Gate the defaults
+  on a sweep: outlier counts down on tube111/DCCF with no
+  overlap/iteration/wirelength regression vs the legalize baseline
+  (wirelength is the real cost metric for straightening), then publish
+  the JSON under `docs/benchmarks/`.
 - **Track-tidy mode, deferred**: the old Tidy tab is gone (replaced by the
   Tidy placement regime), so routed-track cleanup has no home. Proposed:
   a track-tidy section in the Route panel operating on selected routed nets,
@@ -207,11 +220,18 @@ Counts are additive (`fanout_vias_added` / `fanout_tracks_added`).
   commit, `./scripts/check_js.sh` (`node --check`) green throughout. The
   4000-line rule now holds for every file; revisit only if a domain file
   itself approaches the budget.
-- **Aesthetic row-alignment regime**: superseded — the Tidy regime does
-  orientation consensus in the dynamics instead of a post-pass (no rows,
-  no axis snap; diagonals hold). Rows were dropped as actively harmful to
-  the force-directed layout; do not revive without a subcircuit-scoped
-  design.
+- **Even pitch / row hold (Tidy phase 2, landed)**: row detection
+  (y-band 3 mm clustering within `align_radius_m`, min 3 parts, angles
+  already on a mode, single layer), median-edge baselines + median-pitch
+  frames recentered on the row, frozen at engagement, deadband-gated
+  (1.0/1.5 mm), released inside half or past the radius. Row anchors
+  override the leash anchor so the existing weak spring pulls — no new
+  force term, no new params. tube111: baseline σ 0.93→0.83, pitch σ
+  3.64→1.60, pairs 0, walls 1→3 (row pull near edges; still far below
+  the 7-wall start). Follow-up: wall-contact release (drop row
+  engagement while the wall law is actively ejecting a part) if the
+  sweep shows the wall trade persisting. Columns later by the same
+  pattern.
 - **THT-vs-opposite-SMD overlap**: re-audit courtyard accounting for a THT
   part facing an SMD on the opposite layer — through-hole pins occupy both
   sides, so opposite-side overlap may undercount. Needs a fixture pair +

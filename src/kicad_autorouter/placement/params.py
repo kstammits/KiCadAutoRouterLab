@@ -127,28 +127,32 @@ class PlacementParams:
     # dict to the proposal with per-iteration per-pad forces/positions and
     # depen-pass diagnostics. Off by default (zero overhead in production).
     debug: bool = False
-    # In-dynamics orientation consensus (Tidy regime): neighbor-median
+    # In-dynamics Manhattan snap + row hold (Tidy regime): nearest-mode
     # angle alignment as pad-force couples plus a weak position hold.
     # Stiffnesses are 0 = off (cluster/legalize presets pin them at 0).
-    # Spacing stays fully force-driven; there is no gap equalization.
-    # Diagonals are fine — consensus is local, never axis-snapped.
-    # Orientation consensus stiffness: constant-magnitude tangential
-    # couple (N), signed by the consensus error. Outliers rotate toward
-    # their neighbors at a steady rate until the error is inside the
-    # deadband; parts within the deadband feel nothing. Constant (not
-    # proportional) because proportional torque stalls under viscous
-    # damping before the error closes. Must clear dry friction and the
-    # ~2.4 mN convergence-crawl floor at legalize damping.
+    # Angle snaps to compass modes with a mode-agreement gate (diagonal
+    # threads far from any mode are left alone); rows get frozen
+    # baseline/pitch anchors that override the leash anchor at the same
+    # weak stiffness. Wall still wins every shove.
+    # Orientation snap stiffness: constant-magnitude tangential couple
+    # (N), signed by the mode error. Outliers rotate toward the nearest
+    # mode at a steady rate until the error is inside the deadband; parts
+    # on a mode feel nothing. Constant (not proportional) because torque
+    # stalls under viscous damping before the error closes. Must clear
+    # dry friction and the ~2.4 mN convergence-crawl floor at legalize
+    # damping.
     align_angle_k_N: float = 0.0
     # Position-hold stiffness (N/m): weak leash toward the pose held at the
-    # last consensus recompute, so a rotating body settles instead of
+    # last align recompute — or toward the frozen row baseline/pitch frame
+    # for row-engaged parts — so a rotating body settles instead of
     # drifting. Anchors refresh as the board moves; sustained wall pressure
     # still ejects (wall_k >> align hold).
     align_pos_k_N_m: float = 0.0
     # Consensus error below this (degrees) is not an outlier: no torque.
     align_deadband_deg: float = 10.0
-    # Neighbor search radius for the consensus graph (meters, SI; the UI
-    # displays millimeters). Only the k-nearest (k=6) parts inside count.
+    # Neighbor search radius for the mode-agreement and row graphs
+    # (meters, SI; the UI displays millimeters). Only the k-nearest (k=6)
+    # parts inside count.
     align_radius_m: float = 0.020
 
     def to_dict(self) -> dict:

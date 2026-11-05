@@ -258,7 +258,7 @@
             <span class="num">Regime</span>
             <button id="regime-cluster-btn" title="Scattered-start clustering: stronger attraction, softer walls (attraction ~0.05, wall ~0.025, damping 0.08, dt 2ms)">Scatter start</button>
             <button id="regime-legalize-btn" title="Placed-board polish: gentle attraction, firm walls, 4mm halo (attraction ~0.008, wall ~0.08, damping 0.12, dt 1ms)">Placed-board polish</button>
-            <button id="regime-tidy-btn" title="Orientation consensus on a legalize base: outlier parts rotate toward their local neighbor median (deadband 10 deg, diagonals kept) with a weak position hold. Accept/Clear like any placement run.">Tidy (align)</button>
+            <button id="regime-tidy-btn" title="Manhattan snap + row hold on a legalize base: outliers rotate to the nearest compass mode when neighbors agree; ragged rows get frozen baseline/pitch anchors under the same weak hold. Threads far from any mode are left alone. Accept/Clear like any placement run.">Tidy (align)</button>
           </div>
           <details id="advanced-params-details">
             <summary title="Power, decap, ghost, and convergence knobs hidden from the main panel">Advanced</summary>

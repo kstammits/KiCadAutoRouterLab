@@ -27,6 +27,8 @@ from .align import (
     ALIGN_RECOMPUTE_ITERS,
     build_align_ref_axes,
     compute_align_targets,
+    compute_row_targets,
+    courtyard_half_extents,
 )
 from .depenetrate import _depenetrate_positions
 from .force import ForceContext, _compute_total_force
@@ -445,7 +447,7 @@ def _run_region_simulation(
     positions = pad_positions.copy()
     prev_positions = pad_positions.copy()
 
-    # Orientation-consensus regime (Tidy): reference axes from the
+    # Manhattan-snap + row-hold regime (Tidy): reference axes from the
     # committed pose, targets refreshed every N iterations. Off unless a
     # stiffness is set, so cluster/legalize trajectories are untouched.
     align_active = (
@@ -470,21 +472,50 @@ def _run_region_simulation(
         build_align_ref_axes(fp_local_to_rows, pad_positions)
         if align_active else {}
     )
+    _part_extents = (
+        {
+            li: courtyard_half_extents(fp_by_uuid[uuid])
+            for li, uuid in enumerate(fp_uuids)
+            if uuid in fp_by_uuid
+        }
+        if align_active else {}
+    )
 
     def _refresh_align_targets(
         prev: Optional[dict] = None,
-    ) -> dict:
+        prev_rows: Optional[dict] = None,
+    ) -> tuple:
         if not align_active:
-            return {}
-        return compute_align_targets(
+            return {}, {}
+        targets = compute_align_targets(
             positions, fp_local_to_rows, fp_movable_arr,
             _fp_layers, _ghost_local, _committed_angles, _align_ref_axes,
             radius_mm=params.align_radius_m * 1000.0,
             deadband_deg=params.align_deadband_deg,
             prev_targets=prev,
         )
+        row_targets: dict = {}
+        if params.align_pos_k_N_m > 0.0:
+            # Row hold overrides the leash anchor (not the angle): the same
+            # weak spring pulls toward the frozen row frame instead of the
+            # last recompute pose. Parts outside any row keep the leash.
+            row_targets = compute_row_targets(
+                positions, fp_local_to_rows, fp_movable_arr,
+                _fp_layers, _ghost_local, _committed_angles,
+                _align_ref_axes, _part_extents,
+                radius_mm=params.align_radius_m * 1000.0,
+                deadband_deg=params.align_deadband_deg,
+                prev_targets=prev_rows,
+            )
+            for li, (tx, ty) in row_targets.items():
+                if li in targets:
+                    angle, _ax, _ay = targets[li]
+                    targets[li] = (angle, tx, ty)
+                else:
+                    targets[li] = (None, tx, ty)
+        return targets, row_targets
 
-    _align_targets = _refresh_align_targets()
+    _align_targets, _row_targets = _refresh_align_targets()
 
     # Polygon cache for courtyard collision - persists across iterations.
     # Rebuild thresholds are TIGHT (20µm/0.02°): a stale body polygon snaps
@@ -665,7 +696,8 @@ def _run_region_simulation(
     for iteration in range(params.max_iterations):
         # Consensus refresh: quasi-static targets that track drift.
         if align_active and iteration > 0 and iteration % ALIGN_RECOMPUTE_ITERS == 0:
-            _align_targets = _refresh_align_targets(_align_targets)
+            _align_targets, _row_targets = _refresh_align_targets(
+                _align_targets, _row_targets)
         # Update context with current velocities for tangential assist
         fctx.pad_velocities = _vel
         force, _ = _compute_total_force(
