@@ -1104,8 +1104,7 @@ def build_via_ok_mask(
 
     # Union of all obstacle sources across layers (2D): a via halo on
     # any layer forbids the (row, col) center on every layer. OR-then-
-    # dilate equals dilate-then-OR, so one dilation replaces the old
-    # per-obstacle-cell Python ``_stamp`` loop with identical results.
+    # dilate equals dilate-then-OR, so a single dilation covers all layers.
     obstacle = np.zeros((H, W), dtype=bool)
     for l in range(n_layers):
         layer = cost_grid[l]

@@ -1,12 +1,8 @@
 """Pipeline entry point: route → finish → refine.
 
-Extracted from routing/pipeline.py (Step 3: split god modules). Behavior-neutral
-move only.
-
-This module keeps the public entry points (:func:`route_nets`,
-:func:`refine_routing`, :class:`RoutingResult`) and re-exports every name that
-was previously importable from ``kicad_autorouter.routing.pipeline`` so existing
-``from .pipeline import ...`` sites keep working.
+Public entry points (:func:`route_nets`, :func:`refine_routing`,
+:class:`RoutingResult`); re-exports stage-A/B/C helpers importable from
+``kicad_autorouter.routing.pipeline``.
 
 Stage A (raw routing) lives in :mod:`routing.route_raw`, stage B
 (stitch/writeback/refill/DRC) in :mod:`routing.finish_routes`, stage C

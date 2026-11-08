@@ -1,7 +1,6 @@
 """Placement / ghost / footprint HTTP endpoints.
 
-Extracted from ui/server.py (Step 3: split god modules). Behavior-neutral move
-only; every status code + body is unchanged.
+Every status code + body is defined here.
 """
 
 from __future__ import annotations

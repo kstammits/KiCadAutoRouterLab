@@ -285,8 +285,7 @@ function toast(msg, ok = false) {
 // [minW, maxW], persisted under `storageKey`. `sign` is +1 when dragging
 // right widens (left sidebar) and -1 when dragging right narrows (right
 // drawer); `onDown` runs first (e.g. expand a collapsed panel).
-// Saves parseInt px so a reload restores "<n>px" (previously the sidebar
-// saved the "px"-suffixed string and restored "<n>pxpx", i.e. never).
+// Saves parseInt px so a reload restores "<n>px".
 function initHorizResizer({ resizerId, panel, minW, maxW, storageKey, sign = 1, onDown }) {
   const resizer = el(resizerId);
   if (!resizer || !panel) return;

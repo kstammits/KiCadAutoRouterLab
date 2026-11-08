@@ -1,8 +1,5 @@
 """Stage C of the routing pipeline: order-space refinement search.
 
-Extracted from routing/pipeline.py (Step 3: split god modules). Behavior-neutral
-move only.
-
 Order-space search: re-route the nets under several seeded orders. Trial 0 runs
 the input order; trials 1..N permute within tangle groups. The best trial goes
 straight to :func:`finish_routes` — no re-route replay.
@@ -10,7 +7,6 @@ straight to :func:`finish_routes` — no re-route replay.
 :func:`refine_routing` calls :func:`route_raw`, :func:`finish_routes`, and
 :func:`_tangle_groups` through the :mod:`routing.pipeline` namespace (resolved
 at call time) so that callers/tests can monkeypatch ``pipeline.route_raw`` etc.
-exactly as they could when everything lived in one module.
 """
 
 from __future__ import annotations
@@ -59,8 +55,7 @@ def refine_routing(
     untouched and reported in ``failed_reasons``.
     """
     # Resolved at call time so ``monkeypatch.setattr(pipeline, "route_raw", …)``
-    # (and the same for finish_routes / _tangle_groups) takes effect, exactly
-    # as when these all lived in pipeline.py.
+    # (and the same for finish_routes / _tangle_groups) takes effect.
     from .pipeline import route_raw as _route_raw, finish_routes as _finish_routes
     from .pipeline import _tangle_groups as _tangle_groups
 

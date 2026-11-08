@@ -1,8 +1,5 @@
 """Stage A of the routing pipeline: rip-up, grids, raw routing, track conversion.
 
-Extracted from routing/pipeline.py (Step 3: split god modules). Behavior-neutral
-move only.
-
 Holds ``RawRoutes`` (the handoff boundary to ``finish_routes``), ``route_raw``,
 and every helper stage A depends on: grid/cost-grid setup, power/ground/signal
 classification, plane fanout, chunking/splicing, smoothing, corridor stamping,

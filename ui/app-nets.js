@@ -111,8 +111,8 @@ function netRowHtml(net, idx) {
       ? `<span class="power-badge is-ground" title="Ground net (keyword rules)">GND</span>`
       : "");
   // Pwr cell control: always render a visible button (ghost bolt for
-  // signal nets) — the old `${pwr || ""}` left signal cells empty and
-  // undiscoverable. Name-column badge above stays static text.
+  // signal nets) so every row stays discoverable. Name-column badge above
+  // stays static text.
   // Board-controlled strings are HTML-escaped (net/ref names come from the file).
   const safeName = escapeHtml(net.name);
   const netName = escapeHtml(net.name);

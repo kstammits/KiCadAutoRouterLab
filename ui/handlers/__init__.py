@@ -5,5 +5,5 @@ Each submodule exports ``handle_get(path, qs, handler)`` and
 or ``None`` when it does not own ``path``. ``ui/server.py`` owns the
 :class:`~http.server.BaseHTTPRequestHandler`` subclass, dispatch, and all shared
 state/helpers; the handler modules contain only the per-endpoint logic moved
-out of the god ``Handler`` (Step 3: split god modules, behavior-neutral).
+per-endpoint logic.
 """

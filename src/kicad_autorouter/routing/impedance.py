@@ -39,6 +39,7 @@ cannot cover siblings. Regions without an inlet report ``no-inlet``.
 from __future__ import annotations
 
 import heapq
+import itertools
 import math
 from dataclasses import dataclass, field
 from typing import Collection, Dict, List, Optional, Sequence, Set, Tuple
@@ -60,6 +61,9 @@ POUR_TAP_MOHM = 0.2
 # override per bridge where the connector datasheet says otherwise.
 BRIDGE_DEFAULT_MOHM = 20.0
 SNAP_MM = 0.1
+# Monotonic edge ids for the resistive graph; module-level so ids stay
+# unique across graphs built in one process (report-only, never persisted).
+_EDGE_IDS = itertools.count(1)
 
 DEFAULT_GND_MAX_MOHM = 50.0  # screening floor, not a spec: must clear a
 # known-good single header hop (~22 mΩ) with margin, while still catching
@@ -211,6 +215,7 @@ class ImpedanceReport:
 
 
 def _assumptions() -> Dict[str, object]:
+    """Screening constants bundled for the report payload (not a field solver)."""
     return {
         "rho_cu_ohm_m": RHO_CU_OHM_M,
         "cu_thickness_um": 35.0,
@@ -228,6 +233,7 @@ def _pad_key(uuid: str, number: str) -> str:
 
 
 def _snap_key(x_mm: float, y_mm: float, layer: str) -> str:
+    """Copper graph node snapped to the 0.1 mm grid so coincident endpoints join."""
     return f"pt:{layer}:{round(x_mm / SNAP_MM):d}:{round(y_mm / SNAP_MM):d}"
 
 
@@ -271,6 +277,7 @@ def _reconstruct(prev: Dict[str, Tuple[str, int, str, int]], source: str,
 
 
 def _find_pad(model: BoardModel, ref: str, number: str):
+    """Footprint + pad by ref/number; (fp, None) when the pad number is absent."""
     fp = model.by_ref.get(ref)
     if fp is None:
         return None, None
@@ -300,6 +307,7 @@ def _island_at(labels, copper, grid: RoutingGrid, x_mm: float, y_mm: float) -> i
 
 
 def _normalize_inlets(specs: Optional[Sequence[object]]) -> List[InletSpec]:
+    """Coerce dict/dataclass inlet specs; drops entries without ref/pad."""
     out: List[InletSpec] = []
     for spec in specs or ():
         if isinstance(spec, InletSpec):
@@ -311,6 +319,7 @@ def _normalize_inlets(specs: Optional[Sequence[object]]) -> List[InletSpec]:
 
 
 def _normalize_bridges(specs: Optional[Sequence[object]]) -> List[BridgeSpec]:
+    """Coerce dict/dataclass bridge specs; negative resistance clamps to 0."""
     out: List[BridgeSpec] = []
     for spec in specs or ():
         if isinstance(spec, BridgeSpec):
@@ -330,6 +339,7 @@ def _normalize_bridges(specs: Optional[Sequence[object]]) -> List[BridgeSpec]:
 
 
 def _region_of(model: BoardModel, uuid: str) -> int:
+    """Board region index for a footprint; 0 when unpaneled, -1 when unassigned."""
     if not model.board_regions:
         return 0
     return model.footprint_region.get(uuid, -1)
@@ -603,10 +613,10 @@ def _analyze_net(model: BoardModel, adj: Dict[str, List[Tuple[str, float, int, s
 
 def _add_edge(adj: Dict[str, List[Tuple[str, float, int, str, int]]],
               a: str, b: str, r_mohm: float, via_inc: int, kind: str) -> int:
+    """Undirected resistive link; returns the edge id (-1 for self-loops)."""
     if a == b:
         return -1
-    _add_edge.counter = getattr(_add_edge, "counter", 0) + 1
-    eid = _add_edge.counter
+    eid = next(_EDGE_IDS)
     adj.setdefault(a, []).append((b, r_mohm, via_inc, kind, eid))
     adj.setdefault(b, []).append((a, r_mohm, via_inc, kind, eid))
     return eid

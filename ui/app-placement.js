@@ -364,8 +364,7 @@ window.addEventListener("mouseup", e => {
           }
         });
         
-        // Single bulk replace (the old code toggled each uuid, which
-        // could *deselect* already-selected parts server-side).
+        // Atomic bulk replace so overlapping marquee/frustum hits can't deselect.
         replaceSelectionBulk([...selectedUuids]);
       }
     }
@@ -1009,7 +1008,7 @@ on("sidebar-select-visible", "click", () => {
       next.add(fp.uuid);
     }
   });
-  // Single bulk replace (the old N×toggle could deselect server-side).
+  // Atomic bulk replace so re-selecting visible parts can't deselect.
   replaceSelectionBulk([...next]);
 });
 

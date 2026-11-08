@@ -37,7 +37,7 @@ import numpy as np
 # Consensus refresh cadence (iterations): moving targets every step inject
 # noise; every-N keeps the torque quasi-static while tracking drift.
 ALIGN_RECOMPUTE_ITERS = 25
-# Neighbor count cap, matching the old geometric pass.
+# Neighbor count cap: bounds per-part cost and keeps consensus local.
 _ALIGN_NEIGHBOR_K = 6
 
 

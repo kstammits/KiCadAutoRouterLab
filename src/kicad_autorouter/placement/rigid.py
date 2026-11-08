@@ -154,10 +154,7 @@ def _compute_footprint_pose_from_pads(
 
     # Original pad positions in true footprint-local coordinates (Y down).
     # ``_to_board`` maps local -> board with R(-angle_deg), so the inverse
-    # used here is R(+angle_deg). Building this frame with the same R(-angle)
-    # as ``_to_board`` (the old behavior) returned a delta whose sign was
-    # opposite to the simulated rigid rotation; ``apply_deltas`` then swung
-    # the part the wrong way (2B Q1 appeared to rotate into C6).
+    # used here is R(+angle_deg).
     orig_local = []
     for global_idx in pad_indices:
         local_idx = global_pad_idx_to_local[global_idx]

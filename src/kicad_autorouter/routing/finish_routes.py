@@ -1,8 +1,5 @@
 """Stage B of the routing pipeline: stitching, tree writeback, refill, DRC.
 
-Extracted from routing/pipeline.py (Step 3: split god modules). Behavior-neutral
-move only.
-
 Consumes a :class:`routing.route_raw.RawRoutes` bundle from :func:`route_raw`
 (single trial or refine winner alike) and produces the
 :class:`routing.pipeline.RoutingResult`.

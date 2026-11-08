@@ -1,8 +1,5 @@
 """Final de-penetration pass (legalize eject) for placement.
 
-Extracted from placement/runner.py (Step 3: split god modules). Behavior-neutral
-move only.
-
 Positional projection applied once after dynamics settle. The penalty wall law
 equilibrates against net attraction at nonzero penetration, so wedged pairs keep
 residual overlap; this pass ejects them geometrically. Fractional relaxation per
