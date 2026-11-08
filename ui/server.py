@@ -1,7 +1,6 @@
 """Workflow UI HTTP server: dispatch + shared state.
 
-Extracted from ui/server.py (Step 3: split god modules). Behavior-neutral move
-only: this module keeps the public names tests and scripts rely on
+This module keeps the public names tests and scripts rely on
 (``Handler``, ``STATE``, ``PARAMS_PATH``, ``load_params``/``save_params``,
 ``load_routing_params``/``save_routing_params``, ``proposal_to_json``,
 ``main``) and the :class:`Handler` class, whose ``do_GET``/``do_POST`` now
@@ -259,6 +258,10 @@ def proposal_to_json(proposal, include_frames=True) -> dict:
 
     out = {
         "deltas": {u: [r5(dx), r5(dy), r5(da)] for u, (dx, dy, da) in proposal.deltas.items()},
+        "label_deltas": {
+            u: [r5(dx), r5(dy)]
+            for u, (dx, dy) in (getattr(proposal, "label_deltas", {}) or {}).items()
+        },
         "iterations": proposal.iterations,
         "final_max_disp_mm": r5(proposal.final_max_disp_mm),
         "elapsed_s": r5(proposal.elapsed_s),

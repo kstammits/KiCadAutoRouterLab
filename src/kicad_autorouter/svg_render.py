@@ -506,15 +506,40 @@ def _courtyard_centroid(fp) -> tuple[float, float]:
 
 
 def _footprint_ref_svg(fp) -> str:
-    """Generate reference text for a single footprint at courtyard centroid."""
-    label = fp.ref or (fp.uuid[:8] if fp.uuid else "")
-    if not label:
+    """Generate reference text for a single footprint at its true label pose.
+
+    When the footprint carries a parsed ``SilkLabel`` (silkscreen/Fab
+    reference text from the file), the text is drawn at the label's board
+    pose (position + rotation) at the file's font size — what you see is
+    where the label actually sits. Footprints without a label keep the
+    historic centroid fallback (``ref`` or short uuid).
+    """
+    from .board_model import label_board_pose
+
+    label = getattr(fp, "label", None)
+    if label is not None:
+        pose = label_board_pose(fp)
+        if pose is not None:
+            cx, cy, angle = pose
+            size = 1.0
+            try:
+                size = float(label.size_mm[1])
+            except (TypeError, ValueError, IndexError):
+                pass
+            rot = f' transform="rotate({_fmt(angle)} {_fmt(cx)} {_fmt(cy)})"' if angle else ""
+            return (
+                f'<text x="{_fmt(cx)}" y="{_fmt(cy)}" '
+                f'fill="{REF_TEXT}" font-family="monospace" font-size="{_fmt(size)}"{rot}>'
+                f"{html.escape(label.text)}</text>"
+            )
+    label_text = fp.ref or (fp.uuid[:8] if fp.uuid else "")
+    if not label_text:
         return ""
     cx, cy = _courtyard_centroid(fp)
     return (
         f'<text x="{_fmt(cx)}" y="{_fmt(cy - 0.5)}" '
         f'fill="{REF_TEXT}" font-family="monospace" font-size="1">'
-        f"{html.escape(label)}</text>"
+        f"{html.escape(label_text)}</text>"
     )
 
 
@@ -1040,7 +1065,10 @@ def render_board_svg(
             u: (d[0], d[1], d[2] if len(d) > 2 else 0.0)
             for u, d in proposal.deltas.items()
         }
-        view = apply_deltas(model, deltas)
+        view = apply_deltas(
+            model, deltas,
+            label_deltas=getattr(proposal, "label_deltas", None) or None,
+        )
     else:
         view = model
     min_x, min_y, width, height = _bounds(view)

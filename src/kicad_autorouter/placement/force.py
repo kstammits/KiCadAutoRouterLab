@@ -364,6 +364,54 @@ def _compute_total_force(
                         body_poly = Polygon(body_verts)
                     else:
                         body_poly = Polygon()
+                    # Label solidity: union the posed label clearance rect
+                    # into the collision body so the text demands space near
+                    # its parent. 0 skips entirely (byte-identical bodies to
+                    # label-unaware runs); >0 inflates the bare text bbox by
+                    # solidity * label_halo_m, so the slider reads as more
+                    # demanding without touching wall_k_N. The unioned body
+                    # classifies honestly below (a protruding label makes a
+                    # rectangle read as a polygon). Orbit mode owns label
+                    # collision through its own nodes instead — never both.
+                    if params.label_solidity > 0.0 and not params.label_orbit:
+                        lab = e.get("label")
+                        if lab and lab.get("corners"):
+                            try:
+                                import numpy as _np
+
+                                _corners = _np.asarray(lab["corners"], dtype=float)
+                                if motion is not None:
+                                    oc, cc, ca, sa, tx, ty, _ang = motion
+                                    _posed = _apply_rigid_motion(
+                                        _corners, oc, cc, ca, sa, tx, ty
+                                    )
+                                else:
+                                    _posed = _corners
+                                _halo = float(params.label_solidity) * float(params.label_halo_m) * 1000.0
+                                _label_poly = Polygon(_posed)
+                                if not _label_poly.is_empty:
+                                    if _halo > 0:
+                                        _label_poly = _label_poly.buffer(_halo)
+                                    if not _label_poly.is_empty and not body_poly.is_empty:
+                                        from shapely.ops import unary_union as _union
+
+                                        _united = _union([body_poly, _label_poly])
+                                        if _united is not None and not _united.is_empty:
+                                            if _united.geom_type == "Polygon":
+                                                body_poly = _united
+                                            else:
+                                                # Disjoint label (filed anchor parked
+                                                # clear of the courtyard): the union
+                                                # is a MultiPolygon, which the
+                                                # classifier cannot read. The
+                                                # convex hull is the honest body —
+                                                # the gap is leash space the label
+                                                # already claims.
+                                                body_poly = _united.convex_hull
+                                    elif body_poly.is_empty:
+                                        body_poly = _label_poly
+                            except Exception:
+                                logger.debug("label union failed fp=%s", fp_uuid)
                     body_polys[fp_uuid] = body_poly
                     body_empty[fp_uuid] = bool(body_poly.is_empty)
 
@@ -1012,9 +1060,8 @@ def _compute_total_force(
                         # Straddling the edge: protrusion depth of the verts
                         # sticking out, capped by the shared wall law. One
                         # vectorized GEOS distance over the ring instead of
-                        # one Point + distance call per vertex (same
-                        # per-point GEOS op; non-finite entries contribute
-                        # nothing, matching the old max() comparison).
+                        # one Point + distance call per vertex (non-finite
+                        # entries contribute nothing).
                         try:
                             _coords = np.asarray(
                                 body_poly.exterior.coords, dtype=np.float64

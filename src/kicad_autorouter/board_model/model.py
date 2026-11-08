@@ -219,6 +219,29 @@ class EdgeCutArc:
     end: Point
 
 @dataclass(frozen=True)
+class SilkLabel:
+    """One visible silkscreen/Fab reference label of a footprint.
+
+    The placer's label model: a single text anchor per footprint on the
+    footprint's own side (``F.SilkS``/``F.Fab`` for ``F.Cu`` parts, ``B.*``
+    for ``B.Cu`` parts), like an SMD pad. Local coordinates mirror the
+    file's ``fp_text (at x y [angle])`` frame; the board pose derives via
+    ``_to_board`` exactly like pads and courtyard segments. ``uuid`` is the
+    ``fp_text`` node's own uuid for writeback targeting. ``text`` holds the
+    resolved human text (``${REFERENCE}`` resolved to the footprint ref).
+    """
+
+    text: str
+    local_x_mm: float
+    local_y_mm: float
+    local_angle_deg: float
+    layer: str
+    size_mm: Tuple[float, float] = (1.0, 1.0)
+    thickness_mm: float = 0.15
+    uuid: str = ""
+
+
+@dataclass(frozen=True)
 class Footprint:
     """A placed footprint with its courtyard outline in board coordinates.
 
@@ -244,6 +267,7 @@ class Footprint:
     uuid: str = ""
     ghost: bool = False
     ghost_attractions: Tuple[Tuple[str, float], ...] = ()
+    label: Optional[SilkLabel] = None
 
 @dataclass(frozen=True)
 class KeepoutZone:

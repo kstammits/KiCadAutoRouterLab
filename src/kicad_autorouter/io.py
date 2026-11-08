@@ -134,6 +134,7 @@ def rip_up_nets(
     protected = protected_nets or set()
 
     def should_keep(node: SExpr) -> bool:
+        """Keep non-copper nodes, unassigned/protected nets, and nets outside the rip-up set."""
         if node.head not in ("segment", "arc", "via"):
             return True
         net_node = node.find("net")
@@ -432,7 +433,7 @@ def collapse_to_two_layer(tree: SExpr) -> Tuple[SExpr, dict]:
     return new_tree, report
 
 
-def _shift_at(tree: SExpr, fp: SExpr, dx_mm: float = 0.0, dy_mm: float = 0.0, da_deg: float = 0.0) -> SExpr:
+def _shift_at(tree: SExpr, fp: SExpr, dx_mm: float = 0.0, dy_mm: float = 0.0, da_deg: float = 0.0, label_snap: bool = True, label_allow_inverted: bool = False, label_dx_mm: float = 0.0, label_dy_mm: float = 0.0) -> SExpr:
     """Return ``tree`` with footprint node ``fp``'s ``(at ...)`` position and angle shifted.
 
     Pad ``(at ...)`` angles store the effective board orientation (verified
@@ -443,6 +444,20 @@ def _shift_at(tree: SExpr, fp: SExpr, dx_mm: float = 0.0, dy_mm: float = 0.0, da
     Pad local ``x y`` positions are untouched (they live in the footprint
     frame and rotate via the footprint angle). A zero delta is still the
     exact no-op (nothing rewritten).
+
+    ``fp_text`` angles are footprint-relative instead (tube111: a footprint
+    at 180 stores text angle 0 while its pads store absolute 180), so text
+    local ``x y`` never changes and a rotation needs no text rewrite for
+    rigid follow — but the readable snap (same rule as
+    ``board_model.query.apply_deltas``) counter-rotates same-side text to
+    the nearest upright board orientation. Same-side only (``F.SilkS`` /
+    ``F.Fab`` for ``F.Cu`` parts, ``B.*`` for ``B.Cu``): opposite-side
+    text belongs to the other face. Pure translations (``da_deg == 0``)
+    never touch text, keeping the zero-delta no-op exact.
+
+    Orbit mode passes ``label_dx_mm``/``label_dy_mm`` (footprint-local
+    anchor offsets from the integrated orbit): same-side text gains the
+    shifted ``(at x y)`` plus the snap, mirroring ``apply_deltas`` exactly.
     """
     at = fp.find("at")
     if at is None or len(at.args) < 2:
@@ -455,16 +470,101 @@ def _shift_at(tree: SExpr, fp: SExpr, dx_mm: float = 0.0, dy_mm: float = 0.0, da
     elif da_deg != 0.0:
         args.append(da_deg)
     new_at = SExpr("at", tuple(args))
+    fp_angle = float(args[2]) if len(args) >= 3 else 0.0
+    fp_old_angle = fp_angle - da_deg
+    label_moved = label_dx_mm != 0.0 or label_dy_mm != 0.0
     new_fp_args = []
     for child in fp.args:
         if child is at:
             new_fp_args.append(new_at)
         elif da_deg != 0.0 and isinstance(child, SExpr) and child.head == "pad":
             new_fp_args.append(_shift_pad_angle(child, da_deg))
+        elif (da_deg != 0.0 or label_moved) and isinstance(child, SExpr) and child.head == "fp_text":
+            new_fp_args.append(_shift_label_pose(
+                child, fp, fp_old_angle, fp_angle, label_allow_inverted,
+                label_dx_mm=label_dx_mm, label_dy_mm=label_dy_mm,
+                snap=label_snap and da_deg != 0.0,
+            ))
         else:
             new_fp_args.append(child)
     new_fp = replace(fp, args=tuple(new_fp_args))
     return replace(tree, args=tuple(new_fp if a is fp else a for a in tree.args))
+
+
+def _shift_label_pose(
+    text: SExpr,
+    fp: SExpr,
+    fp_old_angle: float,
+    fp_new_angle: float,
+    allow_inverted: bool = False,
+    label_dx_mm: float = 0.0,
+    label_dy_mm: float = 0.0,
+    snap: bool = True,
+) -> SExpr:
+    """Return ``fp_text`` with its local anchor shifted and angle snapped.
+
+    Orbit-mode counterpart to ``apply_deltas(..., label_deltas=...)``:
+    ``(at x y)`` gains the footprint-local ``(label_dx_mm, label_dy_mm)``
+    orbit offset, then the local angle snaps to readable exactly like the
+    model path (``snap=False`` keeps the rigid angle, used when the caller
+    disables ``label_snap``). Same-side text only — opposite-side text
+    passes through untouched. ``(at x y)`` without an angle reads as 0
+    and only gains an explicit angle when the snap actually rotates it.
+    """
+    from .board_model import _layer_of
+    from .board_model.labels import snapped_local_angle
+
+    layer_node = fp.find("layer")
+    fp_layer = str(layer_node.args[0]) if layer_node is not None and layer_node.args else "F.Cu"
+    side = "F" if fp_layer.startswith("F") else ("B" if fp_layer.startswith("B") else "")
+    text_layer = _layer_of(text)
+    if side and text_layer not in (f"{side}.SilkS", f"{side}.Fab"):
+        return text
+    at = text.find("at")
+    if at is None or len(at.args) < 2:
+        return text
+    args = list(at.args)
+    old_local = float(args[2]) if len(args) >= 3 and isinstance(args[2], (int, float)) else 0.0
+    new_local = (
+        snapped_local_angle(
+            old_local, fp_old_angle, fp_new_angle, snap=True,
+            allow_inverted=allow_inverted,
+        )
+        if snap
+        else old_local
+    )
+    new_x = _shift_mm(args[0], label_dx_mm)
+    new_y = _shift_mm(args[1], label_dy_mm)
+    if (
+        new_local == old_local
+        and new_x == args[0]
+        and new_y == args[1]
+    ):
+        return text
+    args[0], args[1] = new_x, new_y
+    if len(args) >= 3 and isinstance(args[2], (int, float)):
+        if isinstance(args[2], int) and float(new_local).is_integer():
+            args[2] = int(new_local)
+        else:
+            args[2] = new_local
+    elif new_local != 0.0:
+        args.append(new_local)
+    new_at = SExpr("at", tuple(args))
+    return replace(text, args=tuple(new_at if a is at else a for a in text.args))
+
+
+def _shift_label_angle(
+    text: SExpr,
+    fp: SExpr,
+    fp_old_angle: float,
+    fp_new_angle: float,
+    allow_inverted: bool = False,
+) -> SExpr:
+    """Legacy alias: angle-only snap without anchor motion (follow mode)."""
+    return _shift_label_pose(
+        text, fp, fp_old_angle, fp_new_angle, allow_inverted,
+        snap=True,
+    )
 
 
 def _shift_pad_angle(pad: SExpr, da_deg: float) -> SExpr:
@@ -506,14 +606,21 @@ def nudge_footprint(
 
 
 def nudge_footprint_by_uuid(
-    tree: SExpr, uuid: str, dx_mm: float = 0.0, dy_mm: float = 0.0, da_deg: float = 0.0
+    tree: SExpr, uuid: str, dx_mm: float = 0.0, dy_mm: float = 0.0, da_deg: float = 0.0,
+    label_snap: bool = True, label_allow_inverted: bool = False,
+    label_dx_mm: float = 0.0, label_dy_mm: float = 0.0,
 ) -> SExpr:
     """Return the board tree with the footprint carrying `uuid` shifted by (dx_mm, dy_mm, da_deg).
 
     Same guarantees as :func:`nudge_footprint`, addressed by UUID instead of
     reference so duplicate or missing refs remain addressable at writeback time.
+    Same-side ``fp_text`` labels snap to readable on rotation (matching
+    ``apply_deltas``); disable with ``label_snap=False``. Orbit-mode label
+    anchor offsets ride ``label_dx_mm``/``label_dy_mm`` (footprint-local).
     """
-    return _shift_at(tree, find_footprint_by_uuid(tree, uuid), dx_mm, dy_mm, da_deg)
+    return _shift_at(tree, find_footprint_by_uuid(tree, uuid), dx_mm, dy_mm, da_deg,
+                     label_snap=label_snap, label_allow_inverted=label_allow_inverted,
+                     label_dx_mm=label_dx_mm, label_dy_mm=label_dy_mm)
 
 
 def save_pair(

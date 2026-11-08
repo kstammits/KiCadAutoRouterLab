@@ -11,7 +11,7 @@ never centroid-to-centroid.
 from __future__ import annotations
 
 import math
-from typing import Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from shapely.geometry import LineString, Point, Polygon
@@ -19,6 +19,110 @@ from shapely.ops import nearest_points, polygonize, unary_union
 
 from ..board_model import Footprint, Segment
 from .rigid import _rigid_pose_vertices
+
+
+def _overlap_depth_along(
+    pa_coords, pb_coords, ux: float, uy: float
+) -> float:
+    """Penetration depth (mm) of two rings along unit (ux, uy).
+
+    Vertex-projection interval overlap; exact for convex outlines,
+    a conservative under-read for concave ones (never invents depth).
+    """
+    try:
+        pa = [x * ux + y * uy for x, y in pa_coords]
+        pb = [x * ux + y * uy for x, y in pb_coords]
+    except Exception:
+        return 0.0
+    return max(0.0, min(max(pa), max(pb)) - max(min(pa), min(pb)))
+
+
+def label_contact_force(
+    label_poly: Polygon,
+    body_polys: Dict[str, Polygon],
+    halo_mm: float,
+    wall_k_N: float,
+    wall_exponent: float = 2.0,
+    wall_cap_depth_mm: float = 0.0,
+    solidity: float = 1.0,
+    skip_uuids: Tuple[str, ...] = (),
+) -> Tuple[float, float]:
+    """Wall-law push (newtons, board frame) on one orbiting label rect.
+
+    Sums one wall-law contact per nearby body (own parent included — a
+    filed anchor inside the courtyard equilibrates against its leash,
+    which is exactly the float). Direction is the nearest-points axis,
+    out of the body; overlap depth comes from vertex-projection along
+    that axis. ``solidity`` scales the summed force so the slider stays
+    meaningful in orbit mode (0 skips the loop entirely — caller-gated,
+    but double-guarded here). Winner-takes-all is deliberately NOT used:
+    a label wedged between two bodies should feel both.
+    """
+    if label_poly is None or label_poly.is_empty:
+        return (0.0, 0.0)
+    if halo_mm <= 0.0 or wall_k_N <= 0.0 or solidity <= 0.0:
+        return (0.0, 0.0)
+    try:
+        label_coords = list(label_poly.exterior.coords)
+    except Exception:
+        return (0.0, 0.0)
+    fx = fy = 0.0
+    for uuid, body in body_polys.items():
+        if uuid in skip_uuids:
+            continue
+        try:
+            if body is None or body.is_empty:
+                continue
+            if label_poly.disjoint(body):
+                try:
+                    gap = label_poly.distance(body)
+                except Exception:
+                    continue
+                if gap >= halo_mm:
+                    continue
+                try:
+                    qi, qj = nearest_points(label_poly, body)
+                    dx, dy = float(qi.x - qj.x), float(qi.y - qj.y)
+                except Exception:
+                    continue
+                dist = math.hypot(dx, dy)
+                if dist <= 1e-9:
+                    continue
+                ux, uy = dx / dist, dy / dist
+                s_mm = gap
+            else:
+                try:
+                    qi, qj = nearest_points(label_poly, body)
+                    dx, dy = float(qi.x - qj.x), float(qi.y - qj.y)
+                except Exception:
+                    continue
+                dist = math.hypot(dx, dy)
+                if dist <= 1e-9:
+                    try:
+                        dx = label_poly.centroid.x - body.centroid.x
+                        dy = label_poly.centroid.y - body.centroid.y
+                    except Exception:
+                        continue
+                    dist = math.hypot(dx, dy)
+                    if dist <= 1e-9:
+                        # Concentric (e.g. a filed anchor dead-center in
+                        # its own courtyard): any axis pushes out, so take
+                        # +x instead of reporting zero and sticking forever.
+                        dx, dy, dist = 1.0, 0.0, 1.0
+                ux, uy = dx / dist, dy / dist
+                try:
+                    body_coords = list(body.exterior.coords)
+                except Exception:
+                    continue
+                s_mm = -_overlap_depth_along(label_coords, body_coords, ux, uy)
+            mag = _wall_mag(
+                wall_k_N, s_mm, halo_mm, wall_exponent, wall_cap_depth_mm
+            )
+            fx += mag * ux
+            fy += mag * uy
+        except Exception:
+            continue
+    return (solidity * fx, solidity * fy)
 
 
 class ShapeType:

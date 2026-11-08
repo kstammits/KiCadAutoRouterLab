@@ -1,7 +1,6 @@
 """Board / docs / mode / static HTTP endpoints.
 
-Extracted from ui/server.py (Step 3: split god modules). Behavior-neutral move
-only; every status code + body is unchanged.
+Every status code + body is defined here.
 """
 
 from __future__ import annotations
@@ -182,6 +181,7 @@ def _handle_board_svg(qs):
                 params=proposal.params,
                 forces=merged_forces,
                 force_components=merged_comps,
+                label_deltas=getattr(proposal, "label_deltas", None) or {},
                 stop_reason=getattr(proposal, "stop_reason", "budget"),
                 residual_max_force_N=getattr(proposal, "residual_max_force_N", 0.0),
                 depenetrated=getattr(proposal, "depenetrated", False),

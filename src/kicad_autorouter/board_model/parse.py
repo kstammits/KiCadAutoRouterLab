@@ -7,10 +7,11 @@ import uuid as uuid_module
 from typing import Collection, Dict, List, Optional, Set, Tuple
 
 from ..sexpr import SExpr, get_generator_version
-from .model import ArcTrack, BoardModel, BoardRegion, EdgeCutArc, FilledPolygon, Footprint, KeepoutZone, NetClass, NetConnection, Pad, Point, Segment, Track, Via, Zone
+from .model import ArcTrack, BoardModel, BoardRegion, EdgeCutArc, FilledPolygon, Footprint, KeepoutZone, NetClass, NetConnection, Pad, Point, Segment, SilkLabel, Track, Via, Zone
 from .query import _assign_board_regions, _extract_board_polygons, _polygon_bbox, _to_board, sample_circular_arc
 
 def _point(node: SExpr) -> Point:
+    """First two numeric args as Point; caller guarantees well-formed input."""
     return Point(float(node.args[0]), float(node.args[1]))
 
 def _point_or_none(node: Optional[SExpr]) -> Optional[Point]:
@@ -48,6 +49,7 @@ def _net_name(net_node: Optional[SExpr]) -> Optional[str]:
     return name if name else None
 
 def _layer_of(node: SExpr) -> str:
+    """Child ``(layer …)`` name, or empty string when absent."""
     lay = node.find("layer")
     return str(lay.args[0]) if lay is not None and lay.args else ""
 
@@ -69,6 +71,7 @@ def _is_locked(node: SExpr) -> bool:
 def _pad(
     node: SExpr, x_mm: float, y_mm: float, angle_deg: float, layer: str
 ) -> Pad:
+    """Pad node -> Pad with board-space position; missing fields fall back to smd/circle/1mm."""
     number = str(node.args[0]) if node.args else ""
     pad_type = str(node.args[1]) if len(node.args) > 1 else "smd"
     shape = str(node.args[2]) if len(node.args) > 2 else "circle"
@@ -277,6 +280,75 @@ def _parse_ghost_attractions(node: SExpr) -> Tuple[Tuple[str, float], ...]:
                 continue
     return tuple(attractions)
 
+def _parse_label(node: SExpr, fp_layer: str, fp_ref: str) -> Optional[SilkLabel]:
+    """Pick the single visible label of a footprint on its own side.
+
+    Like an SMD pad, a label belongs to one side: ``F.Cu`` footprints read
+    ``F.SilkS`` (falling back to ``F.Fab`` reference text — tube111 keeps
+    ``${REFERENCE}`` there with graphics-only silk), ``B.Cu`` footprints
+    read the ``B.*`` pair. Ranking is silk-over-fab, reference-text first;
+    ties keep file order. ``${REFERENCE}`` resolves to the footprint ref.
+    Returns None when the footprint carries no same-side text.
+    """
+    side = "F" if fp_layer.startswith("F") else ("B" if fp_layer.startswith("B") else "")
+    silk_layer = f"{side}.SilkS" if side else ""
+    fab_layer = f"{side}.Fab" if side else ""
+
+    best = None
+    best_rank = None
+    for ft in node.children("fp_text"):
+        if len(ft.args) < 2:
+            continue
+        raw_text = ft.args[1] if isinstance(ft.args[1], str) else str(ft.args[1])
+        layer = _layer_of(ft)
+        if side and layer not in (silk_layer, fab_layer):
+            continue
+        at = ft.find("at")
+        if at is None or len(at.args) < 2:
+            continue
+        try:
+            lx = float(at.args[0])
+            ly = float(at.args[1])
+            la = float(at.args[2]) if len(at.args) > 2 else 0.0
+        except (TypeError, ValueError):
+            continue
+        is_ref = raw_text in ("${REFERENCE}", "${REF}") or (fp_ref and raw_text == fp_ref)
+        rank = (0 if layer == silk_layer else 1, 0 if is_ref else 1)
+        if best_rank is not None and rank >= best_rank:
+            continue
+        text = fp_ref if raw_text in ("${REFERENCE}", "${REF}") else raw_text
+        size = (1.0, 1.0)
+        thickness = 0.15
+        effects = ft.find("effects")
+        font = effects.find("font") if effects is not None else None
+        if font is not None:
+            size_node = font.find("size")
+            if size_node is not None and len(size_node.args) >= 2:
+                try:
+                    size = (float(size_node.args[0]), float(size_node.args[1]))
+                except (TypeError, ValueError):
+                    pass
+            thick_node = font.find("thickness")
+            if thick_node is not None and thick_node.args:
+                try:
+                    thickness = float(thick_node.args[0])
+                except (TypeError, ValueError):
+                    pass
+        uuid_node = ft.find("uuid")
+        ft_uuid = str(uuid_node.args[0]) if uuid_node is not None and uuid_node.args else ""
+        best_rank = rank
+        best = SilkLabel(
+            text=text,
+            local_x_mm=lx,
+            local_y_mm=ly,
+            local_angle_deg=la,
+            layer=layer,
+            size_mm=size,
+            thickness_mm=thickness,
+            uuid=ft_uuid,
+        )
+    return best
+
 def footprints(tree: SExpr) -> list[Footprint]:
     """Extract every top-level footprint with board-space pads and courtyard."""
     result = []
@@ -319,6 +391,7 @@ def footprints(tree: SExpr) -> list[Footprint]:
                 uuid=uuid,
                 ghost=_is_ghost(node),
                 ghost_attractions=_parse_ghost_attractions(node),
+                label=_parse_label(node, layer, ref),
             )
         )
     return result

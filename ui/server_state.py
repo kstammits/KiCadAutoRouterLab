@@ -598,12 +598,20 @@ class BoardState:
             arcs_before = _Counter(a.net_name for a in self.model.arcs if a.net_name)
             vias_before = _Counter(v.net_name for v in self.model.vias if v.net_name)
             # Apply to BoardModel: move footprints + rip up tracks/vias on affected nets
-            self.model = commit_placement(self.model, self.proposal.deltas, protected_nets)
+            self.model = commit_placement(
+                self.model, self.proposal.deltas, protected_nets,
+                label_deltas=getattr(self.proposal, "label_deltas", None) or None,
+            )
             # Apply to S-expression tree: move footprints + rip up tracks/vias
             self.pcb_tree = rip_up_nets(self.pcb_tree, affected_nets, protected_nets)
+            _plab = getattr(self.proposal, "label_deltas", {}) or {}
             for uuid, (dx, dy, da) in self.proposal.deltas.items():
-                if dx != 0.0 or dy != 0.0 or da != 0.0:
-                    self.pcb_tree = nudge_footprint_by_uuid(self.pcb_tree, uuid, dx, dy, da)
+                if dx != 0.0 or dy != 0.0 or da != 0.0 or uuid in _plab:
+                    ldx, ldy = _plab.get(uuid, (0.0, 0.0))
+                    self.pcb_tree = nudge_footprint_by_uuid(
+                        self.pcb_tree, uuid, dx, dy, da,
+                        label_dx_mm=ldx, label_dy_mm=ldy,
+                    )
             # Copper counts after -> per-net ripped report
             tracks_after = _Counter(t.net_name for t in self.model.tracks if t.net_name)
             arcs_after = _Counter(a.net_name for a in self.model.arcs if a.net_name)

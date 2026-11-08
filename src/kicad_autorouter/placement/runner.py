@@ -1,8 +1,5 @@
 """Placement runner: region grouping, run_placement orchestrator, frame merging.
 
-Extracted from placement/runner.py (Step 3: split god modules). Behavior-neutral
-move only — ``run_placement`` and ``_merge_region_lists`` are unchanged.
-
 Per-region force simulation lives in :mod:`placement.region`; the final
 de-penetration eject in :mod:`placement.depenetrate`; the result dataclass in
 :mod:`placement.proposal`. This module is a thin orchestrator: validate params,
@@ -133,6 +130,7 @@ def run_placement(
     # Group pads by board region
     if model.board_regions and model.footprint_region:
         all_deltas: Dict[str, Tuple[float, float, float]] = {}
+        all_label_deltas: Dict[str, Tuple[float, float]] = {}
         all_forces: Dict[str, Tuple[float, float]] = {}
         all_components: Dict[str, Dict[str, Tuple[float, float]]] = {}
         total_iterations = 0
@@ -176,7 +174,8 @@ def run_placement(
             if region_pads:
                 (region_deltas, region_forces, region_iters, region_comps,
                  region_frames, region_force_frames, region_stop,
-                 region_residual, region_dbg, region_depen) = _run_region_simulation(
+                 region_residual, region_dbg, region_depen,
+                 region_label_deltas) = _run_region_simulation(
                     region_idx, model.board_regions[region_idx],
                     region_pad_indices, region_pads, region_pad_to_fp_idx,
                     region_fp_uuid_to_pad_indices, region_global_pad_idx_to_local,
@@ -189,6 +188,7 @@ def run_placement(
                     all_stop = region_stop
                 all_residual = max(all_residual, region_residual)
                 all_deltas.update(region_deltas)
+                all_label_deltas.update(region_label_deltas)
                 all_forces.update(region_forces)
                 all_components.update(region_comps)
                 total_iterations = max(total_iterations, region_iters)
@@ -221,6 +221,7 @@ def run_placement(
 
         return PlacementProposal(
             deltas=all_deltas,
+            label_deltas=all_label_deltas,
             iterations=total_iterations,
             final_max_disp_mm=max_final_disp,
             elapsed_s=time.perf_counter() - start,
@@ -264,7 +265,8 @@ def run_placement(
 
     (region_deltas, region_forces, region_iters, region_comps,
      region_frames, region_force_frames, region_stop,
-     region_residual, region_dbg, region_depen) = _run_region_simulation(
+     region_residual, region_dbg, region_depen,
+     region_label_deltas) = _run_region_simulation(
         0, virtual_region,
         region_pad_indices, region_pads, region_pad_to_fp_idx,
         region_fp_uuid_to_pad_indices, region_global_pad_idx_to_local,
@@ -287,6 +289,7 @@ def run_placement(
 
     return PlacementProposal(
         deltas=region_deltas,
+        label_deltas=region_label_deltas,
         iterations=region_iters,
         final_max_disp_mm=max(
             (math.hypot(dx, dy) for dx, dy, _ in region_deltas.values()), default=0.0

@@ -392,24 +392,67 @@ def _to_local_point(p: Point, fp: Footprint) -> Tuple[float, float]:
     local = _to_local(p.x_mm, p.y_mm, fp.x_mm, fp.y_mm, fp.angle_deg, fp.layer)
     return (local.x_mm, local.y_mm)
 
+
+def label_board_pose(fp: Footprint) -> Optional[Tuple[float, float, float]]:
+    """Board-frame (cx_mm, cy_mm, angle_deg) of a footprint's label.
+
+    The anchor rides the footprint-local frame via :func:`_to_board`
+    (pads/courtyard convention); the angle is local-plus-parent (pad-angle
+    convention — verified: FP@180 stores text 0 with pads at absolute 180).
+    None when the footprint carries no label.
+    """
+    from .labels import label_board_angle
+
+    if fp.label is None:
+        return None
+    c = _to_board(
+        fp.label.local_x_mm, fp.label.local_y_mm,
+        fp.x_mm, fp.y_mm, fp.angle_deg, fp.layer,
+    )
+    return (
+        c.x_mm,
+        c.y_mm,
+        label_board_angle(fp.label.local_angle_deg, fp.angle_deg),
+    )
+
 def apply_deltas(
-    model: BoardModel, deltas: Dict[str, Tuple[float, float, float]]
+    model: BoardModel, deltas: Dict[str, Tuple[float, float, float]],
+    label_snap: bool = True,
+    label_allow_inverted: bool = False,
+    label_deltas: Optional[Dict[str, Tuple[float, float]]] = None,
 ) -> BoardModel:
     """Return a new BoardModel with footprint positions updated by deltas.
 
     Deltas are keyed by footprint UUID as (dx_mm, dy_mm, dangle_deg).
     Only unlocked footprints are moved; locked footprints stay in place
     regardless of delta. Footprints without a delta entry are unchanged.
+
+    Labels ride in the footprint-local frame (``fp_text`` angles are
+    footprint-relative — a file with the footprint at 180 stores text
+    angle 0 while its pads store absolute 180), so translation and
+    rotation need no label rewrite; when the footprint rotates
+    (``da != 0``), an optional readable snap counter-rotates the label's
+    local angle to the nearest upright board orientation (0/90/270, 180
+    only with ``label_allow_inverted``). Pure translations never touch
+    text (a zero delta stays the exact no-op), matching ``io``.
+
+    Orbit mode passes ``label_deltas`` (uuid to footprint-local dx/dy
+    from the filed anchor): the local anchor shifts before the snap, so
+    the final board pose reproduces the integrated orbit exactly. A
+    footprint with only a label entry (parent unmoved) still updates.
     """
-    if not deltas:
+    if not deltas and not label_deltas:
         return model
 
     updated_footprints = []
     for fp in model.footprints:
-        if fp.locked or not fp.uuid or fp.uuid not in deltas:
+        if fp.locked or not fp.uuid or (
+            fp.uuid not in deltas
+            and not (label_deltas and fp.uuid in label_deltas)
+        ):
             updated_footprints.append(fp)
             continue
-        dx, dy, da = deltas[fp.uuid]
+        dx, dy, da = deltas.get(fp.uuid, (0.0, 0.0, 0.0))
         new_x = fp.x_mm + dx
         new_y = fp.y_mm + dy
         new_angle = fp.angle_deg + da
@@ -445,6 +488,42 @@ def apply_deltas(
             for a, b in fp.courtyard
         )
 
+        # Labels ride the footprint-local frame: the local anchor is
+        # invariant under moves (only the parent pose changes), while the
+        # local angle gains the readable snap expressed in the new frame.
+        # Orbit mode shifts the anchor itself via label_deltas first.
+        new_label = None
+        if fp.label is not None:
+            lx, ly = fp.label.local_x_mm, fp.label.local_y_mm
+            if label_deltas and fp.uuid in label_deltas:
+                ldx, ldy = label_deltas[fp.uuid]
+                lx, ly = lx + ldx, ly + ldy
+            if da != 0.0 and label_snap:
+                from .labels import snapped_local_angle
+
+                new_local_angle = snapped_local_angle(
+                    fp.label.local_angle_deg,
+                    fp.angle_deg,
+                    new_angle,
+                    snap=True,
+                    allow_inverted=label_allow_inverted,
+                )
+            else:
+                new_local_angle = fp.label.local_angle_deg
+            if (
+                new_local_angle != fp.label.local_angle_deg
+                or lx != fp.label.local_x_mm
+                or ly != fp.label.local_y_mm
+            ):
+                new_label = replace(
+                    fp.label,
+                    local_x_mm=lx,
+                    local_y_mm=ly,
+                    local_angle_deg=new_local_angle,
+                )
+            else:
+                new_label = fp.label
+
         updated_footprints.append(
             replace(
                 fp,
@@ -453,6 +532,7 @@ def apply_deltas(
                 angle_deg=new_angle,
                 pads=new_pads,
                 courtyard=new_courtyard,
+                label=new_label,
             )
         )
 
@@ -467,6 +547,7 @@ def commit_placement(
     model: BoardModel,
     deltas: Dict[str, Tuple[float, float, float]],
     protected_nets: Optional[Set[str]] = None,
+    label_deltas: Optional[Dict[str, Tuple[float, float]]] = None,
 ) -> BoardModel:
     """Apply deltas AND rip up tracks/vias on nets of moved footprints.
 
@@ -474,11 +555,13 @@ def commit_placement(
         model: Board model
         deltas: {uuid: (dx, dy, dangle)} footprint movements
         protected_nets: Net names to never rip up (e.g., power rails)
+        label_deltas: orbit-mode {uuid: (dx, dy)} footprint-local label
+            offsets, forwarded to :func:`apply_deltas`
 
     Returns:
         New BoardModel with moved footprints and pruned tracks/vias
     """
-    if not deltas:
+    if not deltas and not label_deltas:
         return model
 
     # Collect affected nets from moved footprints' pads
@@ -492,7 +575,7 @@ def commit_placement(
                         affected_nets.add(pad.net_name)
 
     if not affected_nets:
-        return apply_deltas(model, deltas)
+        return apply_deltas(model, deltas, label_deltas=label_deltas)
 
     protected = protected_nets or set()
 
@@ -510,7 +593,7 @@ def commit_placement(
 
     # Apply footprint movement (preserves all board metadata via replace
     # inside apply_deltas), then prune copper.
-    moved_model = apply_deltas(model, deltas)
+    moved_model = apply_deltas(model, deltas, label_deltas=label_deltas)
 
     # Return model with pruned copper, preserving everything else
     # (ghost_footprints, version, regions, ...).

@@ -1,9 +1,5 @@
 """Per-region force-spring simulation loop for placement.
 
-Extracted from placement/runner.py (Step 3: split god modules). Behavior-neutral
-move only — `_run_region_simulation` and its frame/force rounding helpers are
-unchanged.
-
 Supports multi-board region simulation: footprints are grouped by board
 outline region (from Edge.Cuts) and each region is simulated independently
 with its own bounding box and timestep state.
@@ -16,12 +12,13 @@ from typing import Collection, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
-from ..board_model import BoardRegion, Footprint, Pad, is_ground_net, is_power_net_effective
+from ..board_model import BoardRegion, Footprint, Pad, _to_board, _to_local, is_ground_net, is_power_net_effective
 from ..mass import courtyard_bbox_area_m2, footprint_mass_kg
 from .contact import (
     _courtyard_outline_polygon,
     _footprint_courtyard_polygon,
     courtyard_is_degenerate,
+    label_contact_force,
 )
 from .align import (
     ALIGN_RECOMPUTE_ITERS,
@@ -44,9 +41,11 @@ from .params import (
     PlacementParams,
 )
 from .rigid import (
+    _apply_rigid_motion,
     _clamp_rigid_step,
     _compute_footprint_pose_from_pads,
     _project_rigid_poses,
+    _rigid_motion_params,
 )
 
 
@@ -65,6 +64,303 @@ def _round_force_components(
         cause: (_round_sig3(fx), _round_sig3(fy))
         for cause, (fx, fy) in comps.items()
     }
+
+
+# Slot recompute cadence (iterations): side-slot scoring walks every body
+# pair per label, so it refreshes on a slow tick while the spring/contact
+# dynamics run every step.
+_LABEL_SLOT_TICKS = 10
+# Slot candidate gap (mm) past the parent outline + label half-size.
+_LABEL_SLOT_GAP_MM = 1.0
+
+
+def _posed_label_anchor(
+    positions: np.ndarray,
+    pad_rows: np.ndarray,
+    orig_pos: Optional[np.ndarray],
+    anchor_filed: Tuple[float, float],
+    fp_angle_deg: float,
+) -> Tuple[Tuple[float, float], float]:
+    """Pose the filed label anchor by the parent's current rigid motion.
+
+    Returns (posed anchor board xy, parent board angle now). Degenerate
+    pad mappings (empty/single) fall back to the filed anchor and angle.
+    """
+    from .rigid import _apply_rigid_motion as _apply
+
+    motion = None
+    if orig_pos is not None and len(pad_rows):
+        motion = _rigid_motion_params(orig_pos, positions[pad_rows])
+    if motion is None:
+        return anchor_filed, float(fp_angle_deg)
+    oc, cc, ca, sa, tx, ty, ang = motion
+    posed = _apply(
+        np.array([anchor_filed], dtype=np.float64), oc, cc, ca, sa, tx, ty
+    )[0]
+    return (float(posed[0]), float(posed[1])), float(fp_angle_deg) + math.degrees(ang)
+
+
+def _label_body_maps(fctx) -> Tuple[Dict[str, object], Dict[str, Tuple[float, float, float]]]:
+    """Live body polygons + (cx, cy, radius) per footprint from the cache."""
+    polys: Dict[str, object] = {}
+    stats: Dict[str, Tuple[float, float, float]] = {}
+    cache = getattr(fctx, "poly_cache", {}) or {}
+    for uuid, entry in cache.items():
+        poly = (entry or {}).get("body_poly")
+        if poly is None or getattr(poly, "is_empty", True):
+            continue
+        polys[uuid] = poly
+        try:
+            c = (entry or {}).get("centroid") or (poly.centroid.x, poly.centroid.y)
+            r = float((entry or {}).get("radius", 0.0) or 0.0)
+            stats[uuid] = (float(c[0]), float(c[1]), r)
+        except Exception:
+            continue
+    return polys, stats
+
+
+def _orbit_label_forces(
+    positions: np.ndarray,
+    n_pads: int,
+    lab_rows_arr: np.ndarray,
+    lab_parent_li: List[int],
+    lab_uuid: List[str],
+    lab_text: List[str],
+    lab_size: List[Tuple[float, float]],
+    lab_local_angle: List[float],
+    lab_anchor_filed: List[Tuple[float, float]],
+    lab_mass_list: List[float],
+    lab_slot_target: Optional[np.ndarray],
+    fp_uuids: List[str],
+    fp_local_to_rows: List[np.ndarray],
+    fp_by_uuid: Dict[str, Footprint],
+    fctx,
+    params,
+    iteration: int,
+) -> np.ndarray:
+    """Net orbit force (newtons) per label node: tether spring + contact.
+
+    Tether target depends on ``params.label_tether``: "spring" leashes to
+    the filed anchor posed by the parent's current rigid motion, "slot"
+    leashes to the best-scoring courtyard-side slot (refreshed every
+    ``_LABEL_SLOT_TICKS`` iterations), "free" applies no spring. Contact
+    is the wall-law push of the label's clearance rect against nearby
+    bodies (own parent included), scaled by ``label_solidity`` so the
+    slider stays meaningful in orbit mode. Returns (L, 2), zeros when a
+    label has no computable pose.
+    """
+    from ..board_model.labels import (
+        clamp_orbit_radius,
+        label_board_angle,
+        label_board_rect,
+        label_text_size_mm,
+        label_tether_force_N as label_tether_force,
+        score_label_slot,
+        snap_label_angle,
+    )
+
+    n_lab = len(lab_rows_arr)
+    out = np.zeros((n_lab, 2), dtype=np.float64)
+    if n_lab == 0:
+        return out
+    cy_cache = getattr(fctx, "cy_cache", {}) or {}
+    halo_mm = params.wall_halo_m * 1000.0 + params.label_halo_m * 1000.0
+    radius_mm = params.label_orbit_radius_m * 1000.0
+    polys, stats = _label_body_maps(fctx)
+    for i in range(n_lab):
+        uuid = lab_uuid[i]
+        li = lab_parent_li[i]
+        rows = fp_local_to_rows[li] if li < len(fp_local_to_rows) else np.array([], dtype=int)
+        fp = fp_by_uuid.get(fp_uuids[li] if li < len(fp_uuids) else "")
+        if fp is None or len(rows) == 0:
+            continue
+        entry = cy_cache.get(uuid, {}) or {}
+        orig = entry.get("orig_pos")
+        anchor, parent_now = _posed_label_anchor(
+            positions, np.asarray(rows), orig, lab_anchor_filed[i], fp.angle_deg
+        )
+        board_angle = snap_label_angle(
+            label_board_angle(lab_local_angle[i], parent_now),
+            params.label_allow_inverted,
+        )
+        node = positions[lab_rows_arr[i]]
+        target = None
+        if params.label_tether == "spring":
+            target = anchor
+        elif params.label_tether == "slot":
+            if (
+                lab_slot_target is not None
+                and iteration % _LABEL_SLOT_TICKS == 0
+            ):
+                parent_poly = polys.get(uuid)
+                if parent_poly is not None:
+                    try:
+                        minx, miny, maxx, maxy = parent_poly.bounds
+                        cx, cy = (minx + maxx) / 2.0, (miny + maxy) / 2.0
+                    except Exception:
+                        cx, cy = anchor
+                        minx = miny = maxx = maxy = 0.0
+                        dx = dy = 1.0
+                    else:
+                        dx, dy = (maxx - minx) / 2.0, (maxy - miny) / 2.0
+                    w, h = label_text_size_mm(lab_text[i], lab_size[i])
+                    if board_angle in (90.0, 270.0):
+                        w, h = h, w
+                    cands = [
+                        (cx + dx + w / 2.0 + _LABEL_SLOT_GAP_MM, cy),
+                        (cx - dx - w / 2.0 - _LABEL_SLOT_GAP_MM, cy),
+                        (cx, cy + dy + h / 2.0 + _LABEL_SLOT_GAP_MM),
+                        (cx, cy - dy - h / 2.0 - _LABEL_SLOT_GAP_MM),
+                    ]
+                    best, best_cost = cands[0], math.inf
+                    for c in cands:
+                        cost = score_label_slot(
+                            c, lab_text[i], board_angle, lab_size[i],
+                            params.label_halo_m * 1000.0, polys, uuid, anchor,
+                        )
+                        if cost < best_cost:
+                            best, best_cost = c, cost
+                    lab_slot_target[i] = best
+            if lab_slot_target is not None:
+                target = (
+                    float(lab_slot_target[i][0]),
+                    float(lab_slot_target[i][1]),
+                )
+            # Keep slot targets inside the orbit disc (they derive from a
+            # stale parent pose between recompute ticks).
+            if target is not None:
+                target = clamp_orbit_radius(target, anchor, radius_mm)
+        # "free" leaves target None: contact + radius cap only.
+        if target is not None:
+            try:
+                fx, fy = label_tether_force(
+                    (float(node[0]), float(node[1])), target,
+                    lab_mass_list[i], hz=params.label_tether_hz,
+                )
+            except Exception:
+                fx = fy = 0.0
+            out[i, 0] += fx
+            out[i, 1] += fy
+        if params.label_solidity > 0.0 and halo_mm > 0.0:
+            rect = label_board_rect(
+                lab_text[i], float(node[0]), float(node[1]),
+                board_angle, lab_size[i], halo_mm=0.0,
+            )
+            if rect is not None:
+                try:
+                    from shapely.geometry import Polygon as _Poly
+
+                    label_poly = _Poly(rect)
+                except Exception:
+                    label_poly = None
+                if label_poly is not None and not label_poly.is_empty:
+                    try:
+                        lr = math.hypot(
+                            label_poly.bounds[2] - label_poly.bounds[0],
+                            label_poly.bounds[3] - label_poly.bounds[1],
+                        ) / 2.0
+                    except Exception:
+                        lr = 1.0
+                    try:
+                        lx, ly = label_poly.centroid.x, label_poly.centroid.y
+                    except Exception:
+                        lx, ly = float(node[0]), float(node[1])
+                    nearby = {}
+                    for buid, bpoly in polys.items():
+                        st = stats.get(buid)
+                        if st is None:
+                            nearby[buid] = bpoly
+                            continue
+                        if math.hypot(lx - st[0], ly - st[1]) <= st[2] + lr + halo_mm:
+                            nearby[buid] = bpoly
+                    if nearby:
+                        cx, cy = label_contact_force(
+                            label_poly, nearby, halo_mm,
+                            params.wall_k_N, params.wall_exponent,
+                            params.wall_cap_depth_mm,
+                            solidity=params.label_solidity,
+                        )
+                        out[i, 0] += cx
+                        out[i, 1] += cy
+    return out
+
+
+def _posed_label_anchors(
+    positions: np.ndarray,
+    lab_parent_li: List[int],
+    lab_anchor_filed: List[Tuple[float, float]],
+    fp_uuids: List[str],
+    fp_local_to_rows: List[np.ndarray],
+    fp_by_uuid: Dict[str, Footprint],
+    fctx,
+) -> np.ndarray:
+    """Posed anchor per orbiting label from the parent's current rigid motion.
+
+    The exact-carry basis: the anchor is the filed anchor transformed by
+    the parent's live pad motion, so labels ride translating/rotating
+    parents with zero lag and the tether governs only the orbit offset.
+    Degenerate mappings fall back to the filed anchor (carry 0).
+    """
+    out = np.zeros((len(lab_parent_li), 2), dtype=np.float64)
+    cy_cache = getattr(fctx, "cy_cache", {}) or {}
+    for k, li in enumerate(lab_parent_li):
+        rows = fp_local_to_rows[li] if li < len(fp_local_to_rows) else np.array([], dtype=int)
+        uuid = fp_uuids[li] if li < len(fp_uuids) else ""
+        fp = fp_by_uuid.get(uuid)
+        if fp is None or len(rows) == 0:
+            out[k] = lab_anchor_filed[k]
+            continue
+        entry = cy_cache.get(uuid, {}) or {}
+        anchor, _ = _posed_label_anchor(
+            positions, np.asarray(rows), entry.get("orig_pos"),
+            lab_anchor_filed[k], fp.angle_deg,
+        )
+        out[k] = anchor
+    return out
+
+
+def _clamp_labels_to_radius(
+    positions: np.ndarray,
+    lab_rows_arr: np.ndarray,
+    lab_parent_li: List[int],
+    lab_anchor_filed: List[Tuple[float, float]],
+    fp_uuids: List[str],
+    fp_local_to_rows: List[np.ndarray],
+    fp_by_uuid: Dict[str, Footprint],
+    fctx,
+    params,
+) -> None:
+    """Positional backstop: pin every label node inside the orbit disc.
+
+    The anchor follows the parent's current rigid motion (same helper as
+    the force path), so a moved parent carries its disc along. Applies in
+    every tether mode (including "free") after the drift so hard shoves
+    can never fling a label across the board. In-place.
+    """
+    from ..board_model.labels import clamp_orbit_radius
+
+    if len(lab_rows_arr) == 0:
+        return
+    cy_cache = getattr(fctx, "cy_cache", {}) or {}
+    radius_mm = params.label_orbit_radius_m * 1000.0
+    for k, row in enumerate(lab_rows_arr):
+        li = lab_parent_li[k]
+        rows = fp_local_to_rows[li] if li < len(fp_local_to_rows) else np.array([], dtype=int)
+        uuid = fp_uuids[li] if li < len(fp_uuids) else ""
+        fp = fp_by_uuid.get(uuid)
+        if fp is None or len(rows) == 0:
+            continue
+        entry = cy_cache.get(uuid, {}) or {}
+        anchor, _ = _posed_label_anchor(
+            positions, np.asarray(rows), entry.get("orig_pos"),
+            lab_anchor_filed[k], fp.angle_deg,
+        )
+        node = positions[int(row)]
+        cx, cy = clamp_orbit_radius(
+            (float(node[0]), float(node[1])), anchor, radius_mm
+        )
+        positions[int(row), 0] = cx
+        positions[int(row), 1] = cy
 
 
 def _run_region_simulation(
@@ -93,6 +389,7 @@ def _run_region_simulation(
     float,
     dict,
     bool,
+    Dict[str, Tuple[float, float]],
 ]:
     """Run force-spring simulation for a single board region."""
     # Extract region bounds
@@ -101,7 +398,7 @@ def _run_region_simulation(
     # Filter pads for this region
     n_pads = len(region_pads)
     if n_pads == 0:
-        return {}, {}, 0, {}, [], [], "empty", 0.0, {}, False
+        return {}, {}, 0, {}, [], [], "empty", 0.0, {}, False, {}
 
     # Build pad positions array
     pad_positions = np.zeros((n_pads, 2), dtype=np.float64)
@@ -164,7 +461,7 @@ def _run_region_simulation(
     pad_mass_kg = np.maximum(pad_mass_kg, _fallback_mass_kg)
 
     if not pad_movable.any():
-        return {}, {}, 0, {}, [], [], "empty", 0.0, {}, False
+        return {}, {}, 0, {}, [], [], "empty", 0.0, {}, False, {}
 
     # Net attraction edges for this region.
     _ref_by_idx: Dict[int, str] = {}
@@ -310,7 +607,8 @@ def _run_region_simulation(
         if _fp is None:
             return {"body": {"kind": "empty", "empty": True}, "pins": [],
                     "pad_idx": np.array([], dtype=int),
-                    "orig_pos": np.array([], dtype=np.float64)}
+                    "orig_pos": np.array([], dtype=np.float64),
+                    "label": None}
         outline = _courtyard_outline_polygon(_fp.courtyard)
         if outline is not None and courtyard_is_degenerate(_fp):
             # Drafting debris, not a body (pin-marker dots): fall through
@@ -408,7 +706,25 @@ def _run_region_simulation(
             [(p.position.x_mm, p.position.y_mm) for p in _fp.pads],
             dtype=np.float64,
         ) if _fp.pads else np.array([], dtype=np.float64)
-        return {"body": body, "pins": pins, "pad_idx": _pad_idx, "orig_pos": _orig_pos}
+        # Label rect in filed board coordinates: the collision body in
+        # force.py re-poses these corners with the same rigid motion as
+        # the courtyard (local-frame geometry rides the pads). Bare text
+        # bbox — halo inflation scales with label_solidity at union time.
+        _label = None
+        if _fp.label is not None:
+            from ..board_model import label_board_pose
+            from ..board_model.labels import label_board_rect
+
+            _pose = label_board_pose(_fp)
+            if _pose is not None:
+                _corners = label_board_rect(
+                    _fp.label.text, _pose[0], _pose[1], _pose[2],
+                    _fp.label.size_mm, halo_mm=0.0,
+                )
+                if _corners is not None:
+                    _label = {"corners": _corners}
+        return {"body": body, "pins": pins, "pad_idx": _pad_idx, "orig_pos": _orig_pos,
+                "label": _label}
 
     cy_cache: Dict[str, dict] = {}
     for _uuid in fp_uuids:
@@ -567,16 +883,114 @@ def _run_region_simulation(
     _dt = float(params.dt_s)
     _prev_ke: Optional[float] = None
 
+    # ---- Orbit-mode label nodes (separate from the union-into-parent path).
+    # Each orbiting label is one extra integrated node in the tail rows of
+    # positions/_vel (indices >= n_pads) with its derived ink mass. The
+    # pad-indexed force kernel never sees them (called on [:n_pads]
+    # slices); label tether + contact forces are computed separately in
+    # the loop below. Only movable, in-region, labeled real footprints
+    # orbit — locked parents keep welded labels.
+    orbit_on = bool(params.label_orbit)
+    lab_rows: List[int] = []
+    lab_parent_li: List[int] = []
+    lab_uuid: List[str] = []
+    lab_text: List[str] = []
+    lab_size: List[Tuple[float, float]] = []
+    lab_local_angle: List[float] = []
+    lab_filed_local: List[Tuple[float, float]] = []
+    lab_anchor_filed: List[Tuple[float, float]] = []
+    lab_mass_list: List[float] = []
+    lab_slot_target: Optional[np.ndarray] = None
+    lab_anchor_prev: Optional[np.ndarray] = None
+    _lab_vel = np.zeros((0, 2), dtype=np.float64)
+    _lab_damp_c = np.zeros(0, dtype=np.float64)
+    _lab_fric_N = np.zeros(0, dtype=np.float64)
+    if orbit_on:
+        from ..board_model import label_board_pose
+        from ..board_model.labels import label_ink_mass_kg
+
+        for _fp in model.footprints:
+            if _fp.label is None or not _fp.uuid:
+                continue
+            if not fp_movable.get(_fp.uuid, False):
+                continue
+            if model.footprint_region.get(_fp.uuid) != region_idx:
+                continue
+            if _fp.uuid not in region_fp_uuid_to_pad_indices:
+                continue
+            if movable_uuids is not None and _fp.uuid not in movable_uuids:
+                continue
+            _pose = label_board_pose(_fp)
+            if _pose is None:
+                continue
+            _li = fp_uuid_to_local_idx.get(_fp.uuid)
+            if _li is None:
+                continue
+            lab_rows.append(n_pads + len(lab_rows))
+            lab_parent_li.append(_li)
+            lab_uuid.append(_fp.uuid)
+            lab_text.append(_fp.label.text)
+            lab_size.append(_fp.label.size_mm)
+            lab_local_angle.append(_fp.label.local_angle_deg)
+            lab_filed_local.append(
+                (_fp.label.local_x_mm, _fp.label.local_y_mm)
+            )
+            lab_anchor_filed.append((_pose[0], _pose[1]))
+            lab_mass_list.append(
+                label_ink_mass_kg(
+                    _fp.label.text, _fp.label.size_mm,
+                    floor_kg=params.mass_floor_kg,
+                )
+            )
+        if lab_rows:
+            _lab_init = np.array(lab_anchor_filed, dtype=np.float64)
+            positions = np.vstack([positions, _lab_init])
+            prev_positions = positions.copy()
+            _vel = np.vstack([_vel, np.zeros((len(lab_rows), 2))])
+            pad_mass_kg = np.concatenate([
+                pad_mass_kg,
+                np.maximum(
+                    np.array(lab_mass_list, dtype=np.float64),
+                    _fallback_mass_kg,
+                ),
+            ])
+            lab_slot_target = _lab_init.copy()
+            lab_anchor_prev = _lab_init.copy()
+            _lab_vel = np.zeros((len(lab_rows), 2), dtype=np.float64)
+            # Mass-consistent damping/friction: the shared viscous decay
+            # 1/(1+c*dt/m) and the friction deadband assume part-scale
+            # masses — at ink mass they would pin labels absolutely
+            # (decay ~1e-5/step, tether forces far below friction_N).
+            # Scale both by m_label/m_ref (heaviest pad) so labels share
+            # the parts' decay timescale and freeze threshold relatively.
+            _ref_mass = max(float(np.max(pad_mass_kg[:n_pads])), 1e-12)
+            _lab_scale = np.maximum(
+                np.array(lab_mass_list, dtype=np.float64),
+                _fallback_mass_kg,
+            ) / _ref_mass
+            _lab_damp_c = np.full(len(lab_rows), params.damping_Ns_m) * _lab_scale
+            _lab_fric_N = params.friction_N * _lab_scale
+        else:
+            orbit_on = False
+            _lab_damp_c = np.zeros(0)
+            _lab_fric_N = np.zeros(0)
+    lab_rows_arr = np.array(lab_rows, dtype=int)
+    lab_movable = np.ones(len(lab_rows), dtype=bool) if orbit_on else np.zeros(0, dtype=bool)
+    all_movable = (
+        np.concatenate([pad_movable, lab_movable]) if orbit_on else pad_movable
+    )
+
     # Initial forces predict the NEXT step from the committed board positions.
+    # (Tail label rows are invisible to the pad-indexed kernel.)
     initial_force, initial_components = _compute_total_force(
-        positions, len(region_pads), pad_movable,
+        positions[:n_pads], len(region_pads), pad_movable,
         params, has_net_edges, src_idx, dst_idx, edge_weights,
         ghost_attractions,
         same_fp_mask,
         edge_sides=edge_sides,
         return_components=True,
         ctx=fctx,
-        pad_velocities=_vel,
+        pad_velocities=_vel[:n_pads],
         align_targets=_align_targets,
         align_ref_axes=_align_ref_axes,
     )
@@ -618,14 +1032,14 @@ def _run_region_simulation(
 
     def _capture_force_frame(pos: np.ndarray) -> Dict[str, Dict[str, Tuple[float, float]]]:
         force, components = _compute_total_force(
-            pos, len(region_pads), pad_movable,
+            pos[:n_pads], len(region_pads), pad_movable,
             params, has_net_edges, src_idx, dst_idx, edge_weights,
             ghost_attractions,
             same_fp_mask,
             edge_sides=edge_sides,
             return_components=True,
             ctx=fctx,
-            pad_velocities=_vel,
+            pad_velocities=_vel[:n_pads],
             align_targets=_align_targets,
             align_ref_axes=_align_ref_axes,
         )
@@ -689,7 +1103,7 @@ def _run_region_simulation(
     # Slow creep still moves the mean, so only true standstills stop here.
     # stall_window=0 disables. The initial pose seeds the reference, so a
     # run that starts wedged stops after exactly one window.
-    stall_mean_ref = positions[pad_movable].copy()
+    stall_mean_ref = positions[all_movable].copy()
     stall_acc = np.zeros_like(stall_mean_ref)
     stall_n = 0
 
@@ -699,15 +1113,16 @@ def _run_region_simulation(
             _align_targets, _row_targets = _refresh_align_targets(
                 _align_targets, _row_targets)
         # Update context with current velocities for tangential assist
-        fctx.pad_velocities = _vel
+        # (pad-indexed kernel: tail label rows stay invisible).
+        fctx.pad_velocities = _vel[:n_pads]
         force, _ = _compute_total_force(
-            positions, len(region_pads), pad_movable,
+            positions[:n_pads], len(region_pads), pad_movable,
             params, has_net_edges, src_idx, dst_idx, edge_weights,
             ghost_attractions,
             same_fp_mask,
             edge_sides=edge_sides,
             ctx=fctx,
-            pad_velocities=_vel,
+            pad_velocities=_vel[:n_pads],
             align_targets=_align_targets,
             align_ref_axes=_align_ref_axes,
         )
@@ -742,6 +1157,14 @@ def _run_region_simulation(
         force[~pad_movable] = 0.0
         _frozen[~pad_movable] = True
 
+        # ---- Orbit-mode label state: exact carry + relative orbit velocity.
+        # Labels ride their parent's anchor displacement exactly (zero
+        # lag by construction); only the orbit OFFSET integrates forces.
+        # _lab_vel is the offset velocity (labels never join the shared
+        # momentum blend — offset dynamics stay overdamped and settle).
+        _lab_frozen = np.zeros(len(lab_rows), dtype=bool)
+        # (Forces integrate after the carry below, at carried positions.)
+
         if pad_movable.any():
             # Rigid-aware residual: net force per movable FOOTPRINT (pads
             # summed), not per-pad max. Pads of one rigid body routinely
@@ -763,47 +1186,115 @@ def _run_region_simulation(
         else:
             residual_max_force_N = 0.0
 
-        # Semi-implicit Euler: v += (F/m) dt, with implicit-Euler viscous
-        # decay v *= 1/(1 + c*dt/m), then a speed ceiling.
-        _accel = force / pad_mass_kg[:, None]
-        _vel[pad_movable] += _accel[pad_movable] * _dt
-        _decay = 1.0 / (1.0 + params.damping_Ns_m * _dt / pad_mass_kg)
-        _vel *= _decay[:, None]
-        _vel[_frozen] = 0.0
-        _speed = np.linalg.norm(_vel, axis=1, keepdims=True)
+        # Semi-implicit Euler for pads: v += (F/m) dt, with implicit-Euler
+        # viscous decay v *= 1/(1 + c*dt/m), then a speed ceiling. Pads
+        # only — labels integrate their offset velocity separately below,
+        # after the exact carry (carrying by velocity would double-count
+        # the anchor motion: once via _vel drift, once via the carry).
+        _pvel = _vel[:n_pads]
+        _accel = force / pad_mass_kg[:n_pads, None]
+        _pvel[pad_movable] += _accel[pad_movable] * _dt
+        _pdecay = 1.0 / (1.0 + params.damping_Ns_m * _dt / pad_mass_kg[:n_pads])
+        _pvel *= _pdecay[:, None]
+        _pvel[_frozen] = 0.0
+        _speed = np.linalg.norm(_pvel, axis=1, keepdims=True)
         _vcap = params.vmax_m_s / np.maximum(_speed, 1e-12)
         np.minimum(_vcap, 1.0, out=_vcap)
-        _vel *= _vcap
-        _vel[~pad_movable] = 0.0
+        _pvel *= _vcap
+        _pvel[~pad_movable] = 0.0
 
         # Drift in meters, applied to the millimeter-native positions.
         _old_positions = positions.copy()
-        positions[pad_movable] += _vel[pad_movable] * _dt * 1000.0
+        positions[:n_pads][pad_movable] += _pvel[pad_movable] * _dt * 1000.0
         positions = np.nan_to_num(positions, nan=0.0, posinf=0.0, neginf=0.0)
+        if orbit_on:
+            _clamp_labels_to_radius(
+                positions, lab_rows_arr, lab_parent_li,
+                lab_anchor_filed, fp_uuids, fp_local_to_rows, fp_by_uuid,
+                fctx, params,
+            )
 
-        # Rigid projection + rigid-step clamp.
+        # Rigid projection + rigid-step clamp (pads only; label rows are
+        # carried exactly below instead of projected).
         _project_rigid_poses(positions, _proj_bodies)
         _clamp_rigid_step(
             positions, _old_positions, _proj_bodies, pad_movable,
             cap_mm=params.vmax_m_s * _dt * 1000.0,
             max_rot_rad=math.radians(10.0),
         )
+        if orbit_on:
+            # Exact carry: the posed anchor moved with the parent's
+            # projection, so translate each label node by the anchor's
+            # own displacement. The tether then governs only the orbit
+            # offset — labels can never lag behind a moving parent.
+            _anchor_now = _posed_label_anchors(
+                positions, lab_parent_li, lab_anchor_filed,
+                fp_uuids, fp_local_to_rows, fp_by_uuid, fctx,
+            )
+            positions[lab_rows_arr] += _anchor_now - lab_anchor_prev
+            lab_anchor_prev = _anchor_now
+            # Orbit forces at the carried positions: tether spring +
+            # label-vs-body contact, integrated into the offset velocity
+            # with mass-consistent decay (same timescale as parts) and
+            # the shared speed ceiling. Radius clamp is positional and
+            # applies in every tether mode, including "free".
+            _lab_force = _orbit_label_forces(
+                positions, n_pads, lab_rows_arr,
+                lab_parent_li, lab_uuid, lab_text, lab_size,
+                lab_local_angle, lab_anchor_filed, lab_mass_list,
+                lab_slot_target,
+                fp_uuids, fp_local_to_rows, fp_by_uuid,
+                fctx, params, iteration,
+            )
+            _lab_frozen = np.zeros(len(lab_rows), dtype=bool)
+            if params.friction_N > 0:
+                _lab_frozen = (
+                    np.linalg.norm(_lab_force, axis=1) < _lab_fric_N
+                )
+                _lab_force[_lab_frozen] = 0.0
+            _lab_accel = _lab_force / np.maximum(
+                np.array(lab_mass_list, dtype=np.float64), 1e-12
+            )[:, None]
+            _lab_vel += _lab_accel * _dt
+            _lab_vel *= (1.0 / (1.0 + _lab_damp_c * _dt / np.maximum(
+                np.array(lab_mass_list, dtype=np.float64), 1e-12
+            )))[:, None]
+            _lab_vel[_lab_frozen] = 0.0
+            _lab_speed = np.linalg.norm(_lab_vel, axis=1, keepdims=True)
+            _lab_vcap = params.vmax_m_s / np.maximum(_lab_speed, 1e-12)
+            np.minimum(_lab_vcap, 1.0, out=_lab_vcap)
+            _lab_vel *= _lab_vcap
+            positions[lab_rows_arr] += _lab_vel * _dt * 1000.0
+            positions = np.nan_to_num(positions, nan=0.0, posinf=0.0, neginf=0.0)
+            _clamp_labels_to_radius(
+                positions, lab_rows_arr, lab_parent_li,
+                lab_anchor_filed, fp_uuids, fp_local_to_rows, fp_by_uuid,
+                fctx, params,
+            )
         # Re-derive velocity from the actual projected displacement so the
         # projection can't inject phantom energy into the guard below.
         # Blend with old velocity (momentum_alpha) for momentum persistence.
+        # Labels are diagnostic here (their dynamics live in _lab_vel):
+        # total displacement velocity, no momentum blend, so the offset
+        # dynamics stay overdamped and settle onto the tether.
         if _dt > 0:
             vel_from_disp = (
-                (positions[pad_movable] - _old_positions[pad_movable]) * 1e-3 / _dt)
+                (positions[:n_pads] - _old_positions[:n_pads]) * 1e-3 / _dt)
             alpha = float(params.momentum_alpha)
-            _vel[pad_movable] = alpha * _vel[pad_movable] + (1.0 - alpha) * vel_from_disp
-        _vel[_frozen] = 0.0
-        _vel[~pad_movable] = 0.0
+            _pvel[pad_movable] = alpha * _pvel[pad_movable] + (1.0 - alpha) * vel_from_disp[pad_movable]
+            if orbit_on:
+                _vel[lab_rows_arr] = (
+                    (positions[lab_rows_arr] - _old_positions[lab_rows_arr]) * 1e-3 / _dt)
+        _vel[:n_pads][_frozen] = 0.0
+        _vel[~all_movable] = 0.0
 
         # Adaptive-dt energy guard: bleed and slow down on significant
-        # kinetic-energy jumps, regrow otherwise.
+        # kinetic-energy jumps, regrow otherwise. Orbit labels join the
+        # budget through all_movable (their ink mass is tiny, so only a
+        # true instability trips the guard).
         _ke = 0.5 * float(np.sum(
-            pad_mass_kg[pad_movable, None]
-            * _vel[pad_movable] * _vel[pad_movable]))
+            pad_mass_kg[all_movable, None]
+            * _vel[all_movable] * _vel[all_movable]))
         # Only trigger the energy guard on significant jumps: above the
         # numerical noise floor AND relatively large (1.25x) AND absolutely
         # large (see _ke_abs_increase_threshold above).
@@ -838,7 +1329,7 @@ def _run_region_simulation(
         # still moves the mean, so only true standstills stop here.
         # stall_window=0 disables.
         if params.stall_window > 0:
-            stall_acc += positions[pad_movable]
+            stall_acc += positions[all_movable]
             stall_n += 1
             if stall_n >= params.stall_window:
                 stall_mean = stall_acc / stall_n
@@ -880,17 +1371,22 @@ def _run_region_simulation(
     footprint_components: Dict[str, Dict[str, Tuple[float, float]]] = {}
 
     final_force, final_components = _compute_total_force(
-        positions, len(region_pads), pad_movable,
+        positions[:n_pads], len(region_pads), pad_movable,
         params, has_net_edges, src_idx, dst_idx, edge_weights,
         ghost_attractions,
         same_fp_mask,
         edge_sides=edge_sides,
         return_components=True,
         ctx=fctx,
-        pad_velocities=_vel,
+        pad_velocities=_vel[:n_pads],
         align_targets=_align_targets,
         align_ref_axes=_align_ref_axes,
     )
+
+    # (The final exact re-seat at the Kabsch-fitted parent pose happens
+    # in label extraction below, covering de-penetration ejects too.)
+    label_deltas: Dict[str, Tuple[float, float]] = {}
+    new_poses: Dict[str, Tuple[float, float, float]] = {}
 
     for fp in model.footprints:
         if model.footprint_region.get(fp.uuid) != region_idx:
@@ -915,6 +1411,7 @@ def _run_region_simulation(
         if math.hypot(dx, dy) > 1e-9 or abs(da) > 1e-9:
             deltas[fp.uuid] = (dx, dy, da)
             final_max_disp = max(final_max_disp, math.hypot(dx, dy))
+        new_poses[fp.uuid] = (new_x, new_y, new_angle)
 
         if pad_indices:
             fp_force = final_force[pad_indices].sum(axis=0)
@@ -940,6 +1437,43 @@ def _run_region_simulation(
             )
         residual_max_force_N = _res
 
+    # Orbit-mode label offsets: final node board position expressed in the
+    # parent's FINAL local frame, minus the filed anchor. Empty when no
+    # label moved (follow behavior, zero sidecar payload). Nodes are
+    # re-seated exactly at the Kabsch-fitted parent pose first: the loop
+    # clamp used the incremental rigid motion, whose angle estimate can
+    # differ by microns from the final fit — without this the sidecar
+    # could exceed the radius cap by that sliver.
+    if orbit_on:
+        from ..board_model.labels import clamp_orbit_radius as _clamp_r
+
+        radius_mm = params.label_orbit_radius_m * 1000.0
+        for k, uuid in enumerate(lab_uuid):
+            pose = new_poses.get(uuid)
+            fp = fp_by_uuid.get(uuid)
+            if pose is None or fp is None:
+                continue
+            fx0, fy0 = lab_filed_local[k]
+            try:
+                anchor_b = _to_board(
+                    fx0, fy0, pose[0], pose[1], pose[2], fp.layer
+                )
+            except (TypeError, ValueError, IndexError):
+                continue
+            node = positions[lab_rows[k]]
+            cx, cy = _clamp_r(
+                (float(node[0]), float(node[1])),
+                (anchor_b.x_mm, anchor_b.y_mm), radius_mm,
+            )
+            positions[lab_rows[k], 0] = cx
+            positions[lab_rows[k], 1] = cy
+            try:
+                local = _to_local(cx, cy, pose[0], pose[1], pose[2], fp.layer)
+            except (TypeError, ValueError, IndexError):
+                continue
+            if math.hypot(local.x_mm - fx0, local.y_mm - fy0) > 1e-9:
+                label_deltas[uuid] = (local.x_mm - fx0, local.y_mm - fy0)
+
     if record_frames and _frame_fps:
         _final_frame = _capture_frame(positions)
         _final_force_frame = _capture_force_frame(positions)
@@ -951,5 +1485,5 @@ def _run_region_simulation(
         deltas, footprint_forces, iteration + 1, footprint_components,
         _region_frames, _region_force_frames, stop_reason, residual_max_force_N,
         {"per_iteration": _dbg_iters or [], "depen": _dbg_depen or []},
-        _depen_moved,
+        _depen_moved, label_deltas,
     )

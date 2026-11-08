@@ -1,7 +1,4 @@
 """PlacementProposal dataclass: result of a placement run.
-
-Extracted from placement/runner.py (Step 3: split god modules). Behavior-neutral
-move only — the dataclass and every public field are unchanged.
 """
 
 from __future__ import annotations
@@ -14,8 +11,9 @@ from typing import Dict, List, Tuple
 class PlacementProposal:
     """Result of a placement run: per-footprint deltas keyed by UUID + diagnostics.
 
-    Deltas are (dx_mm, dy_mm, dangle_deg) for each movable footprint.
+        Deltas are (dx_mm, dy_mm, dangle_deg) for each movable footprint.
     Forces are (Fx, Fy) in arbitrary units for each movable footprint.
+
     Frames (opt-in via run_placement(record_frames=True)) hold per-sampled-
     iteration (dx, dy, da) deltas vs the committed start positions for the
     SVG motion player; already rounded + downsampled to max_frames.
@@ -50,6 +48,12 @@ class PlacementProposal:
     collection, region assignment, deltas, and legality all key off uuid,
     so these parts are exempt from physics. Normally zero; nonzero means
     the board (or a writeback path) dropped uuids — surfaced, not silent.
+
+    label_deltas (orbit mode only) maps footprint UUID to the label's
+    footprint-local offset (dx_mm, dy_mm) from its filed anchor. Empty in
+    follow mode. ``apply_deltas`` and the ``io`` writeback consume it to
+    move ``fp_text (at)``; trajectory frames stay footprint-only (labels
+    ride the final pose in replay — documented v1 limitation).
     """
 
     deltas: Dict[str, Tuple[float, float, float]]
@@ -65,6 +69,7 @@ class PlacementProposal:
     force_frames: List[Dict[str, Dict[str, Tuple[float, float]]]] = field(
         default_factory=list
     )
+    label_deltas: Dict[str, Tuple[float, float]] = field(default_factory=dict)
     frame_stride: int = 1
     stop_reason: str = "budget"
     residual_max_force_N: float = 0.0
