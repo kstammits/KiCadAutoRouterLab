@@ -722,3 +722,33 @@ def test_fillet_g1_multi_joint_runs():
             pieces = fit(run, _clear(60), None, 100, 1,
                          max_radius_cells=20.0, min_leg_cells=0.6)
             assert_g1_pieces(pieces)
+
+
+@pytest.mark.unit
+def test_greedy_keep_cut_never_emits_unwalkable_kink():
+    """Keep-cut kinks must be walkable as straight legs, not just as arcs.
+
+    Regression (tube114 +12V): the keep rule cut a walkable 15mm chord at
+    a sweep-worthy corner whose kink leg crossed 40 hard-exclusion cells.
+    The keep gate only verifies the fillet arc, but the fitter may decline
+    the arc and emit the straight chords — manufacturing an emit-gate trip
+    out of a legal chord. A corner whose kink is illegal is not
+    keep-worthy.
+    """
+    from kicad_autorouter.routing.obstacles import bresenham_cells
+    from kicad_autorouter.routing.smooth import _greedy_pass, _line_walkable
+
+    A, B, C = (5, 50), (30, 25), (50, 40)
+    run = [(c, r, 0) for c, r in bresenham_cells(*A, *B)]
+    run += [(c, r, 0) for c, r in bresenham_cells(*B, *C)][1:]
+    cost = _clear(60)
+    blocked = np.zeros((60, 60), dtype=bool)
+    for cc, rr in [(17, 37), (18, 37), (17, 38), (18, 38)]:
+        blocked[rr, cc] = True
+    out = _greedy_pass(run, cost, None, 100, 1, blocked, 0,
+                       0.0, 2.0, 10.0, 3.0, 0.5)
+    assert len(out) < len(run)  # still smooths (no trivial refuse-all)
+    for a, b in zip(out, out[1:]):
+        assert _line_walkable(a[0], a[1], b[0], b[1], cost, None, 100, 1,
+                              blocked, 0), \
+            f"keep-cut kink {a}->{b} is not walkable as a straight leg"

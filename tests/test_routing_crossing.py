@@ -131,11 +131,15 @@ def test_diagonal_nets_respect_keepout():
     """Central F.Cu keepout: routing still succeeds, block stays clean.
 
     The keepout covers the ideal-diagonal intersection, so a straight
-    shot would have to detour (F.Cu) or dive under it (B.Cu). The router
-    currently hugs the board edges instead, so today this guards the
-    weaker — but still valuable — property: an unrelated keepout neither
+    shot would have to detour (F.Cu) or dive under it (B.Cu). X1 sweeps
+    a broad fillet arc through the middle while X2 threads past it on
+    F.Cu, dives to B.Cu, and bridges back under X1's arc to its far pad.
+    This guards the valuable property: an unrelated keepout neither
     breaks the crossing nor collects copper/vias, and wire stays bounded
-    versus the no-keepout baseline (nothing goes wonky).
+    versus the no-keepout baseline (nothing goes wonky). Plan-view
+    checks run on densely sampled arcs (see helpers.plan_segments):
+    long sweeps bow far off their chords, so chord approximation would
+    misplace the copper.
     """
     params = RoutingParams(run_drc=False, grid_resolution_mm=0.5)
     base_tree, base_model = _xcross_model()

@@ -18,7 +18,15 @@ from typing import Optional, Sequence, Tuple
 from shapely.geometry import LineString
 from shapely.geometry import Point as ShapelyPoint
 
-from kicad_autorouter.board_model import BoardModel, Footprint, Pad, Point, arcs, tracks
+from kicad_autorouter.board_model import (
+    BoardModel,
+    Footprint,
+    Pad,
+    Point,
+    arcs,
+    sample_circular_arc,
+    tracks,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -187,8 +195,11 @@ def make_fp(
 def plan_segments(pcb_tree, net: str, layer: str) -> list:
     """Plan-view LineStrings of a net's tracks on one copper layer.
 
-    Includes (arc) copper as start→mid→end chords so arc-fillet
-    output counts as copper in plan view.
+    (arc) copper is densely sampled along the true circular arc, not
+    approximated as start→mid→end chords: long sweep arcs bow tens of
+    mm off their chords, so chord approximation misplaces the copper
+    in plan view (missed crossings, phantom keepout entries).
+    Sampling every ~0.5mm matches the engine's own arc treatment.
     """
     segs = []
     for tr in tracks(pcb_tree):
@@ -199,11 +210,13 @@ def plan_segments(pcb_tree, net: str, layer: str) -> list:
             ]))
     for ar in arcs(pcb_tree):
         if ar.net_name == net and ar.layer == layer:
-            segs.append(LineString([
-                (ar.start.x_mm, ar.start.y_mm),
-                (ar.mid.x_mm, ar.mid.y_mm),
-                (ar.end.x_mm, ar.end.y_mm),
-            ]))
+            start = (ar.start.x_mm, ar.start.y_mm)
+            mid = (ar.mid.x_mm, ar.mid.y_mm)
+            end = (ar.end.x_mm, ar.end.y_mm)
+            chord = LineString([start, end]).length
+            n = max(16, int(chord / 0.5) + 1)
+            pts = list(sample_circular_arc(start, mid, end, n))
+            segs.append(LineString(pts))
     return segs
 
 

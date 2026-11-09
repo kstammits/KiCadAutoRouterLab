@@ -540,6 +540,15 @@ def _greedy_pass(
             # inside _keep_sweep_corner fail fast (angle, then radius,
             # then legs) so only genuine candidates pay for the
             # clearance gate.
+            #
+            # The cut replaces a walkable chord with two kink legs, so
+            # both legs must be walkable as straight segments too: the
+            # keep gate only verifies the fillet arc, and the fitter may
+            # decline the arc and emit the straight chords — an unchecked
+            # kink manufactures an emit-gate trip out of a legal chord
+            # (tube114 +12V: 15mm kink through 40 exclusion cells the
+            # line check had refused). A corner whose kink is illegal is
+            # simply not keep-worthy; the scan moves on.
             for k in range(i + 1, best_j):
                 if _keep_sweep_corner(
                     run[i], run[k], run[best_j],
@@ -547,6 +556,14 @@ def _greedy_pass(
                     corridor_radius, blocked_layer, hard_radius,
                     keep_min_radius_cells, keep_max_radius_cells,
                     keep_min_leg_cells, keep_sample_spacing_cells,
+                ) and _line_walkable(
+                    run[i][0], run[i][1], run[k][0], run[k][1],
+                    cost_layer, soft_layer, blocked_threshold, corridor_radius,
+                    blocked_layer, hard_radius,
+                ) and _line_walkable(
+                    run[k][0], run[k][1], run[best_j][0], run[best_j][1],
+                    cost_layer, soft_layer, blocked_threshold, corridor_radius,
+                    blocked_layer, hard_radius,
                 ):
                     best_j = k
                     break

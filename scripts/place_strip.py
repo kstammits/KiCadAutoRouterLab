@@ -131,12 +131,24 @@ STEP_ITERS = 200
 
 
 # Window-LED guidance: the five middle-board diodes (D1-D5; D6/D7 are
-# last-board power inlet, untouched). Per-LED ghost attractors spread along
-# the low-y window band so LEDs distribute instead of piling (one shared
-# anchor would repeat the U3 decap-pocket mistake). ka ~ half a net-edge
-# pull; attached for legalize+tidy only (cluster scatters free). Empty = off.
+# last-board power inlet, untouched). One magnet per LED exactly under its
+# filed tube111 position, so the window LEDs stay near their
+# enclosure-window spots while the rest settles (a shared anchor would
+# repeat the U3 decap-pocket mistake). Sizing: all placement forces here
+# are constant-magnitude, so holders must out-pull the whole tug-of-war —
+# cluster drags each 2-net LED with up to 2 x 50mN of net pull plus walls.
+# ka = 4000 → ghost_k_N * ka = 200mN wins that sum with margin, in every
+# stage. Attached in all placement stages (a ghost-free cluster scatters
+# D2/D5 50-68mm first, and no constant magnet wins back 60mm of stretched
+# net). Empty = off.
 # Format: (ghost_ref, anchor_x_mm, anchor_y_mm, target_ref, ka).
-LED_GHOSTS = ()
+LED_GHOSTS = (
+    ("GHOST-D1", 79.51, 43.65, "D1", 4000),
+    ("GHOST-D2", 100.15, 45.40, "D2", 4000),
+    ("GHOST-D3", 100.10, 57.30, "D3", 4000),
+    ("GHOST-D4", 78.64, 63.99, "D4", 4000),
+    ("GHOST-D5", 78.55, 70.26, "D5", 4000),
+)
 # Pin contrast: session-immobile refs, frozen wherever the input file has
 # them (movable_uuids exclusion). Empty = off. Unlike file-backed locks,
 # pins are experiment config, not fixture facts.
@@ -559,7 +571,7 @@ def main(argv=None) -> int:
                 tree = parse_file(prev)
                 model = board_model(tree)
             ran = True
-            if tag in ("legalize", "tidy") and LED_GHOSTS:
+            if tag in ("cluster", "legalize", "tidy") and LED_GHOSTS:
                 model = attach_led_ghosts(model)
                 print(f"[{tag}] attached {len(LED_GHOSTS)} LED ghosts")
             params = PlacementParams.from_dict(preset)

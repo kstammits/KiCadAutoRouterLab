@@ -186,20 +186,21 @@ def test_refine_refuses_protected_and_overcap():
         params=_params(refine_seeds=2, refine_seed=0),
         original_pcb_tree=tree)
     assert result.failed_reasons["X1"].startswith("protected")
-    # X2's straight diagonal crosses foreign 0805 copper (the HEAD route's
-    # centerline intersects XSW's pad polygon), so the emit gate refuses it
-    # loudly: nothing routed, nothing emitted. Loud refusal beats
-    # DRC-dirty copper.
-    assert result.nets_routed == 0
-    assert result.tracks_added == 0
+    # X2's diagonal used to die at the emit gate: the keep rule kinked a
+    # walkable chord into foreign 0805 copper (smoother-manufactured trip).
+    # Keep-cut kinks are walkability-gated now, so X2 routes cleanly alone
+    # (verified DRC-clean outside this test) — the gate still guards real
+    # touches, it just no longer fires on manufactured geometry.
+    assert result.nets_routed == 1
+    assert result.tracks_added > 0
     assert result.pcb_tree is not None
     _, model_probe = _xcross_model()
     raw, _, _ = route_raw(model_probe, ["X2"], set(),
                           params=_params(refine_seeds=2, refine_seed=0))
-    assert raw.nets_routed == 0
-    assert raw.ripup.net_failures["X2"].startswith("emit gate")
-    # Deterministic trip: no retry burn (same grid → same copper).
-    assert raw.ripup.attempts["X2"] == 1
+    assert raw.nets_routed == 1
+    assert "X2" not in raw.ripup.net_failures
+    # Single attempt, no retry burn (deterministic success first try).
+    assert raw.ripup.attempts["X2"] == 0
 
     result2, cost_grid2, routing_grid2 = refine_routing(
         model, ["X1", "X2"], set(),
