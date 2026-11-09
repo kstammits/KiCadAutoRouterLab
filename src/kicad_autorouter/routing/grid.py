@@ -50,6 +50,13 @@ class RoutingGrid:
         ox, oy = self.origin_mm
         return (ox, oy, ox + self.width_mm, oy + self.height_mm)
 
+    def cell_center_mm(self, c: int, r: int) -> Tuple[float, float]:
+        """Board-mm center of cell ``(c, r)`` (rounded to µm)."""
+        ox, oy = self.origin_mm
+        res = self.resolution_mm
+        return (round(ox + (c + 0.5) * res, 3),
+                round(oy + (r + 0.5) * res, 3))
+
 
 def create_grid_from_model(
     model,

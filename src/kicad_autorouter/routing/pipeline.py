@@ -52,6 +52,7 @@ class RoutingResult:
     fanout_vias_added: int = 0  # Plane-tap stubs (four-layer strategy; additive, never folded into vias_added inputs)
     fanout_tracks_added: int = 0  # Stub tracks accompanying plane-tap vias
     failed_reasons: Dict[str, str] = field(default_factory=dict)  # net -> explicit failure reason
+    failed_diagnostics: Dict[str, dict] = field(default_factory=dict)  # net -> chunk failure record (pins, seed, windows tried, retry hints)
     partial_tracks: Tuple = ()  # Display-only copper from failed nets' routed chunks (never written back)
     partial_vias: Tuple = ()  # Display-only vias from failed nets' routed chunks (never written back)
     partial_arcs: Tuple = ()  # Display-only arcs ditto (overlay ignores them for now)

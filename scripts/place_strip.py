@@ -508,6 +508,20 @@ def run_route_stage(model, tree, net_names, protected, params, tag, extra_power=
             print(f"[{tag}] timing {stage}: {val}")
     for net, reason in (result.failed_reasons or {}).items():
         print(f"[{tag}] FAILED {net}: {reason}")
+    for net, diag in (getattr(result, "failed_diagnostics", None) or {}).items():
+        atts = diag.get("attempts", [])
+        dz = diag.get("diagnosis") or {}
+        first = dz.get("first_failure") or {}
+        print(f"[{tag}] DIAG {net}: region={diag.get('region')} "
+              f"chunk={diag.get('chunk')} pins_mm={diag.get('pins_mm')} "
+              f"seed_cells={diag.get('seed_cells')} seed_box_mm={diag.get('seed_box_mm')}")
+        print(f"[{tag}] DIAG {net}: attempts={len(atts)} "
+              f"kinds={dz.get('kinds_tried')} "
+              f"first_fail_pair={first.get('pair')} kind={first.get('kind')} "
+              f"goal={first.get('goal')} box_mm={first.get('window_box_mm')} "
+              f"exp={first.get('expansions')}")
+        for hint in dz.get("hints", []):
+            print(f"[{tag}] DIAG {net} hint: {hint}")
     new_tree = result.pcb_tree if result.pcb_tree is not None else tree
     return board_model(new_tree), new_tree, result
 

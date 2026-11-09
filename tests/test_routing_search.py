@@ -314,3 +314,174 @@ class TestRipRelay:
         assert second.success
         _valid_chain(second.path, start, goal)
         assert second.path != first.path
+
+
+def _sealed_grid(w=40, h=20, wall_c=20):
+    """Two-layer grid split by a full-height wall (no gap anywhere)."""
+    from kicad_autorouter.routing.router import diagnose_attempts
+    grid = _grid(w, h)
+    cost = np.zeros((2, h, w), dtype=np.int16)
+    cost[:, :, wall_c] = 100  # blocked_threshold: impassable both layers
+    router, _ = _router(grid, cost, debug=True, window_margin_cells=4)
+    return grid, router, diagnose_attempts
+
+
+class TestNeighborJoins:
+    def test_pair_stops_at_near_pin_not_far_root(self):
+        """Opportunistic termination: pins join neighbors, not the root.
+
+        R40-shaped: N sits 2mm from M and 5mm from the supply root. The
+        pair M->root must end on N (nearest goal) instead of trekking
+        past it to the root, so total wire stays near the 2+7 minimum.
+        """
+        grid = _grid(40, 10)
+        router, _ = _router(grid, debug=True)
+        root = (25, 5, 0)
+        res = router.route([(20, 5, 0), (18, 5, 0), root], trunk_root=root)
+        assert res.success
+        assert res.wire_mm <= 10.0
+        cells = {c for b in res.branches for c in b}
+        assert (20, 5, 0) in cells and (18, 5, 0) in cells
+
+
+class TestFailureDiagnostics:
+    def test_failed_route_names_its_window(self):
+        """A sealed pair logs boxes + pin mm, and the diagnosis says sealed."""
+        _, router, diagnose_attempts = _sealed_grid()
+        start, goal = (5, 10, 0), (34, 10, 0)
+        res = router.route([start, goal])
+        assert not res.success
+        attempts = list(res.debug_attempts)
+        assert attempts, "failed route must keep its attempt trace"
+        for a in attempts:
+            assert "window_box" in a and "window_box_mm" in a
+            assert "pins_mm" in a
+        w0 = next(a for a in attempts if a["kind"] == "window0")
+        assert w0["window_cells"] < 40 * 20  # initial window, not full board
+        assert w0["window_box_mm"][0] < w0["window_box_mm"][2]
+        # Pin positions are board mm (resolution 1.0, origin 0,0).
+        assert w0["pins_mm"][0][:2] == [5.5, 10.5]
+        assert w0["pins_mm"][1][:2] == [34.5, 10.5]
+        assert any(a["kind"] == "corridor:none" for a in attempts)
+        diag = diagnose_attempts(
+            attempts, max_expansions=router.max_expansions,
+            corridor_enabled=router.corridor_enabled)
+        assert diag["pairs_failed"] == [[0, 1]]
+        assert diag["full_board_tried"]
+        assert any("sealed by obstacles" in h for h in diag["hints"])
+
+    def test_failed_trunk_names_seed_join(self):
+        """Chunk tree forms but kept copper is unreachable: trunk logged."""
+        _, router, diagnose_attempts = _sealed_grid()
+        res = router.route([(5, 10, 0), (8, 10, 0)],
+                           seed_cells=[(30, 10, 0), (31, 10, 0)])
+        assert not res.success
+        attempts = list(res.debug_attempts)
+        trunk = next(a for a in attempts if a["kind"] == "trunk")
+        assert trunk["success"] is False
+        assert trunk["expansions"] > 0
+        assert len(trunk["pins_mm"]) == 2
+        diag = diagnose_attempts(
+            attempts, max_expansions=router.max_expansions,
+            corridor_enabled=router.corridor_enabled)
+        assert any("seed join" in h for h in diag["hints"])
+
+    def test_dangling_terminal_rescued_by_seed_join(self):
+        """Searches end on kept copper, stranding a terminal: join saves it."""
+        grid = _grid(30, 10)
+        cost = np.zeros((2, 10, 30), dtype=np.int16)
+        cost[:, :, 15] = 100  # wall between the terminals
+        router, _ = _router(grid, cost, debug=True)
+        start, goal = (5, 5, 0), (25, 5, 0)
+        res = router.route([start, goal],
+                           seed_cells=[(6, 5, 0), (24, 5, 0)])
+        assert res.success
+        cells = {c for b in res.branches for c in b}
+        assert start in cells and goal in cells
+        assert any(c in cells for c in [(6, 5, 0), (24, 5, 0)])
+        kinds = [a["kind"] for a in res.debug_attempts]
+        assert "trunk" in kinds
+
+    def test_dangling_signature_still_diagnosed(self):
+        """The all-ok-but-unjoined trace keeps its name for the log."""
+        from kicad_autorouter.routing.router import diagnose_attempts
+        attempts = [{"pair": [0, 1], "kind": "window0",
+                     "window_cells": 100, "expansions": 2, "success": True,
+                     "seconds": 0.0}]
+        diag = diagnose_attempts(attempts, has_seed=True)
+        assert diag["pairs_failed"] == []
+        assert any("dangles" in h for h in diag["hints"])
+        assert not any("full-board" in h for h in diag["hints"])
+
+    def test_boxed_in_terminal_still_fails(self):
+        """No path at all (not a join problem): sealed hint, no rescue."""
+        grid = _grid(30, 10)
+        cost = np.zeros((2, 10, 30), dtype=np.int16)
+        cost[:, :, 15] = 100
+        # Box the first terminal in on both layers (its own cell stays free).
+        for dc, dr in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            cost[:, 5 + dr, 5 + dc] = 100
+        router, _ = _router(grid, cost, debug=True)
+        res = router.route([(5, 5, 0), (25, 5, 0)])
+        assert not res.success
+        from kicad_autorouter.routing.router import diagnose_attempts
+        diag = diagnose_attempts(list(res.debug_attempts),
+                                 max_expansions=router.max_expansions,
+                                 corridor_enabled=router.corridor_enabled)
+        assert diag["pairs_failed"] == [[0, 1]]
+        assert any("sealed by obstacles" in h for h in diag["hints"])
+        assert not any("dangles" in h for h in diag["hints"])
+
+    def test_neighbor_pins_join_directly_despite_far_seed(self):
+        """Phase 1: adjacent pins join each other, not distant kept copper."""
+        grid = _grid(40, 10)
+        cost = np.zeros((2, 10, 40), dtype=np.int16)
+        router, _ = _router(grid, cost, debug=True)
+        res = router.route([(5, 5, 0), (8, 5, 0)],
+                           seed_cells=[(9, 5, 0), (35, 5, 0)])
+        assert res.success
+        pair_recs = [a for a in res.debug_attempts
+                     if a["pair"] == [0, 1] and a["success"]]
+        assert pair_recs and all(a["goal"] == "term" for a in pair_recs)
+        assert not any(a.get("goal") == "seed" and a["pair"] == [0, 1]
+                       for a in res.debug_attempts)
+        assert res.wire_mm <= 8.0  # 3mm pair + short trunk, not a 27mm trek
+
+    def test_walled_pair_falls_back_to_seed(self):
+        """Phase 2: pins that cannot join alone still join via kept copper."""
+        grid = _grid(30, 10)
+        cost = np.zeros((2, 10, 30), dtype=np.int16)
+        cost[:, :, 15] = 100
+        router, _ = _router(grid, cost, debug=True)
+        res = router.route([(5, 5, 0), (25, 5, 0)],
+                           seed_cells=[(6, 5, 0), (24, 5, 0)])
+        assert res.success
+        assert any(a.get("goal") == "seed" and a["success"]
+                   for a in res.debug_attempts)
+        assert any(a["kind"] == "trunk" and a["success"]
+                   for a in res.debug_attempts)
+
+    def test_trunk_records_its_window(self):
+        """Windowed joins name their box instead of logging full-board."""
+        grid = _grid(30, 10)
+        cost = np.zeros((2, 10, 30), dtype=np.int16)
+        cost[:, :, 15] = 100
+        router, _ = _router(grid, cost, debug=True)
+        res = router.route([(5, 5, 0), (25, 5, 0)],
+                           seed_cells=[(6, 5, 0), (24, 5, 0)])
+        assert res.success
+        trunks = [a for a in res.debug_attempts if a["kind"] == "trunk"]
+        assert trunks and all(t["success"] for t in trunks)
+        assert any(t["window_box"] for t in trunks)
+
+    def test_capped_search_suggests_cap_not_sealed(self):
+        from kicad_autorouter.routing.router import diagnose_attempts
+        grid = _grid(200, 80)
+        router, _ = _router(grid, debug=True, max_expansions=50)
+        res = router.route([(5, 40, 0), (194, 40, 0)])
+        assert not res.success
+        diag = diagnose_attempts(
+            list(res.debug_attempts), max_expansions=50,
+            corridor_enabled=router.corridor_enabled)
+        assert any("per-search cap" in h for h in diag["hints"])
+        assert not any("sealed by obstacles" in h for h in diag["hints"])

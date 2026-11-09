@@ -32,7 +32,7 @@ from .biarc import pieces_wire_cells
 from .verify import fitted_pieces_violate, gate_touch_margin, share_group_key
 from .smooth import own_net_soft_mask, smooth_branch_pieces, smooth_grid_path, smoothed_wire_mm
 from .smooth import effort_rungs, resolve_config as resolve_smooth_config
-from .router import SECONDARY_BLOCKED
+from .router import SECONDARY_BLOCKED, SingleNetRouter, diagnose_attempts
 from .router import RouteResult as NetRouteResult
 from .power import identify_power_nets
 from .dsu import DisjointSet
@@ -40,7 +40,7 @@ from .grid import RoutingGrid, board_to_grid, grid_to_board, mm_to_cells
 from .pour import pour_corridors, pour_net_names, severance_cost
 from .stitch import plan_stitches
 from .stitch import _region_masks as _board_region_masks
-from .obstacles import BLOCKED, ObstacleCache, bresenham_cells, build_fanout_cost, build_via_block_mask, drill_radius_cells, own_net_hard_cells, stamp_discs, stamp_square, static_fingerprint, tht_drill_cells, track_corridor_radius_cells, via_halo_radius_cells, _build_tht_via_mask
+from .obstacles import BLOCKED, FREE, ObstacleCache, bresenham_cells, build_fanout_cost, build_via_block_mask, drill_radius_cells, own_net_hard_cells, stamp_discs, stamp_square, static_fingerprint, tht_drill_cells, track_corridor_radius_cells, via_halo_radius_cells, _build_tht_via_mask, _mark_pad
 from .params import (
     MAX_GRID_CELLS_TOTAL,
     RoutingParams,
@@ -580,20 +580,142 @@ def _supply_root_cell(model, routing_grid, net_name, terminals):
     return terms[0] if terms else None
 
 
+def _punched_search_grid(model, routing_grid, cost_grid, net_name,
+                         clearance_mm=0.2):
+    """Per-net search grid: own pads read FREE.
+
+    Pad halos price every net's pads as toll ground — including the
+    routed net's own. A through-hole pad then charges rent to hop its
+    own barrel, so searches via up beside the pad instead of through
+    it (the -12V/D7 case: F.Cu stopped 1.5mm short of a legal free
+    hole and drilled a fresh via). Punching the zone makes the hole
+    the cheapest legal transition wherever geometry allows. Only
+    passable cells are lowered (foreign BLOCKED stays blocked, so a
+    genuinely walled hole keeps the adjacent via as the correct
+    fallback); foreign halo tolls live in the per-net secondary and
+    are untouched. Returns ``cost_grid`` itself when the net owns no
+    pads.
+    """
+    import math
+    own = [(fp, pad) for fp in model.footprints for pad in fp.pads
+           if pad.net_name == net_name]
+    if not own:
+        return cost_grid
+    res_mm = routing_grid.resolution_mm
+    cells = max(1, int(math.ceil(clearance_mm / res_mm))) if res_mm > 0 else 1
+    # Same zone geometry as the occupancy stamp (pad copper + clearance
+    # + routing half width), evaluated on a scratch grid used as a mask.
+    scratch = np.zeros_like(cost_grid)
+    for fp, pad in own:
+        _mark_pad(scratch, routing_grid, fp, pad, {net_name: cells}, cells,
+                  track_half_mm=0.125)
+    mask = (scratch > 0) & (cost_grid < BLOCKED)
+    if not mask.any():
+        return cost_grid
+    punched = cost_grid.copy()
+    punched[mask] = FREE
+    return punched
+
+
+def _chunk_failure_diag(
+    router, term_set, region_secondary, seed_cells, trunk_root,
+    res, routing_grid, net_name, region_idx, chunk_idx, n_chunks,
+    should_cancel, replay: bool,
+):
+    """Structured record of a failed chunk flight.
+
+    Names the pin set (cells + board mm), the kept-copper seed it tried to
+    join, every search window tried (cells + board-mm box), and a
+    ``diagnosis`` with machine-usable retry hints — so a second try can do
+    something differently instead of replaying the same ladder blind.
+
+    When the first flight ran blind (router debug off) and ``replay`` is
+    set, the identical search is re-run once with tracing on: a failed
+    flight stamps nothing, so the replay reproduces the same searches
+    deterministically. Skipped when cancellation is pending.
+    """
+    attempts = [dict(a) for a in (res.debug_attempts or ())]
+    replayed = False
+    if replay and not attempts and not (
+        should_cancel is not None and should_cancel()
+    ):
+        dbg = SingleNetRouter(
+            router.grid, router.cost_grid, router.cost_map,
+            router.tht_via_mask, router.via_block_mask,
+            max_expansions=router.max_expansions,
+            via_clearance_cells=router.via_clearance_cells,
+            window_margin_cells=router.window_margin_cells,
+            window_growth=router.window_growth,
+            window_retries=router.window_retries,
+            corridor=router.corridor_enabled,
+            debug=True,
+            max_expansions_per_net=router.max_expansions_per_net,
+        )
+        dbg.via_ok_entry = router.via_ok_entry
+        dbg_res = dbg.route(
+            list(term_set), region_secondary,
+            seed_cells=seed_cells, trunk_root=trunk_root,
+        )
+        attempts = [dict(a) for a in (dbg_res.debug_attempts or ())]
+        replayed = True
+    pins_mm = []
+    for c, r, lyr in term_set:
+        x_mm, y_mm = routing_grid.cell_center_mm(c, r)
+        pins_mm.append([x_mm, y_mm, lyr])
+    seed_list = [tuple(s) for s in (seed_cells or ())]
+    seed_box_mm = None
+    if seed_list:
+        cols = [s[0] for s in seed_list]
+        rows = [s[1] for s in seed_list]
+        ox, oy = routing_grid.origin_mm
+        res_mm = routing_grid.resolution_mm
+        seed_box_mm = [round(ox + min(cols) * res_mm, 3),
+                       round(oy + min(rows) * res_mm, 3),
+                       round(ox + (max(cols) + 1) * res_mm, 3),
+                       round(oy + (max(rows) + 1) * res_mm, 3)]
+    diagnosis = diagnose_attempts(
+        attempts,
+        max_expansions=router.max_expansions,
+        corridor_enabled=router.corridor_enabled,
+        net_budget=router.max_expansions_per_net,
+        has_seed=bool(seed_list),
+    )
+    if not attempts:
+        diagnosis["hints"].append(
+            "no attempt detail recorded (router debug off and replay skipped)"
+        )
+    return {
+        "net": net_name,
+        "region": region_idx,
+        "chunk": [chunk_idx, n_chunks],
+        "pins": [[c, r, lyr] for c, r, lyr in term_set],
+        "pins_mm": pins_mm,
+        "seed_cells": len(seed_list),
+        "seed_box_mm": seed_box_mm,
+        "expansions": res.expansions,
+        "attempts": attempts,
+        "replayed_with_trace": replayed,
+        "diagnosis": diagnosis,
+    }
+
+
 def _route_chunk(
     router, term_set, region_secondary, progress_cb, should_cancel,
     seed_cells, cost_grid, routing_grid, corridor, soft_mask,
     clearance_radius, region_blocked_mask, fit_arcs, max_radius_mm,
     min_leg_mm, sample_mm, keep_min_radius_mm, params, model, timings,
     net_name, tag="", width_mm=None, verify_share=None, trunk_root=None,
+    region_idx=None, chunk_idx=None, n_chunks=None,
 ):
     """Route+smooth+stamp one terminal set within its region.
 
     Mirrors the former ``_fly`` closure: one A* flight, then smoothing,
     board-escape check, and corridor stamp. Returns
-    ``(result|None, failure|None)`` where failure is ``("budget"|"gate",
-    reason)`` on deterministic budget exhaustion / emit-gate trips or
-    ``("open", reason)`` otherwise.
+    ``(result|None, failure|None)`` where failure is ``(kind, reason,
+    diag)``: kind is ``"budget"|"gate"`` on deterministic budget
+    exhaustion / emit-gate trips or ``"open"`` otherwise, and ``diag`` is
+    a structured failure record (pins, seed, windows tried, retry hints)
+    for the failure log — None only when there is no search to describe.
 
     Expansion accounting and progress reporting are owned by the caller
     (``progress_cb`` plus post-route ``expansions``/_report bookkeeping), so
@@ -613,7 +735,7 @@ def _route_chunk(
     )
     search_expansions = res.expansions
 
-    def _failed(kind: str, reason: str):
+    def _failed(kind: str, reason: str, diag=None):
         """Failure return that keeps the search's expansion count visible.
 
         Failed flights used to discard their RouteResult, so refused nets
@@ -624,7 +746,20 @@ def _route_chunk(
         timings["expansions_failed"] = (
             timings.get("expansions_failed", 0) + search_expansions
         )
-        return None, (kind, reason)
+        return None, (kind, reason, diag)
+
+    def _search_diag(kind: str):
+        """Failure record for a dead search; replays with tracing when blind.
+
+        Only ``"open"`` (no path found / left board) replays: budget
+        failures would burn another full budget, and gate trips are a
+        fitting problem, not a search problem.
+        """
+        return _chunk_failure_diag(
+            router, term_set, region_secondary, seed_cells, trunk_root,
+            res, routing_grid, net_name, region_idx, chunk_idx, n_chunks,
+            should_cancel, replay=(kind == "open"),
+        )
     if params.debug and res.debug_attempts:
         key = f"debug_attempts_{net_name}"
         timings[key] = timings.get(key, []) + [dict(a) for a in res.debug_attempts]
@@ -703,7 +838,8 @@ def _route_chunk(
                 # Deterministic on an unchanged grid like budget exhaustion:
                 # the same search + smoother will reproduce the same fitted
                 # copper, so retrying only burns time — fail immediately.
-                return _failed("gate", f"{tag}{gate_failure}")
+                return _failed("gate", f"{tag}{gate_failure}",
+                               _search_diag("gate"))
             res = chosen
             if fell_back:
                 timings["emit_gate_fallback_raw"] = (
@@ -713,7 +849,8 @@ def _route_chunk(
             time.perf_counter() - t_smooth
         )
         if _route_escapes_board(res, routing_grid, model, term_set):
-            return _failed("open", f"{tag}route left board outline")
+            return _failed("open", f"{tag}route left board outline",
+                           _search_diag("open"))
         _apply_route_to_grid(
             res, cost_grid, routing_grid, corridor,
             extra_radius=clearance_radius,
@@ -731,8 +868,8 @@ def _route_chunk(
             f"track width, smaller piecemeal chunks, or a "
             f"coarser grid"
         )
-        return _failed("budget", reason)
-    return _failed("open", f"{tag}no path found")
+        return _failed("budget", reason, _search_diag("budget"))
+    return _failed("open", f"{tag}no path found", _search_diag("open"))
 
 
 def _route_escapes_board(result, grid, model, term_set=None) -> bool:
@@ -958,6 +1095,9 @@ class RawRoutes:
     timings: Dict[str, float] = field(default_factory=dict)
     t_total: float = 0.0
     gnd_stripped: int = 0
+    # Structured failure records (pins, seed, windows tried, retry hints)
+    # keyed by net — one entry per net whose chunk flight failed.
+    failed_diagnostics: Dict[str, dict] = field(default_factory=dict)
     net_stats: Dict[str, dict] = field(default_factory=dict)  # net ->
     # per-net cost attribution: {ok, expansions, wall_s, timings{key: delta}}.
     # Numeric timing deltas around that net's _route_one_net call. One-time
@@ -1154,25 +1294,16 @@ def route_raw(
             track_half_mm=params.track_width_mm / 2.0,
         )
 
-    # 4. Create router (via price in mm; the router scales to cells)
+    # 4. Via price in mm; the router scales to cells. The router itself
+    # is built per net below (own THT drill discs punched FREE), since
+    # the search grid differs per net while stamping stays on the
+    # shared cost grid.
     cost_map = CostMap(
         base_cost=1,
         via_cost_mm=params.via_cost_mm,
         blocked_threshold=100,
         heuristic_weight=params.heuristic_weight,
     )
-    router = SingleNetRouter(
-        routing_grid, cost_grid, cost_map, tht_via_mask, via_block_mask,
-        max_expansions=params.max_expansions,
-        window_margin_cells=params.window_margin_cells,
-        window_growth=params.window_growth,
-        window_retries=params.window_retries,
-        corridor=params.corridor,
-        debug=params.debug,
-        max_expansions_per_net=params.max_expansions_per_net,
-    )
-    if obstacle_cache is not None:
-        router.via_ok_entry = obstacle_cache.active_entry()
 
     # 5. Identify net classes (user-marked power membership included)
     power_nets, ground_nets, signal_nets = identify_power_nets(model, extra_power_nets)
@@ -1379,6 +1510,24 @@ def route_raw(
             track_half_mm=width_mm / 2.0,
             extra_margin_mm=margin_mm,
         )
+        # Per-net router on the punched search grid: own THT drill
+        # discs read FREE so free-hole hops beat adjacent vias. The
+        # shared cost grid keeps every stamp for later nets.
+        router = SingleNetRouter(
+            routing_grid, _punched_search_grid(
+                model, routing_grid, cost_grid, net_name,
+                clearance_mm=resolve_clearance(model, params, net_name)),
+            cost_map, tht_via_mask, via_block_mask,
+            max_expansions=params.max_expansions,
+            window_margin_cells=params.window_margin_cells,
+            window_growth=params.window_growth,
+            window_retries=params.window_retries,
+            corridor=params.corridor,
+            debug=params.debug,
+            max_expansions_per_net=params.max_expansions_per_net,
+        )
+        if obstacle_cache is not None:
+            router.via_ok_entry = obstacle_cache.active_entry()
         if params.debug:
             # Sealed-terminal probe: bounded flood-fill per terminal, runs
             # in milliseconds. Tiny counts mean pair-searches will burn cap.
@@ -1529,6 +1678,8 @@ def route_raw(
                         net_name, tag, width_mm,
                         verify_share=_verify_share_for(region_idx),
                         trunk_root=trunk_root,
+                        region_idx=region_idx, chunk_idx=ci,
+                        n_chunks=n_chunks,
                     )
                     if result is not None:
                         expansions_total += result.expansions
@@ -1540,8 +1691,11 @@ def route_raw(
                         done_base += chunk_pairs
                         attempt_advanced = True
                         continue
-                    kind, reason = failure
+                    kind, reason, diag = failure
                     ripup.record_failure(net_name, reason)
+                    if diag is not None:
+                        failed_diagnostics[net_name] = diag
+                        timings[f"failed_{net_name}"] = diag
                     group_ok = False
                     if kind in ("budget", "gate"):
                         # Budget exhaustion and emit-gate trips are both
@@ -1600,6 +1754,9 @@ def route_raw(
     # Cooperative cancel stops with partial results: already-routed nets
     # are kept, unreached nets count as failed with reason "cancelled".
     net_stats: Dict[str, dict] = {}
+    # Structured failure records (pins, seed, windows tried, retry hints)
+    # keyed by net — one entry per net whose chunk flight failed.
+    failed_diagnostics: Dict[str, dict] = {}
 
     def _route_one_net_timed(net_name: str) -> bool:
         """_route_one_net plus per-net cost attribution (benchmarks only).
@@ -1734,6 +1891,7 @@ def route_raw(
         t_total=t_total,
         gnd_stripped=gnd_stripped,
         net_stats=net_stats,
+        failed_diagnostics=failed_diagnostics,
         pour_corridors=corridors,
         pour_min_thick=corridor_min_thick,
         tracks=tracks,

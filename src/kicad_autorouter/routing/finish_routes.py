@@ -154,6 +154,7 @@ def finish_routes(
         fanout_vias_added=len(raw.plane_vias),
         fanout_tracks_added=len(raw.plane_tracks),
         failed_reasons=dict(raw.ripup.net_failures),
+        failed_diagnostics=dict(raw.failed_diagnostics),
         partial_tracks=tuple(raw.partial_tracks),
         partial_vias=tuple(raw.partial_vias),
         partial_arcs=tuple(raw.partial_arcs),

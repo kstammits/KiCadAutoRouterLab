@@ -30,6 +30,8 @@ from kicad_autorouter.io import add_footprint_to_tree
 from kicad_autorouter.routing.grid import RoutingGrid, board_to_grid, create_grid_from_model
 from kicad_autorouter.routing.obstacles import (
     BLOCKED,
+    FREE,
+    HIGH_COST,
     THT_EXCLUSION,
     build_fanout_cost,
     build_occupancy_grid,
@@ -128,6 +130,48 @@ def _tfree_model(with_tht: bool = True, with_foreign: bool = False):
     )
     model = dc_replace(model, keepout_zones=model.keepout_zones + walls)
     return pcb_tree, model
+
+
+def test_own_tht_drill_punched_free_foreign_blocked_kept():
+    """The per-net search grid frees own THT barrels, nothing else.
+
+    Own drill-disc cells drop below BLOCKED so the free hop beats an
+    adjacent via; a foreign BLOCKED cell on the same disc (walled hole)
+    stays blocked so the adjacent via remains the correct fallback; a
+    net with no THT pads gets the shared grid back untouched (no copy).
+    """
+    from kicad_autorouter.routing.obstacles import (
+        FREE, HIGH_COST, build_occupancy_grid, tht_drill_cells,
+    )
+    from kicad_autorouter.routing.route_raw import _punched_search_grid
+    _, model = _tfree_model()
+    grid = create_grid_from_model(model, resolution_mm=RES, margin_mm=2.0)
+    cost = build_occupancy_grid(model, grid)
+    tht_pad = next(p for fp in model.footprints for p in fp.pads
+                   if fp.ref == "TH")
+    cells = tht_drill_cells(tht_pad, grid)
+    assert cells
+    c0, r0 = next(iter(cells))
+    # Simulate foreign copper walling one drill cell.
+    cost[:, r0, c0] = 100
+    punched = _punched_search_grid(model, grid, cost, "TFREE")
+    assert punched is not cost  # a copy: the shared grid is untouched
+    assert cost[:, r0, c0].tolist() == [100, 100]
+    for c, r in cells:
+        if (c, r) == (c0, r0):
+            assert punched[:, r, c].tolist() == [100, 100]
+        else:
+            assert punched[:, r, c].tolist() == [FREE, FREE]
+    untouched = _punched_search_grid(model, grid, cost, "NOBODY")
+    assert untouched is cost
+    # The approach march matters, not just the drill: a halo cell of
+    # the same pad outside the drill disc is punched too.
+    halo_found = False
+    for c, r in ((c0 + 3, r0), (c0 - 3, r0), (c0, r0 + 3), (c0, r0 - 3)):
+        if cost[0, r, c] == HIGH_COST:
+            assert punched[0, r, c] == FREE
+            halo_found = True
+    assert halo_found, "expected an own-pad halo cell outside the drill"
 
 
 def test_tfree_routes_through_tht_with_no_new_via():

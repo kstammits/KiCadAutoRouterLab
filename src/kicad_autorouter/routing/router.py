@@ -265,8 +265,17 @@ class SingleNetRouter:
                     SECONDARY_BLOCKED,
                 )
 
-        def _search_pair(i: int, j: int, goal_mask: Optional[np.ndarray] = None):
+        def _search_pair(i: int, j: int, term_goal: Optional[np.ndarray] = None,
+                         seed_goal: Optional[np.ndarray] = None):
             """Windowed A* with growth + full-board fallback; (ok, path, cost).
+
+            Two phases: first the terminal tree alone (neighbors join
+            neighbors — a search that can end on kept copper instead
+            will wander past an adjacent pin to distant copper and come
+            back as a loop), then — only if that fails and kept copper
+            exists — the same ladder allowed to terminate on seed. The
+            fallback preserves routability exactly; the common case
+            keeps short local copper.
 
             When the first (smallest) window fails, a coarse corridor is
             computed once and the pair is retried restricted to it before
@@ -298,7 +307,15 @@ class SingleNetRouter:
 
             base = expansions_total
 
-            def attempt(search_window, allow_mask=None, weight_override=None, kind="window"):
+            def _pins_mm():
+                p1 = self.grid.cell_center_mm(si[0], si[1])
+                p2 = self.grid.cell_center_mm(sj[0], sj[1])
+                return [[p1[0], p1[1], si[2]], [p2[0], p2[1], sj[2]]]
+
+            def _box_here(box):
+                return _box_mm(self.grid, box)
+
+            def attempt(search_window, goal, tag, allow_mask=None, weight_override=None, kind="window"):
                 """One A* attempt with progress accounting; returns result."""
                 nonlocal base, result, pairs_done, expansions_total
                 if self._budget_spent(expansions_total):
@@ -313,6 +330,10 @@ class SingleNetRouter:
                             "pair": [i, j],
                             "kind": kind + ":budget",
                             "window_cells": 0,
+                            "window_box": None,
+                            "window_box_mm": None,
+                            "pins_mm": _pins_mm(),
+                            "goal": tag,
                             "expansions": 0,
                             "success": False,
                             "seconds": 0.0,
@@ -339,7 +360,7 @@ class SingleNetRouter:
                     via_ok=via_ok,
                     allow_mask=allow_mask,
                     heuristic_weight=weight_override,
-                    goal_mask=goal_mask,
+                    goal_mask=goal,
                     passable=seed_mask,
                     expansion_allowance=allowance,
                 )
@@ -358,54 +379,98 @@ class SingleNetRouter:
                         "pair": [i, j],
                         "kind": kind,
                         "window_cells": window_cells,
+                        "window_box": ([search_window.c0, search_window.r0,
+                                        search_window.c1, search_window.r1]
+                                       if search_window is not None else None),
+                        "window_box_mm": _box_here(search_window),
+                        "pins_mm": _pins_mm(),
+                        "goal": tag,
                         "expansions": result.expansions,
                         "success": result.success,
                         "seconds": round(dt_attempt, 4),
                     })
                 return result
 
-            # Attempt 1: initial (smallest) window.
-            attempt(window, kind="window0")
-            cstats["window0_exp"] = result.expansions
-            if result.success:
-                pair_cstats.append(cstats)
-                return result.success, result.path, result.cost
+            def ladder(goal, tag, include_full):
+                """One full window ladder for a single goal set.
 
-            # Corridor fallback (only when enabled and window 0 failed).
-            # Skipped when the net budget is already spent: the restricted
-            # search would instant-fail and find_corridor is wasted work.
-            if self.corridor_enabled and not self._budget_spent(expansions_total):
-                cstats["tried"] = 1
-                if should_cancel is not None and should_cancel():
-                    raise RoutingCancelled(f"cancelled before pair {(i, j)}")
-                t_corr = time.perf_counter()
-                corridor = find_corridor(
-                    self.cost_grid, secondary, si, sj,
-                    self.cost_map.blocked_threshold, SECONDARY_BLOCKED,
-                )
-                cstats["corridor_time_s"] = time.perf_counter() - t_corr
-                if corridor is not None:
-                    cstats["found"] = 1
-                    cstats["cells"] = int(corridor.sum())
-                    attempt(
-                        full_board(self.W, self.H),
-                        allow_mask=corridor,
-                        weight_override=1.0,
-                        kind="corridor",
-                    )
-                    cstats["corridor_exp"] = result.expansions
-                    if result.success:
-                        cstats["used"] = 1
-                        pair_cstats.append(cstats)
-                        return result.success, result.path, result.cost
-
-            # Attempts 2..N: grown windows + full-board fallback.
-            for wi in range(1, len(windows)):
-                attempt(windows[wi],
-                        kind="full" if wi == len(windows) - 1 else f"window{wi}")
+                ``tag`` ('term' or 'seed') marks which goal set each
+                logged attempt used, so a failed ladder shows whether
+                the local tree or the kept-copper fallback gave up.
+                Returns True on the first success.
+                """
+                # Attempt 1: initial (smallest) window.
+                attempt(window, goal, tag, kind="window0")
+                cstats["window0_exp"] = result.expansions
                 if result.success:
-                    break
-            cstats["subsequent_exp"] = result.expansions
+                    return True
+
+                # Corridor fallback (only when enabled and window 0 failed).
+                # Skipped when the net budget is already spent: the restricted
+                # search would instant-fail and find_corridor is wasted work.
+                if self.corridor_enabled and not self._budget_spent(expansions_total):
+                    cstats["tried"] = 1
+                    if should_cancel is not None and should_cancel():
+                        raise RoutingCancelled(f"cancelled before pair {(i, j)}")
+                    t_corr = time.perf_counter()
+                    corridor = find_corridor(
+                        self.cost_grid, secondary, si, sj,
+                        self.cost_map.blocked_threshold, SECONDARY_BLOCKED,
+                    )
+                    cstats["corridor_time_s"] = time.perf_counter() - t_corr
+                    if corridor is None:
+                        # Guidance ran but found no mask: log it so a failed
+                        # ladder shows the corridor was considered, not skipped.
+                        if self.debug_enabled:
+                            attempt_log.append({
+                                "pair": [i, j],
+                                "kind": "corridor:none",
+                                "window_cells": 0,
+                                "window_box": None,
+                                "window_box_mm": None,
+                                "pins_mm": _pins_mm(),
+                                "goal": tag,
+                                "expansions": 0,
+                                "success": False,
+                                "seconds": round(time.perf_counter() - t_corr, 4),
+                            })
+                    else:
+                        cstats["found"] = 1
+                        cstats["cells"] = int(corridor.sum())
+                        attempt(
+                            full_board(self.W, self.H), goal, tag,
+                            allow_mask=corridor,
+                            weight_override=1.0,
+                            kind="corridor",
+                        )
+                        cstats["corridor_exp"] = result.expansions
+                        if result.success:
+                            cstats["used"] = 1
+                            return True
+
+                # Attempts 2..N: grown windows (+ full-board fallback).
+                last = len(windows) - 1
+                for wi in range(1, len(windows)):
+                    if wi == last and not include_full:
+                        break
+                    attempt(windows[wi], goal, tag,
+                            kind="full" if wi == last else f"window{wi}")
+                    if result.success:
+                        break
+                cstats["subsequent_exp"] = result.expansions
+                return result.success
+
+            # Phase 1: terminal tree alone — neighbors join neighbors, so a
+            # search cannot wander past an adjacent pin to distant copper.
+            if not ladder(term_goal, "term", include_full=seed_goal is None):
+                if seed_goal is None:
+                    pair_cstats.append(cstats)
+                    return result.success, result.path, result.cost
+                # Phase 2: allow termination on kept copper (the old
+                # behavior) — for joins the new tree cannot make alone.
+                combined = (seed_goal if term_goal is None
+                            else (term_goal | seed_goal))
+                ladder(combined, "seed", include_full=True)
             pair_cstats.append(cstats)
             return result.success, result.path, result.cost
 
@@ -445,6 +510,19 @@ class SingleNetRouter:
         cost_matrix: Dict[Tuple[int, int], float] = {}
         searches = 0
 
+        # Opportunistic neighbor goals: every terminal (not just j's
+        # component) terminates a search, so nearest goal wins and pins
+        # join neighbors instead of walking past them to a far root.
+        # Unions stay honest: a path ending on a third terminal K
+        # records edge (i, K), which the path genuinely spans.
+        all_term_mask = np.zeros((self.n_layers, self.H, self.W), dtype=bool)
+        term_index: Dict[Tuple[int, int, int], int] = {}
+        for idx, t in enumerate(terminals):
+            c, r, l = tuple(t)
+            if 0 <= l < self.n_layers and 0 <= r < self.H and 0 <= c < self.W:
+                all_term_mask[l, r, c] = True
+            term_index[tuple(t)] = idx
+
         for i, j in pair_order:
             if uf.components == 1:
                 break
@@ -455,29 +533,38 @@ class SingleNetRouter:
             searches += 1
 
             # Build goal mask from j's component (if it has existing branches)
-            # plus kept copper: searches terminate on either, joining the
-            # new tree to the kept one wherever they touch.
+            # plus every terminal (nearest goal wins — neighbor joins) plus
+            # kept copper: searches terminate on either, joining the new
+            # tree to the kept one wherever they touch. The start pin is
+            # cleared from the mask (it must travel, not trivially succeed).
             comp_j = uf.find(j)
-            goal_mask = build_goal_mask(comp_j)
-            if seed_mask is not None:
-                goal_mask = seed_mask if goal_mask is None else (goal_mask | seed_mask)
-
-            success, path, cost = _search_pair(i, j, goal_mask)
+            base = build_goal_mask(comp_j)
+            si_cell = tuple(terminals[i])
+            all_goal = all_term_mask.copy()
+            all_goal[si_cell[2], si_cell[1], si_cell[0]] = False
+            term_goal = all_goal if base is None else (base | all_goal)
+            success, path, cost = _search_pair(i, j, term_goal, seed_mask)
             if success:
                 end = tuple(path[-1]) if path else None
                 # Fresh root: comp_j may be stale (j's component can merge
                 # between pairs, popping its old entry).
                 j_cells = component_branches.get(uf.find(j))
+                hit = None
                 if end is not None and (
                     end == tuple(terminals[j])
                     or (j_cells is not None and end in j_cells)
                 ):
-                    uf.union(i, j)
+                    hit = j
+                elif end is not None and end in term_index:
+                    hit = term_index[end]
+                if hit is not None:
+                    uf.union(i, hit)
                 if seed_set is not None and end in seed_set:
                     uf.union(i, SEED)
-                mst_edges.append((i, j))
-                path_matrix[(i, j)] = path_matrix[(j, i)] = path
-                cost_matrix[(i, j)] = cost_matrix[(j, i)] = cost
+                mst_edges.append((i, hit if hit is not None else j))
+                edge = (i, hit if hit is not None else j)
+                path_matrix[edge] = path_matrix[(edge[1], edge[0])] = path
+                cost_matrix[edge] = cost_matrix[(edge[1], edge[0])] = cost
 
                 # Merge branch cells of every joined component (generic:
                 # correct for terminal-terminal, terminal-seed, and
@@ -496,49 +583,127 @@ class SingleNetRouter:
             and any(uf.find(i) == uf.find(SEED) for i in range(n))
         )
         extra_branches: List[Tuple[list, float]] = []
-        if seed_set is not None and connected and not seed_touched:
-            # One trunk search from the new tree to kept copper: start at
-            # the terminal nearest kept copper, walk out along own branches
-            # (walkable) and terminate on kept copper (goal). Without this,
-            # adjacent chunks that route cleanly side-by-side never join.
+        if seed_set is not None and (not connected or not seed_touched):
+            # Seed join: attach every component the pair-searches left
+            # unjoined to kept copper, one trunk search per dangling
+            # component. Pair-searches may terminate on kept copper
+            # instead of each other, leaving terminals united with seed
+            # but never with each other ("connected" False while every
+            # branch already touches kept copper) — the old
+            # connected-first precondition skipped the join exactly then.
+            # Runs unless every terminal already shares the seed
+            # component; only components the new wire actually touches
+            # are united, and the final check below still decides.
             def _manhattan(a, b):
                 return abs(a[0] - b[0]) + abs(a[1] - b[1]) + abs(a[2] - b[2])
 
-            start_t = tuple(min(
-                terminals,
-                key=lambda t: min(_manhattan(tuple(t), s) for s in seed_set),
-            ))
-            goal_s = min(seed_set, key=lambda s: _manhattan(start_t, s))
-            branch_mask = np.zeros((self.n_layers, self.H, self.W), dtype=bool)
-            for cells in component_branches.values():
-                for (c, r, l) in cells:
-                    if 0 <= l < self.n_layers and 0 <= r < self.H and 0 <= c < self.W:
-                        branch_mask[l, r, c] = True
-            walkable = branch_mask | seed_mask
-            if self.max_expansions_per_net > 0:
-                trunk_allowance: Optional[int] = max(
-                    0, self.max_expansions_per_net - expansions_total)
-            else:
-                trunk_allowance = None
-            trunk = self._a_star(
-                start_t, tuple(goal_s), secondary,
-                progress_cb=None,
-                should_cancel=should_cancel,
-                window=None,
-                via_ok=via_ok,
-                allow_mask=None,
-                heuristic_weight=1.0,
-                goal_mask=seed_mask,
-                passable=walkable,
-                expansion_allowance=trunk_allowance,
-            )
-            expansions_total += trunk.expansions
-            _report()
-            if trunk.success and trunk.path:
+            def _branch_mask():
+                mask = np.zeros((self.n_layers, self.H, self.W), dtype=bool)
+                for cells in component_branches.values():
+                    for (c, r, l) in cells:
+                        if 0 <= l < self.n_layers and 0 <= r < self.H and 0 <= c < self.W:
+                            mask[l, r, c] = True
+                return mask
+
+            def _dangling():
+                """Terminal indices whose component touches no kept copper."""
+                seed_root = uf.find(SEED)
+                return sorted(
+                    (i for i in range(n) if uf.find(i) != seed_root),
+                    key=lambda i: i,
+                )
+
+            for _ in _dangling():
+                dangling = _dangling()
+                if not dangling:
+                    break
+                comp_terminals = [terminals[i] for i in dangling]
+                start_t = tuple(min(
+                    comp_terminals,
+                    key=lambda t: min(_manhattan(tuple(t), s) for s in seed_set),
+                ))
+                goal_s = min(seed_set, key=lambda s: _manhattan(start_t, s))
+                walkable = _branch_mask() | seed_mask
+                # Windowed ladder (then unrestricted fallback): the join
+                # is local — start at the dangling pin, end on kept
+                # copper — so a full-board flood per join is pure waste.
+                # Logged like any other attempt, now with a real box.
+                t_win = for_pair(start_t[0], start_t[1], goal_s[0], goal_s[1],
+                                 self.W, self.H, self.window_margin_cells)
+                trunk_windows = [t_win,
+                                 grow(t_win, self.W, self.H, self.window_growth),
+                                 None]
+                trunk = None
+                for tw in trunk_windows:
+                    if self.max_expansions_per_net > 0:
+                        trunk_allowance: Optional[int] = max(
+                            0, self.max_expansions_per_net - expansions_total)
+                    else:
+                        trunk_allowance = None
+                    t_trunk = time.perf_counter() if self.debug_enabled else 0.0
+                    trunk = self._a_star(
+                        start_t, tuple(goal_s), secondary,
+                        progress_cb=None,
+                        should_cancel=should_cancel,
+                        window=tw,
+                        via_ok=via_ok,
+                        allow_mask=None,
+                        heuristic_weight=1.0,
+                        goal_mask=seed_mask,
+                        passable=walkable,
+                        expansion_allowance=trunk_allowance,
+                    )
+                    expansions_total += trunk.expansions
+                    _report()
+                    if self.debug_enabled:
+                        s_mm = self.grid.cell_center_mm(start_t[0], start_t[1])
+                        g_mm = self.grid.cell_center_mm(goal_s[0], goal_s[1])
+                        if tw is None:
+                            tw_cells = self.W * self.H
+                            tw_box = None
+                        else:
+                            tw_cells = ((tw.c1 - tw.c0 + 1)
+                                        * (tw.r1 - tw.r0 + 1))
+                            tw_box = [tw.c0, tw.r0, tw.c1, tw.r1]
+                        attempt_log.append({
+                            "pair": "trunk",
+                            "kind": "trunk",
+                            "window_cells": tw_cells,
+                            "window_box": tw_box,
+                            "window_box_mm": _box_mm(self.grid, tw),
+                            "pins_mm": [[s_mm[0], s_mm[1], start_t[2]],
+                                        [g_mm[0], g_mm[1], goal_s[2]]],
+                            "expansions": trunk.expansions,
+                            "success": bool(trunk.success and trunk.path),
+                            "seconds": round(time.perf_counter() - t_trunk, 4),
+                        })
+                    if trunk.success and trunk.path:
+                        break
+                if not (trunk.success and trunk.path):
+                    continue
                 extra_branches.append((list(trunk.path), trunk.cost))
-                for i in range(n):
-                    uf.union(i, SEED)
+                path_cells = set(map(tuple, trunk.path))
+                # Unite the launching component (the wire starts on its
+                # pin) plus every component the wire walks through.
+                uf.union(terminals.index(start_t), SEED)
+                for i in dangling:
+                    cells = component_branches.get(uf.find(i))
+                    if cells is not None and not path_cells.isdisjoint(cells):
+                        uf.union(i, SEED)
                 seed_touched = True
+                # Later joins may walk this wire.
+                root = uf.find(SEED)
+                component_branches[root] = (
+                    component_branches.get(root, set()) | path_cells
+                )
+        # The join above can unite dangling components through kept
+        # copper, so recompute before the verdict (the pre-loop values
+        # are stale once the trunk runs on an incomplete tree).
+        connected = all(uf.find(i) == uf.find(0) for i in range(n))
+        seed_touched = (
+            seed_set is not None
+            and any(uf.find(i) == uf.find(SEED) for i in range(n))
+        )
         if not connected or (seed_set is not None and not seed_touched):
             return RouteResult([], 0.0, 0, 0.0, False, expansions_total,
                                debug_attempts=tuple(attempt_log))
@@ -1091,6 +1256,112 @@ def grow(window: Window, W: int, H: int, factor: float = 2.0) -> Window:
 def full_board(W: int, H: int) -> Window:
     """Fallback window covering the whole board."""
     return Window(c0=0, r0=0, c1=W - 1, r1=H - 1)
+
+
+def _box_mm(grid, box):
+    """Board-mm edges of a window box (None when unrestricted)."""
+    if box is None:
+        return None
+    ox, oy = grid.origin_mm
+    res = grid.resolution_mm
+    return [round(ox + box.c0 * res, 3), round(oy + box.r0 * res, 3),
+            round(ox + (box.c1 + 1) * res, 3),
+            round(oy + (box.r1 + 1) * res, 3)]
+
+
+def diagnose_attempts(
+    attempts,
+    *,
+    max_expansions: int = 0,
+    corridor_enabled: bool = True,
+    net_budget: int = 0,
+    has_seed: bool = False,
+) -> dict:
+    """Machine-usable summary of a failed search ladder.
+
+    ``attempts`` are the debug records logged by ``route()`` (pair, kind,
+    window box, expansions, success). The returned dict names what was
+    tried per pair — window boxes, corridor outcome, full-board fallback —
+    plus ``hints``: factual one-liners a second try can act on (widen the
+    margin, raise a cap, or accept the box is sealed and join differently).
+    No policy lives here; this only reports so a retry can differ.
+    """
+    records = [dict(a) for a in (attempts or ())]
+    pair_keys = []
+    for a in records:
+        p = a.get("pair")
+        key = tuple(p) if isinstance(p, (list, tuple)) else p
+        if key not in pair_keys:
+            pair_keys.append(key)
+    ok_pairs = {
+        tuple(a["pair"]) for a in records
+        if a.get("success") and isinstance(a.get("pair"), (list, tuple))
+    }
+    failed_pairs = [
+        list(k) for k in pair_keys
+        if isinstance(k, tuple) and k not in ok_pairs
+    ]
+    kinds = sorted({str(a.get("kind", "")) for a in records})
+    base_kinds = {k.split(":")[0] for k in kinds}
+    first_failure = next((a for a in records if not a.get("success")), None)
+    trunk = next((a for a in records if a.get("kind") == "trunk"), None)
+    w0_failed = any(
+        not a.get("success") and a.get("kind") == "window0" for a in records
+    )
+    capped = [
+        a for a in records
+        if (not a.get("success") and max_expansions > 0
+                and a.get("expansions", 0) >= max_expansions)
+    ]
+    budget_cut = any(str(a.get("kind", "")).endswith(":budget") for a in records)
+    hints = []
+    if trunk is not None and not trunk.get("success"):
+        hints.append(
+            "seed join (trunk) failed: chunk tree and kept copper have no "
+            "legal connector in the searched box — retry needs a different "
+            "join (stub/relay), not a wider pair window"
+        )
+    if not failed_pairs and has_seed and trunk is None:
+        hints.append(
+            "pair searches reached kept copper but the tree never fully "
+            "joined (a terminal dangles): retry the seed join (trunk) even "
+            "though the local tree is incomplete — wider pair windows "
+            "cannot help"
+        )
+    if failed_pairs and "full" not in base_kinds and not budget_cut:
+        hints.append(
+            f"full-board window never tried for pairs {failed_pairs}: "
+            "retry with larger window_retries or window_margin_cells"
+        )
+    if capped:
+        hints.append(
+            f"{len(capped)} attempt(s) hit the per-search cap "
+            f"max_expansions={max_expansions}: retry with a larger cap"
+        )
+    if net_budget > 0 and budget_cut:
+        hints.append(
+            "net expansion budget exhausted "
+            f"(max_expansions_per_net={net_budget}): retry with a larger budget"
+        )
+    if corridor_enabled and w0_failed and "corridor" not in base_kinds:
+        hints.append(
+            "corridor fallback never ran after a failed window0: retry with "
+            "corridor enabled and budget unspent"
+        )
+    if (failed_pairs and "full" in base_kinds and not capped and not budget_cut
+            and (trunk is None or trunk.get("success"))):
+        hints.append(
+            "all windows incl. full board failed within budget: sealed by "
+            "obstacles, not by search limits — move copper or join differently"
+        )
+    return {
+        "pairs_tried": [list(k) if isinstance(k, tuple) else k for k in pair_keys],
+        "pairs_failed": failed_pairs,
+        "kinds_tried": kinds,
+        "full_board_tried": "full" in base_kinds,
+        "first_failure": first_failure,
+        "hints": hints,
+    }
 
 
 # ---------------------------------------------------------------------------

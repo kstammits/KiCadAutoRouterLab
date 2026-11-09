@@ -8,6 +8,7 @@ their routed chunks as display-only partial copper (never written back).
 """
 
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,7 @@ from kicad_autorouter.board_model import (
     Point,
     board_model,
 )
+from kicad_autorouter.board_model.model import KeepoutZone
 from kicad_autorouter.sexpr import parse_file
 from kicad_autorouter.routing.pipeline import (
     RoutingParams,
@@ -139,23 +141,50 @@ def test_forced_chunks_on_small_net():
 
 @pytest.mark.dccf
 @pytest.mark.slow
-def test_dccf_gnd_failure_keeps_partial_copper():
-    """A failed chunked net keeps its routed chunks as display-only copper.
+def test_dccf_gnd_routes():
+    """DCCF GND spans two board regions and routes fully per region.
 
-    DCCF GND spans two board regions, so it routes per region: region 0
-    completes within budget while a region-1 chunk fails. Partial tracks
-    carry the failed net's name for the viewer overlay and nothing is
-    committed (tracks_added stays 0 — partials are excluded from writeback).
+    A region-1 chunk used to fail here: its pair-searches terminated on
+    kept copper instead of each other, stranding one terminal, and the
+    seed join (which would have fixed it) was skipped on the incomplete
+    tree. The per-component join rescues it.
     """
     model = board_model(parse_file(DCCF_PCB))
     params = RoutingParams(run_drc=False, stitch_gnd_vias=False,
                            max_attempts_per_net=1,
                            max_expansions_per_net=2_000_000)
     result, _, _ = route_nets(model, ["GND"], set(), params=params)
+    assert result.nets_routed == 1
+    assert result.nets_failed == 0
+    assert result.tracks_added > 0
+
+
+def test_failed_chunk_keeps_partial_copper():
+    """A failed chunked net keeps its routed chunks as display-only copper.
+
+    The keepout seals the later chunks' pads off the board: chunk 1
+    routes, chunk 2 finds no path. Partial tracks carry the failed net's
+    name for the viewer overlay and nothing is committed (tracks_added
+    stays 0 — partials are excluded from writeback).
+    """
+    model = _ladder(20)
+    keepout = KeepoutZone(
+        uuid="kz-sealed",
+        layers=("F.Cu", "B.Cu"),
+        polygon=(Point(40.0, -5.0), Point(90.0, -5.0),
+                 Point(90.0, 15.0), Point(40.0, 15.0)),
+        tracks_allowed=False, vias_allowed=False, pads_allowed=False,
+    )
+    model = replace(model, keepout_zones=(keepout,))
+    params = RoutingParams(run_drc=False, stitch_gnd_vias=False,
+                           max_attempts_per_net=1,
+                           max_terminals_per_net=10,
+                           piecemeal_chunk_terminals=6)
+    result, _, _ = route_nets(model, ["BIG"], set(), params=params)
     assert result.nets_failed == 1
-    assert "chunk" in result.failed_reasons["GND"]
+    assert "no path found" in result.failed_reasons["BIG"]
     assert len(result.partial_tracks) > 0
-    assert {t.net_name for t in result.partial_tracks} == {"GND"}
+    assert {t.net_name for t in result.partial_tracks} == {"BIG"}
     assert all(t.width_mm > 0 for t in result.partial_tracks)
     assert result.tracks_added == 0
-    assert all(v.net_name == "GND" for v in result.partial_vias)
+    assert all(v.net_name == "BIG" for v in result.partial_vias)
