@@ -260,10 +260,69 @@ def build_fanout_cost(
             if layer_idx >= n_layers:
                 continue
             # Hard exclusion: foreign copper must keep clear of the via annulus + clearance + track half-width
-            _mark_circular_zone(
-                secondary[layer_idx], row, col, inner, THT_EXCLUSION
-            )
+            _mark_circular_zone(secondary[layer_idx], row, col, inner, THT_EXCLUSION)
     return secondary
+
+
+def own_net_hard_cells(
+    model,
+    grid,
+    net_name: str,
+    clearance_mm: float,
+    track_half_mm: float,
+) -> np.ndarray:
+    """Boolean ``(n_layers, H, W)`` hard-exclusion cells of one net's own pads/vias.
+
+    Stamps exactly the hard tier :func:`build_fanout_cost` would stamp for
+    these pads/vias (copper plus routed track half-width plus the
+    half-diagonal raster guard; via annulus halo) — i.e. precisely the
+    cells the per-net secondary *carves out* for ``current_net=net_name``.
+    Used to reconstruct the un-carved base mask (``base = net_mask |
+    own_cells``) so the emit-gate STRtree index can be shared across nets
+    instead of rebuilt per net. Millisecond-scale: only one net's pads.
+    """
+    n_layers = len(grid.layers)
+    H, W = grid.height_cells, grid.width_cells
+    res_mm = grid.resolution_mm
+    scratch = np.zeros((n_layers, H, W), dtype=np.int16)
+    if res_mm <= 0:
+        return scratch >= THT_EXCLUSION
+    guard_mm = track_half_mm + res_mm * math.sqrt(2) / 2.0
+    for fp in model.footprints:
+        for pad in fp.pads:
+            if pad.net_name != net_name:
+                continue
+            if pad.is_through_hole:
+                layers = tuple(range(n_layers))
+            else:
+                idx = grid.layer_to_idx.get(fp.layer)
+                layers = (idx,) if idx is not None else ()
+            for layer_idx in layers:
+                if layer_idx >= n_layers:
+                    continue
+                _stamp_pad_zone(
+                    scratch[layer_idx], grid, pad, guard_mm, THT_EXCLUSION
+                )
+    for via in model.vias:
+        if not via.net_name or via.net_name != net_name:
+            continue
+        col, row = board_to_grid(grid, via.position.x_mm, via.position.y_mm)
+        if getattr(via, "layers", ()):
+            layers = tuple(
+                grid.layer_to_idx[name]
+                for name in via.layers
+                if name in grid.layer_to_idx
+            )
+        else:
+            layers = tuple(range(n_layers))
+        inner = via_halo_radius_cells(
+            via.size_mm, clearance_mm, track_half_mm, res_mm
+        )
+        for layer_idx in layers:
+            if layer_idx >= n_layers:
+                continue
+            _mark_circular_zone(scratch[layer_idx], row, col, inner, THT_EXCLUSION)
+    return scratch >= THT_EXCLUSION
 
 
 def tht_drill_cells(pad, grid) -> set:

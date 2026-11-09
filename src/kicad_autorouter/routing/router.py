@@ -169,10 +169,18 @@ class SingleNetRouter:
         progress_cb=None,  # fn(pairs_done, pairs_total, expansions) — best-effort
         should_cancel=None,  # fn() -> bool — checked between pairs + inside A*
         seed_cells: Optional[List[Tuple[int, int, int]]] = None,  # kept same-net copper to join
+        trunk_root: Optional[Tuple[int, int, int]] = None,  # trunk-growth root terminal (ground nets): attach each terminal to the root tree supply-outward instead of Kruskal chaining
     ) -> RouteResult:
         """Route a net connecting all terminals.
 
         Uses MST approximation: pairwise A* distances -> MST -> route edges sequentially.
+
+        With ``trunk_root`` (a terminal cell, used for ground nets), growth
+        is rooted instead: each non-root terminal routes to the root
+        component's existing branches (supply-outward attach-to-tree), so
+        the tree shares trunk copper from the supply rather than chaining
+        pad-to-pad in geographic order. Falls back to Kruskal order when
+        the root is not among these terminals (e.g. other board regions).
 
         ``secondary`` is an optional per-net cost overlay (e.g. fanout halos
         over other nets' pads). Values below SECONDARY_BLOCKED are ADDED to
@@ -200,7 +208,29 @@ class SingleNetRouter:
         # via mask per net and a grown search window per pair: typical cost
         # is ~n-1 searches, not n*(n-1)/2 full-board floods.
         n = len(terminals)
-        pairs_total = n * (n - 1) // 2
+        trunk_idx: Optional[int] = None
+        if trunk_root is not None:
+            try:
+                trunk_idx = list(map(tuple, terminals)).index(tuple(trunk_root))
+            except ValueError:
+                trunk_idx = None
+        if trunk_idx is not None:
+            # Trunk growth: supply-outward attach-to-tree. Each non-root
+            # terminal routes to the root component (the pair search
+            # terminates on its branches via goal_mask), so copper is
+            # shared from the supply outward instead of chained
+            # pad-to-pad. Same union/branch bookkeeping as Kruskal below.
+            pair_order = [
+                (i, trunk_idx)
+                for i in sorted(
+                    (i for i in range(n) if i != trunk_idx),
+                    key=lambda i: manhattan(terminals[i], terminals[trunk_idx]),
+                )
+            ]
+            pairs_total = n - 1
+        else:
+            pair_order = ordered_pairs(terminals)
+            pairs_total = n * (n - 1) // 2
         pairs_done = 0
         expansions_total = 0
         pair_cstats: list[dict] = []
@@ -415,7 +445,7 @@ class SingleNetRouter:
         cost_matrix: Dict[Tuple[int, int], float] = {}
         searches = 0
 
-        for i, j in ordered_pairs(terminals):
+        for i, j in pair_order:
             if uf.components == 1:
                 break
             if self._budget_spent(expansions_total):

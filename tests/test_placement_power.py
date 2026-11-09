@@ -446,6 +446,13 @@ class TestWidthUnity:
         assert resolve_track_width_mm("MOTOR_A") == 0.25
         assert resolve_track_width_mm("VCC") == 0.5
 
+    def test_ground_gets_power_width_without_membership(self):
+        assert resolve_track_width_mm("GND") == 0.5
+        assert resolve_track_width_mm("GROUND_PLANE") == 0.5
+        # Width only: GND must not join the power family or claim priority.
+        assert not is_power_net_effective("GND", set())
+        assert is_ground_net("GND")
+
     def test_netclass_still_first(self):
         nc = NetClass(name="Skinny", trace_width_mm=0.3, nets=("MOTOR_A",))
         w = resolve_track_width_mm(

@@ -161,4 +161,5 @@ def finish_routes(
         total_wire_mm=raw.total_wire_mm,
         net_routes=dict(raw.all_results),
         width_map=dict(raw.width_map),
+        net_stats=dict(raw.net_stats),
     ), cost_grid, routing_grid

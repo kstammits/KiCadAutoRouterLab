@@ -29,7 +29,7 @@ from . import (
 from .output import routes_to_tracks_vias, apply_routes_to_tree
 from .output import Arc as OutputArc, Track as OutputTrack, Via as OutputVia
 from .biarc import pieces_wire_cells
-from .verify import fitted_pieces_violate, gate_touch_margin
+from .verify import fitted_pieces_violate, gate_touch_margin, share_group_key
 from .smooth import own_net_soft_mask, smooth_branch_pieces, smooth_grid_path, smoothed_wire_mm
 from .smooth import effort_rungs, resolve_config as resolve_smooth_config
 from .router import SECONDARY_BLOCKED
@@ -40,7 +40,7 @@ from .grid import RoutingGrid, board_to_grid, grid_to_board, mm_to_cells
 from .pour import pour_corridors, pour_net_names, severance_cost
 from .stitch import plan_stitches
 from .stitch import _region_masks as _board_region_masks
-from .obstacles import BLOCKED, ObstacleCache, bresenham_cells, build_fanout_cost, build_via_block_mask, drill_radius_cells, stamp_discs, stamp_square, tht_drill_cells, track_corridor_radius_cells, via_halo_radius_cells, _build_tht_via_mask
+from .obstacles import BLOCKED, ObstacleCache, bresenham_cells, build_fanout_cost, build_via_block_mask, drill_radius_cells, own_net_hard_cells, stamp_discs, stamp_square, static_fingerprint, tht_drill_cells, track_corridor_radius_cells, via_halo_radius_cells, _build_tht_via_mask
 from .params import (
     MAX_GRID_CELLS_TOTAL,
     RoutingParams,
@@ -558,12 +558,34 @@ def _resolve_gate_trip(raw_res, smoothed_res, violations,
     return raw_res, None, True
 
 
+def _supply_root_cell(model, routing_grid, net_name, terminals):
+    """Trunk root cell: this net's pad on a supply-connector (J-) footprint.
+
+    First J-ref pad of the net in model order, else the first terminal.
+    Deterministic; ground nets grow their tree outward from this cell
+    (``trunk_root``) instead of chaining pad-to-pad.
+    """
+    wanted = set()
+    for fp in model.footprints:
+        if (fp.ref or "").upper().startswith("J"):
+            for pad in fp.pads:
+                if pad.net_name == net_name:
+                    c, r = board_to_grid(
+                        routing_grid, pad.position.x_mm, pad.position.y_mm)
+                    wanted.add((c, r))
+    terms = [tuple(t) for t in terminals]
+    for t in terms:
+        if (t[0], t[1]) in wanted:
+            return t
+    return terms[0] if terms else None
+
+
 def _route_chunk(
     router, term_set, region_secondary, progress_cb, should_cancel,
     seed_cells, cost_grid, routing_grid, corridor, soft_mask,
     clearance_radius, region_blocked_mask, fit_arcs, max_radius_mm,
     min_leg_mm, sample_mm, keep_min_radius_mm, params, model, timings,
-    net_name, tag="", width_mm=None,
+    net_name, tag="", width_mm=None, verify_share=None, trunk_root=None,
 ):
     """Route+smooth+stamp one terminal set within its region.
 
@@ -584,10 +606,25 @@ def _route_chunk(
         progress_cb=progress_cb,
         should_cancel=should_cancel,
         seed_cells=seed_cells,
+        trunk_root=trunk_root,
     )
     timings["astar_s"] = timings.get("astar_s", 0.0) + (
         time.perf_counter() - t_astar
     )
+    search_expansions = res.expansions
+
+    def _failed(kind: str, reason: str):
+        """Failure return that keeps the search's expansion count visible.
+
+        Failed flights used to discard their RouteResult, so refused nets
+        reported 0 expansions while burning millions of hidden pops;
+        accumulate them under ``expansions_failed`` instead (success-side
+        ``expansions`` semantics are unchanged).
+        """
+        timings["expansions_failed"] = (
+            timings.get("expansions_failed", 0) + search_expansions
+        )
+        return None, (kind, reason)
     if params.debug and res.debug_attempts:
         key = f"debug_attempts_{net_name}"
         timings[key] = timings.get(key, []) + [dict(a) for a in res.debug_attempts]
@@ -603,11 +640,15 @@ def _route_chunk(
         effort = float(getattr(params, "smooth_effort", 2.0))
         if effort <= 0.0:
             res = raw_res
+            t0 = time.perf_counter()
             violations = fitted_pieces_violate(
                 list(_branch_paths(res)),
                 tuple(getattr(res, "arc_pieces", ()) or ()),
                 region_blocked_mask, routing_grid,
+                timings=timings, share=verify_share,
             )
+            timings["smooth_verify_s"] = timings.get("smooth_verify_s", 0.0) + (
+                time.perf_counter() - t0)
         else:
             best = None
             best_wire_mm = math.inf
@@ -625,12 +666,17 @@ def _route_chunk(
                     min_leg_mm=cfg["min_leg_mm"],
                     sample_mm=cfg["sample_mm"],
                     keep_min_radius_mm=cfg["keep_min_radius_mm"],
+                    timings=timings,
                 )
+                t0 = time.perf_counter()
                 cand_violations = fitted_pieces_violate(
                     list(_branch_paths(cand)),
                     tuple(getattr(cand, "arc_pieces", ()) or ()),
                     region_blocked_mask, routing_grid,
+                    timings=timings, share=verify_share,
                 )
+                timings["smooth_verify_s"] = timings.get("smooth_verify_s", 0.0) + (
+                    time.perf_counter() - t0)
                 if not cand_violations:
                     wire_mm = float(getattr(cand, "wire_mm", math.inf))
                     if best is None or wire_mm < best_wire_mm:
@@ -657,7 +703,7 @@ def _route_chunk(
                 # Deterministic on an unchanged grid like budget exhaustion:
                 # the same search + smoother will reproduce the same fitted
                 # copper, so retrying only burns time — fail immediately.
-                return None, ("gate", f"{tag}{gate_failure}")
+                return _failed("gate", f"{tag}{gate_failure}")
             res = chosen
             if fell_back:
                 timings["emit_gate_fallback_raw"] = (
@@ -667,7 +713,7 @@ def _route_chunk(
             time.perf_counter() - t_smooth
         )
         if _route_escapes_board(res, routing_grid, model, term_set):
-            return None, ("open", f"{tag}route left board outline")
+            return _failed("open", f"{tag}route left board outline")
         _apply_route_to_grid(
             res, cost_grid, routing_grid, corridor,
             extra_radius=clearance_radius,
@@ -685,8 +731,8 @@ def _route_chunk(
             f"track width, smaller piecemeal chunks, or a "
             f"coarser grid"
         )
-        return None, ("budget", reason)
-    return None, ("open", f"{tag}no path found")
+        return _failed("budget", reason)
+    return _failed("open", f"{tag}no path found")
 
 
 def _route_escapes_board(result, grid, model, term_set=None) -> bool:
@@ -729,7 +775,7 @@ def _smooth_result(result, cost_grid, routing_grid, corridor: int, blocked_thres
                    blocked_mask=None,
                    fit_arcs: bool = False, max_radius_mm: float = 1.0,
                    min_leg_mm: float = 0.3, sample_mm: float = 0.05,
-                   keep_min_radius_mm: float = 0.0):
+                   keep_min_radius_mm: float = 0.0, timings=None):
     """String-pull a successful route before corridor reservation.
 
     Smoothing runs against the pre-route grid (which must NOT yet contain
@@ -798,6 +844,7 @@ def _smooth_result(result, cost_grid, routing_grid, corridor: int, blocked_thres
                 sample_spacing_cells=max(sample_mm / res_mm, 0.25),
                 keep_min_radius_cells=(keep_min_radius_mm / res_mm
                                         if res_mm > 0 else 0.0),
+                timings=timings,
             )
             new_branches.append(smoothed)
             new_pieces.append(tuple(pieces))
@@ -806,6 +853,7 @@ def _smooth_result(result, cost_grid, routing_grid, corridor: int, blocked_thres
             if len(smoothed) != len(branch):
                 changed = True
         else:
+            t0 = time.perf_counter()
             smoothed = smooth_grid_path(
                 branch,
                 cost_grid,
@@ -816,6 +864,9 @@ def _smooth_result(result, cost_grid, routing_grid, corridor: int, blocked_thres
                 blocked_mask=blocked_mask,
                 hard_radius=hard_radius,
             )
+            if timings is not None:
+                timings["smooth_pull_s"] = timings.get("smooth_pull_s", 0.0) + (
+                    time.perf_counter() - t0)
             new_branches.append(smoothed)
             new_pieces.append(())
             if len(smoothed) != len(branch):
@@ -907,6 +958,11 @@ class RawRoutes:
     timings: Dict[str, float] = field(default_factory=dict)
     t_total: float = 0.0
     gnd_stripped: int = 0
+    net_stats: Dict[str, dict] = field(default_factory=dict)  # net ->
+    # per-net cost attribution: {ok, expansions, wall_s, timings{key: delta}}.
+    # Numeric timing deltas around that net's _route_one_net call. One-time
+    # lazy builds land on the group's first net (its smooth_verify_build_s
+    # absorbs the shared base index) — honest as measured, note when reading.
     pour_corridors: Optional[Dict] = None  # corridor map built in 5b (shared
     # across refine trials on the same ripped model; None when skipped)
     pour_min_thick: float = 0.0
@@ -1258,6 +1314,15 @@ def route_raw(
         )
         if len(terminals) < 2:
             return False
+        # Trunk growth for ground nets: root the tree at the supply
+        # connector so branches share trunk copper outward instead of
+        # chaining pad-to-pad (which sums locally-optimal hops into wraps
+        # like the U4 GND ring). Chunks not containing the root fall back
+        # to Kruskal order inside router.route.
+        trunk_root = (
+            _supply_root_cell(model, routing_grid, net_name, terminals)
+            if is_ground_net(net_name) else None
+        )
         # Panel-aware split: group terminals by board region so each board
         # routes independently. Same-net pads on different panels (e.g.
         # tube111 +12V in regions 1+2) must never share copper across the
@@ -1349,6 +1414,30 @@ def route_raw(
             model, routing_grid, net_name,
             clearance_mm=clearance_mm, track_half_mm=width_mm / 2.0,
         )
+        # Cross-net shared emit-gate index: this net's own hard cells plus
+        # a group key per region confinement, so later nets reuse the first
+        # net's un-carved base index instead of rebuilding per mask.
+        # Millisecond-scale (one net's pads); the sharing itself happens in
+        # verify.fitted_pieces_violate.
+        _verify_own = own_net_hard_cells(
+            model, routing_grid, net_name,
+            clearance_mm=clearance_mm, track_half_mm=width_mm / 2.0,
+        )
+        try:
+            _verify_vias_fp = hash(tuple(model.vias))
+        except TypeError:
+            _verify_vias_fp = hash(repr(tuple(model.vias)))
+        _verify_base_fp = (static_fingerprint(model), _verify_vias_fp)
+        _verify_group_keys: Dict[int, tuple] = {}
+
+        def _verify_share_for(region_idx: int) -> tuple:
+            tag = (region_idx if 0 <= region_idx < len(region_masks)
+                   else -1)
+            if tag not in _verify_group_keys:
+                _verify_group_keys[tag] = share_group_key(
+                    _verify_base_fp[0], _verify_base_fp[1], routing_grid,
+                    clearance_mm, width_mm / 2.0, margin_mm, tag)
+            return (_verify_group_keys[tag], _verify_own)
         # Per-region confinement: copy the base secondary and mark every
         # cell outside the group's region BLOCKED, so A*, corridor
         # guidance, and the smoother can never wander across the
@@ -1386,9 +1475,22 @@ def route_raw(
         # only the failed chunk onward (prior copper stays stamped as both
         # obstacle and join target) — same resume rule as single-region.
         group_progress: Dict[int, List[NetRouteResult]] = {}
+        # Fail fast on no-progress retries: a failed attempt stamps nothing,
+        # so an attempt that routes no new chunk reruns the identical
+        # searches on a bit-identical grid. Only attempts that advance
+        # (new kept copper to resume from) earn another try — the attempt
+        # budget then covers nets that keep advancing, not doomed replays.
+        attempt_advanced = True
         while not fatal and not success and ripup.can_retry(net_name):
             if should_cancel is not None and should_cancel():
                 raise RoutingCancelled(f"cancelled before attempt for {net_name}")
+            if not attempt_advanced:
+                # Deterministic on an unchanged grid like budget exhaustion:
+                # nothing was stamped, so the next attempt would burn the
+                # same searches for the same outcome — fail immediately.
+                fatal = True
+                break
+            attempt_advanced = False
             # Resume after already-routed chunks: recompute progress so a
             # retry continues where the previous attempt stopped.
             done_base = _resume_progress(grouped_chunks, group_progress)
@@ -1425,6 +1527,8 @@ def route_raw(
                         params.arc_min_leg_mm, params.arc_sample_mm,
                         params.arc_keep_min_radius_mm, params, model, timings,
                         net_name, tag, width_mm,
+                        verify_share=_verify_share_for(region_idx),
+                        trunk_root=trunk_root,
                     )
                     if result is not None:
                         expansions_total += result.expansions
@@ -1434,6 +1538,7 @@ def route_raw(
                         assert result is not None
                         chunk_results.append(result)
                         done_base += chunk_pairs
+                        attempt_advanced = True
                         continue
                     kind, reason = failure
                     ripup.record_failure(net_name, reason)
@@ -1494,22 +1599,58 @@ def route_raw(
     # 7-9. Route requested nets by class (power, then ground, then signal).
     # Cooperative cancel stops with partial results: already-routed nets
     # are kept, unreached nets count as failed with reason "cancelled".
+    net_stats: Dict[str, dict] = {}
+
+    def _route_one_net_timed(net_name: str) -> bool:
+        """_route_one_net plus per-net cost attribution (benchmarks only).
+
+        Snapshots the numeric timing accumulators and the expansion
+        counter around the call; deltas are that net's honest cost except
+        for one-time lazy builds, which land on the group's first net
+        (e.g. its smooth_verify_build_s absorbs the shared emit-gate
+        base index). Recorded even on cancel (partial costs kept).
+        """
+        t0 = time.perf_counter()
+        exp0 = expansions_total
+        fail0 = timings.get("expansions_failed", 0)
+        snap = {
+            k: v for k, v in timings.items()
+            if isinstance(v, (int, float)) and not isinstance(v, bool)
+        }
+        try:
+            return _route_one_net(net_name)
+        finally:
+            delta = {}
+            for k, v in timings.items():
+                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    d = v - snap.get(k, 0.0)
+                    if d:
+                        delta[k] = d
+            delta.pop("expansions_failed", None)
+            net_stats[net_name] = {
+                "ok": net_name in all_results,
+                "expansions": expansions_total - exp0,
+                "expansions_failed": timings.get("expansions_failed", 0) - fail0,
+                "wall_s": time.perf_counter() - t0,
+                "timings": delta,
+            }
+
     t_route = time.perf_counter()
     try:
         # 7. Route requested power nets (respects pad layers)
         for net_name in requested_power:
             if net_name not in plane_done:
-                _route_one_net(net_name)
+                _route_one_net_timed(net_name)
 
         # 8. Route requested ground nets
         for net_name in requested_ground:
             if net_name not in plane_done:
-                _route_one_net(net_name)
+                _route_one_net_timed(net_name)
 
         # 9. Route signal nets
         for net_name in requested_signal:
             if net_name not in plane_done:
-                _route_one_net(net_name)
+                _route_one_net_timed(net_name)
     except RoutingCancelled:
         cancelled = True
         for net_name in net_names:
@@ -1592,6 +1733,7 @@ def route_raw(
         timings=timings,
         t_total=t_total,
         gnd_stripped=gnd_stripped,
+        net_stats=net_stats,
         pour_corridors=corridors,
         pour_min_thick=corridor_min_thick,
         tracks=tracks,

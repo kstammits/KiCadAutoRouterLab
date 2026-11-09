@@ -63,6 +63,7 @@ class RoutingResult:
     # (-1 = kept pre-refine copper without re-routing)
     net_routes: Dict[str, object] = field(default_factory=dict)  # net -> NetRouteResult (server-side only: feeds Polish; never serialized)
     width_map: Dict[str, float] = field(default_factory=dict)  # net -> emitted track width (route-time resolution; feeds Polish)
+    net_stats: Dict[str, dict] = field(default_factory=dict)  # net -> per-net cost attribution {ok, expansions, wall_s, timings} (route_raw; benchmarks)
 
 
 from .route_raw import (

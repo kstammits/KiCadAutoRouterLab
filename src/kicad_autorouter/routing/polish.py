@@ -21,6 +21,8 @@ from .grid import RoutingGrid
 from .obstacles import (
     build_fanout_cost,
     build_occupancy_grid,
+    own_net_hard_cells,
+    static_fingerprint,
     track_corridor_radius_cells,
     via_halo_radius_cells,
 )
@@ -42,7 +44,7 @@ from .smooth import (
     resolve_config as resolve_smooth_config,
 )
 from .stitch import _region_masks as _board_region_masks
-from .verify import fitted_pieces_violate
+from .verify import fitted_pieces_violate, share_group_key
 
 
 def polish_routes(
@@ -216,6 +218,32 @@ def _polish_one(
                 blocked = confined >= SECONDARY_BLOCKED
         except Exception:
             pass
+    # Cross-net shared emit-gate index (same scheme as the route path):
+    # own hard cells + a group key covering confinement identity, so
+    # repeated polishes reuse one base index instead of rebuilding.
+    # The unconfined case shares the route path's region tag (-1).
+    try:
+        _own_3d = own_net_hard_cells(
+            model, routing_grid, net_name,
+            clearance_mm=clearance_mm, track_half_mm=track_half_mm,
+        )
+        _vias_fp = hash(tuple(model.vias))
+    except TypeError:
+        _own_3d, _vias_fp = None, hash(repr(tuple(model.vias)))
+    if _own_3d is None:
+        _verify_share = None
+    else:
+        # Unconfined polishes share the route path's region tag (-1);
+        # union-confined ones key on the union content.
+        _tag = -1
+        if multi_region and region_masks:
+            try:
+                _tag = ("union", hash(np.ascontiguousarray(union).tobytes()))
+            except (NameError, TypeError, ValueError):
+                _tag = -1
+        _verify_share = (share_group_key(
+            static_fingerprint(model), _vias_fp, routing_grid,
+            clearance_mm, track_half_mm, margin_mm, _tag), _own_3d)
     cost = base.copy()
     corridor = _width_cells(width_mm, res_mm)
     clearance_radius = track_corridor_radius_cells(
@@ -269,7 +297,7 @@ def _polish_one(
         if fitted_pieces_violate(
             list(_branch_paths(cand)),
             tuple(getattr(cand, "arc_pieces", ()) or ()),
-            blocked, routing_grid,
+            blocked, routing_grid, share=_verify_share,
         ):
             continue
         wire = float(getattr(cand, "wire_mm", math.inf))

@@ -23,7 +23,8 @@ Safety rules:
 from __future__ import annotations
 
 import math
-from typing import List, Optional, Set, Tuple
+import time
+from typing import Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
@@ -978,6 +979,7 @@ def smooth_branch_pieces(
     min_leg_cells: float = 3.0,
     sample_spacing_cells: float = 0.5,
     keep_min_radius_cells: float = 0.0,
+    timings: Optional[Dict[str, float]] = None,
 ) -> Tuple[List[Tuple[int, int, int]], List[tuple]]:
     """Smooth one branch and fillet its runs: the single gate, where runs live.
 
@@ -1026,18 +1028,38 @@ def smooth_branch_pieces(
             cost_layer = cost_grid[layer]
             soft_layer = soft_mask[layer] if soft_mask is not None else None
             blocked_layer = blocked_mask[layer] if blocked_mask is not None else None
-            new_run = _smooth_run(run, cost_layer, soft_layer, blocked_threshold, max(0, corridor_radius), blocked_layer,
-                                   max(0, corridor_radius) if hard_radius is None else max(0, hard_radius),
-                                   rank_radius_cells,
-                                   keep_min_radius_cells, max_radius_cells,
-                                   min_leg_cells, sample_spacing_cells)
-            run_pieces = fit_branch_arcs_with_sweeps(
-                new_run, cost_layer, soft_layer, blocked_threshold,
-                max(0, corridor_radius), blocked_layer,
-                max(0, corridor_radius) if hard_radius is None else max(0, hard_radius),
-                pinned, max_radius_cells, min_leg_cells, sample_spacing_cells,
-                keep_min_radius_cells,
-            )
+            if timings is None:
+                new_run = _smooth_run(run, cost_layer, soft_layer, blocked_threshold, max(0, corridor_radius), blocked_layer,
+                                       max(0, corridor_radius) if hard_radius is None else max(0, hard_radius),
+                                       rank_radius_cells,
+                                       keep_min_radius_cells, max_radius_cells,
+                                       min_leg_cells, sample_spacing_cells)
+                run_pieces = fit_branch_arcs_with_sweeps(
+                    new_run, cost_layer, soft_layer, blocked_threshold,
+                    max(0, corridor_radius), blocked_layer,
+                    max(0, corridor_radius) if hard_radius is None else max(0, hard_radius),
+                    pinned, max_radius_cells, min_leg_cells, sample_spacing_cells,
+                    keep_min_radius_cells,
+                )
+            else:
+                t0 = time.perf_counter()
+                new_run = _smooth_run(run, cost_layer, soft_layer, blocked_threshold, max(0, corridor_radius), blocked_layer,
+                                       max(0, corridor_radius) if hard_radius is None else max(0, hard_radius),
+                                       rank_radius_cells,
+                                       keep_min_radius_cells, max_radius_cells,
+                                       min_leg_cells, sample_spacing_cells)
+                timings["smooth_pull_s"] = timings.get("smooth_pull_s", 0.0) + (
+                    time.perf_counter() - t0)
+                t0 = time.perf_counter()
+                run_pieces = fit_branch_arcs_with_sweeps(
+                    new_run, cost_layer, soft_layer, blocked_threshold,
+                    max(0, corridor_radius), blocked_layer,
+                    max(0, corridor_radius) if hard_radius is None else max(0, hard_radius),
+                    pinned, max_radius_cells, min_leg_cells, sample_spacing_cells,
+                    keep_min_radius_cells,
+                )
+                timings["smooth_fit_s"] = timings.get("smooth_fit_s", 0.0) + (
+                    time.perf_counter() - t0)
             pieces.extend(run_pieces)
         if smoothed and new_run and new_run[0] == smoothed[-1]:
             new_run = new_run[1:]

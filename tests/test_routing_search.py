@@ -144,6 +144,47 @@ class TestKruskalPairs:
         assert res.expansions < 10 * 60  # generous: < one full row-scan per pair
 
 
+class TestTrunkGrowth:
+    """Trunk-rooted growth for ground nets: supply-outward attach-to-tree
+    instead of Kruskal chaining."""
+
+    def _line_terms(self):
+        return [(10, 20, 0), (20, 20, 0), (30, 20, 0), (40, 20, 0)]
+
+    def _pairs_of(self, res):
+        return [tuple(a["pair"]) for a in res.debug_attempts]
+
+    def test_trunk_attaches_each_terminal_to_root(self):
+        grid = _grid()
+        router, _ = _router(grid, debug=True)
+        terms = self._line_terms()
+        res = router.route(terms, trunk_root=terms[0])
+        assert res.success
+        for t in terms:
+            assert t in res.path
+        # One attach search per non-root terminal, supply-outward.
+        assert self._pairs_of(res) == [(1, 0), (2, 0), (3, 0)]
+
+    def test_trunk_root_absent_falls_back_to_kruskal(self):
+        grid = _grid()
+        router, _ = _router(grid, debug=True)
+        terms = self._line_terms()
+        res = router.route(terms, trunk_root=(999, 999, 0))
+        assert res.success
+        assert self._pairs_of(res) == [(0, 1), (1, 2), (2, 3)]
+
+    def test_trunk_deterministic(self):
+        grid = _grid()
+        terms = self._line_terms()
+        paths = []
+        for _ in range(2):
+            router, _ = _router(grid, debug=True)
+            res = router.route(terms, trunk_root=terms[0])
+            assert res.success
+            paths.append(res.path)
+        assert paths[0] == paths[1]
+
+
 class TestStarBranches:
     """Regression for the O3 3/4-pad miss: a degree-3 hub must keep every
     spoke as its own continuous branch (no teleport merge, no dropped

@@ -90,7 +90,10 @@ def resolve_track_width_mm(
         for cls in net_classes:
             if cls.name == class_name and cls.trace_width_mm > 0:
                 return cls.trace_width_mm
-    if is_power_net_effective(net_name, extra_power):
+    if is_power_net_effective(net_name, extra_power) or is_ground_net(net_name):
+        # Width only: ground planes feed like power rails (0.5mm), but
+        # membership stays power-keyword-or-marked — GND must not join the
+        # protected power family or claim power routing priority.
         return max(default_mm, power_mm)
     return default_mm
 
