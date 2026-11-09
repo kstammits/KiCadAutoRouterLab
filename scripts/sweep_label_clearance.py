@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
-"""Sweep label tether strategies on a synthetic facing-label pair.
+"""Sweep label clearance on a synthetic facing-label pair.
 
-Compares ``label_tether`` = spring | slot | free in orbit mode (plus the
-orbit-off baseline): final label offsets, orbit-radius usage, stop reason,
-iterations, and wall-clock. One command for the tether experiment — run
-under the project .venv::
+Compares ``label_clearance_m`` values (orbit always on, single spring
+tether): final label offsets, orbit-radius usage, stop reason,
+iterations, and wall-clock. One command for the clearance experiment —
+run under the project .venv::
 
-    .venv/bin/python scripts/sweep_label_tether.py [--iters N] [--json-out PATH]
+    .venv/bin/python scripts/sweep_label_clearance.py [--iters N] [--json-out PATH]
 
 The pair is deliberately uncomfortable: two netted parts 4 mm apart with
-big facing labels, so contact ejects the labels and the tether choice
-decides where they settle. See ``docs/roadmap.md`` (label orbit) and
-``board_model/labels.py`` (``LABEL_TETHERS``).
+big facing labels, so contact ejects the labels and the clearance
+decides where they settle. See ``docs/roadmap.md`` (label orbit).
 """
 
 from __future__ import annotations
@@ -70,9 +69,7 @@ def _summarize(model, params: PlacementParams) -> dict:
         max_r = max(max_r, r)
         offs[uuid] = [round(dx, 3), round(dy, 3), round(r, 3)]
     return {
-        "tether": params.label_tether,
-        "orbit": params.label_orbit,
-        "solidity": params.label_solidity,
+        "clearance_m": params.label_clearance_m,
         "stop": prop.stop_reason,
         "iterations": prop.iterations,
         "label_offsets": offs,
@@ -86,27 +83,20 @@ def main() -> int:
     ap.add_argument("--iters", type=int, default=300)
     ap.add_argument("--label-w", type=float, default=6.0)
     ap.add_argument("--gap", type=float, default=4.0)
-    ap.add_argument("--solidity", type=float, default=0.3)
     ap.add_argument("--wall-halo", type=float, default=0.002)
-    ap.add_argument("--radius", type=float, default=0.005)
+    ap.add_argument("--clearances", type=float, nargs="*", default=[0.0, 0.001, 0.003, 0.005])
     ap.add_argument("--json-out", type=str, default="")
     args = ap.parse_args()
 
-    base = {"max_iterations": args.iters, "label_halo_m": 0.0003,
-            "wall_halo_m": args.wall_halo,
-            "label_orbit_radius_m": args.radius}
+    base = {"max_iterations": args.iters, "wall_halo_m": args.wall_halo}
     model = _pair(label_w_mm=args.label_w, gap_mm=args.gap)
     rows = []
-    rows.append(_summarize(
-        model, PlacementParams(**base, label_orbit=False, label_solidity=args.solidity,
-                               label_tether="spring")))
-    for tether in ("spring", "slot", "free"):
+    for clearance in args.clearances:
         rows.append(_summarize(
-            model, PlacementParams(**base, label_orbit=True, label_solidity=args.solidity,
-                                   label_tether=tether)))
-    print(f"{'mode':<14}{'stop':<10}{'iters':>7}{'max_r':>8}{'secs':>8}  offsets")
+            model, PlacementParams(**base, label_clearance_m=clearance)))
+    print(f"{'clear_mm':<10}{'stop':<10}{'iters':>7}{'max_r':>8}{'secs':>8}  offsets")
     for r in rows:
-        print(f"{r['tether'] + ('/off' if not r['orbit'] else ''):<14}"
+        print(f"{r['clearance_m'] * 1000.0:<10.1f}"
               f"{r['stop']:<10}{r['iterations']:>7}{r['max_radius_mm']:>8}"
               f"{r['seconds']:>8}  {r['label_offsets']}")
     if args.json_out:

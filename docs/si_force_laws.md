@@ -66,6 +66,23 @@ F_ghost = k_ghost · û(target→anchor)              k_ghost in N
 ```
 Split equally over target pads; no reaction on the ghost (infinite mass).
 
+### Label orbit (spring tether + clearance contact)
+Each labeled footprint owns one extra integrated node (derived ink mass,
+floored at `mass_floor_kg`) posed at its filed `fp_text` anchor:
+```
+F_tether = m · (2π·2 Hz)² · (anchor − node)     anchor posed by parent motion
+```
+plus the `_wall_mag` contact of the label's clearance rect (text bbox
+inflated by `label_clearance_m` on all sides) against nearby bodies, and
+the shared viscous decay / friction scaled by `m_label / m_ref` so labels
+share the parts' decay timescale. The node is hard-clamped to
+`max(label_clearance_m, 1 mm)` around its anchor, and the parent carries
+its anchor exactly each step (zero lag by construction), so the tether
+governs only the orbit offset. Pads never feel labels: the pad-indexed
+kernel excludes label rows and the parent body stays the bare courtyard.
+Label orientation snaps to upright (0/90/270, never upside-down) on
+rotation; the final board-local offset is written back to `fp_text (at)`.
+
 ### Tangential assist (sliding assist)
 Applied at courtyard contact pairs only (same-layer body/pin overlap), never
 for halo-only approach. The board wall counts as a ghost courtyard with zero
@@ -209,6 +226,7 @@ mean. `stall_window=0` disables.
 | `decap_link` | — | 4.0 | local decap-chip link weight (globals never boosted) |
 | `overlap_tolerance_mm2` | mm² | 0.1 | legality threshold |
 | `wall_tolerance_mm` | mm | 0.1 | board-wall legality threshold |
+| `label_clearance_m` | m | 0.005 | label clearance reach + orbit leash (0 = parked at filed anchor) |
 
 Regime map (no single ratio both clusters scattered starts and legalizes
 placed boards — use two stages):

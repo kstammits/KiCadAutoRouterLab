@@ -1,10 +1,12 @@
-"""Label-aware placement: one visible label per part + solidity slider.
+"""Label-aware placement: one visible label per part, orbit always on.
 
 Covers the sided single-label parse (SilkS over Fab, same side only,
 ``${REFERENCE}`` resolution), the rigid-follow + readable-snap pose
-(model and ``io`` writeback agree exactly), the ``label_solidity`` param
-validation, the zero-delta tree no-op, and the solidity-0 parity /
-solidity-1 repulsion physics on a synthetic pair.
+(model and ``io`` writeback agree exactly), the ``label_clearance_m``
+param validation, the zero-delta tree no-op, and the clearance-0 parity
+/ clearance>0 label-ejection physics on a synthetic pair. Orbit is
+always on: labels are low-mass nodes on a single spring tether, no
+behavioral toggles.
 """
 
 from dataclasses import replace
@@ -47,7 +49,6 @@ def test_snap_prefers_upright_modes():
     assert snap_label_angle(45.0) == 0.0  # tie breaks toward upright
     assert snap_label_angle(135.0) == 90.0  # tie avoids inverted
     assert snap_label_angle(180.0) == 90.0  # inverted refused: nearest readable
-    assert snap_label_angle(180.0, allow_inverted=True) == 180.0
 
 
 @pytest.mark.unit
@@ -58,9 +59,6 @@ def test_snapped_local_angle_round_trip():
     # Footprint rotates 0 -> 180: board 180 refused, snaps to 90,
     # so local counter-rotates to 270.
     assert snapped_local_angle(0.0, 0.0, 180.0) == 270.0
-    assert snapped_local_angle(0.0, 0.0, 180.0, allow_inverted=True) == 0.0
-    # No snap: pure rigid follow (local gains the delta).
-    assert snapped_local_angle(10.0, 0.0, 90.0, snap=False) == 100.0
 
 
 @pytest.mark.unit
@@ -125,18 +123,20 @@ def test_model_and_tree_agree_on_rotated_label():
 
 @pytest.mark.params
 def test_label_params_validate_and_round_trip():
-    p = PlacementParams.from_dict({"label_solidity": 0.5, "label_halo_m": 0.001})
-    assert p.label_solidity == 0.5
-    assert p.to_dict()["label_solidity"] == 0.5
-    with pytest.raises(ValueError):
-        PlacementParams.from_dict({"label_solidity": 1.5})
-    with pytest.raises(ValueError):
-        PlacementParams.from_dict({"label_solidity": -0.1})
-    with pytest.raises(ValueError):
-        PlacementParams.from_dict({"label_snap": "yes"})
+    p = PlacementParams.from_dict({"label_clearance_m": 0.005})
+    assert p.label_clearance_m == 0.005
+    assert p.to_dict()["label_clearance_m"] == 0.005
+    for bad in ({"label_clearance_m": -0.001}, {"label_clearance_m": 0.06},
+                {"label_clearance_m": "5mm"}):
+        with pytest.raises(ValueError):
+            PlacementParams.from_dict(bad)
     # Partial POST compat: unknown keys dropped, label keys default.
+    # Legacy label keys are unknown now (removed toggles) — dropped too.
     q = PlacementParams.from_dict({"unknown_future_key": 1})
-    assert q.label_solidity == 0.0
+    assert q.label_clearance_m == 0.005
+    legacy = PlacementParams.from_dict(
+        {"label_solidity": 0.5, "label_orbit": True, "label_tether": "slot"})
+    assert legacy.label_clearance_m == 0.005
 
 
 def _labeled_pair(label_w_mm=6.0):
@@ -173,16 +173,20 @@ def _labeled_pair(label_w_mm=6.0):
 
 
 @pytest.mark.physics
-def test_solidity_zero_matches_no_label_parity():
-    """Solidity 0 must reproduce the label-unaware run exactly."""
+def test_clearance_zero_matches_no_label_parity():
+    """Clearance 0 must reproduce the label-unaware run exactly.
+
+    Pad dynamics never feel labels (orbit nodes own all label contact),
+    so a labeled board with parked-clear anchors matches the stripped
+    board pad-for-pad. Asserts the orbit integration cannot leak into
+    the pad kernel.
+    """
     base = _labeled_pair()
     stripped = replace(
         base,
         footprints=tuple(replace(fp, label=None) for fp in base.footprints),
     )
-    params = PlacementParams(
-        max_iterations=50, label_solidity=0.0, label_halo_m=0.0003
-    )
+    params = PlacementParams(max_iterations=50, label_clearance_m=0.0)
     a = run_placement(base, params)
     b = run_placement(stripped, params)
     assert a.deltas.keys() == b.deltas.keys()
@@ -191,26 +195,28 @@ def test_solidity_zero_matches_no_label_parity():
 
 
 @pytest.mark.physics
-def test_solidity_one_pushes_facing_labels_apart():
-    """Solidity 1 unions label rects into bodies: the facing-label pair
-    must end up farther apart (Euclidean final separation — parts may
-    slide sideways around the labels instead of spreading on x) than the
-    solidity-0 run."""
+def test_clearance_ejects_labels_not_parents():
+    """Clearance>0 ejects the facing labels (label_deltas grow) within
+    the derived cap, while the short-horizon pad course is
+    label-independent — labels find homes nearby via their own nodes
+    instead of shoving footprints around. (Long chaotic runs diverge
+    pad-for-pad through the shared KE guard, so pad parity is pinned
+    on a short deterministic horizon.)"""
     import math
 
-    params0 = PlacementParams(
-        max_iterations=300, label_solidity=0.0, label_halo_m=0.001
-    )
-    params1 = PlacementParams(
-        max_iterations=300, label_solidity=1.0, label_halo_m=0.001
-    )
     model = _labeled_pair(label_w_mm=2.0)
-
-    def _separation(prop):
-        ax, ay = prop.deltas.get("uuid-a", (0.0, 0.0, 0.0))[:2]
-        bx, by = prop.deltas.get("uuid-b", (0.0, 0.0, 0.0))[:2]
-        return math.hypot((4.0 + bx) - (0.0 + ax), by - ay)
-
-    assert _separation(run_placement(model, params1)) > _separation(
-        run_placement(model, params0)
-    )
+    # Long run: real clearance ejects the facing labels within the cap.
+    b = run_placement(
+        model, PlacementParams(max_iterations=300, label_clearance_m=0.001))
+    assert b.label_deltas
+    for dx, dy in b.label_deltas.values():
+        assert math.hypot(dx, dy) <= 1.0 + 1e-3  # cap derives from clearance
+        assert math.hypot(dx, dy) > 0.1  # ejected, not parked at anchor
+    # Short horizon: pad course holds station either way.
+    a = run_placement(
+        model, PlacementParams(max_iterations=10, label_clearance_m=0.0))
+    c = run_placement(
+        model, PlacementParams(max_iterations=10, label_clearance_m=0.001))
+    assert a.deltas.keys() == c.deltas.keys()
+    for uuid in a.deltas:
+        assert a.deltas[uuid] == pytest.approx(c.deltas[uuid])

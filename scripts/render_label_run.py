@@ -1,6 +1,6 @@
 """Headless label-orbit run + renders for visual inspection.
 
-1. Loads tube111, runs placement with orbit on (solidity 0.5, spring).
+1. Loads tube111, runs placement (orbit always on, single spring tether).
 2. Dual-writes like the server (commit_placement + per-uuid tree nudge
    with label deltas) and saves the placed .kicad_pcb.
 3. Renders the app SVG before (filed) and after (proposal preview).
@@ -34,9 +34,7 @@ def main() -> int:
 
     params = PlacementParams(
         max_iterations=iters,
-        label_orbit=True, label_tether="spring",
-        label_solidity=0.5, label_halo_m=0.0003,
-        label_orbit_radius_m=0.005,
+        label_clearance_m=0.005,
     )
     prop = run_placement(model, params)
     print(f"stop={prop.stop_reason} iters={prop.iterations} "

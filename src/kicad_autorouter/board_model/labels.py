@@ -9,26 +9,18 @@ and ``io`` writeback. All angles in degrees, lengths in millimeters.
 from __future__ import annotations
 
 import math
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
-_READABLE_MODES = (0.0, 90.0, 180.0, 270.0)
-
-# Tether strategies for orbit mode (``label_tether`` param). ``spring``
-# leashes to the filed anchor posed by the parent; ``slot`` leashes to
-# the best-scoring courtyard-side slot; ``free`` applies no tether and
-# only the orbit-radius cap confines the label.
-LABEL_TETHERS = ("spring", "slot", "free")
+# Orbit tether stiffness (Hz, fixed): stiffness derives from the label's
+# own mass (k = m*omega^2) so light labels get soft tethers. Explicit-Euler
+# stability needs k/m << (2/dt)^2; 2 Hz at dt=1ms sits orders of
+# magnitude inside that bound. Not a param — single spring strategy.
+LABEL_TETHER_HZ = 2.0
 
 # Ink density for the derived orbiter mass (kg/m^2 of text bbox): ink is
 # nearly massless, so a few mm^2 of text lands at/near the mass floor —
 # physically honest and floaty by construction (see tether stiffness).
 LABEL_INK_DENSITY_KG_M2 = 0.1
-
-# Tether angular frequency (Hz): stiffness derives from the label's own
-# mass (k = m*omega^2) so light labels get soft tethers. Explicit-Euler
-# stability needs k/m << (2/dt)^2; 2 Hz at dt=1ms sits orders of
-# magnitude inside that bound.
-LABEL_TETHER_HZ = 2.0
 
 
 def _norm360(angle_deg: float) -> float:
@@ -49,49 +41,37 @@ def label_board_angle(local_angle_deg: float, fp_angle_deg: float) -> float:
     return _norm360(local_angle_deg + fp_angle_deg)
 
 
-def snap_label_angle(
-    board_angle_deg: float, allow_inverted: bool = False
-) -> float:
+def snap_label_angle(board_angle_deg: float) -> float:
     """Snap a board-frame label angle to the nearest readable orientation.
 
-    Candidates are the compass modes (0/90/180/270). Ties break toward
-    0/90 (upright reading); 180 is only chosen when ``allow_inverted`` is
-    set, otherwise the next-best non-inverted mode wins. Keeps rotated
-    parts' labels readable instead of upside-down.
+    Candidates are 0/90/270 (180 upside-down is never chosen). Ties break
+    toward 0/90 (upright reading). Keeps rotated parts' labels readable
+    instead of upside-down. Always on — no inverted toggle.
     """
     a = _norm360(board_angle_deg)
     ranked = sorted(
-        _READABLE_MODES,
-        key=lambda m: (min(abs(a - m), 360.0 - abs(a - m)), 0 if m != 180.0 else 1),
+        (0.0, 90.0, 270.0),
+        key=lambda m: min(abs(a - m), 360.0 - abs(a - m)),
     )
-    for mode in ranked:
-        if mode == 180.0 and not allow_inverted:
-            continue
-        return mode
-    return 0.0
+    return ranked[0]
 
 
 def snapped_local_angle(
     label_local_angle: float,
     fp_old_angle: float,
     fp_new_angle: float,
-    snap: bool = True,
-    allow_inverted: bool = False,
 ) -> float:
     """Label local angle after a footprint rotation by ``fp_new - fp_old``.
 
     Rigid follow first (label keeps its board orientation relative to the
-    parent: local angle gains the delta), then an optional readable snap
-    expressed back in the new local frame so ``io`` writeback and
-    ``apply_deltas`` agree exactly.
+    parent: local angle gains the delta), then the readable snap expressed
+    back in the new local frame so ``io`` writeback and ``apply_deltas``
+    agree exactly. Always snaps upright — no toggles.
     """
-    rigid_local = _norm360(label_local_angle + (fp_new_angle - fp_old_angle))
-    if not snap:
-        return rigid_local
     # Board orientation after rotation: old board angle + delta.
     board = _norm360(label_board_angle(label_local_angle, fp_old_angle)
                       + (fp_new_angle - fp_old_angle))
-    snapped_board = snap_label_angle(board, allow_inverted)
+    snapped_board = snap_label_angle(board)
     return _norm360(snapped_board - fp_new_angle)
 
 
@@ -142,9 +122,8 @@ def label_board_rect(
 ) -> Optional[List[Tuple[float, float]]]:
     """Posed label clearance rect corners (board frame), or None if degenerate.
 
-    ``halo_mm`` inflates the text bbox on all sides; the caller scales it
-    by ``label_solidity`` (0 skips the rect entirely — handled by the
-    caller, not here).
+    ``halo_mm`` inflates the text bbox on all sides; the caller passes
+    ``label_clearance_m`` (single source of truth).
     """
     w, h = label_text_size_mm(text, size_mm)
     if not (w > 0 and h > 0):
@@ -205,9 +184,9 @@ def clamp_orbit_radius(
 ) -> Tuple[float, float]:
     """Hard-clamp a label node to ``radius_mm`` around its anchor (positional).
 
-    The backstop shared by every tether mode (including ``free``): the
-    label can never leave the disc, so runs stay bounded even when contact
-    shoves hard. Inside the disc this is the identity.
+    The orbit backstop: the label can never leave the disc, so runs stay
+    bounded even when contact shoves hard. Inside the disc this is the
+    identity.
     """
     try:
         r = max(float(radius_mm), 0.0)
@@ -220,49 +199,3 @@ def clamp_orbit_radius(
         return node_xy_mm
     s = r / d
     return (anchor_xy_mm[0] + dx * s, anchor_xy_mm[1] + dy * s)
-
-
-def score_label_slot(
-    candidate_xy_mm: Tuple[float, float],
-    text: str,
-    board_angle_deg: float,
-    size_mm: Tuple[float, float],
-    halo_mm: float,
-    body_polys: Dict[str, object],
-    own_uuid: str,
-    anchor_xy_mm: Tuple[float, float],
-) -> float:
-    """Cost of placing a label rect centered at a slot candidate (lower wins).
-
-    Overlap area against every other body dominates (mm^2); distance from
-    the filed anchor breaks ties so near slots win among clear ones.
-    Pure function over shapely polygons — unit-testable without a run.
-    """
-    rect = label_board_rect(
-        text, candidate_xy_mm[0], candidate_xy_mm[1],
-        board_angle_deg, size_mm, halo_mm=halo_mm,
-    )
-    if rect is None:
-        return math.inf
-    try:
-        from shapely.geometry import Polygon
-
-        poly = Polygon(rect)
-    except Exception:
-        return math.inf
-    if poly.is_empty:
-        return math.inf
-    cost = math.hypot(
-        candidate_xy_mm[0] - anchor_xy_mm[0],
-        candidate_xy_mm[1] - anchor_xy_mm[1],
-    )
-    for uuid, body in body_polys.items():
-        if uuid == own_uuid:
-            continue
-        try:
-            if body is None or body.is_empty:
-                continue
-            cost += 1000.0 * poly.intersection(body).area
-        except Exception:
-            continue
-    return cost

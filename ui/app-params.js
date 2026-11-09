@@ -19,7 +19,8 @@ const PARAM_DEFS = [
   { key: "align_angle_k_N", label: "Align angle k (N)", min: 1e-6, max: 1e-2, step: 1e-6, log: true },
   { key: "align_pos_k_N_m", label: "Align hold k (N/m)", min: 1e-3, max: 10, step: 1e-3, log: true },
   { key: "max_iterations", label: "Max iterations", min: 1, max: 20000, step: 10 },
-  { key: "label_solidity", label: "Label solidity", min: 0, max: 1, step: 0.01 },
+  { key: "label_clearance_m", label: "Label clearance (mm)", min: 0, max: 20, step: 0.1,
+    display: { unit: "mm", scale: 1000, step: 0.1 } },
 ];
 
 const ADVANCED_PARAM_DEFS = [
@@ -31,10 +32,6 @@ const ADVANCED_PARAM_DEFS = [
     display: { unit: "mm", scale: 1000, step: 0.05 } },
   { key: "momentum_alpha", label: "Momentum alpha", min: 0.0, max: 1.0, step: 0.05 },
   { key: "contact_tangent_gamma", label: "Contact tangent γ", min: 0.0, max: 0.5, step: 0.01 },
-  { key: "label_orbit_radius_m", label: "Label orbit radius (mm)", min: 0.5, max: 20, step: 0.1,
-    display: { unit: "mm", scale: 1000, step: 0.1 } },
-  { key: "label_halo_m", label: "Label halo (mm)", min: 0, max: 2, step: 0.05,
-    display: { unit: "mm", scale: 1000, step: 0.05 } },
   { key: "convergence_eps_m", label: "Convergence eps (mm)", min: 1e-7, max: 1e-3, step: 1e-7, log: true,
     display: { unit: "mm", scale: 1000, step: 0.0001 } },
   { key: "align_deadband_deg", label: "Align deadband (deg)", min: 0, max: 45, step: 1 },
@@ -56,11 +53,7 @@ const PARAM_DESC = {
   wall_halo_m: "Near-miss reach past part outlines. Shown in mm; stored in meters. Legalize: 4mm; Cluster and engine default: 6mm.",
   damping_Ns_m: "Viscous damping F = −c·v (N·s/m). The physics damper: higher settles faster with less overshoot. Legalize: 0.12; Cluster: 0.08. Log scale.",
   max_iterations: "Hard limit on simulation steps (dimensionless).",
-  label_solidity: "How physical the footprint reference label is (0-1 slider). 0 = pure follower: the label rides its parent with zero collision (default, reproduces label-unaware runs exactly). 1 = the label's clearance rect joins the parent's collision body at full halo reach. Intermediate values inflate the halo proportionally.",
-  label_halo_m: "Extra clearance around the estimated label text bbox. Shown in mm; stored in meters. Scaled by label solidity; 0 with solidity 1 still collides as the bare text bbox.",
-  label_orbit_radius_m: "Orbit-mode leash length. Shown in mm; stored in meters. Hard positional clamp of each label node around its filed anchor — applies in every tether mode including free, so hard shoves cannot fling labels across the board.",
-  label_orbit: "Orbit mode: each label becomes its own low-mass node (derived ink mass) that floats on a tether instead of riding welded to its parent. Separate from solidity; orbit off reproduces label-unaware runs exactly at solidity 0.",
-  label_tether: "Orbit tether strategy: spring (soft leash to the filed anchor), slot (leash to the best-scoring courtyard-side slot), free (no tether — contact plus the orbit radius cap only). Experimental; see sweep_label_tether.py.",
+  label_clearance_m: "Label clearance around the estimated text bbox. Shown in mm; stored in meters. Orbit always on: each label is a low-mass node on a spring tether that finds a home near its parent; the clearance rect also collides via the wall law. Larger values give labels more board space.",
   power_attraction_scale: "Power-rail attraction trim (fanout-scaled k/(fanout-1) per edge). 1 = full participation; 0 restores the old exclude-power behavior.",
   decap_link: "Weight of the supplemental symmetric pull between a small cap and its nearest chip (<=15mm, U* only); global rail pull is never boosted. 0 removes decap GND edges and disables local links.",
   ghost_k_N: "Ghost attractor spring scale (newtons); file ka values weight it. Log scale. Only matters with ghost attractors.",
@@ -144,36 +137,6 @@ for (const def of ADVANCED_PARAM_DEFS) {
 // Full descriptions stay in tooltips (PARAM_DESC) + Docs panel; no static table.
 void ALL_PARAM_DEFS;
 
-// Orbit-mode controls are not sliders: a checkbox (label_orbit) and a
-// tether-strategy dropdown (label_tether) appended to the Advanced grid.
-// They ride the same data-key + input/change wiring as the sliders.
-function buildOrbitRow() {
-  const el = document.createElement("div");
-  el.className = "param";
-  el.title = PARAM_DESC.label_orbit || "";
-  el.innerHTML = `<span title="${PARAM_DESC.label_orbit || ""}">Label orbit</span>
-    <div class="row">
-      <label class="chk"><input type="checkbox" data-key="label_orbit"> orbit labels (low-mass nodes)</label>
-    </div>`;
-  return el;
-}
-function buildTetherRow() {
-  const el = document.createElement("div");
-  el.className = "param";
-  el.title = PARAM_DESC.label_tether || "";
-  el.innerHTML = `<span title="${PARAM_DESC.label_tether || ""}">Label tether</span>
-    <div class="row">
-      <select data-key="label_tether">
-        <option value="spring">spring (filed anchor)</option>
-        <option value="slot">slot (best side)</option>
-        <option value="free">free (contact only)</option>
-      </select>
-    </div>`;
-  return el;
-}
-advancedGrid.appendChild(buildOrbitRow());
-advancedGrid.appendChild(buildTetherRow());
-
 function logToValue(logVal, def) {
   return Math.pow(10, logVal);
 }
@@ -234,11 +197,6 @@ function readParams() {
       || document.querySelector(`#advanced-params-grid input[type=number][data-key="${def.key}"]`);
     if (num) out[def.key] = fromDisplay(Number(num.value), def);
   }
-  // Non-slider orbit controls.
-  const orbitCb = document.querySelector(`input[type=checkbox][data-key="label_orbit"]`);
-  if (orbitCb) out.label_orbit = orbitCb.checked;
-  const tetherSel = document.querySelector(`select[data-key="label_tether"]`);
-  if (tetherSel) out.label_tether = tetherSel.value;
   return out;
 }
 
@@ -263,10 +221,6 @@ async function loadParams(defaultsOnly = false) {
     }
     if (num) num.value = shown;
   }
-  const orbitCb = document.querySelector(`input[type=checkbox][data-key="label_orbit"]`);
-  if (orbitCb && ("label_orbit" in p)) orbitCb.checked = !!p.label_orbit;
-  const tetherSel = document.querySelector(`select[data-key="label_tether"]`);
-  if (tetherSel && ("label_tether" in p)) tetherSel.value = p.label_tether;
 }
 
 // Regime presets from docs/si_force_laws.md §3: no single ratio clusters
@@ -332,15 +286,10 @@ function parseUrlPreset(knownKeys) {
   const out = {};
   for (const [key, raw] of qs) {
     if (!knownKeys.has(key)) continue;
-    if (key === "include_power_nets" || key === "label_orbit") {
+    if (key === "include_power_nets") {
       const v = raw.trim().toLowerCase();
       if (["1", "true", "yes"].includes(v)) out[key] = true;
       else if (["0", "false", "no"].includes(v)) out[key] = false;
-      continue;
-    }
-    if (key === "label_tether") {
-      const v = raw.trim().toLowerCase();
-      if (["spring", "slot", "free"].includes(v)) out[key] = v;
       continue;
     }
     const num = Number(raw);
@@ -377,8 +326,6 @@ async function copyPresetLink() {
   for (const [key, val] of Object.entries(p)) {
     if (typeof val === "number" || typeof val === "boolean") {
       url.searchParams.set(key, String(val));
-    } else if (key === "label_tether" && typeof val === "string") {
-      url.searchParams.set(key, val);
     }
   }
   const link = url.toString();

@@ -154,45 +154,11 @@ class PlacementParams:
     # (meters, SI; the UI displays millimeters). Only the k-nearest (k=6)
     # parts inside count.
     align_radius_m: float = 0.020
-    # Label solidity (dimensionless 0..1, UI slider): how physical the
-    # single visible silkscreen/Fab reference label behaves. 0 = pure
-    # follower (rides the parent, zero collision — the default, so existing
-    # boards reproduce exactly); 1 = the label's clearance rect unions
-    # into the parent's collision body at full halo reach. Intermediate
-    # values inflate the rect halo proportionally (earlier wall-law
-    # contact reads as more demanding without touching wall_k_N).
-    label_solidity: float = 0.0
-    # Label clearance halo (meters, SI): extra inflation of the estimated
-    # text bbox (``len*0.6*size`` per glyph) before the wall law sees it.
-    # Scaled by label_solidity; 0 with solidity 1 still collides as the
-    # bare text bbox.
-    label_halo_m: float = 0.0003
-    # Readable snap: counter-rotate moved labels' local angle to the
-    # nearest upright board orientation (0/90/270). Always safe (labels
-    # never move footprints), so it defaults on.
-    label_snap: bool = True
-    # Allow the 180 (upside-down) snap mode. Off keeps text readable at
-    # the cost of a 90-vs-270 choice for inverted parents.
-    label_allow_inverted: bool = False
-    # Orbit mode: the label becomes its own low-mass node (derived ink
-    # mass, ~the mass floor) instead of riding welded to the parent.
-    # Separate from solidity (which unions the text rect into the parent
-    # body): orbit off reproduces label-unaware runs exactly at solidity 0.
-    label_orbit: bool = False
-    # Tether strategy in orbit mode: "spring" (soft leash to the filed
-    # anchor posed by the parent), "slot" (leash to the best-scoring
-    # courtyard-side slot), "free" (no tether — contact plus the orbit
-    # radius cap only). Experimental selector; see sweep_label_tether.py.
-    label_tether: str = "spring"
-    # Orbit radius cap (meters, SI; UI shows millimeters): hard positional
-    # clamp of the label node around its anchor, shared by every tether
-    # mode (including "free") so runs stay bounded under hard shoves.
-    label_orbit_radius_m: float = 0.005
-    # Tether angular frequency (Hz): stiffness derives from the label's
-    # own mass (k = m*(2*pi*hz)^2), so the float period is
-    # mass-independent and light labels stay far inside the explicit
-    # Euler stability bound at the 1 ms step. API-only (no UI slider).
-    label_tether_hz: float = 2.0
+    # Label clearance (meters, SI): total clearance rect inflation around
+    # the estimated text bbox. Combines former solidity × halo product into
+    # a single parameter; orbit mode always active, label always finds home
+    # near its parent. 5 mm typical; larger values give more board space.
+    label_clearance_m: float = 0.005
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -258,10 +224,7 @@ def _validate(params: PlacementParams) -> None:
         "align_pos_k_N_m",
         "align_deadband_deg",
         "align_radius_m",
-        "label_solidity",
-        "label_halo_m",
-        "label_orbit_radius_m",
-        "label_tether_hz",
+        "label_clearance_m",
     )
     for name in numeric:
         value = getattr(params, name)
@@ -291,20 +254,8 @@ def _validate(params: PlacementParams) -> None:
         raise ValueError("contact_tangent_gamma must be a number")
     if not math.isfinite(gamma) or gamma < 0.0:
         raise ValueError("contact_tangent_gamma must be finite and >= 0.0")
-    if not (0.0 <= params.label_solidity <= 1.0):
-        raise ValueError("label_solidity must be in [0.0, 1.0]")
-    if not isinstance(params.label_snap, bool):
-        raise ValueError("label_snap must be a boolean")
-    if not isinstance(params.label_allow_inverted, bool):
-        raise ValueError("label_allow_inverted must be a boolean")
-    if not isinstance(params.label_orbit, bool):
-        raise ValueError("label_orbit must be a boolean")
-    if params.label_tether not in ("spring", "slot", "free"):
-        raise ValueError("label_tether must be one of spring, slot, free")
-    if params.label_orbit_radius_m <= 0:
-        raise ValueError("label_orbit_radius_m must be > 0")
-    if params.label_tether_hz <= 0:
-        raise ValueError("label_tether_hz must be > 0")
+    if not (0.0 <= params.label_clearance_m <= 0.05):
+        raise ValueError("label_clearance_m must be in [0.0, 0.05] (meters)")
     if params.decap_link < 0:
         raise ValueError("decap_link must be >= 0")
     if not isinstance(params.include_power_nets, bool):

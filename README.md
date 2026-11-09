@@ -83,8 +83,10 @@ Select parts → Step/Run → Ghost preview shows proposed moves → Accept → 
 - **Pin** (Alt+click) = exclude parts from movement
 - **Ghost courtyards + arrows** show where parts want to go
 
-### 2. Routing — Connect the Nets
-```
+### Labels ride along — silkscreen is physics too
+Each footprint's reference label (`F.SilkS`/`F.Fab`) moves with its part during placement — it is a low-mass node on a spring tether, not welded text. Labels snap to upright orientations (never upside-down) when their parent rotates, and they demand clearance around themselves through the same wall law as courtyards, so dense boards make room instead of plastering text over copper. One slider drives it all: **Label clearance (mm)** (default 5 mm) sets both the clearance reach and the orbit leash length; 0 parks every label at its filed anchor. Parent footprints never feel label forces, so pad trajectories match label-unaware runs.
+
+### 2. Routing — Connect the Nets```
 Route tab → Select nets (click rows, Shift/Ctrl) → Set Track/Power Width → Route Selected
 ```
 - **Progress bar + cancel** per net (one net per request, no server threading needed)
@@ -105,6 +107,7 @@ Placement and routing are separate passes but designed to cycle. Move a connecto
 | Feature | Why It Matters |
 |---------|----------------|
 | **Per-pad physics** (not whole-footprint) | Parts rotate organically; decaps snap to pins; no "legal position" constraints |
+| **Labels ride along** (orbit, always on) | Silkscreen refs are tethered nodes that snap upright and demand clearance — one **Label clearance** slider, parents unaffected |
 | **GND pours passable-at-toll** | Router crosses pours when needed (soft cost), never gets stuck on pads inside pours |
 | **GND-only rip-up** | `Strip GND Blockers` evicts only GND vias/tracks; signal/power copper is **never evicted** |
 | **10° angle smoothing** (default) | 36 angle options vs hardcoded 45° — routes look shallower, more gradual |

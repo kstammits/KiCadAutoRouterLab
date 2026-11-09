@@ -433,7 +433,7 @@ def collapse_to_two_layer(tree: SExpr) -> Tuple[SExpr, dict]:
     return new_tree, report
 
 
-def _shift_at(tree: SExpr, fp: SExpr, dx_mm: float = 0.0, dy_mm: float = 0.0, da_deg: float = 0.0, label_snap: bool = True, label_allow_inverted: bool = False, label_dx_mm: float = 0.0, label_dy_mm: float = 0.0) -> SExpr:
+def _shift_at(tree: SExpr, fp: SExpr, dx_mm: float = 0.0, dy_mm: float = 0.0, da_deg: float = 0.0, label_dx_mm: float = 0.0, label_dy_mm: float = 0.0) -> SExpr:
     """Return ``tree`` with footprint node ``fp``'s ``(at ...)`` position and angle shifted.
 
     Pad ``(at ...)`` angles store the effective board orientation (verified
@@ -449,13 +449,14 @@ def _shift_at(tree: SExpr, fp: SExpr, dx_mm: float = 0.0, dy_mm: float = 0.0, da
     at 180 stores text angle 0 while its pads store absolute 180), so text
     local ``x y`` never changes and a rotation needs no text rewrite for
     rigid follow — but the readable snap (same rule as
-    ``board_model.query.apply_deltas``) counter-rotates same-side text to
-    the nearest upright board orientation. Same-side only (``F.SilkS`` /
-    ``F.Fab`` for ``F.Cu`` parts, ``B.*`` for ``B.Cu``): opposite-side
-    text belongs to the other face. Pure translations (``da_deg == 0``)
-    never touch text, keeping the zero-delta no-op exact.
+    ``board_model.query.apply_deltas``) always counter-rotates same-side
+    text to the nearest upright board orientation (0/90/270, never
+    upside-down). Same-side only (``F.SilkS`` / ``F.Fab`` for ``F.Cu``
+    parts, ``B.*`` for ``B.Cu``): opposite-side text belongs to the other
+    face. Pure translations (``da_deg == 0``) never touch text, keeping
+    the zero-delta no-op exact.
 
-    Orbit mode passes ``label_dx_mm``/``label_dy_mm`` (footprint-local
+    Orbit labels pass ``label_dx_mm``/``label_dy_mm`` (footprint-local
     anchor offsets from the integrated orbit): same-side text gains the
     shifted ``(at x y)`` plus the snap, mirroring ``apply_deltas`` exactly.
     """
@@ -481,9 +482,9 @@ def _shift_at(tree: SExpr, fp: SExpr, dx_mm: float = 0.0, dy_mm: float = 0.0, da
             new_fp_args.append(_shift_pad_angle(child, da_deg))
         elif (da_deg != 0.0 or label_moved) and isinstance(child, SExpr) and child.head == "fp_text":
             new_fp_args.append(_shift_label_pose(
-                child, fp, fp_old_angle, fp_angle, label_allow_inverted,
+                child, fp, fp_old_angle, fp_angle,
                 label_dx_mm=label_dx_mm, label_dy_mm=label_dy_mm,
-                snap=label_snap and da_deg != 0.0,
+                snap=da_deg != 0.0,
             ))
         else:
             new_fp_args.append(child)
@@ -496,20 +497,19 @@ def _shift_label_pose(
     fp: SExpr,
     fp_old_angle: float,
     fp_new_angle: float,
-    allow_inverted: bool = False,
     label_dx_mm: float = 0.0,
     label_dy_mm: float = 0.0,
     snap: bool = True,
 ) -> SExpr:
     """Return ``fp_text`` with its local anchor shifted and angle snapped.
 
-    Orbit-mode counterpart to ``apply_deltas(..., label_deltas=...)``:
+    Orbit-label counterpart to ``apply_deltas(..., label_deltas=...)``:
     ``(at x y)`` gains the footprint-local ``(label_dx_mm, label_dy_mm)``
-    orbit offset, then the local angle snaps to readable exactly like the
-    model path (``snap=False`` keeps the rigid angle, used when the caller
-    disables ``label_snap``). Same-side text only — opposite-side text
-    passes through untouched. ``(at x y)`` without an angle reads as 0
-    and only gains an explicit angle when the snap actually rotates it.
+    orbit offset, then the local angle always snaps to readable upright
+    (0/90/270, never upside-down) exactly like the model path.
+    Same-side text only — opposite-side text passes through untouched.
+    ``(at x y)`` without an angle reads as 0 and only gains an explicit
+    angle when the snap actually rotates it.
     """
     from .board_model import _layer_of
     from .board_model.labels import snapped_local_angle
@@ -527,8 +527,7 @@ def _shift_label_pose(
     old_local = float(args[2]) if len(args) >= 3 and isinstance(args[2], (int, float)) else 0.0
     new_local = (
         snapped_local_angle(
-            old_local, fp_old_angle, fp_new_angle, snap=True,
-            allow_inverted=allow_inverted,
+            old_local, fp_old_angle, fp_new_angle,
         )
         if snap
         else old_local
@@ -558,11 +557,10 @@ def _shift_label_angle(
     fp: SExpr,
     fp_old_angle: float,
     fp_new_angle: float,
-    allow_inverted: bool = False,
 ) -> SExpr:
-    """Legacy alias: angle-only snap without anchor motion (follow mode)."""
+    """Legacy alias: angle-only snap without anchor motion."""
     return _shift_label_pose(
-        text, fp, fp_old_angle, fp_new_angle, allow_inverted,
+        text, fp, fp_old_angle, fp_new_angle,
         snap=True,
     )
 
@@ -607,19 +605,17 @@ def nudge_footprint(
 
 def nudge_footprint_by_uuid(
     tree: SExpr, uuid: str, dx_mm: float = 0.0, dy_mm: float = 0.0, da_deg: float = 0.0,
-    label_snap: bool = True, label_allow_inverted: bool = False,
     label_dx_mm: float = 0.0, label_dy_mm: float = 0.0,
 ) -> SExpr:
     """Return the board tree with the footprint carrying `uuid` shifted by (dx_mm, dy_mm, da_deg).
 
     Same guarantees as :func:`nudge_footprint`, addressed by UUID instead of
     reference so duplicate or missing refs remain addressable at writeback time.
-    Same-side ``fp_text`` labels snap to readable on rotation (matching
-    ``apply_deltas``); disable with ``label_snap=False``. Orbit-mode label
-    anchor offsets ride ``label_dx_mm``/``label_dy_mm`` (footprint-local).
+    Same-side ``fp_text`` labels always snap upright on rotation (matching
+    ``apply_deltas``). Orbit-label anchor offsets ride
+    ``label_dx_mm``/``label_dy_mm`` (footprint-local).
     """
     return _shift_at(tree, find_footprint_by_uuid(tree, uuid), dx_mm, dy_mm, da_deg,
-                     label_snap=label_snap, label_allow_inverted=label_allow_inverted,
                      label_dx_mm=label_dx_mm, label_dy_mm=label_dy_mm)
 
 

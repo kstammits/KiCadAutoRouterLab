@@ -4,14 +4,13 @@ Open work only. Completed changes belong in git history, not here.
 
 ## Placement
 
-- **Label tether calibration**: orbit mode (`label_orbit`, `label_tether`
-  spring/slot/free) floats each reference label as a low-mass node on an
-  exact-carry leash, but the tether only matters when contact is mild —
-  at engine-default wall reach the labels plaster to the radius cap in
-  every mode (`scripts/sweep_label_tether.py`, facing-label pair).
-  Calibrate `label_tether_hz` / `label_orbit_radius_m` defaults and the
-  slot-scoring weights on real boards (tube111 subset first), or accept
-  spring+cap as the production behavior and keep slot/free experimental.
+- **Label clearance calibration**: orbit is always on — each reference
+  label floats as a low-mass node on a single spring tether with an
+  exact-carry leash, colliding via `label_clearance_m` (radius cap
+  derived from the same value). At engine-default wall reach the labels
+  plaster to the radius cap (`scripts/sweep_label_clearance.py`,
+  facing-label pair sweeps clearance now). Calibrate the
+  `label_clearance_m` default on real boards (tube111 subset first).
 - **DCCF long-budget regrowth**: `wall_k_N` 0.08 → 0.1 (plus p=2.0) has
   landed in the engine defaults (sweep `wall_hardening_2026-10-26.json`:
   same-k DCCF cells drop 9–10 pairs / ~36–68 mm² to 1–2 pairs / ~8–12 mm²).

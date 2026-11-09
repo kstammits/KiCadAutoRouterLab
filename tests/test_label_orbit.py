@@ -1,10 +1,10 @@
-"""Label orbit mode: low-mass label nodes on experimental tethers.
+"""Label orbit (always on): low-mass label nodes on a single spring tether.
 
-Covers the pure helpers (ink mass, tether spring, radius clamp, slot
-scoring, label contact force), param validation, the model/tree
-round-trip for orbited anchors, orbit physics on a synthetic facing-label
-pair (ejection within the radius cap, tether discrimination, orbit-off
-parity), and the netless-board no-op.
+Covers the pure helpers (ink mass, tether spring, radius clamp, label
+contact force), param validation, the model/tree round-trip for orbited
+anchors, orbit physics on a synthetic facing-label pair (ejection within
+the derived radius cap), and the netless-board no-op. No behavioral
+toggles: orbit is always on, one spring strategy, upright snap only.
 """
 
 import math
@@ -24,7 +24,6 @@ from kicad_autorouter.board_model.labels import (
     clamp_orbit_radius,
     label_ink_mass_kg,
     label_tether_force_N,
-    score_label_slot,
 )
 from kicad_autorouter.io import nudge_footprint_by_uuid
 from kicad_autorouter.placement import PlacementParams, run_placement
@@ -91,19 +90,6 @@ def test_clamp_radius_is_backstop():
 
 
 @pytest.mark.unit
-def test_slot_scoring_prefers_clear_side():
-    bodies = {
-        "own": Polygon([(-1, -1), (1, -1), (1, 1), (-1, 1)]),
-        "east": Polygon([(4, -3), (8, -3), (8, 3), (4, 3)]),
-    }
-    crowded = score_label_slot(
-        (3.5, 0.0), "AB", 0.0, (1.0, 1.0), 0.0, bodies, "own", (0.0, 0.0))
-    clear = score_label_slot(
-        (-2.5, 0.0), "AB", 0.0, (1.0, 1.0), 0.0, bodies, "own", (0.0, 0.0))
-    assert crowded > clear
-
-
-@pytest.mark.unit
 def test_label_contact_pushes_out_of_overlap():
     body = {"b": Polygon([(-1, -1), (1, -1), (1, 1), (-1, 1)])}
     buried = Polygon([(-0.5, -0.5), (0.5, -0.5), (0.5, 0.5), (-0.5, 0.5)])
@@ -117,14 +103,11 @@ def test_label_contact_pushes_out_of_overlap():
 
 @pytest.mark.params
 def test_orbit_params_validate_and_round_trip():
-    p = PlacementParams.from_dict(
-        {"label_orbit": True, "label_tether": "slot",
-         "label_orbit_radius_m": 0.01, "label_tether_hz": 3.0})
-    assert p.label_orbit is True and p.label_tether == "slot"
-    assert p.to_dict()["label_orbit_radius_m"] == 0.01
-    for bad in ({"label_tether": "elastic"}, {"label_orbit_radius_m": 0.0},
-                {"label_orbit_radius_m": -1.0}, {"label_tether_hz": 0.0},
-                {"label_orbit": "yes"}):
+    p = PlacementParams.from_dict({"label_clearance_m": 0.01})
+    assert p.label_clearance_m == 0.01
+    assert p.to_dict()["label_clearance_m"] == 0.01
+    for bad in ({"label_clearance_m": -1.0}, {"label_clearance_m": 0.06},
+                {"label_clearance_m": "wide"}):
         with pytest.raises(ValueError):
             PlacementParams.from_dict(bad)
 
@@ -132,8 +115,7 @@ def test_orbit_params_validate_and_round_trip():
 @pytest.mark.minimal
 def test_orbit_on_netless_board_is_noop():
     model = board_model(parse_file(MINIMAL_PCB))
-    prop = run_placement(
-        model, PlacementParams(max_iterations=50, label_orbit=True))
+    prop = run_placement(model, PlacementParams(max_iterations=50))
     assert prop.label_deltas == {}
     assert prop.stop_reason == "empty"
 
@@ -162,50 +144,41 @@ def test_orbited_anchor_round_trips_model_tree():
 
 
 @pytest.mark.physics
-def test_orbit_ejects_inside_anchor_within_cap():
+def test_orbit_ejects_inside_radius_cap():
     model = _facing_pair()
+    clearance_m = 0.005
     prop = run_placement(model, PlacementParams(
-        max_iterations=300, label_orbit=True, label_tether="spring",
-        label_solidity=0.3, wall_halo_m=0.002, label_halo_m=0.0003,
-        label_orbit_radius_m=0.005))
+        max_iterations=300, label_clearance_m=clearance_m,
+        wall_halo_m=0.002))
     assert set(prop.label_deltas) == {"uuid-a", "uuid-b"}
     for dx, dy in prop.label_deltas.values():
-        # Local-frame millimeters: the 0.005 m orbit cap is 5 mm here.
-        assert math.hypot(dx, dy) <= 5.0 + 1e-3
+        # Local-frame millimeters: the orbit cap derives from clearance.
+        assert math.hypot(dx, dy) <= clearance_m * 1000.0 + 1e-3
         assert math.hypot(dx, dy) > 0.5  # ejected, not parked at anchor
 
 
 @pytest.mark.physics
-def test_free_mode_respects_radius_cap_under_hard_shove():
-    model = _facing_pair()
+def test_zero_clearance_leaves_labels_at_anchor():
+    # Lone labeled part: no pair forces, nothing moves, the spring holds
+    # the label exactly at its filed anchor.
+    fa = replace(
+        make_fp("A", "uuid-a", 0.0, 0.0, ("N1", "N2"), hw=1.5, hh=1.0),
+        label=_lab("A", 2.0, 2.0))
+    model = replace(make_board([fa]), nets={"N1": (), "N2": ()})
     prop = run_placement(model, PlacementParams(
-        max_iterations=120, label_orbit=True, label_tether="free",
-        label_solidity=1.0, wall_halo_m=0.006,
-        label_orbit_radius_m=0.005))
-    assert prop.label_deltas
-    for dx, dy in prop.label_deltas.values():
-        assert math.hypot(dx, dy) <= 5.0 + 1e-3
+        max_iterations=300, label_clearance_m=0.0, wall_halo_m=0.002))
+    assert prop.label_deltas == {}
+    assert prop.deltas == {}
 
 
 @pytest.mark.physics
-def test_slot_settles_differently_than_spring():
-    model = _facing_pair()
-    kw = dict(max_iterations=300, label_orbit=True, label_solidity=0.3,
-              wall_halo_m=0.002, label_halo_m=0.0003,
-              label_orbit_radius_m=0.005)
-    spring = run_placement(model, PlacementParams(**kw, label_tether="spring"))
-    slot = run_placement(model, PlacementParams(**kw, label_tether="slot"))
-    assert spring.label_deltas != slot.label_deltas
-
-
-@pytest.mark.physics
-def test_orbit_off_parity_with_clear_anchors():
+def test_clear_labels_do_not_perturb_pads():
     """Labels parked clear of contact must not perturb pad dynamics.
 
     Exact pad-delta match on a short deterministic horizon (long chaotic
     runs amplify even 1e-9-level KE-guard perturbations, so parity is
-    pinned where it is meaningful), plus a converged single-part orbit
-    run that leaves both sidecars empty.
+    pinned where it is meaningful), plus a converged single-part run
+    that leaves the sidecar empty.
     """
     fa = replace(
         make_fp("A", "uuid-a", 0.0, 0.0, ("N1", "N2"), hw=1.5, hh=1.0),
@@ -214,18 +187,20 @@ def test_orbit_off_parity_with_clear_anchors():
         make_fp("B", "uuid-b", 12.0, 0.0, ("N1", "N3"), hw=1.5, hh=1.0),
         label=_lab("B", 8.0, 2.0))
     model = replace(make_board([fa, fb]), nets={"N1": (), "N2": (), "N3": ()})
-    kw = dict(label_solidity=0.3, wall_halo_m=0.002, label_halo_m=0.0003)
-    base = run_placement(model, PlacementParams(
-        **kw, label_orbit=False, max_iterations=10))
-    orb = run_placement(model, PlacementParams(
-        **kw, label_orbit=True, label_tether="spring", max_iterations=10))
-    assert orb.label_deltas == {}
-    assert orb.deltas.keys() == base.deltas.keys()
+    # Clearance 2 mm: anchors parked ±8 mm are truly clear of contact
+    # (text edge ~7 mm out, inflated reach ~2 mm, courtyard edge 1.5 mm).
+    kw = dict(label_clearance_m=0.002, wall_halo_m=0.002)
+    short = run_placement(model, PlacementParams(**kw, max_iterations=10))
+    assert short.label_deltas == {}
+    stripped = replace(
+        model,
+        footprints=tuple(replace(fp, label=None) for fp in model.footprints),
+    )
+    base = run_placement(stripped, PlacementParams(**kw, max_iterations=10))
+    assert short.deltas.keys() == base.deltas.keys()
     for uuid in base.deltas:
-        assert orb.deltas[uuid] == pytest.approx(base.deltas[uuid])
+        assert short.deltas[uuid] == pytest.approx(base.deltas[uuid])
 
     lone = replace(make_board([fa]), nets={"N1": (), "N2": ()})
-    calm = run_placement(lone, PlacementParams(
-        **kw, label_orbit=True, label_tether="spring",
-        max_iterations=300))
+    calm = run_placement(lone, PlacementParams(**kw, max_iterations=300))
     assert calm.deltas == {} and calm.label_deltas == {}

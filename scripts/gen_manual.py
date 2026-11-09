@@ -325,6 +325,18 @@ preset. <strong>Step</strong> advances the solver and previews the result;
 move. Ghosts are non-copper anchors — walls that push parts out of keepouts,
 or attractors that pull a named target.</p>
 
+<h2>Labels ride along</h2>
+<p>Each footprint's silkscreen reference label (<code>F.SilkS</code> /
+<code>F.Fab</code>) is a low-mass node on a spring tether to its parent,
+integrated alongside the pads — never welded text. When a parent rotates,
+its label counter-rotates to the nearest upright orientation (0/90/270,
+never upside-down). The label's clearance rect collides through the same
+wall law as courtyards, so crowded boards make room instead of overlapping
+text. One slider drives it all: <strong>Label clearance (mm)</strong> sets
+both the clearance reach and the orbit leash length (0 parks every label at
+its filed anchor). Parent footprints never feel label forces, so pad
+trajectories match label-unaware runs.</p>
+
 <h2>Generated examples</h2>
 <p class="muted">All three use the Legalize preset: <code>attraction_k_N=0.008</code>,
 <code>wall_k_N=0.1</code>, <code>damping_Ns_m=0.12</code>,

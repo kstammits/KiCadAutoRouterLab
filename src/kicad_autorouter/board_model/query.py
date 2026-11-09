@@ -417,8 +417,6 @@ def label_board_pose(fp: Footprint) -> Optional[Tuple[float, float, float]]:
 
 def apply_deltas(
     model: BoardModel, deltas: Dict[str, Tuple[float, float, float]],
-    label_snap: bool = True,
-    label_allow_inverted: bool = False,
     label_deltas: Optional[Dict[str, Tuple[float, float]]] = None,
 ) -> BoardModel:
     """Return a new BoardModel with footprint positions updated by deltas.
@@ -431,12 +429,12 @@ def apply_deltas(
     footprint-relative — a file with the footprint at 180 stores text
     angle 0 while its pads store absolute 180), so translation and
     rotation need no label rewrite; when the footprint rotates
-    (``da != 0``), an optional readable snap counter-rotates the label's
-    local angle to the nearest upright board orientation (0/90/270, 180
-    only with ``label_allow_inverted``). Pure translations never touch
-    text (a zero delta stays the exact no-op), matching ``io``.
+    (``da != 0``), a readable snap counter-rotates the label's local
+    angle to the nearest upright board orientation (0/90/270, never
+    upside-down). Pure translations never touch text (a zero delta stays
+    the exact no-op), matching ``io``.
 
-    Orbit mode passes ``label_deltas`` (uuid to footprint-local dx/dy
+    Orbit labels pass ``label_deltas`` (uuid to footprint-local dx/dy
     from the filed anchor): the local anchor shifts before the snap, so
     the final board pose reproduces the integrated orbit exactly. A
     footprint with only a label entry (parent unmoved) still updates.
@@ -498,15 +496,13 @@ def apply_deltas(
             if label_deltas and fp.uuid in label_deltas:
                 ldx, ldy = label_deltas[fp.uuid]
                 lx, ly = lx + ldx, ly + ldy
-            if da != 0.0 and label_snap:
+            if da != 0.0:
                 from .labels import snapped_local_angle
 
                 new_local_angle = snapped_local_angle(
                     fp.label.local_angle_deg,
                     fp.angle_deg,
                     new_angle,
-                    snap=True,
-                    allow_inverted=label_allow_inverted,
                 )
             else:
                 new_local_angle = fp.label.local_angle_deg
