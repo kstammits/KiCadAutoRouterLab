@@ -20,8 +20,6 @@ from typing import Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 import numpy as np
-from shapely import distance as _shapely_distance
-from shapely import points as _shapely_points
 from shapely.geometry import Point, Polygon
 from shapely.ops import nearest_points
 
@@ -33,6 +31,7 @@ from .contact import (
     _contact_weights,
     _pose_shape_params,
     _wall_mag,
+    board_wall_force,
 )
 from .params import PlacementParams
 from .rigid import _apply_rigid_motion, _rigid_motion_params, _rigid_pose_vertices
@@ -367,7 +366,7 @@ def _compute_total_force(
                     # Label collision lives in the orbit nodes
                     # (region._orbit_label_forces) — never unioned here,
                     # so the parent body stays the bare courtyard and the
-                    # label finds its own home nearby via label_clearance_m.
+                    # label finds its own home nearby via the orbit clamp.
                     body_polys[fp_uuid] = body_poly
                     body_empty[fp_uuid] = bool(body_poly.is_empty)
 
@@ -460,6 +459,12 @@ def _compute_total_force(
             body_centroids_arr = np.array(body_centroids, dtype=np.float64)
             body_radii_arr = np.array(body_radii, dtype=np.float64)
             body_layers_arr = np.array(body_layers, dtype=object)
+
+            # Posed pin discs are shared with the label orbit (same THT
+            # extenders repel labels through the same wall law), so stash
+            # the refreshed set on the context; staleness matches the pad
+            # kernel exactly (same refresh cadence, same poses).
+            ctx.pins_data = pins_data
 
             # Uniform grid spatial index for broadphase
             cell_size = 15.0  # mm
@@ -977,97 +982,21 @@ def _compute_total_force(
                     body_poly = ctx.poly_cache.get(fp_uuid, {}).get("body_poly")
                     if body_poly is None or body_poly.is_empty:
                         continue
-                    try:
-                        covered = region_poly.covers(body_poly)
-                    except Exception:
-                        continue
                     clearance_boundary = ctx.region_boundaries[region_idx]
                     if clearance_boundary is None or clearance_boundary.is_empty:
                         continue
-                    if covered:
-                        # Fully inside copper: halo-scaled push off the edge.
-                        try:
-                            gap = clearance_boundary.distance(body_poly)
-                        except Exception:
-                            continue
-                        if gap >= halo_mm:
-                            continue
-                        s_mm = gap
-                        try:
-                            proj = clearance_boundary.project(body_poly.centroid)
-                            nearest = clearance_boundary.interpolate(proj)
-                        except Exception:
-                            continue
-                        # Inward: from the edge toward the body.
-                        dx = body_poly.centroid.x - nearest.x
-                        dy = body_poly.centroid.y - nearest.y
-                    elif body_poly.disjoint(region_poly):
-                        # Fully outside (or sitting in a cutout): bounded
-                        # pull home at contact strength, independent of how
-                        # far out it drifted.
-                        try:
-                            q_region, q_body = nearest_points(region_poly, body_poly)
-                        except Exception:
-                            continue
-                        dx = q_region.x - q_body.x
-                        dy = q_region.y - q_body.y
-                        s_mm = 0.0
-                    else:
-                        # Straddling the edge: protrusion depth of the verts
-                        # sticking out, capped by the shared wall law. One
-                        # vectorized GEOS distance over the ring instead of
-                        # one Point + distance call per vertex (non-finite
-                        # entries contribute nothing).
-                        try:
-                            _coords = np.asarray(
-                                body_poly.exterior.coords, dtype=np.float64
-                            )
-                            _d = np.asarray(
-                                _shapely_distance(
-                                    _shapely_points(_coords), region_poly
-                                ),
-                                dtype=np.float64,
-                            )
-                        except Exception:
-                            continue
-                        depth = 0.0
-                        if _d.size:
-                            _finite = _d[np.isfinite(_d)]
-                            if _finite.size:
-                                depth = float(_finite.max())
-                        s_mm = -max(depth, 0.0)
-                        try:
-                            outside = body_poly.difference(region_poly)
-                            ref = (
-                                outside.centroid
-                                if not outside.is_empty
-                                else body_poly.centroid
-                            )
-                            proj = clearance_boundary.project(ref)
-                            nearest = clearance_boundary.interpolate(proj)
-                        except Exception:
-                            continue
-                        # Inward: from the outside chunk toward the edge.
-                        dx = nearest.x - ref.x
-                        dy = nearest.y - ref.y
-                    dist = math.hypot(dx, dy)
-                    if dist < 1e-8:
-                        # Degenerate (e.g. concentric): fall back to the
-                        # region centre, which is inward by construction.
-                        _rcx, _rcy = ctx.region_centroids[region_idx]
-                        dx = _rcx - body_poly.centroid.x
-                        dy = _rcy - body_poly.centroid.y
-                        dist = math.hypot(dx, dy)
-                    if dist < 1e-8:
-                        continue
-                    ux, uy = dx / dist, dy / dist
-                    if s_mm >= halo_mm:
-                        continue
-                    force_mag = _wall_mag(
-                        params.wall_k_N, s_mm, halo_mm,
+                    # Inverted courtyard via the shared helper (same law the
+                    # label orbit uses); tangential assist stays local.
+                    fx, fy = board_wall_force(
+                        body_poly, region_poly, clearance_boundary,
+                        ctx.region_centroids[region_idx],
+                        params.wall_k_N, halo_mm,
                         params.wall_exponent, params.wall_cap_depth_mm,
                     )
-                    fx, fy = force_mag * ux, force_mag * uy
+                    force_mag = math.hypot(fx, fy)
+                    if force_mag <= 0.0:
+                        continue
+                    ux, uy = fx / force_mag, fy / force_mag
                     # Tangential assist for board wall (wall velocity = 0)
                     ft_x = ft_y = 0.0
                     if pad_vel is not None and params.contact_tangent_gamma > 0.0:

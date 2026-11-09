@@ -81,6 +81,7 @@ def run_placement(
     frame_stride: int = 1,
     max_frames: int = FRAME_DEFAULT_MAX,
     extra_power_nets: Collection[str] = (),
+    freeze_bodies: bool = False,
 ) -> PlacementProposal:
     """Run per-pad force-spring placement for ``model`` under ``params``.
 
@@ -91,6 +92,11 @@ def run_placement(
     ``params`` is re-validated here because direct ``PlacementParams(...)``
     construction bypasses the ``from_dict`` check (only the API path
     validates); fail fast instead of dividing by zero mid-run.
+
+    With ``freeze_bodies``, footprints never move while labels still orbit
+    to equilibrium — a label-settle pass. Convergence then means the labels
+    went quiet, so the legality downgrade (which judges part poses) is
+    skipped: pre-existing part overlaps are not the settle pass's verdict.
     """
     _validate(params)
     start = time.perf_counter()
@@ -181,6 +187,7 @@ def run_placement(
                     region_fp_uuid_to_pad_indices, region_global_pad_idx_to_local,
                     region_pad_is_ghost, model, params, movable_uuids,
                     record_frames, _eff_stride, extra_power_nets,
+                    freeze_bodies,
                 )
                 any_region = True
                 any_depen = any_depen or region_depen
@@ -216,7 +223,7 @@ def run_placement(
             wall_tolerance_mm=params.wall_tolerance_mm,
         )
         final_stop = all_stop if any_region else "empty"
-        if final_stop == "converged" and not legality.is_legal:
+        if final_stop == "converged" and not freeze_bodies and not legality.is_legal:
             final_stop = "stalled"
 
         return PlacementProposal(
@@ -272,6 +279,7 @@ def run_placement(
         region_fp_uuid_to_pad_indices, region_global_pad_idx_to_local,
         region_pad_is_ghost, model, params, movable_uuids,
         record_frames, _eff_stride, extra_power_nets,
+        freeze_bodies,
     )
 
     thin_frames = _thin_frames(region_frames, max_frames) if record_frames else []
@@ -284,7 +292,7 @@ def run_placement(
         wall_tolerance_mm=params.wall_tolerance_mm,
     )
     final_stop = region_stop
-    if final_stop == "converged" and not legality.is_legal:
+    if final_stop == "converged" and not freeze_bodies and not legality.is_legal:
         final_stop = "stalled"
 
     return PlacementProposal(
@@ -316,4 +324,25 @@ def run_placement(
             if fp.ref and courtyard_is_degenerate(fp)
         )),
         debug_trace=region_dbg,
+    )
+
+
+def run_label_settle(
+    model: BoardModel,
+    params: PlacementParams,
+    max_iterations: int = 200,
+) -> PlacementProposal:
+    """Frozen-body label relaxation: settle labels, move no footprints.
+
+    Runs the normal region simulations with bodies frozen, so each label
+    orbits (tether + tiny-courtyard wall law + pin discs + board edge +
+    pad Coulomb, all one-way) to a local de-overlap equilibrium against
+    static obstacles. Returns the usual proposal with empty pad deltas;
+    ``stop_reason`` reports label quiet (``converged``/``stalled``).
+    """
+    from dataclasses import replace
+
+    return run_placement(
+        model, replace(params, max_iterations=max_iterations),
+        freeze_bodies=True,
     )

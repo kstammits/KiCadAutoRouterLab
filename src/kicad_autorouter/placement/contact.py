@@ -46,17 +46,24 @@ def label_contact_force(
     wall_cap_depth_mm: float = 0.0,
     solidity: float = 1.0,
     skip_uuids: Tuple[str, ...] = (),
+    tie_key: Optional[str] = None,
 ) -> Tuple[float, float]:
     """Wall-law push (newtons, board frame) on one orbiting label rect.
 
-    Sums one wall-law contact per nearby body (own parent included — a
-    filed anchor inside the courtyard equilibrates against its leash,
-    which is exactly the float). Direction is the nearest-points axis,
+    Sums one wall-law contact per nearby body (callers pass
+    ``skip_uuids`` for bodies a label may sit on — e.g. its own parent,
+    whose courtyard is DRC-legal ground). Direction is the nearest-points axis,
     out of the body; overlap depth comes from vertex-projection along
     that axis. ``solidity`` scales the summed force so the slider stays
     meaningful in orbit mode (0 skips the loop entirely — caller-gated,
     but double-guarded here). Winner-takes-all is deliberately NOT used:
     a label wedged between two bodies should feel both.
+
+    ``tie_key`` breaks exact concentric ties antisymmetrically: when two
+    coincident rects meet, the query whose key sorts first pushes +x and
+    the other pushes -x, so identical labels separate instead of marching
+    off together. Bodies (non-``lab:`` keys) always take +1, matching the
+    historical behavior. ``None`` (unit-test callers) keeps +1 for all.
     """
     if label_poly is None or label_poly.is_empty:
         return (0.0, 0.0)
@@ -106,9 +113,15 @@ def label_contact_force(
                     dist = math.hypot(dx, dy)
                     if dist <= 1e-9:
                         # Concentric (e.g. a filed anchor dead-center in
-                        # its own courtyard): any axis pushes out, so take
-                        # +x instead of reporting zero and sticking forever.
-                        dx, dy, dist = 1.0, 0.0, 1.0
+                        # its own courtyard): any axis pushes out, but two
+                        # coincident labels must pick opposite sides, so
+                        # the tie_key order decides the sign (+x or -x)
+                        # instead of both marching +x together.
+                        tie = 1.0
+                        if (tie_key is not None and uuid.startswith("lab:")
+                                and tie_key > uuid):
+                            tie = -1.0
+                        dx, dy, dist = tie, 0.0, 1.0
                 ux, uy = dx / dist, dy / dist
                 try:
                     body_coords = list(body.exterior.coords)
@@ -537,6 +550,114 @@ def _wall_mag(
     if cap_depth_mm > 0.0:
         s_mm = max(s_mm, -cap_depth_mm)
     return k_wall_N * (1.0 - s_mm / halo_mm) ** exponent
+
+
+def board_wall_force(
+    body_poly,
+    region_poly,
+    clearance_boundary,
+    region_centroid: Tuple[float, float],
+    wall_k_N: float,
+    halo_mm: float,
+    exponent: float = 2.0,
+    cap_depth_mm: float = 0.0,
+) -> Tuple[float, float]:
+    """Inverted-courtyard push of one body off the board edge.
+
+    Shared by the part kernel (board wall) and the label orbit: the region
+    polygon is an inverted courtyard — covered bodies get a halo-scaled
+    push inward, disjoint bodies a bounded pull home, straddling bodies a
+    protrusion-depth push. Same wall law, same sign convention (gap +,
+    penetration -). Returns (0, 0) when the body clears the halo or any
+    geometry query fails. No tangential term; callers add slide assist.
+    """
+    from shapely import distance as _shp_dist
+    from shapely import points as _shp_pts
+
+    if body_poly is None or getattr(body_poly, "is_empty", True):
+        return (0.0, 0.0)
+    if region_poly is None or getattr(region_poly, "is_empty", True):
+        return (0.0, 0.0)
+    if clearance_boundary is None or getattr(clearance_boundary, "is_empty", True):
+        return (0.0, 0.0)
+    try:
+        covered = region_poly.covers(body_poly)
+    except Exception:
+        return (0.0, 0.0)
+    if covered:
+        # Fully inside: halo-scaled push off the edge, inward from the
+        # nearest boundary point toward the body.
+        try:
+            gap = clearance_boundary.distance(body_poly)
+        except Exception:
+            return (0.0, 0.0)
+        if gap >= halo_mm:
+            return (0.0, 0.0)
+        s_mm = gap
+        try:
+            proj = clearance_boundary.project(body_poly.centroid)
+            nearest = clearance_boundary.interpolate(proj)
+        except Exception:
+            return (0.0, 0.0)
+        dx = body_poly.centroid.x - nearest.x
+        dy = body_poly.centroid.y - nearest.y
+    elif body_poly.disjoint(region_poly):
+        # Fully outside (or in a cutout): bounded pull home at contact
+        # strength, independent of how far out it drifted.
+        try:
+            q_region, q_body = nearest_points(region_poly, body_poly)
+        except Exception:
+            return (0.0, 0.0)
+        dx = q_region.x - q_body.x
+        dy = q_region.y - q_body.y
+        s_mm = 0.0
+    else:
+        # Straddling the edge: protrusion depth of the verts sticking out.
+        try:
+            _coords = np.asarray(body_poly.exterior.coords, dtype=np.float64)
+            _d = np.asarray(
+                _shp_dist(_shp_pts(_coords), region_poly), dtype=np.float64
+            )
+        except Exception:
+            return (0.0, 0.0)
+        depth = 0.0
+        if _d.size:
+            _finite = _d[np.isfinite(_d)]
+            if _finite.size:
+                depth = float(_finite.max())
+        s_mm = -max(depth, 0.0)
+        try:
+            outside = body_poly.difference(region_poly)
+            ref = (
+                outside.centroid
+                if not outside.is_empty
+                else body_poly.centroid
+            )
+            proj = clearance_boundary.project(ref)
+            nearest = clearance_boundary.interpolate(proj)
+        except Exception:
+            return (0.0, 0.0)
+        # Inward: from the outside chunk toward the edge.
+        dx = nearest.x - ref.x
+        dy = nearest.y - ref.y
+    dist = math.hypot(dx, dy)
+    if dist < 1e-8:
+        # Degenerate (e.g. concentric): fall back to the region centre,
+        # which is inward by construction.
+        try:
+            _rcx, _rcy = region_centroid
+            dx = _rcx - body_poly.centroid.x
+            dy = _rcy - body_poly.centroid.y
+            dist = math.hypot(dx, dy)
+        except Exception:
+            return (0.0, 0.0)
+    if dist < 1e-8:
+        return (0.0, 0.0)
+    ux, uy = dx / dist, dy / dist
+    if s_mm >= halo_mm:
+        return (0.0, 0.0)
+    force_mag = _wall_mag(wall_k_N, s_mm, halo_mm, exponent, cap_depth_mm)
+    return (force_mag * ux, force_mag * uy)
 
 
 

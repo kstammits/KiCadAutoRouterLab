@@ -445,16 +445,16 @@ def _shift_at(tree: SExpr, fp: SExpr, dx_mm: float = 0.0, dy_mm: float = 0.0, da
     frame and rotate via the footprint angle). A zero delta is still the
     exact no-op (nothing rewritten).
 
-    ``fp_text`` angles are footprint-relative instead (tube111: a footprint
-    at 180 stores text angle 0 while its pads store absolute 180), so text
-    local ``x y`` never changes and a rotation needs no text rewrite for
-    rigid follow — but the readable snap (same rule as
-    ``board_model.query.apply_deltas``) always counter-rotates same-side
-    text to the nearest upright board orientation (0/90/270, never
-    upside-down). Same-side only (``F.SilkS`` / ``F.Fab`` for ``F.Cu``
-    parts, ``B.*`` for ``B.Cu``): opposite-side text belongs to the other
-    face. Pure translations (``da_deg == 0``) never touch text, keeping
-    the zero-delta no-op exact.
+    ``fp_text`` angles render literally instead (gerber-verified: the
+    stored angle is the board angle — parent rotation moves the anchor
+    but never the glyphs), so text local ``x y`` never changes and a
+    rotation needs no text rewrite for rigid follow — but the readable
+    snap (same rule as ``board_model.query.apply_deltas``) always
+    re-snaps the stored angle to the nearest upright board orientation
+    (0/90/180/270; stored 180 survives literally). Same-side only (``F.SilkS`` / ``F.Fab``
+    for ``F.Cu`` parts, ``B.*`` for ``B.Cu``): opposite-side text belongs
+    to the other face. Pure translations (``da_deg == 0``) never touch
+    text, keeping the zero-delta no-op exact.
 
     Orbit labels pass ``label_dx_mm``/``label_dy_mm`` (footprint-local
     anchor offsets from the integrated orbit): same-side text gains the
@@ -480,7 +480,10 @@ def _shift_at(tree: SExpr, fp: SExpr, dx_mm: float = 0.0, dy_mm: float = 0.0, da
             new_fp_args.append(new_at)
         elif da_deg != 0.0 and isinstance(child, SExpr) and child.head == "pad":
             new_fp_args.append(_shift_pad_angle(child, da_deg))
-        elif (da_deg != 0.0 or label_moved) and isinstance(child, SExpr) and child.head == "fp_text":
+        elif (da_deg != 0.0 or label_moved) and isinstance(child, SExpr) and (
+            child.head == "fp_text"
+            or (child.head == "property" and len(child.args) >= 2 and child.args[0] == "Reference")
+        ):
             new_fp_args.append(_shift_label_pose(
                 child, fp, fp_old_angle, fp_angle,
                 label_dx_mm=label_dx_mm, label_dy_mm=label_dy_mm,
@@ -501,12 +504,16 @@ def _shift_label_pose(
     label_dy_mm: float = 0.0,
     snap: bool = True,
 ) -> SExpr:
-    """Return ``fp_text`` with its local anchor shifted and angle snapped.
+    """Return a reference-text node with its local anchor shifted and angle snapped.
 
-    Orbit-label counterpart to ``apply_deltas(..., label_deltas=...)``:
+    Applies to ``fp_text`` mirrors and the ``(property "Reference" ...)``
+    field alike — both carry ``(at x y [angle])`` / ``(layer ...)`` /
+    ``(effects (font ...))`` in the same shape, and both render the
+    reference on the board. Orbit-label counterpart to
+    ``apply_deltas(..., label_deltas=...)``:
     ``(at x y)`` gains the footprint-local ``(label_dx_mm, label_dy_mm)``
     orbit offset, then the local angle always snaps to readable upright
-    (0/90/270, never upside-down) exactly like the model path.
+    (0/90/180/270) exactly like the model path.
     Same-side text only — opposite-side text passes through untouched.
     ``(at x y)`` without an angle reads as 0 and only gains an explicit
     angle when the snap actually rotates it.
@@ -565,6 +572,78 @@ def _shift_label_angle(
     )
 
 
+def reset_label_anchors(tree: SExpr, filed_tree: SExpr) -> Tuple[SExpr, int]:
+    """Rebase label anchors to the filed board (same tree shape required).
+
+    The orbit tether pulls each label toward its input-tree anchor, and
+    the clamp caps excursion per run — so chaining runs without rebasing
+    compounds drift. Resetting every ``fp_text`` / Reference node (matched
+    by uuid) to the filed ``(at x y)`` keeps the association budget
+    absolute instead of compounding. Angles are untouched: writeback snap
+    is idempotent on cardinals, so only positions can drift. Delegates to
+    :func:`_shift_label_pose` (same-side gating included), so this is
+    exactly writeback run in reverse. Returns the new tree and the
+    changed-node count.
+    """
+    def _filed_xy(text):
+        at = text.find("at")
+        if at is None or len(at.args) < 2:
+            return None
+        try:
+            return (float(at.args[0]), float(at.args[1]))
+        except (TypeError, ValueError):
+            return None
+
+    def _is_label_node(child):
+        return isinstance(child, SExpr) and (
+            child.head == "fp_text"
+            or (
+                child.head == "property"
+                and len(child.args) >= 2
+                and child.args[0] == "Reference"
+            )
+        )
+
+    filed_at = {}
+    for fp in filed_tree.args:
+        if not (isinstance(fp, SExpr) and fp.head == "footprint"):
+            continue
+        for child in fp.args:
+            if not _is_label_node(child):
+                continue
+            u = child.find("uuid")
+            pos = _filed_xy(child)
+            if u is not None and u.args and pos is not None:
+                filed_at[str(u.args[0])] = pos
+
+    changed = 0
+    new_fps = []
+    for fp in tree.args:
+        if not (isinstance(fp, SExpr) and fp.head == "footprint"):
+            new_fps.append(fp)
+            continue
+        new_children = []
+        for child in fp.args:
+            if _is_label_node(child):
+                u = child.find("uuid")
+                key = str(u.args[0]) if u is not None and u.args else None
+                cur = _filed_xy(child)
+                if key is not None and key in filed_at and cur is not None:
+                    dx = filed_at[key][0] - cur[0]
+                    dy = filed_at[key][1] - cur[1]
+                    if abs(dx) > 1e-9 or abs(dy) > 1e-9:
+                        shifted = _shift_label_pose(
+                            child, fp, 0.0, 0.0,
+                            label_dx_mm=dx, label_dy_mm=dy, snap=False,
+                        )
+                        if shifted is not child:
+                            child = shifted
+                            changed += 1
+            new_children.append(child)
+        new_fps.append(replace(fp, args=tuple(new_children)))
+    return replace(tree, args=tuple(new_fps)), changed
+
+
 def _shift_pad_angle(pad: SExpr, da_deg: float) -> SExpr:
     """Return ``pad`` with its ``(at x y [angle])`` angle advanced by ``da_deg``.
 
@@ -611,8 +690,9 @@ def nudge_footprint_by_uuid(
 
     Same guarantees as :func:`nudge_footprint`, addressed by UUID instead of
     reference so duplicate or missing refs remain addressable at writeback time.
-    Same-side ``fp_text`` labels always snap upright on rotation (matching
-    ``apply_deltas``). Orbit-label anchor offsets ride
+    Same-side reference text (``fp_text`` mirrors and the
+    ``(property "Reference" ...)`` field) always snaps upright on rotation
+    (matching ``apply_deltas``). Orbit-label anchor offsets ride
     ``label_dx_mm``/``label_dy_mm`` (footprint-local).
     """
     return _shift_at(tree, find_footprint_by_uuid(tree, uuid), dx_mm, dy_mm, da_deg,

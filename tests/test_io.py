@@ -15,6 +15,7 @@ from kicad_autorouter.io import (
     load_pair,
     nudge_footprint,
     nudge_footprint_by_uuid,
+    reset_label_anchors,
     save_pair,
 )
 from kicad_autorouter.sexpr import SExpr, Symbol, parse, parse_file, to_sexpr, tokenize
@@ -55,6 +56,46 @@ def test_nudge_by_uuid_moves_only_target_footprint():
     orig_mh4 = find_footprint(tree, "MH4").find("at")
     new_mh4 = find_footprint(moved, "MH4").find("at")
     assert list(new_mh4.args) == list(orig_mh4.args)
+
+
+def _ref_texts(tree, ref):
+    """(property Reference at-args, fp_text user at-args) for a footprint."""
+    fp = find_footprint(tree, ref)
+    prop = next(
+        c for c in fp.args
+        if getattr(c, "head", None) == "property" and c.args[1] == ref
+    )
+    mirror = next(
+        c for c in fp.args
+        if getattr(c, "head", None) == "fp_text" and c.args[1] == "${REFERENCE}"
+    )
+    return prop, mirror
+
+
+@pytest.mark.unit
+def test_reset_label_anchors_restores_filed_positions():
+    tree = parse_file(PCB_FIXTURE)
+    drifted = nudge_footprint_by_uuid(
+        tree, MH1_UUID, 0.0, 0.0, 0.0, label_dx_mm=2.0, label_dy_mm=-1.0)
+    prop0, mirr0 = _ref_texts(tree, "MH1")
+    prop1, mirr1 = _ref_texts(drifted, "MH1")
+    assert float(prop1.find("at").args[0]) == pytest.approx(
+        float(prop0.find("at").args[0]) + 2.0)
+    fixed, n = reset_label_anchors(drifted, tree)
+    assert n > 0
+    prop2, mirr2 = _ref_texts(fixed, "MH1")
+    assert list(prop2.find("at").args) == pytest.approx(
+        list(prop0.find("at").args))
+    assert list(mirr2.find("at").args) == pytest.approx(
+        list(mirr0.find("at").args))
+    # Value text is not a label anchor: untouched throughout.
+    value = next(
+        c for c in find_footprint(fixed, "MH1").args
+        if getattr(c, "head", None) == "property" and c.args[0] == "Value")
+    assert list(value.find("at").args)[:2] == [0, 3.35]
+    # Idempotent: already-filed input changes nothing.
+    _, n2 = reset_label_anchors(fixed, tree)
+    assert n2 == 0
 
 
 def test_fixture_sch_round_trip_tree_equality():

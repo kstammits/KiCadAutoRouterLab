@@ -27,7 +27,7 @@ from .align import (
     compute_row_targets,
     courtyard_half_extents,
 )
-from .depenetrate import _depenetrate_positions
+from .depenetrate import _depenetrate_labels, _depenetrate_positions
 from .force import ForceContext, _compute_total_force
 from .model import (
     _build_net_edges_pad_level,
@@ -67,7 +67,7 @@ def _round_force_components(
 
 
 # Orbit tether stiffness re-exported from board_model.labels
-# (single spring strategy, fixed 2 Hz — not a param, no toggles).
+# (single spring strategy, fixed 40 Hz — not a param, no toggles).
 from ..board_model.labels import LABEL_TETHER_HZ as _LABEL_TETHER_HZ
 # Orbit radius floor (mm): the positional clamp disc never collapses
 # below this even at label_clearance_m == 0, so hard shoves cannot
@@ -146,28 +146,140 @@ def _orbit_label_forces(
     fctx,
     params,
     iteration: int,
+    lab_ref_mass_kg: float = 0.0,
 ) -> np.ndarray:
     """Net orbit force (newtons) per label node: single spring tether + contact.
 
     Single spring tether leashes label to the filed anchor posed by the
-    parent's current rigid motion. Contact uses label_clearance_m for
-    clearance rect inflation. Always in orbit mode — no tether strategy
-    toggles (spring/slot/free). Returns (L, 2), zeros when a label has
-    no computable pose.
+    parent's current rigid motion. Contact reuses the parts logic: each
+    label rect is a tiny courtyard (text bbox inflated by the font-fraction
+    halo) colliding through the same wall law with body courtyards, the
+    shared THT pin-extender discs, and the board outline as an inverted
+    courtyard — plus pad-center Coulomb with the parts' k and charge mask.
+    All new terms are one-way: labels feel bodies, bodies never feel
+    labels. Always in orbit mode — no tether strategy toggles
+    (spring/slot/free). Returns (L, 2), zeros when a label has no
+    computable pose.
+
+    Contact/edge/Coulomb forces scale with the label's own ink mass
+    (``lab_ref_mass_kg`` is the reference pad mass, same ratio the
+    damping and friction already use): at ink mass a part-scale newton
+    means 1e5+ m/s^2, so unscaled walls ping-pong instead of settling.
+    Scaling makes every label follow the same acceleration field as the
+    reference part — the equilibrium standoff is unchanged (the tether
+    is inherently mass-proportional, so mass cancels at the fixed
+    point), only the bounce disappears.
     """
     from ..board_model.labels import (
         label_board_angle,
         label_board_rect,
+        label_halo_mm,
         label_tether_force_N,
         snap_label_angle,
     )
+    from .contact import board_wall_force
 
     n_lab = len(lab_rows_arr)
     out = np.zeros((n_lab, 2), dtype=np.float64)
+    tout = np.zeros((n_lab, 2), dtype=np.float64)
     if n_lab == 0:
         return out
+    try:
+        _ref = max(float(lab_ref_mass_kg), 1e-12)
+    except (TypeError, ValueError):
+        _ref = 1e-12
+    _lab_scale = np.maximum(
+        np.asarray(lab_mass_list, dtype=np.float64), 1e-12) / _ref
     cy_cache = getattr(fctx, "cy_cache", {}) or {}
     polys, stats = _label_body_maps(fctx)
+    # Pre-pass: every label's clearance rect at its current node position.
+    # Labels repel each other through the same wall law as bodies (their
+    # own rects join each other's collision set below); body silk and
+    # board notes stay out of the collision model by design.
+    lab_polys: List = [None] * n_lab
+    lab_cents: List[Tuple[float, float]] = [(0.0, 0.0)] * n_lab
+    lab_radii: List[float] = [0.0] * n_lab
+    lab_halos: List[float] = [0.0] * n_lab
+    for i in range(n_lab):
+        li = lab_parent_li[i]
+        rows = fp_local_to_rows[li] if li < len(fp_local_to_rows) else np.array([], dtype=int)
+        fp = fp_by_uuid.get(fp_uuids[li] if li < len(fp_uuids) else "")
+        if fp is None or len(rows) == 0:
+            continue
+        entry = cy_cache.get(lab_uuid[i], {}) or {}
+        orig = entry.get("orig_pos")
+        anchor, parent_now = _posed_label_anchor(
+            positions, np.asarray(rows), orig, lab_anchor_filed[i], fp.angle_deg
+        )
+        board_angle = snap_label_angle(
+            label_board_angle(lab_local_angle[i], parent_now),
+        )
+        node = positions[lab_rows_arr[i]]
+        if params.label_clearance_m <= 0.0:
+            continue
+        # Tiny-courtyard halo: font height times the fixed fraction (not
+        # label_clearance_m, which now only sizes the orbit clamp disc).
+        halo_i = label_halo_mm(lab_size[i])
+        lab_halos[i] = halo_i
+        rect = label_board_rect(
+            lab_text[i], float(node[0]), float(node[1]),
+            board_angle, lab_size[i], halo_mm=halo_i,
+        )
+        if rect is None:
+            continue
+        try:
+            from shapely.geometry import Polygon as _Poly
+            poly = _Poly(rect)
+        except Exception:
+            continue
+        if poly is None or poly.is_empty:
+            continue
+        lab_polys[i] = poly
+        try:
+            lab_cents[i] = (poly.centroid.x, poly.centroid.y)
+            lab_radii[i] = math.hypot(
+                poly.bounds[2] - poly.bounds[0],
+                poly.bounds[3] - poly.bounds[1]) / 2.0
+        except Exception:
+            lab_cents[i] = (float(node[0]), float(node[1]))
+            lab_radii[i] = 1.0
+    # Pad-center Coulomb for labels (parts parity, one-way): the same k/d^2
+    # law as the pad kernel, with the same charge mask and the same
+    # own-footprint exemption — labels feel pads, pads never feel labels,
+    # so the accumulation below only touches ``out``. This is the only SMD
+    # pad protection parts have, and labels get exactly that.
+    try:
+        _pos = np.asarray(positions, dtype=np.float64)
+        _ppos = _pos[:n_pads]
+        _lpos = _pos[np.asarray(lab_rows_arr)]
+        _charged = getattr(fctx, "pad_charged", None)
+        _rk = float(params.repulsion_k_N_m2)
+        if (
+            _ppos.shape[0] > 0
+            and _charged is not None
+            and tuple(np.shape(_charged)) == (_ppos.shape[0],)
+        ):
+            _diff = _lpos[:, None, :] - _ppos[None, :, :]  # (L, P, 2), mm
+            _d2 = np.maximum(np.sum(_diff * _diff, axis=2), 1e-6)
+            _mag = _rk / np.maximum(_d2 * 1e-6, 1e-12)  # mm^2 -> m^2, SI
+            _keep = np.broadcast_to(
+                np.asarray(_charged, dtype=bool)[None, :], _mag.shape
+            ).copy()
+            _p2f = getattr(fctx, "pad_to_fp_local", None)
+            try:
+                _p2f_arr = np.asarray(_p2f)
+                if _p2f_arr.shape[0] == _ppos.shape[0]:
+                    _keep[_p2f_arr[None, :] == np.asarray(lab_parent_li)[:, None]] = False
+            except Exception:
+                pass
+            _mag[~_keep] = 0.0
+            with np.errstate(divide="ignore", invalid="ignore"):
+                _d = np.maximum(np.sqrt(_d2)[:, :, None], 1e-9)
+                _vec = _diff * (_mag[:, :, None] / _d)
+            _vec[~np.isfinite(_vec)] = 0.0
+            out += np.sum(_vec, axis=1)
+    except Exception:
+        pass
     for i in range(n_lab):
         uuid = lab_uuid[i]
         li = lab_parent_li[i]
@@ -177,58 +289,94 @@ def _orbit_label_forces(
             continue
         entry = cy_cache.get(uuid, {}) or {}
         orig = entry.get("orig_pos")
-        anchor, parent_now = _posed_label_anchor(
+        anchor, _ = _posed_label_anchor(
             positions, np.asarray(rows), orig, lab_anchor_filed[i], fp.angle_deg
-        )
-        board_angle = snap_label_angle(
-            label_board_angle(lab_local_angle[i], parent_now),
         )
         node = positions[lab_rows_arr[i]]
         # Single spring tether: leash to posed filed anchor.
         # (No strategy branching — always spring to filed anchor.)
         target = anchor
-        # Contact using label_clearance_m (absorbs former solidity × halo).
-        if params.label_clearance_m > 0.0:
-            rect = label_board_rect(
-                lab_text[i], float(node[0]), float(node[1]),
-                board_angle, lab_size[i], halo_mm=params.label_clearance_m * 1000.0,
-            )
-            if rect is not None:
-                try:
-                    from shapely.geometry import Polygon as _Poly
-                    label_poly = _Poly(rect)
-                except Exception:
-                    label_poly = None
-                if label_poly is not None and not label_poly.is_empty:
-                    try:
-                        lr = math.hypot(
-                            label_poly.bounds[2] - label_poly.bounds[0],
-                            label_poly.bounds[3] - label_poly.bounds[1],
-                        ) / 2.0
-                    except Exception:
-                        lr = 1.0
-                    try:
-                        lx, ly = label_poly.centroid.x, label_poly.centroid.y
-                    except Exception:
-                        lx, ly = float(node[0]), float(node[1])
-                    nearby = {}
-                    for buid, bpoly in polys.items():
-                        st = stats.get(buid)
-                        if st is None:
-                            nearby[buid] = bpoly
+        # Contact through the parts wall law: the pre-pass rect is the
+        # label's tiny courtyard. Other labels join the body set so labels
+        # deconflict each other, not just parts; the shared THT pin discs
+        # and the board outline (inverted courtyard) join below. The
+        # label's own parent body is skipped (silk over its own courtyard
+        # is DRC-legal, so a label may sit on its own part); its THT pin
+        # copper still repels via the pin discs, like all pads.
+        label_poly = lab_polys[i]
+        halo_i = lab_halos[i]
+        parent_uuid = fp_uuids[li] if li < len(fp_uuids) else ""
+        if label_poly is not None and params.label_clearance_m > 0.0:
+            try:
+                lx, ly = lab_cents[i]
+                lr = lab_radii[i]
+            except Exception:
+                lx, ly = float(node[0]), float(node[1])
+                lr = 1.0
+            nearby = {}
+            for buid, bpoly in polys.items():
+                st = stats.get(buid)
+                if st is None:
+                    nearby[buid] = bpoly
+                    continue
+                if math.hypot(lx - st[0], ly - st[1]) <= st[2] + lr + halo_i:
+                    nearby[buid] = bpoly
+            for j in range(n_lab):
+                if j == i or lab_polys[j] is None:
+                    continue
+                jx, jy = lab_cents[j]
+                if math.hypot(lx - jx, ly - jy) <= lab_radii[j] + lr + halo_i:
+                    nearby["lab:" + lab_uuid[j]] = lab_polys[j]
+            # THT pin extenders, two-level gated: only discs of bodies
+            # already nearby (the parent's own body is skipped above, but
+            # its pins still repel — all pads repel, including the
+            # parent's own copper).
+            _pins_data = getattr(fctx, "pins_data", None) or {}
+            if _pins_data:
+                for buid in [k for k in nearby if not k.startswith("lab:")]:
+                    for k, _pin in enumerate(_pins_data.get(buid, ()) or ()):
+                        try:
+                            _ppoly, _pcent, _prad = _pin[0], _pin[1], float(_pin[2])
+                        except Exception:
                             continue
-                        if math.hypot(lx - st[0], ly - st[1]) <= st[2] + lr + params.label_clearance_m * 1000.0:
-                            nearby[buid] = bpoly
-                    if nearby:
-                        cx, cy = label_contact_force(
-                            label_poly, nearby, params.label_clearance_m * 1000.0,
-                            params.wall_k_N, params.wall_exponent,
-                            params.wall_cap_depth_mm,
-                            solidity=1.0,
-                        )
-                        out[i, 0] += cx
-                        out[i, 1] += cy
+                        if _ppoly is None or getattr(_ppoly, "is_empty", True):
+                            continue
+                        try:
+                            _pcx, _pcy = float(_pcent[0]), float(_pcent[1])
+                        except Exception:
+                            continue
+                        if math.hypot(lx - _pcx, ly - _pcy) <= _prad + lr + halo_i:
+                            nearby["pin:%s:%d" % (buid, k)] = _ppoly
+            if nearby:
+                cx, cy = label_contact_force(
+                    label_poly, nearby, halo_i,
+                    params.wall_k_N, params.wall_exponent,
+                    params.wall_cap_depth_mm,
+                    solidity=1.0, tie_key="lab:" + lab_uuid[i],
+                    skip_uuids=(parent_uuid,) if parent_uuid else (),
+                )
+                out[i, 0] += cx
+                out[i, 1] += cy
+            # Board outline as inverted courtyard (shared helper with the
+            # part kernel): labels cannot end past EdgeCuts.
+            _r2r = getattr(fctx, "fp_uuid_to_region", None) or {}
+            _rpolys = getattr(fctx, "region_polygons", None) or []
+            _ridx = _r2r.get(parent_uuid)
+            if _ridx is not None and 0 <= _ridx < len(_rpolys):
+                _rb = getattr(fctx, "region_boundaries", None) or []
+                _rc = getattr(fctx, "region_centroids", None) or []
+                ex, ey = board_wall_force(
+                    label_poly, _rpolys[_ridx],
+                    _rb[_ridx] if _ridx < len(_rb) else None,
+                    _rc[_ridx] if _ridx < len(_rc) else (float(node[0]), float(node[1])),
+                    params.wall_k_N, halo_i,
+                    params.wall_exponent, params.wall_cap_depth_mm,
+                )
+                out[i, 0] += ex
+                out[i, 1] += ey
         # Spring force to target (fixed hz; stiffness k = m*(2*pi*hz)^2).
+        # Tether is inherently mass-proportional, so it accumulates
+        # separately and is NOT mass-scaled at return.
         try:
             fx, fy = label_tether_force_N(
                 (float(node[0]), float(node[1])), target,
@@ -236,9 +384,12 @@ def _orbit_label_forces(
             )
         except Exception:
             fx = fy = 0.0
-        out[i, 0] += fx
-        out[i, 1] += fy
-    return out
+        tout[i, 0] += fx
+        tout[i, 1] += fy
+    # Mass-scale the contact/edge/Coulomb field (not the tether): every
+    # label then accelerates like the reference part — same standoff,
+    # no ink-mass bounce.
+    return out * _lab_scale[:, None] + tout
 
 
 def _posed_label_anchors(
@@ -331,6 +482,7 @@ def _run_region_simulation(
     record_frames: bool = False,
     frame_stride: int = 1,
     extra_power_nets: Collection[str] = (),
+    freeze_bodies: bool = False,
 ) -> Tuple[
     Dict[str, Tuple[float, float, float]],
     Dict[str, Tuple[float, float]],
@@ -344,7 +496,14 @@ def _run_region_simulation(
     bool,
     Dict[str, Tuple[float, float]],
 ]:
-    """Run force-spring simulation for a single board region."""
+    """Run force-spring simulation for a single board region.
+
+    With ``freeze_bodies``, pads never integrate (all footprints forced
+    immovable) while labels still orbit to a local de-overlap equilibrium
+    — a label-settle pass. Convergence then keys on label quiet alone
+    (pad residual is trivially zero), so a settled pass reports
+    ``converged`` even when the frozen board carries part overlaps.
+    """
     # Extract region bounds
     min_x, max_x, min_y, max_y = region.bbox
 
@@ -377,6 +536,15 @@ def _run_region_simulation(
     for fp in model.ghost_footprints:
         if fp.uuid and model.footprint_region.get(fp.uuid) == region_idx:
             fp_movable[fp.uuid] = False
+
+    if freeze_bodies:
+        # Label-settle pass: bodies are anchors, not dynamics. Force every
+        # footprint immovable (part kernel gates on fp_movable/pad_movable,
+        # so contacts still compute but nothing integrates); the label
+        # section below orbits anyway via the freeze override.
+        for fp in model.footprints:
+            if fp.uuid:
+                fp_movable[fp.uuid] = False
 
     pad_movable = np.array([
         (not region_pad_is_ghost[i] and fp_movable.get(
@@ -413,7 +581,7 @@ def _run_region_simulation(
     ], dtype=np.float64)
     pad_mass_kg = np.maximum(pad_mass_kg, _fallback_mass_kg)
 
-    if not pad_movable.any():
+    if not pad_movable.any() and not freeze_bodies:
         return {}, {}, 0, {}, [], [], "empty", 0.0, {}, False, {}
 
     # Net attraction edges for this region.
@@ -860,7 +1028,7 @@ def _run_region_simulation(
     for _fp in model.footprints:
         if _fp.label is None or not _fp.uuid:
             continue
-        if not fp_movable.get(_fp.uuid, False):
+        if not freeze_bodies and not fp_movable.get(_fp.uuid, False):
             continue
         if model.footprint_region.get(_fp.uuid) != region_idx:
             continue
@@ -911,6 +1079,9 @@ def _run_region_simulation(
         # (decay ~1e-5/step, tether forces far below friction_N).
         # Scale both by m_label/m_ref (heaviest pad) so labels share
         # the parts' decay timescale and freeze threshold relatively.
+        # Contact/edge/Coulomb forces get the same ratio inside
+        # _orbit_label_forces (same acceleration field as parts, no
+        # ink-mass bounce); the tether is inherently mass-proportional.
         _ref_mass = max(float(np.max(pad_mass_kg[:n_pads])), 1e-12)
         _lab_scale = np.maximum(
             np.array(lab_mass_list, dtype=np.float64),
@@ -1185,6 +1356,7 @@ def _run_region_simulation(
                 lab_local_angle, lab_anchor_filed, lab_mass_list,
                 fp_uuids, fp_local_to_rows, fp_by_uuid,
                 fctx, params, iteration,
+                lab_ref_mass_kg=_ref_mass,
             )
             _lab_frozen = np.zeros(len(lab_rows), dtype=bool)
             if params.friction_N > 0:
@@ -1375,6 +1547,91 @@ def _run_region_simulation(
                 float(np.linalg.norm(final_force[_rows].sum(axis=0))),
             )
         residual_max_force_N = _res
+
+    # Label de-penetration: the same geometric eject the parts pass gives
+    # wedged courtyards, applied to the labels' tiny-courtyard bodies
+    # (text bbox plus the shared halo — the exact bodies the wall law
+    # separates). Walls-off configurations skip it exactly like the parts
+    # pass, and zero orbit clearance welds labels exactly like the orbit
+    # forces; bodies are static (one-way invariant holds here too).
+    if (lab_rows and params.max_iterations > 0 and params.wall_k_N > 0.0
+            and params.wall_halo_m > 0.0 and params.label_clearance_m > 0.0):
+        from dataclasses import replace as _replace
+        from shapely.geometry import Polygon as _ShapelyPolygon
+        from ..board_model import Point as _Point
+        from ..board_model.labels import label_board_angle as _lba
+        from ..board_model.labels import snap_label_angle as _sla
+        from .contact import pad_copper_polygon as _pad_cu
+        from .contact import pad_present_on_layer as _pad_on_layer
+        from .depenetrate import _depenetrate_labels as _depen_labels
+        try:
+            _edge_poly = _ShapelyPolygon(
+                [(p.x_mm, p.y_mm) for p in region.polygon]
+            ) if region.polygon else None
+            if _edge_poly is not None and _edge_poly.is_empty:
+                _edge_poly = None
+        except Exception:
+            _edge_poly = None
+        _cu_layers = tuple(getattr(model, "copper_layers", ()) or ())
+        # Same visibility the orbit walls feel: any pad with copper on
+        # either side (THT spans sides, so it is covered once), all bodies
+        # regardless of layer — the depenetrate finishes what the shared
+        # wall law equilibrated on, with no label-only obstacle set.
+        _copper_all: List = []
+        for _i in range(n_pads):
+            try:
+                _li = region_pad_to_fp_idx[_i]
+                if _li < 0:
+                    continue
+                _fp = model.footprints[_li]
+                if not _fp.uuid:
+                    continue
+                _pose = new_poses.get(_fp.uuid)
+                _da = (_pose[2] - _fp.angle_deg) if _pose is not None else 0.0
+                _pad = region_pads[_i]
+                _posed = _replace(
+                    _pad,
+                    position=_Point(float(positions[_i, 0]), float(positions[_i, 1])),
+                    angle_deg=_pad.angle_deg + _da,
+                )
+                if (_pad_on_layer(_posed, _fp.layer, "F.Cu", _cu_layers)
+                        or _pad_on_layer(_posed, _fp.layer, "B.Cu", _cu_layers)):
+                    _poly = _pad_cu(_posed)
+                    if _poly is not None and not _poly.is_empty:
+                        _copper_all.append(_poly)
+            except Exception:
+                continue
+        _lab_spec_rows: List[int] = []
+        _lab_specs: List = []
+        for _k, _uuid in enumerate(lab_uuid):
+            try:
+                _pose = new_poses.get(_uuid)
+                _lfp = fp_by_uuid.get(_uuid)
+                if _pose is None or _lfp is None:
+                    continue
+                _fx0, _fy0 = lab_filed_local[_k]
+                _anchor_b = _to_board(
+                    _fx0, _fy0, _pose[0], _pose[1], _pose[2], _lfp.layer)
+                _lab_spec_rows.append(lab_rows[_k])
+                _lab_specs.append((
+                    _uuid, lab_text[_k], lab_size[_k],
+                    _sla(_lba(lab_local_angle[_k], _pose[2])),
+                    (float(_anchor_b.x_mm), float(_anchor_b.y_mm)),
+                    _uuid,
+                ))
+            except (TypeError, ValueError, IndexError):
+                continue
+        if _lab_specs:
+            try:
+                if _depen_labels(
+                    positions, _lab_spec_rows, _lab_specs,
+                    fp_uuids, fp_local_to_rows, fp_by_uuid,
+                    _copper_all,
+                    _edge_poly, _label_orbit_radius_mm(params),
+                ):
+                    _vel[:] = 0.0
+            except Exception:
+                pass
 
     # Orbit-mode label offsets: final node board position expressed in the
     # parent's FINAL local frame, minus the filed anchor. Empty when no

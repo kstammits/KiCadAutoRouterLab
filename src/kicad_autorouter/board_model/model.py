@@ -229,6 +229,10 @@ class SilkLabel:
     ``_to_board`` exactly like pads and courtyard segments. ``uuid`` is the
     ``fp_text`` node's own uuid for writeback targeting. ``text`` holds the
     resolved human text (``${REFERENCE}`` resolved to the footprint ref).
+    ``mirrored`` records the file's ``(justify mirror)`` flag: KiCad mirrors
+    bottom-side text so it reads correctly from below; the viewer must
+    mirror too, or 180° B-side labels render upside-down. Mirroring never
+    changes the text bbox, so dynamics and DRC geometry ignore it.
     """
 
     text: str
@@ -239,6 +243,7 @@ class SilkLabel:
     size_mm: Tuple[float, float] = (1.0, 1.0)
     thickness_mm: float = 0.15
     uuid: str = ""
+    mirrored: bool = False
 
 
 @dataclass(frozen=True)

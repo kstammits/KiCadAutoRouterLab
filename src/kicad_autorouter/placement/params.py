@@ -154,10 +154,11 @@ class PlacementParams:
     # (meters, SI; the UI displays millimeters). Only the k-nearest (k=6)
     # parts inside count.
     align_radius_m: float = 0.020
-    # Label clearance (meters, SI): total clearance rect inflation around
-    # the estimated text bbox. Combines former solidity × halo product into
-    # a single parameter; orbit mode always active, label always finds home
-    # near its parent. 5 mm typical; larger values give more board space.
+    # Label clearance (meters, SI): sizes the orbit clamp disc around the
+    # filed anchor (see _label_orbit_radius_mm). Contact halos are
+    # font-relative now (LABEL_HALO_FONT_FRACTION in board_model.labels),
+    # so this only bounds how far a label may roam, not how close it may
+    # sit to bodies. 5 mm typical; larger values give more board space.
     label_clearance_m: float = 0.005
 
     def to_dict(self) -> dict:

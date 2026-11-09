@@ -526,7 +526,13 @@ def _footprint_ref_svg(fp) -> str:
                 size = float(label.size_mm[1])
             except (TypeError, ValueError, IndexError):
                 pass
-            rot = f' transform="rotate({_fmt(angle)} {_fmt(cx)} {_fmt(cy)})"' if angle else ""
+            # Mirrored text (bottom-side ``justify mirror``) reads upright:
+            # gerber-verified, a mirrored 180 plots pixel-identical to an
+            # unmirrored 0 (and 90 stays 90), so fold the flip bit for
+            # display. The bbox is unchanged either way, so dynamics and
+            # DRC geometry (which keep the filed angle) still agree.
+            ea = angle % 180.0 if getattr(label, "mirrored", False) else angle
+            rot = f' transform="rotate({_fmt(ea)} {_fmt(cx)} {_fmt(cy)})"' if ea else ""
             return (
                 f'<text x="{_fmt(cx)}" y="{_fmt(cy)}" '
                 f'fill="{REF_TEXT}" font-family="monospace" font-size="{_fmt(size)}"{rot}>'

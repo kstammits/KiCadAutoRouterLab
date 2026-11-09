@@ -53,6 +53,7 @@ from kicad_autorouter.board_model import (  # noqa: E402
 )
 from kicad_autorouter.io import (  # noqa: E402
     nudge_footprint_by_uuid,
+    reset_label_anchors,
     rip_up_nets,
 )
 from kicad_autorouter.placement import PlacementParams, run_placement  # noqa: E402
@@ -535,6 +536,7 @@ def main(argv=None) -> int:
 
     tree = parse_file(Path(input_path))
     model = board_model(tree)
+    filed_tree = tree  # label-anchor source: the human-filed board
     locked = sum(fp.locked for fp in model.footprints)
     print(f"loaded {input_path}: {len(model.footprints)} footprints ({locked} locked)")
 
@@ -571,6 +573,13 @@ def main(argv=None) -> int:
                 tree = parse_file(prev)
                 model = board_model(tree)
             ran = True
+            # Rebase label anchors to filed before every stage: the orbit
+            # tether + clamp would otherwise compound up to 5mm of drift
+            # per stage. No-op on the filed input itself.
+            tree, n_reset = reset_label_anchors(tree, filed_tree)
+            if n_reset:
+                model = board_model(tree)
+                print(f"[{tag}] rebased {n_reset} label anchors to filed")
             if tag in ("cluster", "legalize", "tidy") and LED_GHOSTS:
                 model = attach_led_ghosts(model)
                 print(f"[{tag}] attached {len(LED_GHOSTS)} LED ghosts")

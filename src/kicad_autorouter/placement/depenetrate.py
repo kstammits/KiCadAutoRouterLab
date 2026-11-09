@@ -23,6 +23,11 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 from ..board_model import Footprint
+from ..board_model.labels import (
+    clamp_orbit_radius,
+    label_board_rect,
+    label_halo_mm,
+)
 from .contact import (
     _contact_weights,
     _footprint_courtyard_polygon,
@@ -35,6 +40,11 @@ logger = logging.getLogger(__name__)
 _DEPEN_RELAX = 0.5
 _DEPEN_CLEAN_AREA_MM2 = 1e-6
 _DEPEN_MAX_ROT_RAD = math.radians(2.0)
+# Label rounds: single nodes cannot spin, so unlike the parts pass the
+# rounds iterate toward clean instead of stopping after one Jacobi
+# round. Relax stays shared, so big penetrations still need ~25 rounds
+# to converge geometrically; the cap only bounds obstacle fights.
+_DEPEN_LABEL_MAX_ROUNDS = 30
 
 
 def _depenetrate_positions(
@@ -62,31 +72,14 @@ def _depenetrate_positions(
     from shapely.ops import nearest_points as _nearest_points
 
     def _posed():
-        polys: Dict[str, object] = {}
+        polys = _body_poly_map(positions, fp_uuids, fp_local_to_rows, fp_by_uuid)
         cents: Dict[str, Tuple[float, float]] = {}
         radii: Dict[str, float] = {}
         layers: Dict[str, str] = {}
-        for li, uuid in enumerate(fp_uuids):
+        for uuid, poly in polys.items():
             fp = fp_by_uuid.get(uuid)
             if fp is None:
                 continue
-            rows = fp_local_to_rows[li]
-            if fp.ghost or len(rows) == 0:
-                if not fp.courtyard:
-                    continue
-                poly = _footprint_courtyard_polygon(fp)
-                if poly is None or poly.is_empty:
-                    continue
-            else:
-                try:
-                    poly = _footprint_courtyard_polygon(
-                        fp, pad_positions=positions, pad_indices=[int(r) for r in rows]
-                    )
-                except Exception:
-                    logger.debug("courtyard polygon failed for %s", uuid)
-                    continue
-                if poly is None or poly.is_empty:
-                    continue
             try:
                 c = poly.centroid
                 coords = np.asarray(poly.exterior.coords, dtype=np.float64)
@@ -96,7 +89,6 @@ def _depenetrate_positions(
                 continue
             if not math.isfinite(r) or r < 1e-9:
                 r = 1.0
-            polys[uuid] = poly
             cents[uuid] = (float(c.x), float(c.y))
             radii[uuid] = r
             layers[uuid] = fp.layer
@@ -191,4 +183,235 @@ def _depenetrate_positions(
         positions, _pass_old, proj_bodies, pad_movable,
         cap_mm=1e9, max_rot_rad=_DEPEN_MAX_ROT_RAD,
     )
+    return moved_any
+
+
+def _label_rect_poly(text, node_xy, board_angle_deg, size_mm, halo_mm):
+    """Halo-inflated label collision rect at a node, or None if degenerate."""
+    try:
+        rect = label_board_rect(
+            text, float(node_xy[0]), float(node_xy[1]),
+            float(board_angle_deg), size_mm, halo_mm=halo_mm,
+        )
+    except (TypeError, ValueError):
+        return None
+    if not rect:
+        return None
+    try:
+        from shapely.geometry import Polygon as _Polygon
+        poly = _Polygon(rect)
+    except Exception:
+        return None
+    if poly is None or poly.is_empty:
+        return None
+    return poly
+
+
+def _body_poly_map(
+    positions: np.ndarray,
+    fp_uuids: List[str],
+    fp_local_to_rows: List[np.ndarray],
+    fp_by_uuid: Dict[str, Footprint],
+) -> Dict[str, object]:
+    """Posed courtyard polygon per footprint uuid (ghosts filed, rest posed).
+
+    Shared body set for both depenetrate passes: ghosts use their filed
+    courtyards (static anchors), real footprints rebuild from current pad
+    positions. Skips degenerates, never raises.
+    """
+    polys: Dict[str, object] = {}
+    for li, uuid in enumerate(fp_uuids):
+        fp = fp_by_uuid.get(uuid)
+        if fp is None:
+            continue
+        try:
+            rows = fp_local_to_rows[li]
+        except (IndexError, TypeError):
+            continue
+        if fp.ghost or len(rows) == 0:
+            if not fp.courtyard:
+                continue
+            poly = _footprint_courtyard_polygon(fp)
+        else:
+            try:
+                poly = _footprint_courtyard_polygon(
+                    fp, pad_positions=positions, pad_indices=[int(r) for r in rows]
+                )
+            except Exception:
+                logger.debug("courtyard polygon failed for %s", uuid)
+                continue
+        if poly is None or poly.is_empty:
+            continue
+        polys[uuid] = poly
+    return polys
+
+
+def _depenetrate_labels(
+    positions: np.ndarray,
+    lab_rows: List[int],
+    lab_specs: List[Tuple[str, str, Tuple[float, float], float, Tuple[float, float], str]],
+    fp_uuids: List[str],
+    fp_local_to_rows: List[np.ndarray],
+    fp_by_uuid: Dict[str, Footprint],
+    copper_polys: List[object],
+    edge_poly: Optional[object],
+    radius_mm: float,
+    max_rounds: int = _DEPEN_LABEL_MAX_ROUNDS,
+) -> bool:
+    """Eject settled labels out of true body/copper/edge penetration.
+
+    ``lab_specs`` parallels ``lab_rows`` as (uuid, text, size_mm,
+    board_angle_deg, anchor_xy_mm, parent_uuid). Bodies, copper, and the
+    region edge are static — the label always takes the full correction
+    (one-way invariant); label-vs-label splits evenly like movable parts.
+    A label's own parent body is excluded (silk over its own courtyard
+    is DRC-legal); its copper still repels via ``copper_polys``. Every
+    move is clipped to the orbit disc around the filed anchor. Iterated
+    Jacobi rounds toward clean (capped): single nodes cannot spin, so
+    the ping-pong that caps the parts pass at one round does not apply.
+    Returns True when any label moved.
+    """
+    from shapely.ops import nearest_points as _nearest_points
+
+    order = sorted(range(len(lab_rows)), key=lambda k: lab_specs[k][0])
+    if not order:
+        return False
+    try:
+        radius = max(float(radius_mm), 0.0)
+    except (TypeError, ValueError):
+        radius = 0.0
+    body_items = list(
+        _body_poly_map(positions, fp_uuids, fp_local_to_rows, fp_by_uuid).items()
+    )
+
+    def _rects():
+        rects = {}
+        for k in order:
+            uuid, text, size, angle, _anchor, _parent = lab_specs[k]
+            halo = label_halo_mm(size)
+            rects[uuid] = _label_rect_poly(
+                text, positions[lab_rows[k]], angle, size, halo)
+        return rects
+
+    def _push_from(poly, obs, share):
+        """Relaxed MTV eject of poly from blocker obs (or None)."""
+        try:
+            if poly is None or poly.is_empty or obs is None or obs.is_empty:
+                return None
+            if not poly.intersects(obs):
+                return None
+            inter = poly.intersection(obs)
+            if inter.is_empty or float(inter.area) <= _DEPEN_CLEAN_AREA_MM2:
+                return None
+            qa, qb = _nearest_points(poly, obs)
+            dx, dy = float(qa.x - qb.x), float(qa.y - qb.y)
+        except Exception:
+            return None
+        dist = math.hypot(dx, dy)
+        if dist <= 1e-9:
+            try:
+                dx = poly.centroid.x - obs.centroid.x
+                dy = poly.centroid.y - obs.centroid.y
+                dist = math.hypot(dx, dy)
+            except Exception:
+                dist = 0.0
+            if dist <= 1e-9:
+                dx, dy, dist = 1.0, 0.0, 1.0
+        depth = _overlap_depth_mm(poly, obs, dx / dist, dy / dist)
+        if depth <= 1e-9:
+            return None
+        step = depth * _DEPEN_RELAX * share
+        return (dx / dist * step, dy / dist * step)
+
+    def _edge_push(poly):
+        """Containment push for a rect outside the region polygon."""
+        if edge_poly is None or edge_poly.is_empty:
+            return None
+        try:
+            if edge_poly.covers(poly):
+                return None
+            boundary = edge_poly.boundary
+            worst = None
+            best_d = -1.0
+            for v in poly.exterior.coords:
+                from shapely.geometry import Point as _Point
+                pt = _Point(v)
+                if edge_poly.covers(pt):
+                    continue
+                d = pt.distance(boundary)
+                if d > best_d:
+                    best_d = float(d)
+                    worst = (float(v[0]), float(v[1]))
+            if worst is None:
+                return None
+            q = _nearest_points(
+                _Point(worst), boundary)[1]
+            dx, dy = worst[0] - float(q.x), worst[1] - float(q.y)
+            d = math.hypot(dx, dy)
+            if d <= 1e-12:
+                return None
+            s = (best_d + 1e-6) / d
+            return (-dx * s, -dy * s)
+        except Exception:
+            return None
+
+    moved_any = False
+    for _ in range(max(1, int(max_rounds))):
+        rects = _rects()
+        moves: Dict[str, Tuple[float, float]] = {}
+        for k in order:
+            uuid = lab_specs[k][0]
+            parent = lab_specs[k][5]
+            poly = rects.get(uuid)
+            if poly is None or poly.is_empty:
+                continue
+            mx, my = 0.0, 0.0
+            for bu, obs in body_items:
+                if bu == parent:
+                    continue
+                push = _push_from(poly, obs, 1.0)
+                if push is not None:
+                    mx, my = mx + push[0], my + push[1]
+            for obs in copper_polys:
+                push = _push_from(poly, obs, 1.0)
+                if push is not None:
+                    mx, my = mx + push[0], my + push[1]
+            push = _edge_push(poly)
+            if push is not None:
+                mx, my = mx + push[0], my + push[1]
+            moves[uuid] = (mx, my)
+        # Label-vs-label, split evenly, from the same frozen geometry.
+        for ia in range(len(order)):
+            for ib in range(ia + 1, len(order)):
+                ua, ub = lab_specs[order[ia]][0], lab_specs[order[ib]][0]
+                pa, pb = rects.get(ua), rects.get(ub)
+                if pa is None or pb is None or pa.is_empty or pb.is_empty:
+                    continue
+                push = _push_from(pa, pb, 0.5)
+                if push is None:
+                    continue
+                moves[ua] = (moves[ua][0] + push[0], moves[ua][1] + push[1])
+                moves[ub] = (moves[ub][0] - push[0], moves[ub][1] - push[1])
+        changed = False
+        for k in order:
+            uuid = lab_specs[k][0]
+            mx, my = moves[uuid]
+            if abs(mx) <= 1e-12 and abs(my) <= 1e-12:
+                continue
+            node = positions[lab_rows[k]]
+            try:
+                nx, ny = clamp_orbit_radius(
+                    (float(node[0]) + mx, float(node[1]) + my),
+                    lab_specs[k][4], radius,
+                )
+            except Exception:
+                continue
+            if abs(nx - float(node[0])) > 1e-9 or abs(ny - float(node[1])) > 1e-9:
+                positions[lab_rows[k], 0] = nx
+                positions[lab_rows[k], 1] = ny
+                changed = True
+        if changed:
+            moved_any = True
+        else:
+            break
     return moved_any

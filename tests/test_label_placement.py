@@ -39,6 +39,44 @@ from .helpers import make_board, make_fp
 
 FIXTURES = Path(__file__).parent / "fixtures"
 MINIMAL_PCB = FIXTURES / "minimal.kicad_pcb"
+TUBE111_PCB = FIXTURES / "tube111.kicad_pcb"
+
+
+@pytest.mark.unit
+def test_parse_prefers_silk_property_over_fab_mirror():
+    """The tracked label is the DRC-visible reference, not the Fab mirror.
+
+    tube111 R10 carries both: ``(property "Reference" ...)`` on B.SilkS
+    at (3.6, -0.05) and an ``fp_text user ${REFERENCE}`` mirror on B.Fab
+    at (0, 0). The orbit must steer the silk property — steering the Fab
+    mirror leaves every silkscreen DRC hit in place.
+    """
+    model = board_model(parse_file(TUBE111_PCB))
+    fp = next(f for f in model.footprints if f.ref == "R10")
+    assert fp.label is not None
+    assert fp.label.layer == "B.SilkS"
+    assert fp.label.local_x_mm == pytest.approx(3.6)
+    assert fp.label.local_y_mm == pytest.approx(-0.05)
+
+
+@pytest.mark.unit
+def test_nudge_shifts_property_reference_with_label():
+    """Label writeback moves the silk property and keeps the mirror glued.
+
+    Shifting R10's orbit anchor by (+1, 0) must move the
+    ``(property "Reference" ...)`` ``(at ...)`` by the same delta as the
+    Fab ``fp_text`` mirror, so the re-parsed label lands on the property.
+    """
+    tree = parse_file(TUBE111_PCB)
+    model = board_model(tree)
+    fp = next(f for f in model.footprints if f.ref == "R10")
+    moved = nudge_footprint_by_uuid(tree, fp.uuid, 0.0, 0.0, 0.0, label_dx_mm=1.0)
+    reparsed = board_model(moved)
+    fp2 = next(f for f in reparsed.footprints if f.uuid == fp.uuid)
+    assert fp2.label is not None
+    assert fp2.label.layer == "B.SilkS"
+    assert fp2.label.local_x_mm == pytest.approx(fp.label.local_x_mm + 1.0)
+    assert fp2.label.local_y_mm == pytest.approx(fp.label.local_y_mm)
 
 
 @pytest.mark.unit
@@ -48,23 +86,26 @@ def test_snap_prefers_upright_modes():
     assert snap_label_angle(270.0) == 270.0
     assert snap_label_angle(45.0) == 0.0  # tie breaks toward upright
     assert snap_label_angle(135.0) == 90.0  # tie avoids inverted
-    assert snap_label_angle(180.0) == 90.0  # inverted refused: nearest readable
+    assert snap_label_angle(180.0) == 180.0  # literal: mirrored B-side reads fine
+    assert snap_label_angle(225.0) == 270.0  # tie still avoids inverted
 
 
 @pytest.mark.unit
 def test_snapped_local_angle_round_trip():
-    # Footprint rotates 0 -> 90, text filed at local 0 (board 0):
-    # board becomes 90, snap keeps 90, local stays 0.
-    assert snapped_local_angle(0.0, 0.0, 90.0) == 90.0 - 90.0
-    # Footprint rotates 0 -> 180: board 180 refused, snaps to 90,
-    # so local counter-rotates to 270.
-    assert snapped_local_angle(0.0, 0.0, 180.0) == 270.0
+    # Rendering is literal (stored angle = board angle), so a parent
+    # rotation never turns the glyphs: the snap re-snaps the stored
+    # angle itself, ignoring both parent angles.
+    assert snapped_local_angle(0.0, 0.0, 90.0) == 0.0
+    assert snapped_local_angle(45.0, 0.0, 180.0) == 0.0
+    assert snapped_local_angle(100.0, 30.0, -60.0) == 90.0
 
 
 @pytest.mark.unit
-def test_label_board_angle_adds_parent():
-    assert label_board_angle(0.0, 180.0) == 180.0
-    assert label_board_angle(90.0, -90.0) == 0.0
+def test_label_board_angle_is_literal():
+    # Gerber-verified: parent rotation moves the anchor, never the angle.
+    assert label_board_angle(0.0, 180.0) == 0.0
+    assert label_board_angle(90.0, -90.0) == 90.0
+    assert label_board_angle(232.36, 217.64) == 232.36
 
 
 @pytest.mark.unit

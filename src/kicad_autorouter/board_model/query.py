@@ -397,9 +397,10 @@ def label_board_pose(fp: Footprint) -> Optional[Tuple[float, float, float]]:
     """Board-frame (cx_mm, cy_mm, angle_deg) of a footprint's label.
 
     The anchor rides the footprint-local frame via :func:`_to_board`
-    (pads/courtyard convention); the angle is local-plus-parent (pad-angle
-    convention — verified: FP@180 stores text 0 with pads at absolute 180).
-    None when the footprint carries no label.
+    (pads/courtyard convention); the angle is the stored local angle
+    verbatim — KiCad renders footprint text angles literally (gerber
+    verified), so the parent rotation moves the anchor but never the
+    glyphs. None when the footprint carries no label.
     """
     from .labels import label_board_angle
 
@@ -425,14 +426,13 @@ def apply_deltas(
     Only unlocked footprints are moved; locked footprints stay in place
     regardless of delta. Footprints without a delta entry are unchanged.
 
-    Labels ride in the footprint-local frame (``fp_text`` angles are
-    footprint-relative — a file with the footprint at 180 stores text
-    angle 0 while its pads store absolute 180), so translation and
+    Labels ride in the footprint-local frame for position, while the
+    stored angle renders literally (gerber-verified), so translation and
     rotation need no label rewrite; when the footprint rotates
-    (``da != 0``), a readable snap counter-rotates the label's local
-    angle to the nearest upright board orientation (0/90/270, never
-    upside-down). Pure translations never touch text (a zero delta stays
-    the exact no-op), matching ``io``.
+    (``da != 0``), the stored angle is re-snapped to the nearest upright
+    board orientation (0/90/180/270). Pure translations
+    never touch text (a zero delta stays the exact no-op), matching
+    ``io``.
 
     Orbit labels pass ``label_deltas`` (uuid to footprint-local dx/dy
     from the filed anchor): the local anchor shifts before the snap, so
@@ -486,10 +486,11 @@ def apply_deltas(
             for a, b in fp.courtyard
         )
 
-        # Labels ride the footprint-local frame: the local anchor is
-        # invariant under moves (only the parent pose changes), while the
-        # local angle gains the readable snap expressed in the new frame.
-        # Orbit mode shifts the anchor itself via label_deltas first.
+        # Labels ride the footprint-local frame for position (only the
+        # parent pose changes the anchor), while the stored angle renders
+        # literally — a parent rotation never turns the glyphs, so the
+        # readable snap re-snaps the stored angle itself. Orbit mode
+        # shifts the anchor itself via label_deltas first.
         new_label = None
         if fp.label is not None:
             lx, ly = fp.label.local_x_mm, fp.label.local_y_mm

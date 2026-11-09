@@ -18,7 +18,7 @@ from .contact import (
     _wall_mag,
     courtyard_is_degenerate,
 )
-from .runner import PlacementProposal, _run_region_simulation, _thin_frames, run_placement
+from .runner import PlacementProposal, _run_region_simulation, _thin_frames, run_label_settle, run_placement
 from .model import (
     _build_net_edges_pad_level,
     _collect_pad_nodes,
@@ -40,6 +40,7 @@ from .legality import LegalityReport, check_legality
 __all__ = [
     "PlacementParams",
     "PlacementProposal",
+    "run_label_settle",
     "run_placement",
     "LegalityReport",
     "check_legality",

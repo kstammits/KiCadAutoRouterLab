@@ -286,24 +286,36 @@ def _parse_label(node: SExpr, fp_layer: str, fp_ref: str) -> Optional[SilkLabel]
     Like an SMD pad, a label belongs to one side: ``F.Cu`` footprints read
     ``F.SilkS`` (falling back to ``F.Fab`` reference text — tube111 keeps
     ``${REFERENCE}`` there with graphics-only silk), ``B.Cu`` footprints
-    read the ``B.*`` pair. Ranking is silk-over-fab, reference-text first;
-    ties keep file order. ``${REFERENCE}`` resolves to the footprint ref.
-    Returns None when the footprint carries no same-side text.
+    read the ``B.*`` pair. The DRC-visible reference field is the
+    ``(property "Reference" ...)`` node, so property candidates outrank
+    ``fp_text`` mirrors at the same layer; ranking is silk-over-fab,
+    property-over-fp_text, reference-text first; ties keep file order.
+    ``${REFERENCE}`` resolves to the footprint ref. Returns None when the
+    footprint carries no same-side text.
     """
     side = "F" if fp_layer.startswith("F") else ("B" if fp_layer.startswith("B") else "")
     silk_layer = f"{side}.SilkS" if side else ""
     fab_layer = f"{side}.Fab" if side else ""
 
-    best = None
-    best_rank = None
+    candidates = []
+    for prop in node.children("property"):
+        if len(prop.args) < 2 or prop.args[0] != "Reference":
+            continue
+        raw_text = prop.args[1] if isinstance(prop.args[1], str) else str(prop.args[1])
+        candidates.append((prop, raw_text, True, 0))
     for ft in node.children("fp_text"):
         if len(ft.args) < 2:
             continue
         raw_text = ft.args[1] if isinstance(ft.args[1], str) else str(ft.args[1])
-        layer = _layer_of(ft)
+        is_ref = raw_text in ("${REFERENCE}", "${REF}") or (fp_ref and raw_text == fp_ref)
+        candidates.append((ft, raw_text, is_ref, 1))
+    best = None
+    best_rank = None
+    for text_node, raw_text, is_ref, source_rank in candidates:
+        layer = _layer_of(text_node)
         if side and layer not in (silk_layer, fab_layer):
             continue
-        at = ft.find("at")
+        at = text_node.find("at")
         if at is None or len(at.args) < 2:
             continue
         try:
@@ -312,14 +324,13 @@ def _parse_label(node: SExpr, fp_layer: str, fp_ref: str) -> Optional[SilkLabel]
             la = float(at.args[2]) if len(at.args) > 2 else 0.0
         except (TypeError, ValueError):
             continue
-        is_ref = raw_text in ("${REFERENCE}", "${REF}") or (fp_ref and raw_text == fp_ref)
-        rank = (0 if layer == silk_layer else 1, 0 if is_ref else 1)
+        rank = (0 if layer == silk_layer else 1, source_rank, 0 if is_ref else 1)
         if best_rank is not None and rank >= best_rank:
             continue
         text = fp_ref if raw_text in ("${REFERENCE}", "${REF}") else raw_text
         size = (1.0, 1.0)
         thickness = 0.15
-        effects = ft.find("effects")
+        effects = text_node.find("effects")
         font = effects.find("font") if effects is not None else None
         if font is not None:
             size_node = font.find("size")
@@ -334,8 +345,13 @@ def _parse_label(node: SExpr, fp_layer: str, fp_ref: str) -> Optional[SilkLabel]
                     thickness = float(thick_node.args[0])
                 except (TypeError, ValueError):
                     pass
-        uuid_node = ft.find("uuid")
-        ft_uuid = str(uuid_node.args[0]) if uuid_node is not None and uuid_node.args else ""
+        uuid_node = text_node.find("uuid")
+        text_uuid = str(uuid_node.args[0]) if uuid_node is not None and uuid_node.args else ""
+        mirrored = False
+        effects = text_node.find("effects")
+        justify = effects.find("justify") if effects is not None else None
+        if justify is not None and any(str(a) == "mirror" for a in justify.args):
+            mirrored = True
         best_rank = rank
         best = SilkLabel(
             text=text,
@@ -345,7 +361,8 @@ def _parse_label(node: SExpr, fp_layer: str, fp_ref: str) -> Optional[SilkLabel]
             layer=layer,
             size_mm=size,
             thickness_mm=thickness,
-            uuid=ft_uuid,
+            uuid=text_uuid,
+            mirrored=mirrored,
         )
     return best
 

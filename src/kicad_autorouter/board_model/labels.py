@@ -11,16 +11,40 @@ from __future__ import annotations
 import math
 from typing import List, Optional, Tuple
 
-# Orbit tether stiffness (Hz, fixed): stiffness derives from the label's
-# own mass (k = m*omega^2) so light labels get soft tethers. Explicit-Euler
-# stability needs k/m << (2/dt)^2; 2 Hz at dt=1ms sits orders of
-# magnitude inside that bound. Not a param — single spring strategy.
-LABEL_TETHER_HZ = 2.0
+# Orbit tether stiffness (Hz, fixed): stiffness k = m*(2*pi*hz)^2 derives
+# from the label's own mass so the float period is mass-independent and
+# light labels stay stable at the 1 ms solver step. 40 Hz balances the
+# mass-scaled wall law at ~2-3 mm displacement (walls otherwise win every
+# tie and labels rim-seek to the clamp instead of holding near their
+# part); k/m = (2*pi*40)^2 sits ~60x inside the explicit-Euler stability
+# bound at dt=1ms. Not a param — single spring strategy.
+LABEL_TETHER_HZ = 40.0
 
 # Ink density for the derived orbiter mass (kg/m^2 of text bbox): ink is
 # nearly massless, so a few mm^2 of text lands at/near the mass floor —
 # physically honest and floaty by construction (see tether stiffness).
 LABEL_INK_DENSITY_KG_M2 = 0.1
+
+# Label halo as a fraction of font height: the orbit contact rect inflates
+# the text bbox by font_height * this on all sides, so tiny refs get tiny
+# halos (stay placeable on dense boards) and big refs get room. The label
+# is a light bbox that springs out of the way of real part bodies — one
+# fixed fraction, not a param; the DRC recount calibrates the value.
+LABEL_HALO_FONT_FRACTION = 1.0
+
+
+def label_halo_mm(size_mm: Tuple[float, float]) -> float:
+    """Per-label contact halo (mm): font height times the fixed fraction.
+
+    ``size_mm`` is the (width, height) font size; height is the second
+    entry. Zero/degenerate sizes yield a zero halo (rect builders already
+    skip those).
+    """
+    try:
+        h = float(size_mm[1])
+    except (TypeError, ValueError, IndexError):
+        return 0.0
+    return max(h, 0.0) * LABEL_HALO_FONT_FRACTION
 
 
 def _norm360(angle_deg: float) -> float:
@@ -34,24 +58,34 @@ def _norm360(angle_deg: float) -> float:
 def label_board_angle(local_angle_deg: float, fp_angle_deg: float) -> float:
     """Board-frame orientation of a label riding on a footprint.
 
-    Labels live in the footprint-local frame, so the board orientation is
-    the footprint rotation plus the label's own local angle (same additive
-    convention as pad angles, which store the absolute board orientation).
+    KiCad renders a footprint text's stored angle literally: the parent
+    rotation moves the text anchor but never the glyph orientation
+    (verified by gerber export — a B-side label stored at 232.36 on a
+    217.64 parent plots diagonally, and an F-side label stored at 90 on
+    a 45 parent plots vertically). So the board angle is the stored
+    local angle, normalized; ``fp_angle_deg`` is accepted for
+    call-compatibility and ignored.
     """
-    return _norm360(local_angle_deg + fp_angle_deg)
+    return _norm360(local_angle_deg)
 
 
 def snap_label_angle(board_angle_deg: float) -> float:
     """Snap a board-frame label angle to the nearest readable orientation.
 
-    Candidates are 0/90/270 (180 upside-down is never chosen). Ties break
-    toward 0/90 (upright reading). Keeps rotated parts' labels readable
-    instead of upside-down. Always on — no inverted toggle.
+    Candidates are 0/90/180/270 — 180 is kept literally (bottom-side
+    text with ``justify mirror`` reads correctly at 180, and the
+    collision rect must match what DRC sees). Exact ties break toward
+    0/90/270 (upright reading); a stored 180 itself always survives.
+    Always on — no inverted toggle.
     """
     a = _norm360(board_angle_deg)
     ranked = sorted(
-        (0.0, 90.0, 270.0),
-        key=lambda m: min(abs(a - m), 360.0 - abs(a - m)),
+        (0.0, 90.0, 180.0, 270.0),
+        key=lambda m: (
+            min(abs(a - m), 360.0 - abs(a - m)),
+            0 if m in (0.0, 90.0, 270.0) else 1,
+            m,
+        ),
     )
     return ranked[0]
 
@@ -61,18 +95,17 @@ def snapped_local_angle(
     fp_old_angle: float,
     fp_new_angle: float,
 ) -> float:
-    """Label local angle after a footprint rotation by ``fp_new - fp_old``.
+    """Readable stored angle after a footprint rotation.
 
-    Rigid follow first (label keeps its board orientation relative to the
-    parent: local angle gains the delta), then the readable snap expressed
-    back in the new local frame so ``io`` writeback and ``apply_deltas``
-    agree exactly. Always snaps upright — no toggles.
+    Rendering is literal (the stored angle is the board angle), so a
+    parent rotation never turns the glyphs — it only moves the anchor.
+    Snapping therefore re-snaps the stored angle itself to the nearest
+    readable board orientation (0/90/180/270; 180 survives literally for
+    bottom-side mirrored text); the parent angles are accepted for
+    call-compatibility and ignored. ``io`` writeback and
+    ``apply_deltas`` agree exactly.
     """
-    # Board orientation after rotation: old board angle + delta.
-    board = _norm360(label_board_angle(label_local_angle, fp_old_angle)
-                      + (fp_new_angle - fp_old_angle))
-    snapped_board = snap_label_angle(board)
-    return _norm360(snapped_board - fp_new_angle)
+    return snap_label_angle(_norm360(label_local_angle))
 
 
 def label_text_size_mm(text: str, size_mm: Tuple[float, float]) -> Tuple[float, float]:

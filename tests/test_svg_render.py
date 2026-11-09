@@ -174,6 +174,26 @@ def test_preview_matches_accept_with_rotation():
     assert "translate(" not in preview
 
 
+def test_mirrored_labels_render_upright():
+    """B-side mirrored labels read upright (gerber-verified).
+
+    A B.SilkS reference stored at 180 with ``(justify mirror)`` plots
+    pixel-identical to an unmirrored 0 (tube111 R2 gerber), so the viewer
+    folds the flip bit instead of emitting rotate(180). Vertical mirrored
+    labels keep their rotation; F-side text is untouched.
+    """
+    m = _tube111_model()
+    s = render_board_svg(m)
+    assert m.by_ref["R2"].label.mirrored is True
+    assert m.by_ref["RV1"].label.mirrored is False
+    r2 = re.search(
+        r'<text x="([\d.]+)" y="([\d.]+)"[^>]*>R2</text>', s)
+    assert r2 and "rotate(" not in r2.group(0)
+    r16 = re.search(
+        r'<text[^>]*>R16</text>', s)
+    assert r16 and "rotate(90.000" in r16.group(0)
+
+
 def test_tube111_back_footprints_inside_region_in_svg():
     """D6/D7 courtyards must render inside board region 2 (not mirrored out).
 
@@ -259,7 +279,10 @@ def test_preview_rotates_square_pads_with_part():
     # File 270 + 25 = 295 -> SVG (-295) % 360 = 65 must appear identically
     # in both (not stale idle-orientation 90).
     assert "rotate(65.000" in grp_preview
-    assert "rotate(90.000" not in grp_preview
+    # The reference text keeps its filed literal angle (90): KiCad renders
+    # footprint text angles literally, so the parent rotation turns pads
+    # and copper but never the glyphs.
+    assert "rotate(90.000" in grp_preview
     assert grp_preview == grp_accepted
     # Rigid body: pad row and copper tilt together (both -25 for da=+25).
     moved = apply_deltas(m, prop.deltas).by_ref["Q1"]
