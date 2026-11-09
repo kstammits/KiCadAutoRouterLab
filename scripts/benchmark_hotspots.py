@@ -20,6 +20,11 @@ Usage (under the project .venv)::
 Results print as tables and are saved as JSON (default
 docs/benchmarks/hotspots_<date>.json), same shape as the other
 benchmark families: {"params", "cases", "profile_top"}.
+
+A throwaway 1-net route per board runs before timing (the verify
+stage builds a per-mask STRtree index on first touch, which would
+otherwise land in whichever row runs first and dwarf the
+steady-state stage costs).
 """
 
 from __future__ import annotations
@@ -127,6 +132,7 @@ def time_route_tail(
         "route_s": round(t.get("route_s", 0.0), 3),
         "astar_s": round(t.get("astar_s", 0.0), 3),
         "smooth_s": round(t.get("smooth_s", 0.0), 3),
+        "pour_s": round(t.get("pour_s", 0.0), 3),
         "occupancy_s": round(t.get("occupancy_s", 0.0), 3),
         "grid_build_s": round(t.get("grid_build_s", 0.0), 3),
         "total_s": round(t.get("total_s", wall), 3),
@@ -236,6 +242,20 @@ def main() -> None:
 
     base = RoutingParams(max_attempts_per_net=1, stitch_gnd_vias=False,
                          run_drc=False)
+
+    # Warm-up (discarded, one throwaway route per board): the verify
+    # stage builds a per-mask STRtree index on first touch (~seconds)
+    # and reuses it afterwards, so without a per-board warm-up the first
+    # timed row on each board would carry the build cost and later rows
+    # would not — incomparable. Warms steady-state stage costs.
+    for _board in ("tube111", "DCCF"):
+        try:
+            _model = load_board(_board)
+            _nets = pick_signal_nets(_model, 1)
+            if _nets:
+                route_nets(_model, _nets[:1], set(), params=base)
+        except Exception:
+            pass
     if args.quick:
         tail_plan = [("DCCF", 2), ("tube111", 1)]
         cache_plan = [("DCCF", 2)]
@@ -279,13 +299,13 @@ def main() -> None:
 
     print(f"{'case':<20}{'mode':>8}{'nets':>6}{'routed':>7}{'failed':>7}"
           f"{'expans':>9}{'wall_s':>9}{'astar':>8}{'smooth':>8}"
-          f"{'polish':>8}{'refine?':>8}")
+          f"{'pour':>8}{'polish':>8}")
     for r in cases:
         print(f"{r['case']:<20}{r['mode']:>8}{r['nets']:>6}"
               f"{r['nets_routed']:>7}{r['nets_failed']:>7}"
               f"{r['expansions']:>9}{r['wall_s']:>9.3f}"
               f"{r['route_s']:>8.3f}{r['smooth_s']:>8.3f}"
-              f"{r['polish_s']:>8.3f}{'':>8}")
+              f"{r['pour_s']:>8.3f}{r['polish_s']:>8.3f}")
     print("\ncache (fresh vs reused ObstacleCache):")
     for r in cache_rows:
         print(f"  {r['case']:<16}nets={r['nets']} "

@@ -1465,40 +1465,38 @@ def _fill_polygon(grid: np.ndarray, points: List[Tuple[int, int]], value: int):
 
     ``points`` are (row, col) cell coordinates (note: ``board_to_grid``
     returns (col, row), so callers must swap).
+
+    Edge intersections use the exact scalar formula below, evaluated per
+    row over all edges with numpy instead of a Python per-edge loop.
     """
     if len(points) < 3:
         return
     H, W = grid.shape
-    
+
+    pts = np.asarray(points, dtype=np.float64)
+    er1, ec1 = pts[:, 0], pts[:, 1]
+    er2 = np.roll(er1, -1)
+    ec2 = np.roll(ec1, -1)
+
     # Find y bounds
-    rows = [p[0] for p in points]
-    r_min = max(0, min(rows))
-    r_max = min(H - 1, max(rows))
-    
-    for r in range(r_min, r_max + 1):
-        # Find intersections with scanline
-        intersections = []
-        for i in range(len(points)):
-            p1 = points[i]
-            p2 = points[(i + 1) % len(points)]
-            r1, c1 = p1
-            r2, c2 = p2
-            
-            if r1 == r2:
-                continue  # horizontal edge - skip
-            
-            # Check if scanline intersects this edge
-            if (r1 <= r < r2) or (r2 <= r < r1):
-                # Linear interpolation
-                t = (r - r1) / (r2 - r1)
-                c = c1 + t * (c2 - c1)
-                intersections.append(c)
-        
-        intersections.sort()
+    r_min = max(0, int(np.min(er1)))
+    r_max = min(H - 1, int(np.max(er1)))
+    if r_max < r_min:
+        return
+    rows = np.arange(r_min, r_max + 1)[:, None]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        # Horizontal edges (er1 == er2) never satisfy either half-open
+        # test, matching the scalar skip; the 0/0 quotient there is
+        # masked out before use.
+        hits = ((er1 <= rows) & (rows < er2)) | ((er2 <= rows) & (rows < er1))
+        t = (rows - er1) / (er2 - er1)
+        cols = ec1 + t * (ec2 - ec1)
+
+    for i, r in enumerate(range(r_min, r_max + 1)):
+        intersections = np.sort(cols[i][hits[i]])
         # Fill between pairs
-        for i in range(0, len(intersections), 2):
-            if i + 1 < len(intersections):
-                c_start = max(0, int(np.ceil(intersections[i])))
-                c_end = min(W - 1, int(np.floor(intersections[i + 1])))
-                if c_start <= c_end:
-                    grid[r, c_start:c_end + 1] = np.maximum(grid[r, c_start:c_end + 1], value)
+        for j in range(0, len(intersections) - 1, 2):
+            c_start = max(0, int(np.ceil(intersections[j])))
+            c_end = min(W - 1, int(np.floor(intersections[j + 1])))
+            if c_start <= c_end:
+                grid[r, c_start:c_end + 1] = np.maximum(grid[r, c_start:c_end + 1], value)

@@ -907,6 +907,9 @@ class RawRoutes:
     timings: Dict[str, float] = field(default_factory=dict)
     t_total: float = 0.0
     gnd_stripped: int = 0
+    pour_corridors: Optional[Dict] = None  # corridor map built in 5b (shared
+    # across refine trials on the same ripped model; None when skipped)
+    pour_min_thick: float = 0.0
     tracks: List[OutputTrack] = field(default_factory=list)
     vias: List[OutputVia] = field(default_factory=list)
     route_arcs: List[OutputArc] = field(default_factory=list)
@@ -926,8 +929,12 @@ def route_raw(
     params: Optional[RoutingParams] = None,
     original_pcb_tree: Optional = None,
     extra_power_nets: Collection[str] = (),
-    progress_cb=None,  # fn(net_name, pairs_done, pairs_total, expansions) — best-effort
+    progress_cb=None,  # fn(net_name, done, total, expansions) — best-effort
     should_cancel=None,  # fn() -> bool — checked between nets/attempts/pairs
+    precomputed_pour=None,  # (corridors, min_thick) from a prior identical
+    # call (refine trials share one ripped model + grid); shapes are
+    # validated, None computes as before. Refine-internal: callers must
+    # guarantee the same ripped model and grid resolution.
 ) -> Tuple[RawRoutes, np.ndarray, RoutingGrid]:
     """Route nets to raw copper (no stitching, tree writeback, refill, DRC).
 
@@ -1116,10 +1123,34 @@ def route_raw(
 
     # 5b. Pour-corridor map for severance-aware routing (computed once on
     # the ripped model; pour nets themselves route without the penalty).
+    # Skipped entirely when no requested net can consume it (every
+    # requested net owns the pour) — the severance term is provably
+    # unread then (see _route_one_net).
     pour_nets = set(pour_net_names(model))
     corridors, corridor_min_thick = (None, 0.0)
-    if params.pour_severance_weight > 0 and pour_nets:
-        corridors, corridor_min_thick = pour_corridors(model, routing_grid)
+    timings["pour_s"] = 0.0
+    wants_severance = (
+        params.pour_severance_weight > 0
+        and bool(pour_nets)
+        and any(n not in pour_nets for n in net_names)
+    )
+    if wants_severance:
+        reused = (
+            precomputed_pour is not None
+            and isinstance(precomputed_pour[0], dict)
+            and all(
+                layer in precomputed_pour[0]
+                and precomputed_pour[0][layer].shape
+                == (routing_grid.height_cells, routing_grid.width_cells)
+                for layer in routing_grid.layers
+            )
+        )
+        if reused:
+            corridors, corridor_min_thick = precomputed_pour
+        else:
+            t_pour = time.perf_counter()
+            corridors, corridor_min_thick = pour_corridors(model, routing_grid)
+            timings["pour_s"] = time.perf_counter() - t_pour
 
     # 6. Separate requested nets into categories
     requested_power = [n for n in net_names if n in power_nets]
@@ -1561,6 +1592,8 @@ def route_raw(
         timings=timings,
         t_total=t_total,
         gnd_stripped=gnd_stripped,
+        pour_corridors=corridors,
+        pour_min_thick=corridor_min_thick,
         tracks=tracks,
         vias=vias,
         route_arcs=route_arcs,

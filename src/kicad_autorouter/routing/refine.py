@@ -111,6 +111,9 @@ def refine_routing(
     cancelled = False
     seen_orders: Set[Tuple[str, ...]] = set()
     prev_failed: Set[str] = set()  # relay memory: trial k+1 routes trial k's failed nets first
+    shared_pour = None  # corridor map: identical across trials (same set
+    # of ripped nets, same grid), so trial 0 builds it and later trials
+    # reuse it instead of re-rastering every pour on every seed.
     for k in range(seeds):
         if should_cancel is not None and should_cancel():
             cancelled = True
@@ -138,7 +141,10 @@ def refine_routing(
                 extra_power_nets=extra_power_nets,
                 progress_cb=progress_cb,
                 should_cancel=should_cancel,
+                precomputed_pour=shared_pour,
             )
+            if shared_pour is None and raw.pour_corridors is not None:
+                shared_pour = (raw.pour_corridors, raw.pour_min_thick)
         except RoutingCancelled:
             cancelled = True
             break

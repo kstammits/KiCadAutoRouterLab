@@ -90,9 +90,9 @@ def _paint_pad(mask: np.ndarray, grid: RoutingGrid, pad: Pad, inflate_mm: float)
         y = pad.position.y_mm + sy * ca + sx * sa
         c, r = board_to_grid(grid, x, y)
         corners.append((r, c))
-    tmp = np.zeros_like(mask, dtype=np.uint8)
-    _fill_polygon(tmp, corners, 1)
-    mask |= tmp.astype(bool)
+    # Fill straight into the mask (maximum == OR on boolean copper);
+    # avoids a full-board temp alloc per pad.
+    _fill_polygon(mask, corners, True)
     if shape in ("oval",):
         # capsule ends (both discs in one compiled stamp call)
         dx, dy = ca * (w - h) / 2.0, sa * (w - h) / 2.0
@@ -155,62 +155,116 @@ def pour_copper_mask(
     except ValueError:
         return np.zeros((H, W), dtype=bool)
 
+    zones = [
+        zone for zone in model.zones
+        if (zone.net_name or "") == net_name and layer in zone.layers
+        and zone.polygon and len(zone.polygon) >= 3
+    ]
+    if not zones:
+        return np.zeros((H, W), dtype=bool)
+
+    # Cell-space union bbox of the zone outlines. Cuts only remove copper
+    # that a zone fill put down, and fills land inside this bbox — so a
+    # foreign obstacle whose inflated paint bbox misses it is skipped
+    # unread. (Same-net add-back below is never skipped: routed copper may
+    # legitimately extend past the outline.)
+    zone_pts = []
+    ur0, uc0, ur1, uc1 = H, W, -1, -1
+    for zone in zones:
+        pts = [(r, c) for (c, r) in
+               (board_to_grid(grid, p.x_mm, p.y_mm) for p in zone.polygon)]
+        zone_pts.append(pts)
+        for r, c in pts:
+            if r < ur0:
+                ur0 = r
+            if c < uc0:
+                uc0 = c
+            if r > ur1:
+                ur1 = r
+            if c > uc1:
+                uc1 = c
+
+    def _misses(r0: float, c0: float, r1: float, c1: float) -> bool:
+        return r0 > ur1 or r1 < ur0 or c0 > uc1 or c1 < uc0
+
     copper = np.zeros((H, W), dtype=bool)
     min_thick: Optional[float] = None
-    for zone in model.zones:
-        if (zone.net_name or "") != net_name or layer not in zone.layers:
-            continue
-        if not zone.polygon or len(zone.polygon) < 3:
-            continue
+    # Scratch buffers reused across obstacles (no per-obstacle full-board
+    # allocs): ztmp stages one zone fill, scratch one cut paint.
+    ztmp = np.zeros((H, W), dtype=np.uint8)
+    scratch = np.zeros((H, W), dtype=bool)
+    for zone, pts in zip(zones, zone_pts):
         min_thick = zone.min_thickness_mm if min_thick is None else min(min_thick, zone.min_thickness_mm)
-        pts = [(r, c) for (c, r) in (board_to_grid(grid, p.x_mm, p.y_mm) for p in zone.polygon)]
-        tmp = np.zeros((H, W), dtype=np.uint8)
-        _fill_polygon(tmp, pts, 1)
-        zone_mask = tmp.astype(bool)
-        copper |= zone_mask
+        ztmp.fill(0)
+        _fill_polygon(ztmp, pts, 1)
+        copper |= ztmp.astype(bool)
         clr = mm_to_cells(zone.clearance_mm, res, 0)
 
         # Cut different-net copper, inflated by the zone clearance.
+        inflate_mm = zone.clearance_mm
         for fp in model.footprints:
             for pad in fp.pads:
                 if pad.net_name is None or pad.net_name == net_name:
                     continue
                 if layer_idx not in _pad_layers(fp, pad, grid):
                     continue
-                cut = np.zeros((H, W), dtype=bool)
-                _paint_pad(cut, grid, pad, zone.clearance_mm + max(pad.size_mm) * 0.0)
-                copper &= ~cut
+                c, r = board_to_grid(grid, pad.position.x_mm, pad.position.y_mm)
+                ext = (math.hypot(*pad.size_mm) / 2.0 + inflate_mm) / res + 1.0
+                if _misses(r - ext, c - ext, r + ext, c + ext):
+                    continue
+                scratch.fill(False)
+                _paint_pad(scratch, grid, pad, inflate_mm)
+                copper &= ~scratch
         for track in copper_tracks(model):
             if track.net_name is None or track.net_name == net_name:
                 continue
             if track.layer != layer:
                 continue
-            cut = np.zeros((H, W), dtype=bool)
-            _paint_track(cut, grid, track.start.x_mm, track.start.y_mm,
-                         track.end.x_mm, track.end.y_mm,
-                         track.width_mm / 2.0 + zone.clearance_mm)
-            copper &= ~cut
+            half = track.width_mm / 2.0 + inflate_mm
+            c1, r1 = board_to_grid(grid, track.start.x_mm, track.start.y_mm)
+            c2, r2 = board_to_grid(grid, track.end.x_mm, track.end.y_mm)
+            ext = half / res + 1.0
+            if _misses(min(r1, r2) - ext, min(c1, c2) - ext,
+                       max(r1, r2) + ext, max(c1, c2) + ext):
+                continue
+            scratch.fill(False)
+            _paint_track(scratch, grid, track.start.x_mm, track.start.y_mm,
+                         track.end.x_mm, track.end.y_mm, half)
+            copper &= ~scratch
         for via in model.vias:
             if via.net_name is not None and via.net_name != net_name:
-                cut = np.zeros((H, W), dtype=bool)
-                _paint_disc(cut, grid, via.position.x_mm, via.position.y_mm,
-                            via.size_mm / 2.0 + zone.clearance_mm)
-                copper &= ~cut
+                rad_mm = via.size_mm / 2.0 + inflate_mm
+                c, r = board_to_grid(grid, via.position.x_mm, via.position.y_mm)
+                ext = rad_mm / res + 1.0
+                if _misses(r - ext, c - ext, r + ext, c + ext):
+                    continue
+                scratch.fill(False)
+                _paint_disc(scratch, grid, via.position.x_mm, via.position.y_mm,
+                            rad_mm)
+                copper &= ~scratch
         # Drill holes remove copper regardless of net.
         for fp in model.footprints:
             for pad in fp.pads:
                 if not pad.is_through_hole or pad.drill_mm <= 0:
                     continue
-                cut = np.zeros((H, W), dtype=bool)
-                _paint_disc(cut, grid, pad.position.x_mm, pad.position.y_mm,
+                c, r = board_to_grid(grid, pad.position.x_mm, pad.position.y_mm)
+                ext = (pad.drill_mm / 2.0) / res + 1.0
+                if _misses(r - ext, c - ext, r + ext, c + ext):
+                    continue
+                scratch.fill(False)
+                _paint_disc(scratch, grid, pad.position.x_mm, pad.position.y_mm,
                             pad.drill_mm / 2.0)
-                copper &= ~cut
+                copper &= ~scratch
         for via in model.vias:
             if via.drill_mm > 0:
-                cut = np.zeros((H, W), dtype=bool)
-                _paint_disc(cut, grid, via.position.x_mm, via.position.y_mm,
+                c, r = board_to_grid(grid, via.position.x_mm, via.position.y_mm)
+                ext = (via.drill_mm / 2.0) / res + 1.0
+                if _misses(r - ext, c - ext, r + ext, c + ext):
+                    continue
+                scratch.fill(False)
+                _paint_disc(scratch, grid, via.position.x_mm, via.position.y_mm,
                             via.drill_mm / 2.0)
-                copper &= ~cut
+                copper &= ~scratch
 
     # Add same-net copper back (uninflated: it IS the net) — but only on
     # layers carrying a zone of this net. A same-net THT barrel without a
