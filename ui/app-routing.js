@@ -48,6 +48,7 @@ const ROUTING_PARAM_DESCS = {
   max_expansions_per_net: "Total expansion budget across one net's pair-searches. 0 = no cap.",
   refine_seeds: "Refine candidates: shuffled re-routes tried per Refine run (plus keeping current copper).",
   refine_seed: "Refine base seed: shuffles derive from base..base+seeds-1 (reproducible; auto-advances per run).",
+  smooth_effort: "Smoother engagement: 0 emits raw search paths (fastest), 1 shortcuts without arcs, 2 is full arcs (default). Above 2 retries hotter (denser sampling, stronger keep, extra passes); 3 is the high-effort retry.",
 };
 // Removed sliders stay engine/API-valid (RoutingParams + validation
 // untouched; POST merges) — grid resolution, arc radii/sample, edge
@@ -66,6 +67,7 @@ const ROUTING_PARAM_DEFS = [
   { key: "clearance_mm", label: "Clearance (mm)", min: 0.1, max: 1.0, step: 0.05, default: 0.2 },
   { key: "fanout_margin_mm", label: "Push away from foreign pins (mm, steering only)", min: 0, max: 1.0, step: 0.05, default: 0 },
   { key: "via_cost_mm", label: "Via Cost (mm)", min: 1, max: 20, step: 0.5, default: 5 },
+  { key: "smooth_effort", label: "Smoothing Effort (0 raw … 3 retry)", min: 0, max: 3, step: 0.25, default: 2 },
   // 4-layer-only knob: hidden in two-layer mode (mode forces it there),
   // amber-badged elsewhere (see routingSliderHtml + .param-4l in style.css).
   { key: "pour_severance_weight", label: "Pour Severance Weight (0 disables)", min: 0, max: 200, step: 5, default: 30, fourLayerOnly: true },
@@ -795,6 +797,84 @@ async function refineSelectedNets() {
   }
 }
 
+// Polish: re-smooth the selected nets' stored routes at the Smoothing
+// Effort slider (no A*, no re-routing). The server keeps improved copper
+// only (gate-clean and shorter); the stash refreshes so Polish iterates.
+async function polishSelectedNets() {
+  if (selectedNets.size === 0) return;
+  const diag = routeDiag;
+  const cancelBtn = el("route-cancel-btn");
+  const progress = el("route-progress");
+  if (!diag || !progress) return;
+
+  const nets = Array.from(selectedNets);
+  await saveRoutingParams();
+  const params = readRoutingParams();
+  const t0 = performance.now();
+  const elapsed = () => `${Math.round((performance.now() - t0) / 1000)}s`;
+
+  setRouteBusy(true);
+  progress.hidden = false;
+  progress.value = 0;
+  if (cancelBtn) cancelBtn.hidden = false;
+  routeCancelRequested = false;
+
+  let jobId = null;
+  try {
+    const res = await fetch("/api/routing/polish", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ net_names: nets, params }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    if (!data.job_id) throw new Error("server did not return a job id");
+    jobId = data.job_id;
+    routeCurrentJobId = jobId;
+    for (;;) {
+      if (routeCancelRequested) {
+        await cancelRoutingJob(jobId);
+        break;
+      }
+      const job = await apiJson(jobUrl(jobId));
+      const p = job.progress || {};
+      const pairTxt = p.pairs_total > 0 ? `net ${Math.min(p.pairs_total, p.pairs_done + 1)}/${p.pairs_total}${p.net ? ` (${p.net})` : ""}` : "starting";
+      diag.textContent = `polish ${pairTxt} · ${elapsed()}`;
+      if (p.pairs_total > 0) progress.value = Math.min(0.99, (p.pairs_done || 0) / p.pairs_total);
+      if (job.state === "done") {
+        routeCurrentJobId = null;
+        const r = job.result;
+        if (!r) throw new Error("empty job result");
+        if (r.version) {
+          lastVersion = r.version;
+          await fetchAndInjectSVG(r.version);
+        }
+        await fetchNets();
+        const rep = r.report || {};
+        const per = Object.entries(rep.nets || {}).map(([n, s]) =>
+          `${n}:${s.status}${s.status === "polished" ? ` (-${(s.wire_before_mm - s.wire_after_mm).toFixed(2)}mm)` : ""}`).join(" · ");
+        diag.textContent = `polish done: ${rep.polished || 0} improved, ${rep.kept || 0} kept, ` +
+          `${rep.reverted || 0} reverted, ${rep.skipped || 0} skipped` +
+          (rep.wire_saved_mm ? `, saved ${rep.wire_saved_mm}mm` : "") +
+          (per ? ` [${per}]` : "") + ` (${elapsed()})`;
+        diag.title = diag.textContent;
+        if (undoBtn) undoBtn.disabled = false;
+        break;
+      }
+      if (job.state === "failed") throw new Error(job.error || "polish job failed");
+      await new Promise(r => setTimeout(r, ROUTE_JOB_POLL_MS));
+    }
+  } catch (err) {
+    routeCurrentJobId = null;
+    diag.textContent = `polish failed: ${err.message}`;
+  } finally {
+    setRouteBusy(false);
+    if (cancelBtn) cancelBtn.hidden = true;
+    progress.hidden = true;
+    updateNetSelectionUI();
+  }
+}
+
 // Shuffle lives in the Route panel: rip and re-route random routable nets,
 // N times in a queue. Picks each net uniformly from unprotected 2+ pad
 // nets (repeats allowed, so a "lucky" net can roll again). Single-net
@@ -997,4 +1077,5 @@ on("route-selected-btn", "click", routeSelectedNets);
 on("route-all-btn", "click", routeAllNets);
 on("rip-selected-btn", "click", ripSelectedNets);
 on("refine-btn", "click", refineSelectedNets);
+on("polish-btn", "click", polishSelectedNets);
 on("shuffle-btn", "click", shuffleRandomNets);

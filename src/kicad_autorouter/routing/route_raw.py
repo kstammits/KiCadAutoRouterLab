@@ -29,7 +29,9 @@ from . import (
 from .output import routes_to_tracks_vias, apply_routes_to_tree
 from .output import Arc as OutputArc, Track as OutputTrack, Via as OutputVia
 from .biarc import pieces_wire_cells
+from .verify import fitted_pieces_violate, gate_touch_margin
 from .smooth import own_net_soft_mask, smooth_branch_pieces, smooth_grid_path, smoothed_wire_mm
+from .smooth import effort_rungs, resolve_config as resolve_smooth_config
 from .router import SECONDARY_BLOCKED
 from .router import RouteResult as NetRouteResult
 from .power import identify_power_nets
@@ -503,19 +505,73 @@ def _resume_progress(grouped_chunks, group_progress: Dict[int, List[NetRouteResu
     )
 
 
+def _resolve_gate_trip(raw_res, smoothed_res, violations,
+                       region_blocked_mask, routing_grid, model, net_name,
+                       track_half_mm):
+    """Decide a gate trip: real copper touch vs fallback to the raw path.
+
+    ``violations`` tripped on the smoothed/fitted copper. When the emitted
+    track never touches foreign copper (guard-ring graze or cell-corner
+    clip — the smoother manufactured the geometry out of a legal search
+    path), fall back to the pre-smooth search path, which the gate is
+    re-run against; a clean raw path is returned for stamping instead of
+    failing the net. A real touch, or a raw path that also trips, stays a
+    loud ``("gate", reason)`` failure.
+
+    Returns ``(result|None, failure|None, fell_back: bool)``. Single
+    fallback only — the raw re-gate is final, so this cannot loop. Future
+    cost-matrix re-smoothing replaces the ``fell_back`` branch (same seam,
+    same acceptance check).
+    """
+    is_touch, margin = gate_touch_margin(
+        list(_branch_paths(smoothed_res)),
+        tuple(getattr(smoothed_res, "arc_pieces", ()) or ()),
+        routing_grid, model, net_name, track_half_mm,
+    )
+    if math.isinf(margin):
+        margin_txt = "no foreign copper nearby"
+    else:
+        margin_txt = f"min track-to-copper {margin:.3f}mm"
+    if is_touch:
+        detail = "; ".join(violations[:3])
+        if len(violations) > 3:
+            detail += f" (+{len(violations) - 3} more)"
+        return None, (
+            f"emit gate: fitted copper crosses hard exclusion "
+            f"({detail}; {margin_txt}); failing loudly instead "
+            f"of writing DRC-dirty copper"
+        ), False
+    raw_violations = fitted_pieces_violate(
+        list(_branch_paths(raw_res)), (),
+        region_blocked_mask, routing_grid,
+    )
+    if raw_violations:
+        detail = "; ".join(raw_violations[:3])
+        if len(raw_violations) > 3:
+            detail += f" (+{len(raw_violations) - 3} more)"
+        return None, (
+            f"emit gate: smoothed copper grazes hard exclusion "
+            f"({margin_txt}) but the raw search path also trips "
+            f"({detail}); failing loudly instead "
+            f"of writing DRC-dirty copper"
+        ), False
+    return raw_res, None, True
+
+
 def _route_chunk(
     router, term_set, region_secondary, progress_cb, should_cancel,
     seed_cells, cost_grid, routing_grid, corridor, soft_mask,
     clearance_radius, region_blocked_mask, fit_arcs, max_radius_mm,
     min_leg_mm, sample_mm, keep_min_radius_mm, params, model, timings,
-    net_name, tag="",
+    net_name, tag="", width_mm=None,
 ):
     """Route+smooth+stamp one terminal set within its region.
 
     Mirrors the former ``_fly`` closure: one A* flight, then smoothing,
     board-escape check, and corridor stamp. Returns
-    ``(result|None, failure|None)`` where failure is ``("budget", reason)``
-    on deterministic budget exhaustion or ``("open", reason)`` otherwise.
+    ``(result|None, failure|None)`` where failure is ``("budget"|"gate",
+    reason)`` on deterministic budget exhaustion / emit-gate trips or
+    ``("open", reason)`` otherwise.
 
     Expansion accounting and progress reporting are owned by the caller
     (``progress_cb`` plus post-route ``expansions``/_report bookkeeping), so
@@ -537,17 +593,76 @@ def _route_chunk(
         timings[key] = timings.get(key, []) + [dict(a) for a in res.debug_attempts]
     if res.success:
         t_smooth = time.perf_counter()
-        res = _smooth_result(
-            res, cost_grid, routing_grid, corridor,
-            pinned=pinned, soft_mask=soft_mask,
-            clearance_radius=clearance_radius,
-            blocked_mask=region_blocked_mask,
-            fit_arcs=fit_arcs,
-            max_radius_mm=max_radius_mm,
-            min_leg_mm=min_leg_mm,
-            sample_mm=sample_mm,
-            keep_min_radius_mm=keep_min_radius_mm,
-        )
+        raw_res = res
+        # Smoother engagement (RoutingParams.smooth_effort, default 2.0):
+        # 0 emits the raw search path, (0, 2] is a single configured pass
+        # (2.0 reproduces the legacy kwargs exactly), and (2, 3] runs a
+        # bounded deterministic ladder from 2.0 up to the effort, keeping
+        # the best gate-clean rung by wire length. Gate trips below still
+        # funnel into the same touch-vs-graze resolution.
+        effort = float(getattr(params, "smooth_effort", 2.0))
+        if effort <= 0.0:
+            res = raw_res
+            violations = fitted_pieces_violate(
+                list(_branch_paths(res)),
+                tuple(getattr(res, "arc_pieces", ()) or ()),
+                region_blocked_mask, routing_grid,
+            )
+        else:
+            best = None
+            best_wire_mm = math.inf
+            res = raw_res
+            violations: List[str] = []
+            for sub in effort_rungs(effort):
+                cfg = resolve_smooth_config(sub, params)
+                cand = _smooth_result(
+                    raw_res, cost_grid, routing_grid, corridor,
+                    pinned=pinned, soft_mask=soft_mask,
+                    clearance_radius=clearance_radius,
+                    blocked_mask=region_blocked_mask,
+                    fit_arcs=cfg["fit_arcs"],
+                    max_radius_mm=cfg["max_radius_mm"],
+                    min_leg_mm=cfg["min_leg_mm"],
+                    sample_mm=cfg["sample_mm"],
+                    keep_min_radius_mm=cfg["keep_min_radius_mm"],
+                )
+                cand_violations = fitted_pieces_violate(
+                    list(_branch_paths(cand)),
+                    tuple(getattr(cand, "arc_pieces", ()) or ()),
+                    region_blocked_mask, routing_grid,
+                )
+                if not cand_violations:
+                    wire_mm = float(getattr(cand, "wire_mm", math.inf))
+                    if best is None or wire_mm < best_wire_mm:
+                        best, best_wire_mm = cand, wire_mm
+                else:
+                    res, violations = cand, cand_violations
+            if best is not None:
+                res, violations = best, []
+        # Emit gate: the fitter's stitching loop emits straight connector
+        # stubs without re-checking them; a stub that skips collapsed
+        # vertices can cut straight across foreign copper the search and
+        # smoother both refused. Fail loudly here (before stamping) instead
+        # of writing DRC-dirty copper downstream — unless the trip is
+        # raster dust with no copper touched, in which case the legal
+        # search path is stamped as-is.
+        if violations:
+            if width_mm is None:
+                width_mm = resolve_track_width(model, params, net_name)
+            chosen, gate_failure, fell_back = _resolve_gate_trip(
+                raw_res, res, violations, region_blocked_mask,
+                routing_grid, model, net_name, width_mm / 2.0,
+            )
+            if gate_failure is not None:
+                # Deterministic on an unchanged grid like budget exhaustion:
+                # the same search + smoother will reproduce the same fitted
+                # copper, so retrying only burns time — fail immediately.
+                return None, ("gate", f"{tag}{gate_failure}")
+            res = chosen
+            if fell_back:
+                timings["emit_gate_fallback_raw"] = (
+                    timings.get("emit_gate_fallback_raw", 0) + 1
+                )
         timings["smooth_s"] = timings.get("smooth_s", 0.0) + (
             time.perf_counter() - t_smooth
         )
@@ -1278,7 +1393,7 @@ def route_raw(
                         params.arc_fillets, params.arc_max_radius_mm,
                         params.arc_min_leg_mm, params.arc_sample_mm,
                         params.arc_keep_min_radius_mm, params, model, timings,
-                        net_name, tag,
+                        net_name, tag, width_mm,
                     )
                     if result is not None:
                         expansions_total += result.expansions
@@ -1292,10 +1407,11 @@ def route_raw(
                     kind, reason = failure
                     ripup.record_failure(net_name, reason)
                     group_ok = False
-                    if kind == "budget":
-                        # Budget exhaustion is deterministic on an unchanged
-                        # grid: the next attempt would burn the same budget
-                        # for the same outcome, so stop retrying and fail.
+                    if kind in ("budget", "gate"):
+                        # Budget exhaustion and emit-gate trips are both
+                        # deterministic on an unchanged grid: the next
+                        # attempt would burn the same budget for the same
+                        # outcome, so stop retrying and fail.
                         fatal = True
                     break
                 if not group_ok:

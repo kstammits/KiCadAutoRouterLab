@@ -5742,6 +5742,7 @@
 		)
 	)
 	(footprint "europi:Thonkiconn"
+		(locked yes)
 		(layer "F.Cu")
 		(uuid "00000000-0000-0000-0000-000061efac4b")
 		(at 97.05 136.9 180)
@@ -5886,6 +5887,7 @@
 		(embedded_fonts no)
 	)
 	(footprint "Connector_PinHeader_2.54mm:PinHeader_1x08_P2.54mm_Vertical"
+		(locked yes)
 		(layer "F.Cu")
 		(uuid "00000000-0000-0000-0000-000061f04e10")
 		(at 129.25 43.75)
@@ -6203,6 +6205,7 @@
 		)
 	)
 	(footprint "Connector_PinHeader_2.54mm:PinHeader_1x08_P2.54mm_Vertical"
+		(locked yes)
 		(layer "F.Cu")
 		(uuid "00000000-0000-0000-0000-000061f04e48")
 		(at 138.45 127.15 -90)
@@ -6717,6 +6720,7 @@
 		(embedded_fonts no)
 	)
 	(footprint "europi:Thonkiconn"
+		(locked yes)
 		(layer "F.Cu")
 		(uuid "00000000-0000-0000-0000-000061f05598")
 		(at 82.05 136.9 180)
@@ -7253,6 +7257,7 @@
 		(embedded_fonts no)
 	)
 	(footprint "Connector_PinHeader_2.54mm:PinHeader_1x05_P2.54mm_Vertical"
+		(locked yes)
 		(layer "F.Cu")
 		(uuid "00000000-0000-0000-0000-000061f06744")
 		(at 94.63 75.25 -90)
@@ -9103,6 +9108,7 @@
 		)
 	)
 	(footprint "Button_Switch_THT:SPDT_Sip3"
+		(locked yes)
 		(layer "F.Cu")
 		(uuid "00000000-0000-0000-0000-000061f1b90a")
 		(at 80.05 55.475 90)
@@ -9574,6 +9580,7 @@
 		(embedded_fonts no)
 	)
 	(footprint "europi:Thonkiconn"
+		(locked yes)
 		(layer "F.Cu")
 		(uuid "00000000-0000-0000-0000-000061f20957")
 		(at 81.55 82.5)
@@ -9718,6 +9725,7 @@
 		(embedded_fonts no)
 	)
 	(footprint "Potentiometer_THT:Potentiometer_Alpha_RD901F-40-00D_Single_Vertical"
+		(locked yes)
 		(layer "F.Cu")
 		(uuid "00000000-0000-0000-0000-000061f209c1")
 		(at 89.05 79.95)
@@ -10029,6 +10037,7 @@
 		)
 	)
 	(footprint "Potentiometer_THT:Potentiometer_Alpha_RD901F-40-00D_Single_Vertical"
+		(locked yes)
 		(layer "F.Cu")
 		(uuid "00000000-0000-0000-0000-000061f20a49")
 		(at 89.05 98)
@@ -10340,6 +10349,7 @@
 		)
 	)
 	(footprint "Potentiometer_THT:Potentiometer_Alpha_RD901F-40-00D_Single_Vertical"
+		(locked yes)
 		(layer "F.Cu")
 		(uuid "00000000-0000-0000-0000-000061f20ad1")
 		(at 89.05 116)
@@ -10651,6 +10661,7 @@
 		)
 	)
 	(footprint "europi:Thonkiconn"
+		(locked yes)
 		(layer "F.Cu")
 		(uuid "00000000-0000-0000-0000-000061f20b2c")
 		(at 81.55 118.5 180)
@@ -10795,6 +10806,7 @@
 		(embedded_fonts no)
 	)
 	(footprint "europi:Thonkiconn"
+		(locked yes)
 		(layer "F.Cu")
 		(uuid "00000000-0000-0000-0000-000061f20b69")
 		(at 81.55 100.45)
@@ -10939,6 +10951,7 @@
 		(embedded_fonts no)
 	)
 	(footprint "Potentiometer_THT:Potentiometer_Bourns_3296W_Vertical"
+		(locked yes)
 		(layer "F.Cu")
 		(uuid "00000000-0000-0000-0000-0000621c91d3")
 		(at 90.5 91.425 180)
@@ -21410,6 +21423,7 @@
 		)
 	)
 	(footprint "Connector_PinHeader_2.54mm:PinHeader_1x08_P2.54mm_Vertical"
+		(locked yes)
 		(layer "B.Cu")
 		(uuid "00000000-0000-0000-0000-000061f04e2c")
 		(at 98.45 127.15 90)
@@ -23521,6 +23535,7 @@
 		)
 	)
 	(footprint "Connector_PinHeader_2.54mm:PinHeader_1x08_P2.54mm_Vertical"
+		(locked yes)
 		(layer "B.Cu")
 		(uuid "00000000-0000-0000-0000-000061f0afbc")
 		(at 89.25 43.77 180)

@@ -17,6 +17,7 @@ from kicad_autorouter.routing.pipeline import (
     RoutingResult,
     refine_routing,
 )
+from kicad_autorouter.routing.route_raw import route_raw
 from kicad_autorouter.sexpr import parse_file
 
 from .helpers import make_fp
@@ -170,7 +171,11 @@ def test_refine_keeps_current_when_all_trials_fail():
         original_pcb_tree=tree)
     assert result.winner_seed == -1
     assert result.tracks_added == 0 and result.vias_added == 0
-    assert len(result.candidates) == 2  # trials ran, all failed
+    # Relay: trial 0 fails every net, so trial 1's failed-first order is
+    # the identity order again — dedup skips the provably-identical
+    # re-route (routing is deterministic per order on a fresh grid).
+    assert len(result.candidates) == 1
+    assert result.candidates[0]["nets_routed"] == 0
     assert cost_grid is None and routing_grid is None
 
 
@@ -181,8 +186,20 @@ def test_refine_refuses_protected_and_overcap():
         params=_params(refine_seeds=2, refine_seed=0),
         original_pcb_tree=tree)
     assert result.failed_reasons["X1"].startswith("protected")
-    assert result.nets_routed == 1  # eligible X2 still routed
+    # X2's straight diagonal crosses foreign 0805 copper (the HEAD route's
+    # centerline intersects XSW's pad polygon), so the emit gate refuses it
+    # loudly: nothing routed, nothing emitted. Loud refusal beats
+    # DRC-dirty copper.
+    assert result.nets_routed == 0
+    assert result.tracks_added == 0
     assert result.pcb_tree is not None
+    _, model_probe = _xcross_model()
+    raw, _, _ = route_raw(model_probe, ["X2"], set(),
+                          params=_params(refine_seeds=2, refine_seed=0))
+    assert raw.nets_routed == 0
+    assert raw.ripup.net_failures["X2"].startswith("emit gate")
+    # Deterministic trip: no retry burn (same grid → same copper).
+    assert raw.ripup.attempts["X2"] == 1
 
     result2, cost_grid2, routing_grid2 = refine_routing(
         model, ["X1", "X2"], set(),

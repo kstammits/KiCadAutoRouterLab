@@ -61,6 +61,8 @@ class RoutingResult:
     candidates: Tuple[dict, ...] = ()  # refine_routing order trials
     winner_seed: int = 0  # Shuffle seed of the winning refine candidate
     # (-1 = kept pre-refine copper without re-routing)
+    net_routes: Dict[str, object] = field(default_factory=dict)  # net -> NetRouteResult (server-side only: feeds Polish; never serialized)
+    width_map: Dict[str, float] = field(default_factory=dict)  # net -> emitted track width (route-time resolution; feeds Polish)
 
 
 from .route_raw import (

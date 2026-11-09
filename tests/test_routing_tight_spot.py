@@ -123,14 +123,13 @@ class TestVinTightSpot:
             assert result.path[0][:2] == terminals[1][:2]
             assert result.path[-1][:2] == terminals[2][:2]
 
-    def test_corridor_finds_capsule_opened_thread(self, dccf_model):
-        """Capsule-exact halos open the thin Q1–Q2 thread for the corridor.
-
-        Previously the ANY-blocked-supercell rule sealed this thread at 4x
-        and 2x downsampling (disc halos sized by pad length), so the
-        finder returned None. With capsule stamps + the hard-core-only
-        exclusion, the thread survives coarsening and a corridor appears.
-        Pins the find plus graceful bounded behavior either way.
+    def test_corridor_rejects_copper_crossing_thread(self, dccf_model):
+        """The Q1–Q2 thread stays sealed: the only fine-grid opening crosses
+        real foreign copper (the pre-guard corridor mask intersects 20
+        foreign pads' copper + half-track: J6, Q1 pins), so the widened
+        hard core (copper + half-track + raster guard) correctly seals it
+        and the finder returns None. Loud refusal beats DRC-dirty copper.
+        Pins the refusal plus graceful bounded behavior either way.
         """
         from kicad_autorouter.routing.corridor import find_corridor
         from kicad_autorouter.routing.pipeline import RoutingParams
@@ -151,10 +150,7 @@ class TestVinTightSpot:
             cost_grid, secondary, terminals[1], terminals[2], 100,
             SECONDARY_BLOCKED,
         )
-        assert corridor is not None
-        # Returned mask is fine-grid: both terminals sit inside it.
-        assert bool(corridor[terminals[1][1], terminals[1][0]])
-        assert bool(corridor[terminals[2][1], terminals[2][0]])
+        assert corridor is None
         t0 = time.perf_counter()
         result = router.route([terminals[1], terminals[2]], secondary)
         elapsed = time.perf_counter() - t0

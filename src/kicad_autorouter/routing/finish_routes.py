@@ -159,4 +159,6 @@ def finish_routes(
         partial_arcs=tuple(raw.partial_arcs),
         arcs_added=len(route_arcs),
         total_wire_mm=raw.total_wire_mm,
+        net_routes=dict(raw.all_results),
+        width_map=dict(raw.width_map),
     ), cost_grid, routing_grid

@@ -94,6 +94,11 @@ class BoardState:
         # on board load/reset (stale refs must not linger).
         self.last_failed_reasons: Dict[str, str] = {}
         self.last_failed_version: Optional[int] = None
+        # Last routable bundle for Polish (net -> NetRouteResult + widths,
+        # stamped at the board version they were routed against). Polish
+        # re-smooths these branches against current copper; any board
+        # mutation (rip, route, undo, reset) invalidates the bundle.
+        self.last_polishable: dict = {}
         # Board mode switch (two-layer | four-layer): per-board server
         # memory, inferred from the stackup on load, user-overridable.
         # Presets apply as an in-memory overlay (never written to disk).
@@ -139,6 +144,7 @@ class BoardState:
                 self.bridges = []
                 self.last_failed_reasons = {}
                 self.last_failed_version = None
+                self.last_polishable = {}
                 # Auto-detect protected nets (power/ground, incl. user-marked power)
                 self.protected_nets.clear()
                 self.power_override_nets.clear()
@@ -451,6 +457,7 @@ class BoardState:
             self.cost_grid = None
             self.routing_grid = None
             self.routing_model = None
+            self.last_polishable = {}
             self.version += 1
             return self.version
 
@@ -470,6 +477,29 @@ class BoardState:
         """Return (reasons copy, version stamp) of the last routing run."""
         with self._lock:
             return dict(self.last_failed_reasons), self.last_failed_version
+
+    def set_last_polishable(self, routes: dict, widths: dict) -> None:
+        """Stash the last routing run's per-net branches for Polish.
+
+        Stamped at the current board version; any board mutation bumps
+        the version and invalidates the bundle (checked at polish time).
+        """
+        with self._lock:
+            self.last_polishable = {
+                "version": self.version,
+                "routes": dict(routes or {}),
+                "widths": dict(widths or {}),
+            }
+
+    def get_last_polishable(self) -> dict:
+        """Return the stashed polish bundle (copies; version-stamped)."""
+        with self._lock:
+            bundle = self.last_polishable or {}
+            return {
+                "version": bundle.get("version"),
+                "routes": dict(bundle.get("routes") or {}),
+                "widths": dict(bundle.get("widths") or {}),
+            }
 
     def push_undo(self) -> None:
         """Push current state to undo stack (called before mutating).
@@ -515,6 +545,7 @@ class BoardState:
             self.cost_grid = None
             self.routing_grid = None
             self.routing_model = None
+            self.last_polishable = {}
             self.version += 1
             self.selection_version += 1
             return self.version
@@ -537,6 +568,7 @@ class BoardState:
                 self.routing_model = None
                 self.last_failed_reasons = {}
                 self.last_failed_version = None
+                self.last_polishable = {}
                 # Restore board version and warning from original
                 self.board_version = self.model.version if self.model else ""
                 self.version_warning = self.model.version_warning if self.model else None

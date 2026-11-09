@@ -35,7 +35,66 @@ _EMPTY_BOOL_2D = np.zeros((0, 0), dtype=bool)
 
 # Cost bands (mirrors routing/obstacles.py + router.CostMap).
 SOFT_THRESHOLD = 50  # HIGH_COST pad rings / EDGE_KEEPOUT: no shortcut through
-                         # COURTYARD (25) is below this — shortcuts allowed
+                          # COURTYARD (25) is below this — shortcuts allowed
+
+# Smoother engagement anchors for ``RoutingParams.smooth_effort`` (float,
+# 0..3, default 2.0). 0 skips smoothing, 1 is shortcut-only without arcs,
+# 2 is the full default (arcs + keep radius), (2, 3] adds a bounded
+# deterministic re-attempt ladder, 3 is the high-effort retry rung.
+# Fractional values interpolate the keep radius between anchors so
+# downstream tasks (polish, future post-passes) get proportional
+# engagement from the same float.
+EFFORT_ARCS_ON = 1.5  # effort at which fillets/sweeps engage
+EFFORT_KEEP_FULL_MM = 1.0  # keep radius the ladder converges to at effort 3
+
+
+def effort_rungs(effort: float) -> List[float]:
+    """Deterministic sub-effort ladder for one smooth call.
+
+    Effort <= 2 is a single rung (the effort itself). Above 2, rungs run
+    from 2.0 (today's behavior as the safe baseline) up to the effort in
+    half-effort steps — at most 3 rungs ([2.0, 2.5, 3.0]). Callers keep
+    the best gate-clean rung by wire length, so fractional effort buys
+    proportionally more re-attempts.
+    """
+    e = float(effort)
+    if e <= 2.0:
+        return [e]
+    n = 1 + int(math.floor((e - 2.0) * 2.0 + 1e-9))
+    n = min(max(n, 1), 3)
+    if n == 1:
+        return [e]
+    return [2.0 + (e - 2.0) * i / (n - 1) for i in range(n)]
+
+
+def resolve_config(effort: float, params) -> dict:
+    """Map float effort to ``_smooth_result`` kwargs (one rung).
+
+    ``resolve_config(2.0)`` reproduces the current defaults exactly
+    (``fit_arcs``, ``arc_max_radius_mm``, ``arc_min_leg_mm``,
+    ``arc_sample_mm``, ``arc_keep_min_radius_mm``), so the default path
+    is byte-identical to prior behavior.
+    """
+    e = float(effort)
+    keep_default = float(getattr(params, "arc_keep_min_radius_mm", 0.0) or 0.0)
+    sample_default = float(getattr(params, "arc_sample_mm", 0.05) or 0.05)
+    if e < EFFORT_ARCS_ON:
+        keep_mm = 0.0
+    elif e <= 2.0:
+        keep_mm = keep_default * (e - EFFORT_ARCS_ON) / (2.0 - EFFORT_ARCS_ON)
+    else:
+        keep_mm = keep_default + (EFFORT_KEEP_FULL_MM - keep_default) * (e - 2.0)
+    if e <= 2.0:
+        sample_mm = sample_default
+    else:
+        sample_mm = sample_default * (1.0 - 0.5 * (e - 2.0))
+    return {
+        "fit_arcs": bool(getattr(params, "arc_fillets", False)) and e >= EFFORT_ARCS_ON,
+        "max_radius_mm": float(getattr(params, "arc_max_radius_mm", 10.0)),
+        "min_leg_mm": float(getattr(params, "arc_min_leg_mm", 0.3)),
+        "sample_mm": sample_mm,
+        "keep_min_radius_mm": keep_mm,
+    }
 
 
 def _soft_stamp(mask, grid, n_layers, res_mm, fp, pad, clearance_mm, track_half_mm) -> None:

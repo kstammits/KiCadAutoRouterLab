@@ -87,6 +87,12 @@ class RoutingParams:
     # with occasional sharp regressions. 0.0 = legacy shortcut-everything.
     # Staircases still collapse; only corners with roomy legs survive, so
     # this buys broad arcs with air.
+    smooth_effort: float = 2.0  # Smoother engagement: 0 skips smoothing
+    # (raw A* Manhattan), 1 is shortcut-only without arcs, 2 is the full
+    # default (arcs + keep radius). Fractional values interpolate the keep
+    # radius between anchors; (2, 3] adds a bounded deterministic
+    # re-attempt ladder (denser arc sampling, stronger keep, extra passes).
+    # 3 is the high-effort retry rung. Resolved by smooth.resolve_config.
     fanout_planes: bool = False  # Via-to-plane stubs for plane-owned nets (inner zones)
     # When True, a ground/power-effective net owning an inner-copper zone
     # (In*.Cu) is satisfied with short outer stubs + through-vias tapping
@@ -142,6 +148,7 @@ class RoutingParams:
             "arc_min_leg_mm": self.arc_min_leg_mm,
             "arc_sample_mm": self.arc_sample_mm,
             "arc_keep_min_radius_mm": self.arc_keep_min_radius_mm,
+            "smooth_effort": self.smooth_effort,
             "fanout_planes": self.fanout_planes,
             "fanout_plane_vias_max": self.fanout_plane_vias_max,
             "refine_seeds": self.refine_seeds,
@@ -164,7 +171,7 @@ class RoutingParams:
             "window_margin_cells", "window_growth", "window_retries",
             "corridor", "refill_zones", "allowed_layers",
             "arc_fillets", "arc_max_radius_mm", "arc_min_leg_mm",
-            "arc_sample_mm", "arc_keep_min_radius_mm",
+            "arc_sample_mm", "arc_keep_min_radius_mm", "smooth_effort",
             "fanout_planes", "fanout_plane_vias_max",
             "refine_seeds", "refine_seed",
         }
@@ -192,6 +199,8 @@ def _validate_routing_params(params: "RoutingParams") -> None:
         "arc_max_radius_mm", "arc_min_leg_mm", "arc_sample_mm",
         "arc_keep_min_radius_mm",
     )
+    # smooth_effort has its own range check below (0..3), so it is not
+    # part of the plain nonneg group.
     for name in nonneg:
         value = getattr(params, name)
         if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -235,6 +244,13 @@ def _validate_routing_params(params: "RoutingParams") -> None:
         or params.window_growth <= 0
     ):
         raise ValueError("window_growth must be a positive finite number")
+    if (
+        isinstance(params.smooth_effort, bool)
+        or not isinstance(params.smooth_effort, (int, float))
+        or not math.isfinite(params.smooth_effort)
+        or not 0.0 <= params.smooth_effort <= 3.0
+    ):
+        raise ValueError("smooth_effort must be a finite number in [0, 3]")
     for name in (
         "run_drc", "debug", "stitch_gnd_vias", "strip_gnd_blockers",
         "corridor", "refill_zones", "fanout_planes", "arc_fillets",

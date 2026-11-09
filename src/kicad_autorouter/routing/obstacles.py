@@ -44,10 +44,10 @@ FANOUT_HALO_OUTER = 100  # one further clearance-width ring beyond inner
 THT_EXCLUSION = 10000  # >= router.SECONDARY_BLOCKED, fits int16
 
 # Steep-but-passable toll for the clearance margin around foreign pads.
-# The hard core (THT_EXCLUSION) covers actual copper only; the
-# clearance + track-half band pays this instead of blocking, so A* may
-# squeeze through a tight thread when no alternative exists. Must stay
-# below router.SECONDARY_BLOCKED (1000) — enforced by test.
+# The hard core covers copper + the routed track's half-width + raster
+# guard; the clearance band beyond the track edge pays this instead of
+# blocking, so A* may squeeze through a tight thread when no alternative
+# exists. Must stay below router.SECONDARY_BLOCKED (1000) — enforced by test.
 FANOUT_HALO_STEEP = 800
 
 
@@ -153,8 +153,9 @@ def build_fanout_cost(
     """Build the per-net secondary (fanout) cost grid for ``current_net``.
 
     Returns a ``(n_layers, H, W)`` int16 grid of graded halos over
-    every *other* net's pads: ``THT_EXCLUSION`` on actual copper only,
-    ``FANOUT_HALO_STEEP`` over the clearance + half-track margin,
+    every *other* net's pads: ``THT_EXCLUSION`` on copper plus the routed
+    track half-width plus a half-diagonal raster guard (cell-center stamps
+    miss boundary cells), ``FANOUT_HALO_STEEP`` over the clearance + half-track margin,
     ``FANOUT_HALO_OUTER`` for one further clearance-width ring plus
     ``extra_margin_mm`` of steering push. The current net's own pads are
     excluded so its terminals can still escape. All other cells are 0.
@@ -169,8 +170,9 @@ def build_fanout_cost(
     clearance margin pays a steep toll (``FANOUT_HALO_STEEP``, passable
     below ``router.SECONDARY_BLOCKED``) instead of blocking, so A* may
     squeeze through a tight thread when no alternative exists. Only
-    actual copper carries ``THT_EXCLUSION`` (impassable): foreign tracks
-    can never touch another net's copper, but they may graze its
+    copper plus the routed track half-width (plus the raster guard)
+    carries ``THT_EXCLUSION`` (impassable): foreign tracks can never
+    touch another net's copper, but they may graze its
     clearance halo at high cost (DRC remains the acceptance check).
     Own-net exclusion still applies, so the owner connects and hops
     for free.
@@ -205,8 +207,9 @@ def build_fanout_cost(
             # Oriented pad stamps (capsules for ovals, inflated rects for
             # the rect family, discs for round/unknown pads). Three tiers
             # (max semantics, so stamp order is irrelevant): hard core on
-            # actual copper only, steep-but-passable toll over the
-            # clearance + track-half margin, soft shoulder beyond that.
+            # copper + track half-width + guard (copper touch impossible),
+            # steep-but-passable toll over the clearance + track-half
+            # margin, soft shoulder beyond that.
             margin_mm = clearance_mm + track_half_mm
             outer_mm = margin_mm + outer_extra_mm
             for layer_idx in layers:
@@ -219,8 +222,19 @@ def build_fanout_cost(
                 _stamp_pad_zone(
                     layer, grid, pad, margin_mm, FANOUT_HALO_STEEP
                 )
+                # Hard core: actual copper plus the routed track's half
+                # width plus a half-diagonal raster guard. Center sampling
+                # can miss boundary cells by up to ~0.07 mm, and a track
+                # whose centerline threads such a cell still overlaps
+                # copper by up to its half-width (tube111: 0.5 mm power
+                # tracks grazing foreign SMD pads after the toll-road
+                # search paid the steep halo toll). The steep tier above
+                # keeps the clearance band soft; this tier makes copper
+                # touch impossible at any track width.
                 _stamp_pad_zone(
-                    layer, grid, pad, 0.0, THT_EXCLUSION
+                    layer, grid, pad,
+                    track_half_mm + res_mm * math.sqrt(2) / 2.0,
+                    THT_EXCLUSION,
                 )
 
     # Foreign vias: hard exclusion ring (like foreign THT pads)

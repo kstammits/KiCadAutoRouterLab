@@ -27,6 +27,7 @@ from ui.server_jobs import (
     _drc_lock,
     _prune_jobs_locked,
     _run_drc_now,
+    _run_polish_job,
     _run_routing_job,
 )
 from ui.debug_grids import _cost_grid_to_debug, _secondary_to_debug
@@ -329,6 +330,9 @@ def handle_post(path, qs, body, handler):
     if path == "/api/routing/run":
         return _handle_run(body)
 
+    if path == "/api/routing/polish":
+        return _handle_polish(body)
+
     if path == "/api/routing/ripup":
         return _handle_ripup(body)
 
@@ -395,12 +399,89 @@ def _handle_run(body):
         STATE.set_last_failed(result.failed_reasons or {})
     except (AttributeError, TypeError):
         pass
+    try:
+        STATE.set_last_polishable(getattr(result, "net_routes", None) or {},
+                                  getattr(result, "width_map", None) or {})
+    except (AttributeError, TypeError):
+        pass
     payload = _routing_result_payload(result)
     payload["mode_warning"] = mode_info["warning"]
     payload["version"] = version
     if route_params.debug:
         payload["debug"] = _cost_grid_to_debug(cost_grid, routing_grid)
     return 200, json.dumps(payload).encode(), "application/json"
+
+
+def _handle_polish(body):
+    """Start a background Polish job (re-smooth stored routes, no A*).
+
+    Body: ``{net_names, params}`` — effort comes from the shared
+    ``smooth_effort`` slider. Fast-fails when there is nothing polishable
+    (no stash, board changed, unknown nets all protected/missing).
+    """
+    req = _require_json(body)
+    if req is None or not isinstance(req, dict):
+        return 400, b"invalid JSON", "text/plain"
+    model, _, _, version, _, _ = STATE.snapshot
+    if model is None:
+        return 404, b"no board loaded", "text/plain"
+    net_names = req.get("net_names", [])
+    if not isinstance(net_names, list) or not net_names:
+        return 400, b"net_names required (non-empty list)", "text/plain"
+    params_dict = req.get("params", {})
+    if not isinstance(params_dict, dict):
+        return 400, b"params must be an object", "text/plain"
+    try:
+        route_params = RoutingParams.from_dict(params_dict)
+    except (ValueError, TypeError) as exc:
+        return 400, f"bad routing params: {exc}".encode(), "text/plain"
+    if not route_params.smooth_effort > 0:
+        return 400, b"smooth_effort must be > 0 to polish", "text/plain"
+    bundle = STATE.get_last_polishable()
+    if not bundle.get("routes"):
+        return 409, "no routed copper to polish — route first".encode(), "text/plain"
+    if bundle.get("version") != version:
+        return 409, "board changed since routing — re-route first".encode(), "text/plain"
+    if STATE.routing_grid is None:
+        return 409, "no routing grid — route first".encode(), "text/plain"
+    clean_names = [n for n in net_names if isinstance(n, str) and n]
+    if not clean_names:
+        return 400, b"net_names required (non-empty list)", "text/plain"
+    if not _ROUTING_JOB_LOCK.acquire(blocking=False):
+        return 409, b"another routing job is running", "text/plain"
+    job_id = uuidlib.uuid4().hex[:12]
+    with _JOBS_LOCK:
+        _prune_jobs_locked()
+        _JOBS[job_id] = {
+            "job_id": job_id,
+            "state": "queued",
+            "net_names": clean_names,
+            "params_dict": params_dict,
+            "polish": True,
+            "cancel_requested": False,
+            "created": time.time(),
+            "started": None,
+            "finished": None,
+            "progress": {
+                "stage": "queued",
+                "net": "",
+                "pairs_done": 0,
+                "pairs_total": len(clean_names),
+                "expansions": 0,
+                "elapsed_s": 0.0,
+            },
+            "result": None,
+            "error": None,
+        }
+    worker = threading.Thread(target=_run_polish_job, args=(job_id,), daemon=True)
+    try:
+        worker.start()
+    except Exception:
+        with _JOBS_LOCK:
+            _JOBS.pop(job_id, None)
+        _ROUTING_JOB_LOCK.release()
+        raise
+    return 200, json.dumps({"ok": True, "job_id": job_id, "state": "queued"}).encode(), "application/json"
 
 
 def _handle_ripup(body):

@@ -194,10 +194,14 @@ class TestHaloTiers:
             c, r = board_to_grid(grid, x, y)
             return sec[0, r, c]
 
-        # Core (copper, r=0.5): hard. Margin (0.5..0.825): steep toll,
-        # passable. Shoulder (..1.025): soft. Beyond: free.
+        # Hard core covers copper + the routed half-track + a half-diagonal
+        # raster guard (0.5..0.696: center sampling can miss boundary cells
+        # by ~0.07 mm, and a threading centerline still overlaps copper by
+        # up to its half-width — copper touch must be impossible, not just
+        # tolled). Margin (0.696..0.825): steep toll, passable. Shoulder
+        # (..1.025): soft. Beyond: free.
         assert at(20.0, 20.0) == THT_EXCLUSION
-        assert at(20.0, 20.6) == FANOUT_HALO_STEEP
+        assert at(20.0, 20.6) == THT_EXCLUSION
         assert at(20.0, 20.9) == FANOUT_HALO_OUTER
         assert at(20.0, 22.0) == 0
         # Own-net pad is excluded entirely.

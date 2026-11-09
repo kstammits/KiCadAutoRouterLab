@@ -45,11 +45,13 @@ def refine_routing(
     Sequential routing is order-dependent — an early track can wall off a
     later net. Trial 0 runs the input order; trials 1..N permute within
     tangle groups (nets whose pad boxes overlap; isolated nets hold their
-    positions). The best trial by (nets routed, then ``total_wire_mm +
-    via_cost_mm * vias``) goes straight to ``finish_routes`` — no re-route
-    replay. Stitching runs once on the winner, never per trial, so trials
-    compare raw routing alone. If every trial fails to route anything, the
-    incoming copper is kept untouched (``winner_seed == -1``).
+    positions). Each trial relays the previous trial's failed nets first
+    (failure-first ordering). The best trial by (nets routed, then
+    ``total_wire_mm + via_cost_mm * vias``) goes straight to
+    ``finish_routes`` — no re-route replay. Stitching runs once on the
+    winner, never per trial, so trials compare raw routing alone. If every
+    trial fails to route anything, the incoming copper is kept untouched
+    (``winner_seed == -1``).
 
     Refused nets (protected, or over ``max_terminals_per_net``) are left
     untouched and reported in ``failed_reasons``.
@@ -108,6 +110,7 @@ def refine_routing(
     best_expansions = 0
     cancelled = False
     seen_orders: Set[Tuple[str, ...]] = set()
+    prev_failed: Set[str] = set()  # relay memory: trial k+1 routes trial k's failed nets first
     for k in range(seeds):
         if should_cancel is not None and should_cancel():
             cancelled = True
@@ -116,7 +119,7 @@ def refine_routing(
             seed, order = base_seed, list(eligible)  # identity trial
         else:
             seed = base_seed + k
-            order = _refine_order(eligible, groups, seed)
+            order = _refine_order(eligible, groups, seed, prev_failed)
         _report_stage(k + 1, seeds)
         key = tuple(order)
         if key in seen_orders:
@@ -147,6 +150,8 @@ def refine_routing(
             "expansions": raw.expansions_total,
         })
         best_expansions += raw.expansions_total
+        ripup = getattr(raw, "ripup", None)
+        prev_failed = set(getattr(ripup, "net_failures", None) or ())
         if raw.nets_routed > 0 and (raw.nets_routed, -score) > (
             best_routed, -best_score
         ):
@@ -216,24 +221,55 @@ def _tangle_groups(
 
 
 def _refine_order(
-    net_names: List[str], groups: List[List[str]], seed: int
+    net_names: List[str], groups: List[List[str]], seed: int,
+    failed: Collection[str] = (),
 ) -> List[str]:
     """Permute within tangle groups; isolated nets hold their positions.
 
-    Deterministic for a given seed (single ``random.Random`` stream over
-    groups in order); singleton groups pass through untouched.
+    With relay memory (``failed`` = previous trial's failed nets), those
+    nets move to the front in input order and the remainder permutes
+    within its clipped tangle groups. Deterministic for a given seed;
+    singleton groups pass through untouched. Empty ``failed`` reproduces
+    the legacy order exactly.
     """
     rng = random.Random(seed)
-    shuffled: Dict[str, List[str]] = {}
+    failed_set = set(failed or ()) & set(net_names)
+    if not failed_set:
+        shuffled: Dict[str, List[str]] = {}
+        for group in groups:
+            if len(group) > 1:
+                members = list(group)
+                rng.shuffle(members)
+                for name in group:
+                    shuffled[name] = members
+        order: List[str] = []
+        emitted: Set[str] = set()
+        for name in net_names:
+            if name in emitted:
+                continue
+            if name in shuffled:
+                for member in shuffled[name]:
+                    if member not in emitted:
+                        order.append(member)
+                        emitted.add(member)
+            else:
+                order.append(name)
+                emitted.add(name)
+        return order
+    head = [n for n in net_names if n in failed_set]
+    rest = [n for n in net_names if n not in failed_set]
+    rest_set = set(rest)
+    shuffled = {}
     for group in groups:
-        if len(group) > 1:
-            members = list(group)
-            rng.shuffle(members)
-            for name in group:
-                shuffled[name] = members
-    order: List[str] = []
-    emitted: Set[str] = set()
-    for name in net_names:
+        members = [m for m in group if m in rest_set]
+        if len(members) > 1:
+            clipped = list(members)
+            rng.shuffle(clipped)
+            for name in members:
+                shuffled[name] = clipped
+    order = list(head)
+    emitted = set(head)
+    for name in rest:
         if name in emitted:
             continue
         if name in shuffled:
