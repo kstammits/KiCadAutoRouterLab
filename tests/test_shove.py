@@ -201,7 +201,7 @@ class TestShoveRetry:
         model, tree = _rail_board()
         params = _params()
         with mock.patch(
-                "kicad_autorouter.routing.route_raw.route_gap_terminals",
+                "kicad_autorouter.routing.shove.route_gap_terminals",
                 return_value=(None, "boom", None, 0.25, None)):
             model2, tree2, reports = retry_failed_with_shove(
                 model, tree, ["S"], set(), params, radius_mm=4.0)

@@ -1,9 +1,15 @@
 """Staged routing service: trial -> refine relay -> repair -> shove.
 
-One entry point shared by the headless pipeline and (later) the UI
+One entry point shared by the headless pipeline and the UI
 worker, so both run the same failure recovery instead of drifting.
 No printing here: progress flows through the callbacks, outcomes ride
 the returned result plus the info dict; callers log.
+
+Boundary: this module plus ``shove`` is the recovery layer. Recovery
+may import the engine core (``pipeline``, ``route_raw``, ``output``,
+``board_model``, ``sexpr``); nothing under ``routing.*`` may import
+recovery back — callers enter only through ``route_with_retry`` (see
+``tests/test_retry.py::TestRouteWithRetry`` import-guard test).
 """
 
 from __future__ import annotations
@@ -103,7 +109,8 @@ def route_with_retry(
     """Route a net list with failure-gated retries.
 
     Trial 0 is always a single ``route_nets`` pass. When it leaves
-    failures and ``params.refine_seeds > 1``, a ``refine_routing``
+    failures and ``params.retry_stages`` is set (plus
+    ``params.refine_seeds > 1`` for the relay), a ``refine_routing``
     retry follows (trial 0 redone plus failure-first relay trials);
     the retry wins only on a strict routed-count win, so clean runs
     cost one pass and ties keep trial 0. Nets the adoption broke
@@ -112,7 +119,9 @@ def route_with_retry(
     through ``retry_failed_with_shove`` (GND sever plus partial-tolerant
     restore, strict-improvement-or-rollback per net) and finally
     ``retry_failed_with_signal_shove`` (signal sever plus restore or
-    gap reconnect, rollback per net otherwise). Returns ``(result, info)``
+    gap reconnect, rollback per net otherwise). With
+    ``retry_stages=False`` the trial-0 result returns untouched, so a
+    clean board provably costs one pass. Returns ``(result, info)``
     where ``info``
     carries the trial-0 result (``info["trial_result"]``), the refine
     run (``info["refine_result"]``, None when skipped), whether the
@@ -134,6 +143,16 @@ def route_with_retry(
     trial_result = result
     refine_result: Optional[RoutingResult] = None
     refine_adopted = False
+    repair_reports: Dict[str, ShoveReport] = {}
+    shove_reports: Dict[str, ShoveReport] = {}
+    signal_shove_reports: Dict[str, ShoveReport] = {}
+    if not params.retry_stages:
+        return result, {"trial_result": trial_result,
+                        "refine_result": refine_result,
+                        "refine_adopted": refine_adopted,
+                        "repair_reports": repair_reports,
+                        "shove_reports": shove_reports,
+                        "signal_shove_reports": signal_shove_reports}
     if result.nets_failed and params.refine_seeds > 1:
         refine_result, _, _ = refine_routing(
             model=model,
@@ -149,14 +168,12 @@ def route_with_retry(
         if refine_result.nets_routed > result.nets_routed:
             result = refine_result
             refine_adopted = True
-    repair_reports: Dict[str, ShoveReport] = {}
     if result.nets_failed and result.pcb_tree is not None:
         result, repair_reports = _repair_casualties(
             result, list(net_names), trial_result, set(protected_nets),
             params, extra_power_nets=tuple(extra_power_nets),
             progress_cb=progress_cb, should_cancel=should_cancel,
         )
-    shove_reports: Dict[str, ShoveReport] = {}
     if result.nets_failed and result.pcb_tree is not None:
         shove_model = board_model(result.pcb_tree)
         still_failed = [n for n in net_names if n in result.failed_reasons]
@@ -165,7 +182,6 @@ def route_with_retry(
             params, progress_cb=progress_cb, should_cancel=should_cancel,
         )
         result = _adopt_shove_fixes(result, shove_tree, shove_reports)
-    signal_shove_reports: Dict[str, ShoveReport] = {}
     if result.nets_failed and result.pcb_tree is not None:
         sig_model = board_model(result.pcb_tree)
         still_failed = [n for n in net_names if n in result.failed_reasons]

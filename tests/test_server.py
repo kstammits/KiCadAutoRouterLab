@@ -375,3 +375,56 @@ def test_accept_report_counts_ripped_arcs():
     ripped = st.last_accept_report["ripped"]["+12V"]
     assert ripped["arcs"] == 1
     assert ripped["tracks"] >= 0 and ripped["vias"] >= 0
+
+
+@pytest.mark.server
+@pytest.mark.minimal
+def test_recovery_job_uses_retry_service():
+    """Recovery jobs route via route_with_retry (headless parity)."""
+    import json as _json
+    from unittest import mock
+
+    import server_jobs
+    from kicad_autorouter.routing.pipeline import RoutingResult
+
+    trial = RoutingResult(tracks_added=0, vias_added=0, nets_routed=1,
+                          nets_failed=0, drc_clean=True, drc_violations=0,
+                          pcb_tree=None, failed_reasons={})
+    info = {"trial_result": trial, "refine_result": None,
+            "refine_adopted": False, "repair_reports": {},
+            "shove_reports": {}, "signal_shove_reports": {}}
+    job_id = "recovery-unit"
+    server_jobs._JOBS[job_id] = {
+        "job_id": job_id, "state": "queued", "net_names": ["S"],
+        "params_dict": {"retry_stages": False}, "recovery": True,
+        "refine": False, "mode": None, "mode_warning": None,
+        "cancel_requested": False, "created": 0.0, "started": None,
+        "finished": None, "progress": {}, "result": None, "error": None,
+    }
+    fake_state = mock.Mock()
+    fake_state.snapshot = (mock.Mock(), None, None, None, None, None)
+    fake_state.snapshot_pcb.return_value = (mock.Mock(), None)
+    fake_state.get_protected_nets.return_value = set()
+    fake_state.get_power_override_nets.return_value = ()
+    fake_state.version = 0
+    with mock.patch.object(server_jobs, "STATE", fake_state):
+        with mock.patch.object(server_jobs, "route_with_retry",
+                               return_value=(trial, info)) as svc:
+            assert server_jobs._ROUTING_JOB_LOCK.acquire(blocking=False)
+            try:
+                server_jobs._run_routing_job(job_id)
+            finally:
+                if server_jobs._ROUTING_JOB_LOCK.locked():
+                    server_jobs._ROUTING_JOB_LOCK.release()
+    assert svc.call_count == 1
+    sent = svc.call_args.kwargs["params"] if svc.call_args.kwargs.get("params") \
+        else svc.call_args[0][4]
+    # Job key wins over the payload: full staged chain runs.
+    assert sent.retry_stages is True
+    for key in ("progress_cb", "stage_cb", "should_cancel"):
+        assert key in svc.call_args.kwargs
+    # Recovery builds its own grids: STATE cleared for rebuild.
+    assert fake_state.cost_grid is None and fake_state.routing_grid is None
+    job = server_jobs._JOBS.pop(job_id)
+    assert job["state"] == "done"
+    _json.dumps(job)  # poll-safe: no report objects leak into the job dict

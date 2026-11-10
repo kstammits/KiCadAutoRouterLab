@@ -30,6 +30,7 @@ from kicad_autorouter.routing.pipeline import (
     refine_routing,
     route_nets,
 )
+from kicad_autorouter.routing.retry import route_with_retry
 from kicad_autorouter.routing.polish import polish_routes
 
 from ui.debug_grids import _cost_grid_to_debug
@@ -109,6 +110,8 @@ def _run_routing_job(job_id: str) -> None:
                 prog["stage"] = "refine"
                 prog["candidate"] = j.get("refine_candidate", 0)
                 prog["candidates"] = j.get("refine_total", 0)
+            elif j.get("recovery"):
+                prog["stage"] = "recovery"
             j["progress"] = prog
 
     def _on_stage(idx: int, total: int) -> None:
@@ -120,6 +123,10 @@ def _run_routing_job(job_id: str) -> None:
             j["refine_total"] = total
 
     try:
+        if job.get("recovery"):
+            # Recovery jobs always run the full staged chain; the job key
+            # wins over the params payload.
+            params_dict["retry_stages"] = True
         route_params = RoutingParams.from_dict(params_dict)
     except (ValueError, TypeError) as exc:
         with _JOBS_LOCK:
@@ -129,24 +136,52 @@ def _run_routing_job(job_id: str) -> None:
         _ROUTING_JOB_LOCK.release()
         return
     try:
-        route_fn = refine_routing if job.get("refine") else route_nets
-        kwargs = {}
-        if job.get("refine"):
-            kwargs["stage_cb"] = _on_stage
-        result, cost_grid, routing_grid = route_fn(
-            model=model,
-            net_names=net_names,
-            protected_nets=protected_nets,
-            cost_grid=STATE.cost_grid,
-            routing_grid=STATE.routing_grid,
-            obstacle_cache=STATE.obstacle_cache,
-            params=route_params,
-            original_pcb_tree=tree,
-            extra_power_nets=extra_power,
-            progress_cb=_on_progress,
-            should_cancel=_should_cancel,
-            **kwargs,
-        )
+        if job.get("recovery"):
+            # Same staged recovery as the headless pipeline (trial plus
+            # refine relay, repair, and shove stages). Recovery builds its
+            # own grids, so STATE's are dropped and rebuilt next run; the
+            # debug grid payload is skipped (no grids to show).
+            result, info = route_with_retry(
+                model=model,
+                tree=tree,
+                net_names=net_names,
+                protected_nets=set(protected_nets),
+                params=route_params,
+                extra_power_nets=extra_power,
+                progress_cb=_on_progress,
+                stage_cb=_on_stage,
+                should_cancel=_should_cancel,
+            )
+            rep = info["trial_result"]
+            logger.info(
+                "routing job %s recovery done: trial %d/%d, adopted=%s, "
+                "repair/shove/sigshove fixes=%d/%d/%d",
+                job_id, rep.nets_routed, rep.nets_failed,
+                info["refine_adopted"],
+                sum(1 for r in info["repair_reports"].values() if r.routed),
+                sum(1 for r in info["shove_reports"].values() if r.routed),
+                sum(1 for r in info["signal_shove_reports"].values()
+                    if r.routed))
+            cost_grid, routing_grid = None, None
+        else:
+            route_fn = refine_routing if job.get("refine") else route_nets
+            kwargs = {}
+            if job.get("refine"):
+                kwargs["stage_cb"] = _on_stage
+            result, cost_grid, routing_grid = route_fn(
+                model=model,
+                net_names=net_names,
+                protected_nets=protected_nets,
+                cost_grid=STATE.cost_grid,
+                routing_grid=STATE.routing_grid,
+                obstacle_cache=STATE.obstacle_cache,
+                params=route_params,
+                original_pcb_tree=tree,
+                extra_power_nets=extra_power,
+                progress_cb=_on_progress,
+                should_cancel=_should_cancel,
+                **kwargs,
+            )
     except ValueError as exc:
         with _JOBS_LOCK:
             job["state"] = "failed"
@@ -210,7 +245,7 @@ def _run_routing_job(job_id: str) -> None:
             for c in result.candidates
         ]
         payload["winner_seed"] = result.winner_seed
-    if route_params.debug:
+    if route_params.debug and cost_grid is not None:
         payload["debug"] = _cost_grid_to_debug(cost_grid, routing_grid)
     with _JOBS_LOCK:
         job["state"] = "done"

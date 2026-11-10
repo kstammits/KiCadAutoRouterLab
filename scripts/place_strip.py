@@ -127,8 +127,8 @@ OUT113 = "tube113.kicad_pcb"
 OUT114 = "tube114.kicad_pcb"
 OUT115 = "tube115_rails.kicad_pcb"
 OUT116 = "tube116_routed.kicad_pcb"
-CLUSTER_ITERS = 500
-LEGAL_ITERS = 1000
+CLUSTER_ITERS = 400
+LEGAL_ITERS = 1200
 TIDY_ITERS = 200
 # Slice size above stall_window (100): per-slice stop reasons are honest
 # (converged / stalled reachable), not budget-by-construction.

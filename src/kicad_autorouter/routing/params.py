@@ -103,6 +103,10 @@ class RoutingParams:
     # (baseline current copper + refine_seeds shuffled re-routes; best wins).
     refine_seed: int = 0  # Base RNG seed for refine order shuffles (0 = fixed
     # sequence; reproducible across runs).
+    retry_stages: bool = True  # Run the staged post-trial chain in
+    # route_with_retry (refine relay, casualty repair, GND/signal shove).
+    # False returns the trial-0 result untouched, so a clean board provably
+    # costs one pass and recovery stays out of the UI path unless asked.
     allowed_layers: Optional[List[str]] = None  # Copper subset to route on (None = all stackup layers).
     # Enforced in route_nets: terminals on disallowed layers fail the net
     # with an explicit reason, and A* moves / via landings are confined to
@@ -153,6 +157,7 @@ class RoutingParams:
             "fanout_plane_vias_max": self.fanout_plane_vias_max,
             "refine_seeds": self.refine_seeds,
             "refine_seed": self.refine_seed,
+            "retry_stages": self.retry_stages,
             "allowed_layers": list(self.allowed_layers) if self.allowed_layers is not None else None,
         }
 
@@ -173,7 +178,7 @@ class RoutingParams:
             "arc_fillets", "arc_max_radius_mm", "arc_min_leg_mm",
             "arc_sample_mm", "arc_keep_min_radius_mm", "smooth_effort",
             "fanout_planes", "fanout_plane_vias_max",
-            "refine_seeds", "refine_seed",
+            "refine_seeds", "refine_seed", "retry_stages",
         }
         unknown = sorted(k for k in d if k not in valid_keys)
         if strict and unknown:
@@ -254,6 +259,7 @@ def _validate_routing_params(params: "RoutingParams") -> None:
     for name in (
         "run_drc", "debug", "stitch_gnd_vias", "strip_gnd_blockers",
         "corridor", "refill_zones", "fanout_planes", "arc_fillets",
+        "retry_stages",
     ):
         if not isinstance(getattr(params, name), bool):
             raise ValueError(f"{name} must be a boolean")

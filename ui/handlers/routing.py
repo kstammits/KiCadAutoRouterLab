@@ -290,6 +290,7 @@ def handle_post(path, qs, body, handler):
                 "net_names": clean_names,
                 "params_dict": params_dict,
                 "refine": bool(req.get("refine", False)),
+                "recovery": bool(req.get("recovery", False)),
                 "mode": mode_info["mode"],
                 "mode_warning": mode_info["warning"],
                 "cancel_requested": False,

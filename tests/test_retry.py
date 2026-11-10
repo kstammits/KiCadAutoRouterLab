@@ -255,6 +255,67 @@ class TestRouteWithRetry:
         assert result.nets_failed == 1
         assert result.failed_reasons == {"B": "walled"}
 
+    def test_retry_stages_off_returns_trial_untouched(self):
+        # Master flag off: trial 0 returns as-is, no refine/repair/shove
+        # runs at all (clean single pass, UI parity path).
+        import unittest.mock as mock
+
+        import kicad_autorouter.routing.retry as retry_mod
+
+        model, tree = _easy_board()
+        params = _params(retry_stages=False)
+        trial = _fake_result(0, 1, {"S": "no path"}, tree)
+        calls = []
+
+        def spy_route(**kw):
+            calls.append(kw["net_names"])
+            return (trial, None, None)
+
+        with mock.patch.object(retry_mod, "route_nets", spy_route):
+            with mock.patch.object(
+                    retry_mod, "refine_routing",
+                    side_effect=AssertionError("must not run")):
+                with mock.patch.object(
+                        retry_mod, "retry_failed_with_shove",
+                        side_effect=AssertionError("must not run")):
+                    with mock.patch.object(
+                            retry_mod, "retry_failed_with_signal_shove",
+                            side_effect=AssertionError("must not run")):
+                        result, info = route_with_retry(
+                            model, tree, ["S"], set(), params=params)
+        assert result is trial
+        assert calls == [["S"]]
+        assert info["refine_result"] is None
+        assert info["refine_adopted"] is False
+        assert info["repair_reports"] == {}
+        assert info["shove_reports"] == {}
+        assert info["signal_shove_reports"] == {}
+
+    def test_recovery_boundary_no_core_imports_recovery(self):
+        # One-way dependency, enforced: importing engine core must not
+        # pull in the recovery layer (same package by history, not by
+        # coupling). Subprocess: immune to this session's sys.modules.
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        repo = Path(__file__).resolve().parent.parent
+        code = (
+            f"import sys; sys.path.insert(0, {str(repo / 'src')!r}); "
+            "import kicad_autorouter.routing.pipeline, "
+            "kicad_autorouter.routing.route_raw, "
+            "kicad_autorouter.routing.router, "
+            "kicad_autorouter.routing.refine, "
+            "kicad_autorouter.routing.finish_routes, "
+            "kicad_autorouter.routing.output; "
+            "bad = [m for m in sys.modules if m.endswith('.retry') "
+            "or m.endswith('.shove')]; "
+            "assert not bad, bad"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True)
+        assert proc.returncode == 0, proc.stderr
+
     def test_no_casualties_no_extra_pass(self):
         # Clean trial: no refine, no repair, exactly one route_nets call.
         import unittest.mock as mock

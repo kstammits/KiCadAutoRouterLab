@@ -1,5 +1,12 @@
 """Local shove: evict-split-restore retry for walled nets.
 
+Recovery layer (with ``retry``): sever-and-restore retries that run
+*around* the engine core, never inside it — this module may import
+``pipeline``, ``route_raw`` and ``output``, but nothing under
+``routing.*`` may import it back. Callers enter through
+``retry_failed_with_shove`` / ``retry_failed_with_signal_shove``
+(usually via ``retry.route_with_retry``); outcomes ride ``ShoveReport``.
+
 Sequential routing can wall a later net behind rail copper committed by
 an earlier stage. Global eviction would destroy that committed mesh,
 and reordering only moves the blockage (tube116: R28 / R31 / C2OutCV /
@@ -39,12 +46,15 @@ from typing import Collection, Dict, List, Optional, Sequence, Set, Tuple
 from shapely.geometry import LineString, box as shapely_box
 from shapely.ops import unary_union
 
-from ..board_model import BoardModel, Point, board_model
+from ..board_model import ArcTrack, BoardModel, Point, Track, Via, board_model
 from ..board_model.model import (
     is_ground_net,
     is_power_net_effective,
 )
 from ..sexpr import SExpr
+from .output import apply_routes_to_tree, routes_to_tracks_vias
+from .pipeline import route_nets
+from .route_raw import _tht_sites_by_net, route_gap_terminals
 
 # KiCad default board edge clearance (setup constraint) used as the
 # acceptance gate for shoved copper when the tree carries no explicit
@@ -191,8 +201,6 @@ def evict_gnd_in_boxes(
     whole into the ledger (vias cannot split; arcs are rare enough that
     whole removal + restore is exact).
     """
-    from ..board_model import Track
-
     boxes = tuple(boxes)
     if not boxes:
         return Eviction(model=model, tree=tree)
@@ -751,10 +759,6 @@ def _fly_one_gap(
     model, tree, reason)``; any failure rolls the whole attempt back
     (eviction was on copies, so rollback is free).
     """
-    from ..board_model import ArcTrack, Track, Via
-    from .output import apply_routes_to_tree, routes_to_tracks_vias
-    from .route_raw import _tht_sites_by_net, route_gap_terminals
-
     seed_tracks = [
         (t.start.x_mm, t.start.y_mm, t.end.x_mm, t.end.y_mm, t.layer)
         for t in model.tracks if t.net_name == victim]
@@ -1044,8 +1048,6 @@ def retry_failed_with_shove(
     """
     from dataclasses import replace as _replace_params
 
-    from .pipeline import route_nets
-
     if clearance_mm is None:
         clearance_mm = float(getattr(params, "clearance_mm", 0.2))
     # Shove opens local room: a net that still needs a huge search
@@ -1146,8 +1148,6 @@ def retry_failed_with_signal_shove(
     inside each solo route and gap flight via ``should_cancel``).
     """
     from dataclasses import replace as _replace_params
-
-    from .pipeline import route_nets
 
     if clearance_mm is None:
         clearance_mm = float(getattr(params, "clearance_mm", 0.2))
