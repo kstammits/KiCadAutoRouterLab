@@ -537,11 +537,25 @@ class SingleNetRouter:
             # kept copper: searches terminate on either, joining the new
             # tree to the kept one wherever they touch. The start pin is
             # cleared from the mask (it must travel, not trivially succeed).
+            # Terminals already in i's component are cleared too: with
+            # nearest-goal-wins, a search that can end on an already-joined
+            # neighbor records a vacuous union (no progress) and the ladder
+            # stops growing — two close pads plus a far group stalls
+            # forever with every pair "succeeding". Forcing the search
+            # onto other components (or an honest failure, which grows the
+            # window) guarantees union progress on success. j's own
+            # component stays (skip-checked different), as does seed.
             comp_j = uf.find(j)
             base = build_goal_mask(comp_j)
             si_cell = tuple(terminals[i])
             all_goal = all_term_mask.copy()
             all_goal[si_cell[2], si_cell[1], si_cell[0]] = False
+            same = uf.find(i)
+            for k, t in enumerate(terminals):
+                if k != i and uf.find(k) == same:
+                    c, r, l = tuple(t)
+                    if 0 <= l < self.n_layers and 0 <= r < self.H and 0 <= c < self.W:
+                        all_goal[l, r, c] = False
             term_goal = all_goal if base is None else (base | all_goal)
             success, path, cost = _search_pair(i, j, term_goal, seed_mask)
             if success:

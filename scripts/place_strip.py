@@ -2,11 +2,15 @@
 """Staged place -> strip -> legalize -> tidy -> rails -> signals pipeline.
 
 Builds from a test fixture (default: tube111 worktree) through the app's
-accept semantics (``BoardState.accept_proposal``), then strips ALL copper
-(tracks, vias, arcs AND zone pours) up front so nothing can short — a
-stripped board is expected to be full of unconnected nets by design:
+accept semantics (``BoardState.accept_proposal``), then strips tracks,
+vias, arcs, and zone *fills* up front so nothing can short — pour
+definitions (outlines + rules) survive, fills are KiCad caches that go
+stale the moment copper moves. Every stage output is refilled in place
+after its DRC report, so each stage routes from a freshly poured board
+(the engine ignores cached fills and builds its own pour model from
+outlines, so refills only serve the viewer and KiCad DRC truth):
 
-    filed -> [strip all copper] -> [cluster 500] -> tmp/tube112.kicad_pcb
+    filed -> [strip tracks/vias/arcs/fills, keep zone defs] -> [cluster 500] -> tmp/tube112.kicad_pcb
           -> [legalize 1000] -> tmp/tube113.kicad_pcb
           -> [tidy 200] -> tmp/tube114.kicad_pcb
           -> [rails only] -> tmp/tube115_rails.kicad_pcb
@@ -205,11 +209,34 @@ def attach_led_ghosts(model):
         footprint_region=region)
 
 
-def strip_all_copper(tree: SExpr, model) -> SExpr:
-    """Remove every copper feature: tracks, arcs, vias AND zone pours.
+def drop_zone_fills(tree: SExpr) -> SExpr:
+    """Zone nodes without cached fills (definitions survive restrip).
 
-    Keepout zones (if any) are preserved — they are constraints, not copper.
-    After this the board cannot short; unconnected nets are expected.
+    ``filled_polygon`` caches go stale the moment copper moves, and the
+    engine ignores them anyway (it builds its own pour model from zone
+    outlines). Dropping them keeps working trees light and placement
+    DRC copper-free; files are refilled in place after each stage save.
+    """
+    def scrub(node):
+        if (isinstance(node, SExpr) and node.head == "zone" and not any(
+                isinstance(c, SExpr) and c.head == "keepout"
+                for c in node.args)):
+            kids = tuple(
+                c for c in node.args
+                if not (isinstance(c, SExpr) and c.head == "filled_polygon"))
+            if len(kids) != len(node.args):
+                return replace(node, args=kids)
+        return node
+    return replace(tree, args=tuple(scrub(c) for c in tree.args))
+
+
+def strip_all_copper(tree: SExpr, model) -> SExpr:
+    """Remove tracks, arcs, vias, and zone fills (definitions kept).
+
+    Keepout zones are preserved untouched — they are constraints, not
+    copper. Pour outlines stay so later stages refill around final
+    copper. After this the board cannot short; unconnected nets are
+    expected.
     """
     nets = set()
     for fp in model.footprints:
@@ -223,15 +250,7 @@ def strip_all_copper(tree: SExpr, model) -> SExpr:
         if v.net_name:
             nets.add(v.net_name)
     tree = rip_up_nets(tree, nets, set())
-
-    def keep(node) -> bool:
-        if not isinstance(node, SExpr) or node.head != "zone":
-            return True
-        return any(
-            isinstance(c, SExpr) and c.head == "keepout" for c in node.args
-        )
-
-    return replace(tree, args=tuple(c for c in tree.args if keep(c)))
+    return drop_zone_fills(tree)
 
 
 def affected_nets(model, moved_uuids):
@@ -373,6 +392,27 @@ def drc_histogram(path, save_json=None):
     return hist, len(data.get("unconnected_items", []))
 
 
+def refill_file(path: Path, tag: str) -> bool:
+    """Refill zone pours in place via kicad-cli (viewer + DRC truth).
+
+    Log-and-continue on any failure: the engine never reads cached
+    fills (the pour model is rebuilt from outlines), so a missed refill
+    only costs the viewer, never the run.
+    """
+    from kicad_autorouter.validate import refill_zones
+
+    try:
+        rep = refill_zones(path)
+    except Exception as exc:
+        print(f"[{tag}] refill skipped: {exc}")
+        return False
+    if rep.loaded and not rep.error:
+        print(f"[{tag}] refilled zones in {path.name}")
+        return True
+    print(f"[{tag}] refill failed ({rep.error}); continuing unfilled")
+    return False
+
+
 def report_triage(name, hist, base):
     print(f"--- DRC {name}: {sum(hist.values())} violations (unconnected ignored)")
     for t in sorted(set(hist) | set(base)):
@@ -410,6 +450,148 @@ def net_pad_counts(model):
             if pad.net_name:
                 counts[pad.net_name] += 1
     return counts
+
+
+def pour_joined(model, net: str, res_mm: float = 0.1, grid=None) -> bool:
+    """True when every pad of ``net`` joins one island via zone pours.
+
+    3D union-find over the pour engine's own fill model (zone outlines
+    minus foreign copper plus same-net copper incl. via barrels, 6-
+    connected across layers): cached fills are ignored, so this judges
+    the outlines, not KiCad's last refill. Join is required per board
+    region, not file-wide — panels sharing a file must never join
+    across regions (the stitcher is region-scoped the same way).
+    Conservative: any doubt (no zones for the net, an unmapped pad,
+    split islands, engine error) returns False and the net routes tree
+    tracks as usual.
+    """
+    import numpy as np
+    from scipy import ndimage
+
+    from kicad_autorouter.routing.grid import (
+        board_to_grid,
+        create_grid_from_model,
+    )
+    from kicad_autorouter.routing.pour import pour_copper_mask
+
+    try:
+        if not any((z.net_name or "") == net for z in model.zones):
+            return False
+        if grid is None:
+            layers = tuple(model.copper_layers or ("F.Cu", "B.Cu"))
+            grid = create_grid_from_model(model, res_mm, layers=layers)
+        stack = np.stack(
+            [pour_copper_mask(model, grid, net, layer)
+             for layer in grid.layers])
+        struct = np.zeros((3, 3, 3), dtype=bool)
+        struct[1, 1, 1] = True
+        struct[0, 1, 1] = struct[2, 1, 1] = True
+        struct[1, 0, 1] = struct[1, 2, 1] = True
+        struct[1, 1, 0] = struct[1, 1, 2] = True
+        labeled, _ = ndimage.label(stack, structure=struct)
+        idx = grid.layer_to_idx
+        H, W = grid.height_cells, grid.width_cells
+        copper = set(grid.layers)
+        region = getattr(model, "footprint_region", {}) or {}
+        seen: dict = {}
+        for fp in model.footprints:
+            for p in fp.pads:
+                if p.net_name != net:
+                    continue
+                span = set()
+                for layer in p.layers or ():
+                    if layer == "*.Cu":
+                        span.update(copper)
+                    elif layer in idx:
+                        span.add(layer)
+                lis = [idx[layer] for layer in span if layer in idx]
+                if not lis:
+                    return False
+                hx, hy = p.size_mm[0] / 2.0, p.size_mm[1] / 2.0
+                x, y = p.position.x_mm, p.position.y_mm
+                (c0, r0), (c1, r1) = board_to_grid(grid, x - hx, y - hy), \
+                    board_to_grid(grid, x + hx, y + hy)
+                lo_c, hi_c = max(0, min(c0, c1)), min(W - 1, max(c0, c1))
+                lo_r, hi_r = max(0, min(r0, r1)), min(H - 1, max(r0, r1))
+                ids = {int(labeled[li, r, c])
+                       for li in lis
+                       for r in range(lo_r, hi_r + 1)
+                       for c in range(lo_c, hi_c + 1)
+                       if labeled[li, r, c] > 0}
+                if not ids:
+                    return False
+                key = region.get(fp.uuid, -1)
+                seen.setdefault(key, set()).update(ids)
+        return bool(seen) and all(len(v) == 1 for v in seen.values())
+    except Exception as exc:
+        print(f"pour-join query failed for {net} ({exc}); routing it")
+        return False
+
+
+def prestitch_ground(model, tree, params, res_mm: float = 0.1):
+    """Adopt island-joining stitches pre-rails; return (model, tree, joined).
+
+    Runs the stitch planner on the track-free board and commits its
+    vias/bridges only when a ground net comes out pour-joined — the
+    commit that lets rails skip tree tracks for it. Partial joins are
+    discarded (the post-route stitcher handles leftovers later), so a
+    failed attempt leaves the board untouched.
+    """
+    from kicad_autorouter.routing.grid import create_grid_from_model
+    from kicad_autorouter.routing.output import (
+        Track as OutputTrack,
+        Via as OutputVia,
+        apply_routes_to_tree,
+    )
+    from kicad_autorouter.routing.stitch import plan_stitches
+
+    layers = tuple(model.copper_layers or ("F.Cu", "B.Cu"))
+    grid = create_grid_from_model(model, res_mm, layers=layers)
+    plan = plan_stitches(
+        model, grid,
+        size_mm=params.via_size_mm,
+        drill_mm=params.via_drill_mm,
+        clearance_mm=params.clearance_mm,
+        bridge_width_mm=params.stitch_bridge_width_mm,
+        max_vias=params.stitch_vias_max,
+        max_bridges=params.stitch_bridges_max,
+        max_bridge_mm=params.stitch_bridge_max_mm,
+        min_island_mm2=params.stitch_min_island_mm2,
+    )
+    print(f"rails stitch-first: islands {plan.islands_before}"
+          f"->{plan.islands_after}, "
+          f"{len(plan.vias)} vias + {len(plan.tracks)} bridges planned")
+    if not plan.vias and not plan.tracks:
+        return model, tree, set()
+    cand_model = replace(
+        model,
+        tracks=model.tracks + tuple(plan.tracks),
+        vias=model.vias + tuple(plan.vias),
+    )
+    from kicad_autorouter.routing.power import identify_power_nets
+
+    _, ground, _ = identify_power_nets(cand_model, ())
+    joined = {g for g in ground
+              if pour_joined(cand_model, g, res_mm, grid)}
+    if not joined:
+        print("rails stitch-first: still split, discarding stitches")
+        return model, tree, set()
+    out_tracks = [
+        OutputTrack(start=(st.start.x_mm, st.start.y_mm),
+                    end=(st.end.x_mm, st.end.y_mm),
+                    width_mm=st.width_mm, layer=st.layer,
+                    net_name=st.net_name or "")
+        for st in plan.tracks]
+    out_vias = [
+        OutputVia(position=(sv.position.x_mm, sv.position.y_mm),
+                  size_mm=sv.size_mm, drill_mm=sv.drill_mm,
+                  layers=tuple(sv.layers), net_name=sv.net_name or "")
+        for sv in plan.vias]
+    tree = apply_routes_to_tree(tree, out_tracks, out_vias, ())
+    model = board_model(tree)
+    print(f"rails stitch-first adopted for {sorted(joined)}: "
+          f"{len(out_vias)} vias + {len(out_tracks)} bridges committed")
+    return model, tree, joined
 
 
 def report_connectivity(name, model, nets, tol_mm=0.05):
@@ -466,12 +648,20 @@ def report_connectivity(name, model, nets, tol_mm=0.05):
 def run_route_stage(model, tree, net_names, protected, params, tag, extra_power=()):
     """Route one net list via the UI Route-All path (route_nets + writeback).
 
+    Trial 0 is always a single route_nets pass. When it leaves nets failed
+    and params.refine_seeds > 1, a refine_routing retry follows (trial 0
+    redone plus failure-first relay trials within tangle groups); the retry
+    wins only when it routes strictly more nets, so clean runs cost one
+    pass and failing runs keep the best order found. Sequential routing is
+    order-dependent — an early track can wall off a later net (tube116
+    signals: 50/10 single-order vs 53/7 after relay) — while true
+    mid-route push-and-shove stays parked per docs/roadmap.md.
     Logs per-net pair completion (best-effort progress hook), run totals
     (copper, stitch, expansions, timings, wire), and every failed net with
     its explicit reason — the iteration surface for preset/engine work.
     Returns the re-parsed model, the new tree, and the RoutingResult.
     """
-    from kicad_autorouter.routing.pipeline import route_nets
+    from kicad_autorouter.routing.retry import route_with_retry
 
     seen = set()
 
@@ -482,16 +672,57 @@ def run_route_stage(model, tree, net_names, protected, params, tag, extra_power=
             print(f"[{tag}] net {net}: {pairs_done}/{pairs_total} pairs exp={expansions}")
             seen.add(net)
 
+    def stage_cb(idx, total):
+        print(f"[{tag}] refine candidate {idx}/{total}")
+
     t0 = time.time()
-    result, _, _ = route_nets(
+    result, info = route_with_retry(
         model=model,
+        tree=tree,
         net_names=list(net_names),
         protected_nets=set(protected),
         params=params,
-        original_pcb_tree=tree,
         extra_power_nets=tuple(extra_power),
         progress_cb=progress_cb,
+        stage_cb=stage_cb,
     )
+    trial, retry = info["trial_result"], info["refine_result"]
+    if retry is not None:
+        for c in retry.candidates or ():
+            print(f"[{tag}] refine trial seed={c['seed']} "
+                  f"routed={c['nets_routed']} failed={c['nets_failed']} "
+                  f"score={c['score']} exp={c['expansions']}")
+        print(f"[{tag}] refine winner_seed={retry.winner_seed} "
+              f"routed={retry.nets_routed} failed={retry.nets_failed}")
+        if info["refine_adopted"]:
+            print(f"[{tag}] adopting refine retry "
+                  f"({trial.nets_routed}->{retry.nets_routed} routed)")
+        else:
+            print(f"[{tag}] keeping trial 0 "
+                  f"(retry routed {retry.nets_routed}, no strict win)")
+    repair_reports = info["repair_reports"]
+    for net, rep in repair_reports.items():
+        print(f"[{tag}] repair {net}: routed={rep.routed} {rep.reason}")
+    repaired = [n for n, rep in repair_reports.items() if rep.routed]
+    if repaired:
+        print(f"[{tag}] repair adopted for {len(repaired)} nets: {repaired}")
+    shove_reports = info["shove_reports"]
+    for net, rep in shove_reports.items():
+        print(f"[{tag}] shove {net}: routed={rep.routed} "
+              f"evicted={rep.evicted} restored={rep.restored} "
+              f"gap={rep.gap_routed} {rep.reason}")
+    fixed = [n for n, rep in shove_reports.items() if rep.routed]
+    if fixed:
+        print(f"[{tag}] shove adopted for {len(fixed)} nets: {fixed}")
+    sig_reports = info["signal_shove_reports"]
+    for net, rep in sig_reports.items():
+        print(f"[{tag}] sigshove {net}: routed={rep.routed} "
+              f"evicted={rep.evicted} restored={rep.restored} "
+              f"victims={list(rep.victims)} gap={rep.gap_routed} "
+              f"{rep.reason}")
+    sig_fixed = [n for n, rep in sig_reports.items() if rep.routed]
+    if sig_fixed:
+        print(f"[{tag}] sigshove adopted for {len(sig_fixed)} nets: {sig_fixed}")
     dt = time.time() - t0
     drc_state = ("clean" if result.drc_clean else "DIRTY") if params.run_drc else "n/a"
     print(f"[{tag}] routed={result.nets_routed} failed={result.nets_failed} "
@@ -563,12 +794,13 @@ def main(argv=None) -> int:
                   f"{base_unconn} unconnected (ignored below)")
 
         if "cluster" in selected:
-            # Full copper strip up front: tracks, vias, arcs, and zone pours.
-            # Later stages start from stripped/clustered boards, never filed.
+            # Full strip up front: tracks, vias, arcs, zone fills (pour
+            # definitions survive). Later stages start from stripped /
+            # clustered boards, never filed.
             n_tracks = len(model.tracks)
             tree = strip_all_copper(tree, model)
             model = board_model(tree)
-            print(f"stripped all copper: {n_tracks} tracks + pours removed, "
+            print(f"stripped copper: {n_tracks} tracks + zone fills removed, "
                   f"{len(model.tracks)} tracks / {zone_count(tree)} zones remain")
 
         stages = [
@@ -583,8 +815,11 @@ def main(argv=None) -> int:
             if ran:
                 # Reload the previous stage output: true intermediate state.
                 # (The first selected stage runs on [input], loaded above.)
+                # Drop refilled caches: working trees stay fill-free (the
+                # engine ignores fills; only files carry them for viewing).
                 prev = stages[i - 1][3]
                 tree = parse_file(prev)
+                tree = drop_zone_fills(tree)
                 model = board_model(tree)
             ran = True
             # Rebase label anchors to filed before every stage: the orbit
@@ -614,6 +849,10 @@ def main(argv=None) -> int:
                     # no NEW flags (there is nothing to diff against).
                     print(f"--- DRC {tag} {out.name}: {sum(hist.values())} "
                           f"violations (no baseline in subset run)")
+            # Refill after the (fill-free) DRC report: the file ends up
+            # poured for viewing and as the next stage's input, while
+            # placement DRC stays copper-free by the user's standing rule.
+            refill_file(out, tag)
 
     if any(s in selected for s in ("rails", "signals")):
         from kicad_autorouter.routing.pipeline import RoutingParams
@@ -635,6 +874,15 @@ def main(argv=None) -> int:
               f"track={route_params.track_width_mm}/power={route_params.power_width_mm}mm "
               f"via={route_params.via_size_mm}/{route_params.via_drill_mm}mm "
               f"arc_fillets={route_params.arc_fillets}")
+        # Stitch-first: join pour islands on the track-free board so
+        # poured ground can carry continuity instead of tree tracks.
+        # Adopted only on full join (partial joins are discarded); the
+        # post-route stitcher still repairs severance later.
+        prejoined: set = set()
+        if route_params.stitch_gnd_vias:
+            model, tree, prejoined = prestitch_ground(
+                model, tree, route_params,
+                route_params.grid_resolution_mm)
         # Rails input: the tidy output when tidy ran just now, else [input].
         routing_input_path = tmp / OUT114 if "tidy" in selected else Path(input_path)
         route_base = Counter()
@@ -644,7 +892,25 @@ def main(argv=None) -> int:
         power, ground, _ = identify_power_nets(model, ())
         rails = [n for n in list(ground) + list(power) if counts.get(n, 0) >= 2]
         routable = [n for n in model.nets if counts.get(n, 0) >= 2]
-        signals = [n for n in routable if n not in set(rails)]
+        # Poured ground rides the zones, not tree tracks: a pour-joined
+        # ground net leaves the rails list so signals inherit a quieter
+        # board (the stitcher still joins layers). Skipped nets must not
+        # fall through to signals — they are done, not unrouted.
+        # Prestitch already proved the verdict for its board (it tests a
+        # copper superset), so only query directly when it didn't run.
+        if prejoined:
+            skipped_pour = [n for n in rails if n in prejoined]
+        elif route_params.stitch_gnd_vias:
+            skipped_pour = []
+        else:
+            skipped_pour = [n for n in rails if n in set(ground)
+                            and pour_joined(
+                                model, n, route_params.grid_resolution_mm)]
+        for n in skipped_pour:
+            rails.remove(n)
+            print(f"rails: {n} pour-joined, skipping tree tracks")
+        signals = [n for n in routable
+                   if n not in set(rails) and n not in set(skipped_pour)]
         print(f"nets: {len(routable)} routable ({len(counts)} with pads); "
               f"rails={rails} signals={len(signals)} "
               f"skipped_1pad={[n for n in counts if counts[n] < 2]}")
@@ -654,6 +920,11 @@ def main(argv=None) -> int:
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_text(to_sexpr(new_tree) + "\n", encoding="utf-8")
             print(f"saved {tag} -> {out}")
+            # Routing reports see true copper: refill first, then report
+            # (the inverse of placement stages, whose DRC stays
+            # copper-free). Returns the refilled model/tree for chaining.
+            refill_file(out, tag)
+            new_tree = parse_file(out)
             new_model = board_model(new_tree)
             report_legality(f"{tag} {out.name}", new_model)
             routed_here = rails if tag == "rails" else signals
@@ -663,11 +934,12 @@ def main(argv=None) -> int:
                 hist, unconn = drc_histogram(out, save_json=drc_json) or (Counter(), 0)
                 print(f"--- unconnected {tag} {out.name}: {unconn} items")
                 report_triage(f"{tag} {out.name} vs routing input", hist, route_base)
+            return new_model, new_tree
 
         if "rails" in selected:
             model, tree, _ = run_route_stage(
                 model, tree, rails, set(rails), route_params, "rails")
-            save_route("rails", tree, tmp / OUT115)
+            model, tree = save_route("rails", tree, tmp / OUT115)
         if "signals" in selected:
             if "rails" not in selected:
                 # Reload the rails output: true intermediate state.
@@ -675,7 +947,7 @@ def main(argv=None) -> int:
                 model = board_model(tree)
             model, tree, _ = run_route_stage(
                 model, tree, signals, set(rails), route_params, "signals")
-            save_route("signals", tree, tmp / OUT116)
+            model, tree = save_route("signals", tree, tmp / OUT116)
     return 0
 
 

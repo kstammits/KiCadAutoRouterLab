@@ -11322,6 +11322,7 @@
 		(embedded_fonts no)
 	)
 	(footprint "Connector_PinHeader_2.54mm:PinHeader_2x05_P2.54mm_Vertical"
+		(locked yes)
 		(layer "B.Cu")
 		(uuid "00000000-0000-0000-0000-000061ecb25a")
 		(at 135 63.4)

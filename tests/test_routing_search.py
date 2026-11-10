@@ -143,6 +143,30 @@ class TestKruskalPairs:
         # Eager would run 10 pair-searches; Kruskal needs ~4 windowed ones.
         assert res.expansions < 10 * 60  # generous: < one full row-scan per pair
 
+    def test_close_pair_plus_far_terminal_joins(self):
+        """Vacuous-union guard: two adjacent pads plus one far pad.
+
+        Regression: with nearest-goal-wins, every search from the close
+        pair ended on its already-joined neighbor (a no-op union) and
+        the ladder stopped growing — all pairs "succeeded" yet the net
+        failed. Same-component terminals are now excluded from the goal
+        mask, so the far pad genuinely joins. The toll band between the
+        pair and the far pad makes the neighbor the cheap goal (as pour
+        severance does on real boards); it must not count as success.
+        """
+        import numpy as np
+
+        grid = _grid(80, 40)
+        cost = np.zeros((2, grid.height_cells, grid.width_cells),
+                        dtype=np.int16)
+        cost[:, :, 10:60] = 50  # toll band: walkable, never preferred
+        router, _ = _router(grid, cost)
+        terms = [(2, 20, 0), (4, 20, 0), (70, 20, 0)]
+        res = router.route(terms)
+        assert res.success
+        for t in terms:
+            assert t in res.path
+
 
 class TestTrunkGrowth:
     """Trunk-rooted growth for ground nets: supply-outward attach-to-tree

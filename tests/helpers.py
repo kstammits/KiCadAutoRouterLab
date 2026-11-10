@@ -46,6 +46,35 @@ def post_fixture(base: str, fixture: str = "minimal.kicad_pcb",
         return json.load(r)
 
 
+def stamp_edge_cuts(tree, half: float = 25.0):
+    """Rewrite Edge.Cuts rectangles to the test board square.
+
+    Synthetic trees start from minimal.kicad_pcb, whose outline lives
+    far from small-coordinate test boards. Engine stages that reparse
+    the tree (retry/shove) build grids from those cuts, so a mismatch
+    collapses every terminal onto one clamped cell and routing
+    "succeeds" vacuously. Stamp after adding footprints/tracks.
+    """
+    from kicad_autorouter.sexpr import SExpr
+
+    new_args = []
+    for c in tree.args:
+        if c.head == "gr_rect" and any(
+                k.head == "layer" and "Edge.Cuts" in k.args for k in c.args):
+            kids = []
+            for k in c.args:
+                if k.head == "start":
+                    kids.append(SExpr("start", (-half, -half)))
+                elif k.head == "end":
+                    kids.append(SExpr("end", (half, half)))
+                else:
+                    kids.append(k)
+            new_args.append(SExpr(c.head, tuple(kids)))
+        else:
+            new_args.append(c)
+    return SExpr(tree.head, tuple(new_args))
+
+
 def make_board(fps, edge: Optional[float] = 30.0, regions=None) -> BoardModel:
     """Square-edge-cuts board; every footprint in region 0.
 

@@ -12,7 +12,7 @@ import math
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Collection, Optional, Tuple, List, Set, Dict
+from typing import Callable, Collection, Optional, Tuple, List, Set, Dict
 
 import numpy as np
 
@@ -697,6 +697,165 @@ def _chunk_failure_diag(
         "replayed_with_trace": replayed,
         "diagnosis": diagnosis,
     }
+
+
+@dataclass
+class _FlightSetup:
+    """Per-net search context shared by full routes and gap flights.
+
+    Extracted from ``_route_one_net`` so single-flight setup (router,
+    masks, emit-gate share) cannot drift from batch routing: identical
+    inputs produce an identical context.
+    """
+    width_mm: float
+    secondary: np.ndarray  # base per-net cost overlay (unconfined)
+    region_masks: List
+    router: SingleNetRouter
+    corridor: int  # corridor width in cells for stamping/guidance
+    clearance_mm: float
+    clearance_radius: int
+    soft_mask: np.ndarray
+    secondary_for: Callable  # (region_idx, term_set) -> (secondary, blocked)
+    verify_share_for: Callable  # (region_idx) -> emit-gate share tuple
+
+
+def _setup_flight(
+    model: BoardModel,
+    routing_grid: RoutingGrid,
+    cost_grid: np.ndarray,
+    cost_map,
+    tht_via_mask,
+    via_block_mask,
+    obstacle_cache,
+    params,
+    net_name: str,
+    extra_power_nets: Collection[str] = (),
+    corridors=None,
+    corridor_min_thick: float = 0.0,
+    pour_nets: Collection[str] = (),
+) -> _FlightSetup:
+    """Build the per-net search context (code-motion from _route_one_net)."""
+    region_masks: List = []
+    if model.board_regions:
+        try:
+            region_masks = _board_region_masks(model, routing_grid)
+        except Exception:
+            region_masks = []
+    width_mm = resolve_track_width(model, params, net_name, extra_power_nets)
+    margin_mm = max(0.0, float(getattr(params, "fanout_margin_mm", 0.0) or 0.0))
+    secondary = build_fanout_cost(
+        model, routing_grid, net_name,
+        clearance_mm=resolve_clearance(model, params, net_name),
+        track_half_mm=width_mm / 2.0,
+        extra_margin_mm=margin_mm,
+    )
+    # Per-net router on the punched search grid: own THT drill
+    # discs read FREE so free-hole hops beat adjacent vias. The
+    # shared cost grid keeps every stamp for later nets.
+    router = SingleNetRouter(
+        routing_grid, _punched_search_grid(
+            model, routing_grid, cost_grid, net_name,
+            clearance_mm=resolve_clearance(model, params, net_name)),
+        cost_map, tht_via_mask, via_block_mask,
+        max_expansions=params.max_expansions,
+        window_margin_cells=params.window_margin_cells,
+        window_growth=params.window_growth,
+        window_retries=params.window_retries,
+        corridor=params.corridor,
+        debug=params.debug,
+        max_expansions_per_net=params.max_expansions_per_net,
+    )
+    if obstacle_cache is not None:
+        router.via_ok_entry = obstacle_cache.active_entry()
+    if corridors is not None and net_name not in pour_nets:
+        # Pour-severance toll: tracks may still cross narrow pour
+        # channels, but prefer paths that keep pours whole.
+        secondary = secondary + severance_cost(
+            corridors, corridor_min_thick, routing_grid,
+            width_mm=width_mm,
+            clearance_mm=resolve_clearance(model, params, net_name),
+            weight=params.pour_severance_weight,
+        )
+    corridor = _width_cells(width_mm, params.grid_resolution_mm)
+    clearance_mm = resolve_clearance(model, params, net_name)
+    clearance_radius = track_corridor_radius_cells(
+        width_mm, clearance_mm + margin_mm, params.grid_resolution_mm,
+    )
+    router.via_clearance_cells = via_halo_radius_cells(
+        params.via_size_mm, clearance_mm, width_mm / 2.0,
+        params.grid_resolution_mm,
+    )
+    # The window must admit at least a halo-width detour around both
+    # terminals, or every pair pays a growth retry.
+    router.window_margin_cells = max(
+        params.window_margin_cells,
+        router.via_clearance_cells,
+        clearance_radius,
+    )
+    soft_mask = own_net_soft_mask(
+        model, routing_grid, net_name,
+        clearance_mm=clearance_mm, track_half_mm=width_mm / 2.0,
+    )
+    # Cross-net shared emit-gate index: this net's own hard cells plus
+    # a group key per region confinement, so later nets reuse the first
+    # net's un-carved base index instead of rebuilding per mask.
+    # Millisecond-scale (one net's pads); the sharing itself happens in
+    # verify.fitted_pieces_violate.
+    _verify_own = own_net_hard_cells(
+        model, routing_grid, net_name,
+        clearance_mm=clearance_mm, track_half_mm=width_mm / 2.0,
+    )
+    try:
+        _verify_vias_fp = hash(tuple(model.vias))
+    except TypeError:
+        _verify_vias_fp = hash(repr(tuple(model.vias)))
+    _verify_base_fp = (static_fingerprint(model), _verify_vias_fp)
+    _verify_group_keys: Dict[int, tuple] = {}
+
+    def _verify_share_for(region_idx: int) -> tuple:
+        tag = (region_idx if 0 <= region_idx < len(region_masks)
+               else -1)
+        if tag not in _verify_group_keys:
+            _verify_group_keys[tag] = share_group_key(
+                _verify_base_fp[0], _verify_base_fp[1], routing_grid,
+                clearance_mm, width_mm / 2.0, margin_mm, tag)
+        return (_verify_group_keys[tag], _verify_own)
+
+    # Per-region confinement: copy the base secondary and mark every
+    # cell outside the group's region BLOCKED, so A*, corridor
+    # guidance, and the smoother can never wander across the
+    # inter-panel gap or outside the board outline (single-region
+    # nets included — e.g. tube111 C2TubeOut hugging the edge from
+    # outside). Region -1 (outside all polygons) stays
+    # unconstrained, preserving single-board behavior.
+    def _secondary_for_region(region_idx: int, term_set=None):
+        if (
+            region_idx < 0
+            or region_idx >= len(region_masks)
+        ):
+            return secondary, secondary >= SECONDARY_BLOCKED
+        mask = region_masks[region_idx]
+        confined = secondary.copy()
+        confined[:, ~mask] = SECONDARY_BLOCKED
+        if term_set:
+            # Terminals stay enterable: the region raster can clip a
+            # pad cell at the polygon edge, and the secondary has no
+            # goal exemption by design — so restore this group's own
+            # terminal cells to their unmasked values.
+            for (c, r, l) in term_set:
+                if (0 <= l < confined.shape[0]
+                        and 0 <= r < confined.shape[1]
+                        and 0 <= c < confined.shape[2]):
+                    confined[l, r, c] = secondary[l, r, c]
+        return confined, confined >= SECONDARY_BLOCKED
+
+    return _FlightSetup(
+        width_mm=width_mm, secondary=secondary, region_masks=region_masks,
+        router=router, corridor=corridor, clearance_mm=clearance_mm,
+        clearance_radius=clearance_radius, soft_mask=soft_mask,
+        secondary_for=_secondary_for_region,
+        verify_share_for=_verify_share_for,
+    )
 
 
 def _route_chunk(
@@ -1463,12 +1622,6 @@ def route_raw(
             model, routing_grid, net_name, params.allowed_layers
         )
         multi_region = len(region_groups) > 1
-        region_masks: List = []
-        if model.board_regions:
-            try:
-                region_masks = _board_region_masks(model, routing_grid)
-            except Exception:
-                region_masks = []
         # Piecemeal chunking applies within each region group (adjacent
         # row-major bands), never across regions.
         grouped_chunks: List[Tuple[int, List[List[Tuple[int, int, int]]]]] = []
@@ -1501,119 +1654,27 @@ def route_raw(
             len(c) * (len(c) - 1) // 2 for _, chunks in grouped_chunks for c in chunks
         )
         _report(net_name, 0, pairs_total, expansions_total)
-        width_mm = resolve_track_width(model, params, net_name, extra_power_nets)
+        setup = _setup_flight(
+            model, routing_grid, cost_grid, cost_map, tht_via_mask,
+            via_block_mask, obstacle_cache, params, net_name,
+            extra_power_nets, corridors, corridor_min_thick, pour_nets,
+        )
+        width_mm = setup.width_mm
         width_map[net_name] = width_mm
-        margin_mm = max(0.0, float(getattr(params, "fanout_margin_mm", 0.0) or 0.0))
-        secondary = build_fanout_cost(
-            model, routing_grid, net_name,
-            clearance_mm=resolve_clearance(model, params, net_name),
-            track_half_mm=width_mm / 2.0,
-            extra_margin_mm=margin_mm,
-        )
-        # Per-net router on the punched search grid: own THT drill
-        # discs read FREE so free-hole hops beat adjacent vias. The
-        # shared cost grid keeps every stamp for later nets.
-        router = SingleNetRouter(
-            routing_grid, _punched_search_grid(
-                model, routing_grid, cost_grid, net_name,
-                clearance_mm=resolve_clearance(model, params, net_name)),
-            cost_map, tht_via_mask, via_block_mask,
-            max_expansions=params.max_expansions,
-            window_margin_cells=params.window_margin_cells,
-            window_growth=params.window_growth,
-            window_retries=params.window_retries,
-            corridor=params.corridor,
-            debug=params.debug,
-            max_expansions_per_net=params.max_expansions_per_net,
-        )
-        if obstacle_cache is not None:
-            router.via_ok_entry = obstacle_cache.active_entry()
+        secondary = setup.secondary
+        router = setup.router
         if params.debug:
             # Sealed-terminal probe: bounded flood-fill per terminal, runs
             # in milliseconds. Tiny counts mean pair-searches will burn cap.
             timings[f"debug_escape_{net_name}"] = router.terminal_escape_counts(
                 terminals, secondary
             )
-        if corridors is not None and net_name not in pour_nets:
-            # Pour-severance toll: tracks may still cross narrow pour
-            # channels, but prefer paths that keep pours whole.
-            secondary = secondary + severance_cost(
-                corridors, corridor_min_thick, routing_grid,
-                width_mm=width_mm,
-                clearance_mm=resolve_clearance(model, params, net_name),
-                weight=params.pour_severance_weight,
-            )
-        corridor = _width_cells(width_mm, params.grid_resolution_mm)
-        clearance_mm = resolve_clearance(model, params, net_name)
-        clearance_radius = track_corridor_radius_cells(
-            width_mm, clearance_mm + margin_mm, params.grid_resolution_mm,
-        )
-        router.via_clearance_cells = via_halo_radius_cells(
-            params.via_size_mm, clearance_mm, width_mm / 2.0,
-            params.grid_resolution_mm,
-        )
-        # The window must admit at least a halo-width detour around both
-        # terminals, or every pair pays a growth retry.
-        router.window_margin_cells = max(
-            params.window_margin_cells,
-            router.via_clearance_cells,
-            clearance_radius,
-        )
-        soft_mask = own_net_soft_mask(
-            model, routing_grid, net_name,
-            clearance_mm=clearance_mm, track_half_mm=width_mm / 2.0,
-        )
-        # Cross-net shared emit-gate index: this net's own hard cells plus
-        # a group key per region confinement, so later nets reuse the first
-        # net's un-carved base index instead of rebuilding per mask.
-        # Millisecond-scale (one net's pads); the sharing itself happens in
-        # verify.fitted_pieces_violate.
-        _verify_own = own_net_hard_cells(
-            model, routing_grid, net_name,
-            clearance_mm=clearance_mm, track_half_mm=width_mm / 2.0,
-        )
-        try:
-            _verify_vias_fp = hash(tuple(model.vias))
-        except TypeError:
-            _verify_vias_fp = hash(repr(tuple(model.vias)))
-        _verify_base_fp = (static_fingerprint(model), _verify_vias_fp)
-        _verify_group_keys: Dict[int, tuple] = {}
-
-        def _verify_share_for(region_idx: int) -> tuple:
-            tag = (region_idx if 0 <= region_idx < len(region_masks)
-                   else -1)
-            if tag not in _verify_group_keys:
-                _verify_group_keys[tag] = share_group_key(
-                    _verify_base_fp[0], _verify_base_fp[1], routing_grid,
-                    clearance_mm, width_mm / 2.0, margin_mm, tag)
-            return (_verify_group_keys[tag], _verify_own)
-        # Per-region confinement: copy the base secondary and mark every
-        # cell outside the group's region BLOCKED, so A*, corridor
-        # guidance, and the smoother can never wander across the
-        # inter-panel gap or outside the board outline (single-region
-        # nets included — e.g. tube111 C2TubeOut hugging the edge from
-        # outside). Region -1 (outside all polygons) stays
-        # unconstrained, preserving single-board behavior.
-        def _secondary_for_region(region_idx: int, term_set=None):
-            if (
-                region_idx < 0
-                or region_idx >= len(region_masks)
-            ):
-                return secondary, secondary >= SECONDARY_BLOCKED
-            mask = region_masks[region_idx]
-            confined = secondary.copy()
-            confined[:, ~mask] = SECONDARY_BLOCKED
-            if term_set:
-                # Terminals stay enterable: the region raster can clip a
-                # pad cell at the polygon edge, and the secondary has no
-                # goal exemption by design — so restore this group's own
-                # terminal cells to their unmasked values.
-                for (c, r, l) in term_set:
-                    if (0 <= l < confined.shape[0]
-                            and 0 <= r < confined.shape[1]
-                            and 0 <= c < confined.shape[2]):
-                        confined[l, r, c] = secondary[l, r, c]
-            return confined, confined >= SECONDARY_BLOCKED
+        corridor = setup.corridor
+        clearance_mm = setup.clearance_mm
+        clearance_radius = setup.clearance_radius
+        soft_mask = setup.soft_mask
+        _verify_share_for = setup.verify_share_for
+        _secondary_for_region = setup.secondary_for
 
         success = False
         fatal = False
@@ -1917,6 +1978,245 @@ def _tht_sites_by_net(model, grid) -> dict:
             if pad.is_through_hole and pad.net_name:
                 sites.setdefault(pad.net_name, set()).update(tht_drill_cells(pad, grid))
     return sites
+
+
+def _seeded_coverage(
+    join_cells: List[Tuple[int, int, int]],
+    seed_cells: Collection[Tuple[int, int, int]],
+    result: NetRouteResult,
+) -> Optional[str]:
+    """Coverage over kept-plus-new copper: every join cell mutually reachable.
+
+    Same raster semantics as :func:`_check_chunk_coverage` (8-neighbour
+    steps plus layer vias), but the walkable set is the kept seed cells
+    plus the flight's branch cells — so a gap flight that lands on kept
+    copper counts as joined. ``join_cells`` are the terminals the flight
+    had to connect (plus coverage-only pads the caller adds); seed and
+    branch cells are walkable but not required. Returns None when whole,
+    else a reason string.
+    """
+    cells = set(seed_cells or ()) | set(_branch_cells(result))
+    cells |= set(join_cells)
+    missing = sum(1 for t in join_cells if tuple(t) not in cells)
+    if missing:
+        return (f"seeded splice disconnected: {missing} terminal(s) "
+                f"outside kept+routed copper")
+    seen = {tuple(join_cells[0])}
+    stack = [tuple(join_cells[0])]
+    while stack:
+        c, r, l = stack.pop()
+        for dc in (-1, 0, 1):
+            for dr in (-1, 0, 1):
+                if dc == 0 and dr == 0:
+                    continue
+                nb = (c + dc, r + dr, l)
+                if nb in cells and nb not in seen:
+                    seen.add(nb)
+                    stack.append(nb)
+        for nl in (l - 1, l + 1):
+            nb = (c, r, nl)
+            if nb in cells and nb not in seen:
+                seen.add(nb)
+                stack.append(nb)
+    unreachable = sum(1 for t in join_cells if tuple(t) not in seen)
+    if unreachable:
+        return (f"seeded splice disconnected: {unreachable} terminal(s) "
+                f"unreachable in kept+routed copper")
+    return None
+
+
+def route_gap_terminals(
+    model: BoardModel,
+    net_name: str,
+    cut_points: Collection[Tuple[float, float, str]],
+    *,
+    params,
+    seed_tracks: Collection[Tuple[float, float, float, str]] = (),
+    seed_vias: Collection[Tuple[float, float]] = (),
+    punch_tracks: Collection[Tuple[float, float, float, str]] = (),
+    punch_vias: Collection[Tuple[float, float]] = (),
+    extra_power_nets: Collection[str] = (),
+    progress_cb=None,
+    should_cancel=None,
+) -> Tuple[Optional[NetRouteResult], str, Optional[RoutingGrid], float,
+           Optional[str]]:
+    """Single gap-reconnect flight for a severed net (Tier-2 shove).
+
+    ``cut_points`` are ``(x_mm, y_mm, layer)`` island endpoints to join
+    — the ONLY search terminals (already-connected pads are deliberately
+    excluded: a search ending on the nearest pad would join it without
+    ever crossing the gap). ``seed_tracks`` / ``seed_vias`` are
+    kept-copper geometry rasterized as walkable join targets
+    (prior-chunk semantics: the flight terminates on kept copper
+    instead of re-routing it). Builds fresh grids from ``model``,
+    routes one flight through the shared setup (:func:`_setup_flight`,
+    identical to batch routing), and returns ``(result|None, reason,
+    grid|None, width_mm, coverage)``. ``result`` holds ONLY new gap
+    copper (kept copper is not re-emitted); ``coverage`` is None when
+    every cut, isolated pad, and net pad joins one island over
+    kept-plus-new copper (pads added as coverage-only cells inside),
+    else a reason string. Callers emit via
+    :func:`output.routes_to_tracks_vias` and adopt on clean coverage.
+    """
+    width_mm = resolve_track_width(model, params, net_name, extra_power_nets)
+    grid_layers = _resolve_grid_layers(model, params)
+    routing_grid = create_grid_from_model(
+        model, params.grid_resolution_mm, params.margin_mm, layers=grid_layers)
+    total_cells = (len(routing_grid.layers) * routing_grid.width_cells
+                   * routing_grid.height_cells)
+    if total_cells > MAX_GRID_CELLS_TOTAL:
+        return (None, f"gap: routing grid too large ({total_cells} cells)",
+                None, width_mm, None)
+    cost_grid = build_occupancy_grid(
+        model, routing_grid, default_clearance_mm=params.clearance_mm)
+    # Punch evicted copper back to FREE: kept stubs stamp their clearance
+    # halo over the cleared gap, sealing it on the grid although the
+    # copper is gone (hard BLOCKED, so a soft-cell rule would miss it).
+    # Cells covered by current-model copper stay blocked — only stale
+    # halo from removed copper yields — and the emit gate still
+    # enforces clearance, so this only opens genuinely empty corridor.
+    H0, W0 = cost_grid.shape[1], cost_grid.shape[2]
+    hard_all, hard_foreign = set(), set()
+
+    def _cover(x0, y0, x1, y1, layer, foreign: bool) -> None:
+        li = routing_grid.layer_to_idx.get(layer)
+        if li is None:
+            return
+        c0, r0 = board_to_grid(routing_grid, x0, y0)
+        c1, r1 = board_to_grid(routing_grid, x1, y1)
+        for (c, r) in bresenham_cells(c0, r0, c1, r1):
+            if 0 <= r < H0 and 0 <= c < W0:
+                hard_all.add((c, r, li))
+                if foreign:
+                    hard_foreign.add((c, r, li))
+
+    for t in model.tracks:
+        _cover(t.start.x_mm, t.start.y_mm, t.end.x_mm, t.end.y_mm,
+               t.layer, t.net_name != net_name)
+    for a in model.arcs:
+        _cover(a.start.x_mm, a.start.y_mm, a.mid.x_mm, a.mid.y_mm,
+               a.layer, a.net_name != net_name)
+        _cover(a.mid.x_mm, a.mid.y_mm, a.end.x_mm, a.end.y_mm,
+               a.layer, a.net_name != net_name)
+    for v in model.vias:
+        c, r = board_to_grid(routing_grid, v.position.x_mm, v.position.y_mm)
+        if 0 <= r < H0 and 0 <= c < W0:
+            for li in range(cost_grid.shape[0]):
+                hard_all.add((c, r, li))
+                if v.net_name != net_name:
+                    hard_foreign.add((c, r, li))
+    for (x0, y0, x1, y1, layer) in punch_tracks or ():
+        li = routing_grid.layer_to_idx.get(layer)
+        if li is None:
+            continue
+        c0, r0 = board_to_grid(routing_grid, x0, y0)
+        c1, r1 = board_to_grid(routing_grid, x1, y1)
+        for (c, r) in bresenham_cells(c0, r0, c1, r1):
+            if (0 <= r < H0 and 0 <= c < W0
+                    and (c, r, li) not in hard_all):
+                cost_grid[li, r, c] = FREE
+    for (x, y) in punch_vias or ():
+        c, r = board_to_grid(routing_grid, x, y)
+        if 0 <= r < H0 and 0 <= c < W0:
+            for li in range(cost_grid.shape[0]):
+                if (c, r, li) not in hard_all:
+                    cost_grid[li, r, c] = FREE
+    # Cut cells punch through own-copper hardness: a gap flight must be
+    # able to terminate on the kept stub it joins — landing new copper
+    # exactly on the severed end is the joint. Cells covered by foreign
+    # copper stay blocked (landing there would short); the emit gate
+    # double-guards the joint.
+    terms_pre = []
+    for (x, y, layer) in cut_points or ():
+        li = routing_grid.layer_to_idx.get(layer)
+        if li is None:
+            continue
+        c, r = board_to_grid(routing_grid, x, y)
+        if 0 <= r < H0 and 0 <= c < W0:
+            if (c, r, li) not in hard_foreign:
+                cost_grid[li, r, c] = FREE
+            terms_pre.append((c, r, li))
+    tht_via_mask = _build_tht_via_mask(model, routing_grid)
+    via_block_mask = build_via_block_mask(
+        model, routing_grid, clearance_mm=params.clearance_mm,
+        track_half_mm=params.track_width_mm / 2.0)
+    cost_map = CostMap(
+        base_cost=1,
+        via_cost_mm=params.via_cost_mm,
+        blocked_threshold=100,
+        heuristic_weight=params.heuristic_weight,
+    )
+    setup = _setup_flight(
+        model, routing_grid, cost_grid, cost_map, tht_via_mask,
+        via_block_mask, None, params, net_name, extra_power_nets,
+    )
+    H, W = routing_grid.height_cells, routing_grid.width_cells
+    terms = list(terms_pre)
+    seen = set()
+    term_set = [t for t in terms if not (t in seen or seen.add(t))]
+    if len(term_set) < 2:
+        return None, "gap: fewer than 2 terminals", routing_grid, width_mm, None
+    pad_terms = _terminals_for_net(
+        model, routing_grid, net_name, params.allowed_layers)
+    cover_set = term_set + [t for t in pad_terms if t not in seen]
+    seed = []
+    for (x0, y0, x1, y1, layer) in seed_tracks or ():
+        li = routing_grid.layer_to_idx.get(layer)
+        if li is None:
+            continue
+        c0, r0 = board_to_grid(routing_grid, x0, y0)
+        c1, r1 = board_to_grid(routing_grid, x1, y1)
+        for (c, r) in bresenham_cells(c0, r0, c1, r1):
+            if 0 <= r < H and 0 <= c < W:
+                seed.append((c, r, li))
+    for (x, y) in seed_vias or ():
+        c, r = board_to_grid(routing_grid, x, y)
+        if 0 <= r < H and 0 <= c < W:
+            for li in range(len(routing_grid.layers)):
+                seed.append((c, r, li))
+    region_idx = -1
+    if setup.region_masks:
+        for idx in range(len(setup.region_masks)):
+            try:
+                mask = setup.region_masks[idx]
+            except (IndexError, TypeError):
+                continue
+            try:
+                inside = all(0 <= r < H and 0 <= c < W and bool(mask[r, c])
+                             for (c, r, _l) in term_set)
+            except (IndexError, TypeError):
+                continue
+            if inside:
+                region_idx = idx
+                break
+    region_secondary, region_blocked = setup.secondary_for(
+        region_idx, term_set)
+
+    def _pcb(done: int, total: int, exp: int) -> None:
+        if progress_cb is None:
+            return
+        try:
+            progress_cb(net_name, done, total, exp)
+        except Exception:
+            pass
+
+    timings: Dict = {}
+    result, failure = _route_chunk(
+        setup.router, term_set, region_secondary, _pcb, should_cancel,
+        seed or None, cost_grid, routing_grid, setup.corridor,
+        setup.soft_mask, setup.clearance_radius, region_blocked,
+        params.arc_fillets, params.arc_max_radius_mm, params.arc_min_leg_mm,
+        params.arc_sample_mm, params.arc_keep_min_radius_mm, params, model,
+        timings, net_name, "gap ", setup.width_mm,
+        verify_share=setup.verify_share_for(region_idx),
+        trunk_root=None, region_idx=region_idx, chunk_idx=0, n_chunks=1,
+    )
+    if failure is not None:
+        kind, reason, _diag = failure
+        return None, f"gap {kind}: {reason}", routing_grid, width_mm, None
+    assert result is not None
+    coverage = _seeded_coverage(cover_set, seed or (), result)
+    return result, "", routing_grid, width_mm, coverage
 
 
 def _rip_up_nets_from_model(model: BoardModel, net_names: List[str]) -> BoardModel:
