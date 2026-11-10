@@ -561,16 +561,23 @@ def prestitch_ground(model, tree, params, res_mm: float = 0.1):
     print(f"rails stitch-first: islands {plan.islands_before}"
           f"->{plan.islands_after}, "
           f"{len(plan.vias)} vias + {len(plan.tracks)} bridges planned")
+    from kicad_autorouter.routing.power import identify_power_nets
+
+    _, ground, _ = identify_power_nets(model, ())
     if not plan.vias and not plan.tracks:
-        return model, tree, set()
+        # Nothing to fix can still mean already joined: test the board
+        # as-is so a whole pour still earns the tree-track skip.
+        joined = {g for g in ground
+                  if pour_joined(model, g, res_mm, grid)}
+        if joined:
+            print(f"rails stitch-first: already joined for "
+                  f"{sorted(joined)}, nothing to commit")
+        return model, tree, joined
     cand_model = replace(
         model,
         tracks=model.tracks + tuple(plan.tracks),
         vias=model.vias + tuple(plan.vias),
     )
-    from kicad_autorouter.routing.power import identify_power_nets
-
-    _, ground, _ = identify_power_nets(cand_model, ())
     joined = {g for g in ground
               if pour_joined(cand_model, g, res_mm, grid)}
     if not joined:
