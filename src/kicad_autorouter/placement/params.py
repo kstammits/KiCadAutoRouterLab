@@ -81,7 +81,14 @@ class PlacementParams:
     ghost_k_N: float = 5e-5
     # Viscous damping coefficient (N*s/m).
     damping_Ns_m: float = 0.12
-    # Dry-friction deadband (N of total footprint force).
+    # Dry-friction scale (N). Each step, a footprint whose NET force
+    # (pads summed — canceling contact loads sum out) and rim-equivalent
+    # torque both sit below 20*friction_N freezes in place, so
+    # pressed-into-wall rests stop chattering. 0 disables. The bar is
+    # deliberately tighter than the convergence residual: the ghost/wall
+    # legs of the settle threshold stay out, so a part still under real
+    # load never freezes. Re-evaluated live every step, so a shoved part
+    # unfreezes on its own.
     friction_N: float = 1e-6
     # Timestep (s); adaptive guard halves on energy rise, regrows on fall.
     # Solver internal — not a UI slider.

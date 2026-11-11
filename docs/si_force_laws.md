@@ -145,10 +145,15 @@ Per-pad application; rigid projection keeps bodies consistent.
 
 ### Dry friction (deadband, whole footprint)
 ```
-if max pad force over footprint < friction_N → footprint frozen this step
+if net footprint force < 20·friction_N AND rim-equivalent torque < 20·friction_N
+→ footprint frozen this step
 ```
-Whole-footprint all-or-nothing freeze in force units. Stops micro-motion
-without a displacement hack.
+Whole-footprint all-or-nothing freeze in force units. Net (pads summed),
+not per-pad max: pressed-into-wall rests carry big canceling per-pad
+loads with ~zero net, and must rest instead of chattering. Torque is
+checked as rim-equivalent (|torque| / max lever, same bar) so pure
+torque cannot strand a rocking body. Re-evaluated live every step; 0
+disables. Stops micro-motion without a displacement hack.
 
 ## 2. Integrator (semi-implicit Euler + guards)
 
@@ -184,8 +189,10 @@ neighbor superposition is unaffected (aggregation is per pair, not global).
 
 Convergence: max `‖Δx‖ < convergence_eps_m` (meters) per step AND residual
 forces below the settle scale
-(`force_settle_N = max(20·friction, 4·ghost_k, 1e-3·max(wall, attraction))`).
-`stop_reason` reports `converged` (quiet AND weak), `stalled` (no
+(`force_settle_N = max(20·friction, 4·ghost_k, 1e-3·max(wall, attraction))`),
+OR dead window-mean drift (`< convergence_eps_m`) with quiet residual —
+limit-cycle chatter whose center sits still with nothing left to obey.
+`stop_reason` reports `converged` (quiet AND weak, either path), `stalled` (no
 window-mean progress with residual forces), `budget` (max_iterations with
 residual force), or `empty`. Headless callers must treat `stalled` and
 `budget` as needs-attention, never as settled. `depenetrated` flags a

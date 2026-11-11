@@ -1292,15 +1292,50 @@ def _run_region_simulation(
                 }
             _dbg_iters.append(_snap)
 
-        # Dry friction: freeze a whole footprint whose largest pad-force
-        # norm is below friction_N. Frozen bodies also lose velocity.
+        # Rigid-aware net force per footprint (pads summed, not per-pad
+        # max). Pads of one rigid body routinely carry large canceling
+        # contact loads (wall on the contact pads vs attraction spread
+        # over all pads); per-pad max then never settles even at a true
+        # rigid equilibrium and every contact rest runs to budget. Net
+        # force vanishes exactly when the body has nothing left to obey.
+        # (Persistent torque still moves pads — the freeze below checks
+        # rim-equivalent torque too, and the displacement gate covers
+        # rotation.)
+        _fp_nets: List[float] = []
+        _fp_rim: List[float] = []
+        for _rows, _mov in zip(fp_local_to_rows, fp_movable_list):
+            if len(_rows) == 0:
+                _fp_nets.append(0.0)
+                _fp_rim.append(0.0)
+                continue
+            _f = force[_rows]
+            _net = float(np.linalg.norm(_f.sum(axis=0)))
+            _fp_nets.append(_net)
+            _rel = positions[_rows] - positions[_rows].mean(axis=0)
+            _lever = float(np.max(np.linalg.norm(_rel, axis=1)))
+            if _lever > 0:
+                _torque = abs(float((_rel[:, 0] * _f[:, 1]
+                                     - _rel[:, 1] * _f[:, 0]).sum()))
+                _fp_rim.append(_torque / _lever)
+            else:
+                _fp_rim.append(0.0)
+
+        # Dry friction: freeze a whole footprint whose net force AND
+        # rim-equivalent torque sit below the freeze bar — a body
+        # pressed into a wall (big canceling per-pad loads, ~zero net)
+        # rests instead of chattering. The bar is 20*friction_N: the
+        # ghost/wall legs of force_settle_N stay out, so a part still
+        # under real load (wall shove, ghost tension) never freezes.
+        # friction_N=0 disables (bar 0, net is never below it).
+        # Re-evaluated from live forces every step, so a shoved part
+        # unfreezes on its own. Frozen bodies also lose velocity.
+        _freeze_bar_N = 20.0 * params.friction_N
         _frozen = np.zeros(len(region_pads), dtype=bool)
-        if params.friction_N > 0:
-            _fp_force_norm = np.linalg.norm(force, axis=1)
-            for _rows in fp_local_to_rows:
-                if len(_rows) and np.max(_fp_force_norm[_rows]) < params.friction_N:
-                    force[_rows] = 0.0
-                    _frozen[_rows] = True
+        for _rows, _net, _rim in zip(fp_local_to_rows, _fp_nets, _fp_rim):
+            if (len(_rows) and _net < _freeze_bar_N
+                    and _rim < _freeze_bar_N):
+                force[_rows] = 0.0
+                _frozen[_rows] = True
         force[~pad_movable] = 0.0
         _frozen[~pad_movable] = True
 
@@ -1313,22 +1348,14 @@ def _run_region_simulation(
         # (Forces integrate after the carry below, at carried positions.)
 
         if pad_movable.any():
-            # Rigid-aware residual: net force per movable FOOTPRINT (pads
-            # summed), not per-pad max. Pads of one rigid body routinely
-            # carry large canceling contact loads (wall on the contact pads
-            # vs attraction spread over all pads); per-pad max then never
-            # settles even at a true rigid equilibrium and every
-            # contact rest runs to budget. Net force vanishes exactly when
-            # the body has nothing left to obey. (Persistent torque still
-            # moves pads, so the displacement gate covers rotation.)
+            # Residual for the convergence gate: max net force over movable
+            # footprints, computed above (post-freeze, so frozen bodies
+            # read exactly zero).
             _res = 0.0
-            for _rows, _mov in zip(fp_local_to_rows, fp_movable_list):
-                if not _mov or len(_rows) == 0:
+            for _net, _mov in zip(_fp_nets, fp_movable_list):
+                if not _mov:
                     continue
-                _res = max(
-                    _res,
-                    float(np.linalg.norm(force[_rows].sum(axis=0))),
-                )
+                _res = max(_res, _net)
             residual_max_force_N = _res
         else:
             residual_max_force_N = 0.0
@@ -1484,7 +1511,16 @@ def _run_region_simulation(
                 else:
                     stall_shift_m = 0.0
                 if stall_shift_m < STALL_MEAN_EPS_MULT * params.convergence_eps_m:
-                    stop_reason = "stalled"
+                    # A dead window mean with quiet residual is a settle,
+                    # not a wedge: limit-cycle chatter averages itself out
+                    # while real tension would keep forces up. Report the
+                    # honest reason — downstream callers treat stalled
+                    # like budget, never like converged.
+                    if (stall_shift_m < params.convergence_eps_m
+                            and residual_max_force_N < force_settle_N):
+                        stop_reason = "converged"
+                    else:
+                        stop_reason = "stalled"
                     break
                 stall_mean_ref = stall_mean
                 stall_acc[:] = 0.0

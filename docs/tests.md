@@ -29,7 +29,7 @@ fast loop. Deselect slow via `-m "not slow"`; deselect all DCCF via
 | `test_placement_power` | 31 | Power-net attraction: fanout scaling, decap one-sided edges, membership (keyword + `extra_power` override) |
 | `test_placement_movement` | 7 | Trajectories: converge/repel/attract without pathology (inequalities, not golden pins) |
 | `test_placement_pairs` | 12 | Movable-vs-immobile pairing + wall containment invariants on DCCF |
-| `test_placement_settle` | 12 | Honest stopping: `converged`/`stalled`/`budget`, residual-force gate |
+| `test_placement_settle` | 13 | Honest stopping: `converged`/`stalled`/`budget`, residual-force gate |
 | `test_placement_tight` | 12 | Tight-quarters corpus + rotation-in-squeeze regressions, one full-DCCF audit |
 | `test_placement_layers` | 10 | Layer gating: same-side collides, opposite SMD stacks, THT pins collide cross-layer |
 | `test_placement_frames` | 6 | SVG motion-player frames: downsample + rounding |

@@ -7,8 +7,10 @@ crawl. The run must not report a quiet settle with parts still buried in
 each other.
 
 Pinned contract (see PlacementProposal.stop_reason):
-- "converged" requires BOTH a quiet step AND residual forces below the
-  settle scale (post-friction, so deadband-frozen rest still terminates).
+- "converged" requires a quiet step AND residual forces below the
+  settle scale (post-friction, so deadband-frozen rest still terminates),
+  OR a dead window-averaged drift with quiet residual (limit-cycle
+  chatter whose center sits still with nothing left to obey).
 - "stalled" ends a run whose window-averaged pose shows no net progress
   over a full stall window while forces remain unserved (wedged, or
   chattering in place with no resolvable drift): wedged, not rested —
@@ -374,6 +376,43 @@ def test_depenetrated_flag_marks_post_loop_eject():
     )
     assert frozen.stop_reason == "converged"
     assert frozen.depenetrated is False
+
+
+@pytest.mark.physics
+@pytest.mark.unit
+def test_net_friction_settles_sustained_chatter():
+    """Net-force friction rests a chattering squeezed part.
+
+    A movable squeezed off-center between two locked walls (stiff wall,
+    tangential sliding on) rocks on its contacts: per-pad loads stay
+    mN-scale while the net force is small. Max-per-pad deadband never
+    fires there, so the frictionless twin chatters to the full budget.
+    With net-force friction the squeezed part freezes once its net and
+    rim torque go quiet, motion dies, and the run converges — same
+    board, same budget, honest stop.
+    """
+    def _squeezed():
+        la = make_fp("L", "uuid-l", 0.0, 0.0, ("N1", "NX"),
+                     footprint_id="test:R", hw=3.0, hh=2.0,
+                     pad_layers=("F.Cu",), pad_shape="circle", locked=True)
+        m = make_fp("M", "uuid-m", 7.0, 0.5, ("N1", "N2"),
+                    footprint_id="test:R", hw=3.0, hh=2.0,
+                    pad_layers=("F.Cu",), pad_shape="circle")
+        r = make_fp("R", "uuid-r", 14.0, 0.0, ("N2", "NY"),
+                    footprint_id="test:R", hw=3.0, hh=2.0,
+                    pad_layers=("F.Cu",), pad_shape="circle", locked=True)
+        return make_board([la, m, r], edge=100.0)
+    kw = dict(max_iterations=500, convergence_eps_m=1e-9, stall_window=20,
+              repulsion_k_N_m2=1e-15, attraction_k_N=0.05, wall_k_N=0.1,
+              wall_halo_m=0.006, contact_tangent_gamma=0.15)
+    rest = run_placement(_squeezed(), PlacementParams(**kw))
+    assert rest.stop_reason == "converged", (
+        f"squeezed rest must converge, got {rest.stop_reason} "
+        f"with residual {rest.residual_max_force_N:.6f}")
+    assert rest.residual_max_force_N < 1e-3
+    loud = run_placement(_squeezed(), PlacementParams(friction_N=0.0, **kw))
+    assert loud.stop_reason == "budget"
+    assert loud.iterations == 500
 
 
 @pytest.mark.physics
