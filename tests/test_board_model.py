@@ -18,7 +18,6 @@ from kicad_autorouter.board_model import (
     keepout_zones,
     netlist,
     sample_circular_arc,
-    sample_quadratic_bezier,
     transform_local,
     zones,
     _polygon_bbox,
@@ -366,12 +365,6 @@ class TestGhostFootprints:
 import numpy as np  # noqa: E402
 
 from kicad_autorouter.placement.contact import _classify_rectangle  # noqa: E402
-
-
-@pytest.mark.unit
-def test_bezier_zero_segments_yields_endpoints():
-    pts = list(sample_quadratic_bezier((0.0, 0.0), (1.0, 2.0), (2.0, 0.0), 0))
-    assert pts == [(0.0, 0.0), (2.0, 0.0)]
 
 
 @pytest.mark.unit

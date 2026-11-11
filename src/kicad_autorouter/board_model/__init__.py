@@ -54,7 +54,6 @@ from .query import (
     copper_tracks,
     label_board_pose,
     sample_circular_arc,
-    sample_quadratic_bezier,
     transform_local,
 )
 from .parse import (

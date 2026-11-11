@@ -63,9 +63,6 @@ function escapeHtml(s) {
   return String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
-// Docs viewer moved to app-docs.js (renderInline/renderMarkdown/loadDocs*).
-// escapeHtml stays here: every panel uses it, so it belongs to core.
-
 // Keyboard shortcuts
 document.addEventListener("keydown", e => {
   // Don't trigger shortcuts when typing in inputs

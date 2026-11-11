@@ -115,7 +115,6 @@ function netRowHtml(net, idx) {
   // stays static text.
   // Board-controlled strings are HTML-escaped (net/ref names come from the file).
   const safeName = escapeHtml(net.name);
-  const netName = escapeHtml(net.name);
   const pwrCtrl = net.is_power
     ? `<button type="button" class="pwr-toggle is-on" aria-pressed="true" aria-label="Unmark ${safeName} as power" title="${pwrTitle}">${pwr}</button>`
     : (net.is_ground
@@ -158,7 +157,7 @@ function netRowHtml(net, idx) {
       <td class="net-col-select"><input type="checkbox" class="net-col-select" ${selectedNets.has(net.name) ? 'checked' : ''} data-net="${safeName}" title="Select ${safeName} for routing" aria-label="Select ${safeName} for routing"></td>
       <td class="net-col-name" title="${escapeHtml(nameTitle)}">
         <span class="net-swatch" style="background: ${color};"></span>
-        ${netName}${pwr}
+        ${safeName}${pwr}
       </td>
       <td class="net-col-status">${status}</td>
       <td class="net-col-pads" title="${escapeHtml(padsTitle)}">${net.pad_count ?? ""}</td>
@@ -306,8 +305,6 @@ function updateNetSelectionUI() {
     refineBtn.textContent = count > 0 ? `Refine Order (${count})` : "Refine Order";
   }
 }
-
-// Bulk table wiring (lived after diagnostics; moved home).
 
 // Select all checkbox in nets table (in-place: full list stays rendered)
 on("nets-select-all", "change", e => {

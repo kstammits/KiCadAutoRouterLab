@@ -56,7 +56,7 @@ async function refreshInletsDiag() {
   const diag = inletsDiag;
   try {
     const data = await getInlets();
-    const gl = data.gnd_list || data.gnd;
+    const gl = data.gnd_list;
     const g = (Array.isArray(gl) ? gl : (gl ? [gl] : [])).map(a => `${a.ref}.${a.pad}`).join(", ") || "unset";
     const p = Object.entries(data.power || {}).map(([n, a]) => {
       const lst = Array.isArray(a) ? a : [a];

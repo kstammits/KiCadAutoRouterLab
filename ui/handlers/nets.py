@@ -384,14 +384,14 @@ def _handle_inlets_post(body):
         STATE.set_gnd_inlets([])
     if "bridges_clear" in req and req.get("bridges_clear"):
         STATE.set_bridges([])
-    if "gnd" in req:
-        g = req.get("gnd")
+    if "gnd_list" in req:
+        g = req.get("gnd_list")
         if g is None:
             STATE.set_gnd_inlets([])
         else:
             checked = _check_list(g)
             if checked is None:
-                return 400, b"gnd must be {ref, pad}, a list, or null", "text/plain"
+                return 400, b"gnd_list must be {ref, pad}, a list, or null", "text/plain"
             STATE.set_gnd_inlets(checked)
     if "gnd_add" in req:
         ok = _check_anchor(req.get("gnd_add"))

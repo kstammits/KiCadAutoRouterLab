@@ -456,8 +456,6 @@ def analyze_power_gnd(
     power_max_mohm: float = DEFAULT_POWER_MAX_MOHM,
     bridges: Optional[Sequence[object]] = None,
     auto_bridges: bool = True,
-    # Backward-compat single-inlet spell (wrapped into a one-item list).
-    gnd_inlet: Optional[object] = None,
 ) -> ImpedanceReport:
     """Screening analysis: inlet-anchored resistance to every evaluated pad.
 
@@ -473,8 +471,6 @@ def analyze_power_gnd(
     report all pads ``fail``/``no-inlet``.
     """
     gnd_specs = _normalize_inlets(gnd_inlets)
-    if gnd_inlet is not None:
-        gnd_specs = _normalize_inlets([gnd_inlet]) + gnd_specs
     power_specs = {n: _normalize_inlets(s) for n, s in (power_inlets or {}).items()}
     bridge_specs = _normalize_bridges(bridges)
     if grid is None:

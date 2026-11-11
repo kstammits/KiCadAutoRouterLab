@@ -161,8 +161,7 @@ loadInput?.addEventListener("change", async () => {
   loadInput.value = "";
 });
 
-// Single fetch helper: throws with server text on !ok. New code uses this;
-// older call sites migrate as touched.
+// Single fetch helper: throws with server text on !ok.
 async function apiFetch(path, opts) {
   const res = await fetch(path, opts);
   if (!res.ok) throw new Error(await res.text());

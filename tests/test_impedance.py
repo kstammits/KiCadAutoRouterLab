@@ -418,11 +418,11 @@ def test_inlets_roundtrip_and_impedance_on_minimal():
         with urllib.request.urlopen(req) as r:
             assert json.load(r)["ok"] is True
         with urllib.request.urlopen(f"{base}/api/nets/inlets") as r:
-            assert json.load(r)["gnd"] == []
+            assert json.load(r)["gnd_list"] == []
         # Unknown ref is rejected, not stored.
         bad = urllib.request.Request(
             f"{base}/api/nets/inlets",
-            data=json.dumps({"gnd": {"ref": "NOPE", "pad": "1"}}).encode(),
+            data=json.dumps({"gnd_list": {"ref": "NOPE", "pad": "1"}}).encode(),
             method="POST", headers={"Content-Type": "application/json"})
         try:
             urllib.request.urlopen(bad)

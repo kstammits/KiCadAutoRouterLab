@@ -50,7 +50,6 @@ DRC_REPORT_PATH = TMP_DIR / "drc_report_current.json"
 # (every 4096 expansions). Only one routing job runs at a time — a second
 # start gets 409 busy — because jobs share STATE.cost_grid/routing_grid
 # and the obstacle cache.
-# The synchronous POST /api/routing/run is unchanged for back-compat/tests.
 _JOBS: Dict[str, dict] = {}
 _JOBS_LOCK = threading.Lock()
 _ROUTING_JOB_LOCK = threading.Lock()

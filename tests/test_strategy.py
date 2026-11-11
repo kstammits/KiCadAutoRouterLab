@@ -10,7 +10,6 @@ from kicad_autorouter.strategy import (
     MODE_PRESETS,
     apply_mode,
     infer_mode,
-    is_custom,
     mode_owned_keys,
     mode_warning,
 )
@@ -66,21 +65,6 @@ def test_apply_mode_forces_owned_keys_keeps_rest():
     assert MODE_PRESETS["two-layer"]["allowed_layers"] == ["F.Cu", "B.Cu"]
     with pytest.raises(ValueError):
         apply_mode({}, "six-layer")
-
-
-def test_is_custom_owned_keys_only():
-    preset_two = dict(MODE_PRESETS["two-layer"])
-    assert is_custom(dict(preset_two), "two-layer") is False
-    assert is_custom({**preset_two, "via_cost_mm": 99.0},
-                     "two-layer") is False  # non-owned indifference
-    assert is_custom({**preset_two, "pour_severance_weight": 0.0},
-                     "two-layer") is True
-    assert is_custom({}, "four-layer") is True  # missing owned key ≠ preset
-    # allowed_layers order does not read as custom.
-    assert is_custom({**preset_two, "allowed_layers": ["B.Cu", "F.Cu"]},
-                     "two-layer") is False
-    with pytest.raises(ValueError):
-        is_custom({}, "six-layer")
 
 
 def test_mode_owned_keys_match_preset():

@@ -370,7 +370,6 @@ class BoardState:
         """Return copies of the inlet anchors (no version bump; derived state)."""
         with self._lock:
             return {
-                "gnd": list(self.gnd_inlets),
                 "gnd_list": list(self.gnd_inlets),
                 "power": {n: list(a) for n, a in self.power_inlets.items()},
                 "bridges": list(self.bridges),

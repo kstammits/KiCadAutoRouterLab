@@ -134,7 +134,6 @@ def _build_net_edges_pad_level(
     decap_link: float = 4.0,
     include_power: bool = True,
     extra_power: Collection[str] = (),
-    decap_boost: Optional[float] = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Build edge index arrays for pad pairs sharing the same net.
 
@@ -158,12 +157,7 @@ def _build_net_edges_pad_level(
     With include_power=False, power edges are dropped (decap power-side
     edges go with them); the decap GND-side exception is gated by
     decap_link > 0 instead (0 also disables the local chip links).
-
-    ``decap_boost`` is a legacy alias for ``decap_link`` (explicit
-    ``decap_link`` wins when both are given).
     """
-    if decap_boost is not None:
-        decap_link = decap_boost
     decap_set = decap_pad_indices or set()
 
     net_to_pads: Dict[str, List[int]] = {}

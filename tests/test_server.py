@@ -464,20 +464,6 @@ def test_routing_params_rejects_bad_values():
 
 @pytest.mark.server
 @pytest.mark.minimal
-def test_routing_run_validates_net_names_and_params():
-    httpd, base = _client()
-    try:
-        _load(base)
-        assert _code(base, "/api/routing/run", {"net_names": "GND"}) == 400
-        assert _code(base, "/api/routing/run", {"net_names": []}) == 400
-        assert _code(base, "/api/routing/run",
-                    {"net_names": ["X"], "params": {"grid_resolution_mm": 0}}) == 400
-    finally:
-        httpd.shutdown()
-
-
-@pytest.mark.server
-@pytest.mark.minimal
 def test_routing_jobs_rejects_empty_and_bad_params():
     httpd, base = _client()
     try:

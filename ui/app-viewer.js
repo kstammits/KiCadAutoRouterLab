@@ -321,10 +321,8 @@ function showCostGridDebug(debug) {
     const cur = netSel.value;
     const names = (lastNetsByName && lastNetsByName.size)
       ? [...lastNetsByName.keys()].filter(Boolean).sort() : [];
-    const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
     netSel.innerHTML = `<option value="">occupancy only</option>` +
-      names.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join("");
+      names.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join("");
     if (names.includes(cur)) netSel.value = cur;
     else if (debug && debug.net) netSel.value = debug.net;
   }

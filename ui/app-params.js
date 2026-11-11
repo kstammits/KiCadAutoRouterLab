@@ -138,7 +138,6 @@ for (const def of ADVANCED_PARAM_DEFS) {
 }
 
 // Full descriptions stay in tooltips (PARAM_DESC) + Docs panel; no static table.
-void ALL_PARAM_DEFS;
 
 function logToValue(logVal, def) {
   return Math.pow(10, logVal);

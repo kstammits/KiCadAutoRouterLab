@@ -125,26 +125,6 @@ def sample_circular_arc(
         a = a0 + sweep * (i / n)
         yield (cx + r * math.cos(a), cy + r * math.sin(a))
 
-def sample_quadratic_bezier(
-    p0: Tuple[float, float],
-    p1: Tuple[float, float],
-    p2: Tuple[float, float],
-    n: int,
-):
-    """Yield ``n+1`` ``(x, y)`` points along the quadratic Bezier ``B(t)``.
-
-    Legacy helper (kept for compatibility); arc code now uses
-    :func:`sample_circular_arc` since KiCad stores three points ON the arc.
-    """
-    n = max(1, n)
-    for i in range(n + 1):
-        t = i / n
-        u = 1 - t
-        yield (
-            u * u * p0[0] + 2 * u * t * p1[0] + t * t * p2[0],
-            u * u * p0[1] + 2 * u * t * p1[1] + t * t * p2[1],
-        )
-
 def _approximate_arc_as_segments(arc: EdgeCutArc, num_segments: int = 8) -> List[Segment]:
     """Approximate an EdgeCutArc as line segments along its circular arc.
 

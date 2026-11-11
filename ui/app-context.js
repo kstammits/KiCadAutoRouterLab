@@ -18,7 +18,7 @@
 // globals read at runtime only.
 
 const CTX_BUNDLE_KIND = "kicad-autorouter-context";
-const CTX_BUNDLE_VERSION = 1;
+const CTX_BUNDLE_VERSION = 2;
 // Single-file cap: PCB text dominates (fixtures are ~1-2 MB). Over it,
 // retry with Debug off (drops the raster, keeps partials + reasons).
 const CTX_MAX_BYTES = 10 * 1024 * 1024;
@@ -79,7 +79,7 @@ async function ctxCollectBundle() {
       selected: [...(typeof selectedUuids !== "undefined" ? selectedUuids : [])],
     },
     inlets: inletsP ? {
-      gnd: inletsP.gnd_list ?? inletsP.gnd ?? [],
+      gnd_list: inletsP.gnd_list ?? [],
       power: inletsP.power ?? {},
       bridges: inletsP.bridges ?? [],
     } : null,
@@ -185,7 +185,7 @@ async function ctxRestoreNetsState(bundle) {
   if (bundle.inlets) {
     try {
       await postJSON("/api/nets/inlets", {
-        gnd: bundle.inlets.gnd ?? [],
+        gnd_list: bundle.inlets.gnd_list ?? [],
         power: bundle.inlets.power ?? {},
         bridges: bundle.inlets.bridges ?? [],
       });

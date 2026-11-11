@@ -40,11 +40,7 @@ STALL_MEAN_EPS_MULT = 4.0
 
 @dataclass(frozen=True)
 class PlacementParams:
-    """SI placement-dynamics parameters (v2 set; newtons, meters, seconds).
-
-    Legacy v1 fields are gone on purpose — calibration
-    (``scripts/calibrate_si.py``) learns these ranges empirically.
-    """
+    """SI placement-dynamics parameters (v2 set; newtons, meters, seconds)."""
 
     # Step budget; 0 = static force probe (no integration steps, returns
     # initial forces with empty deltas — used by the server force overlay).
@@ -190,16 +186,11 @@ class PlacementParams:
         lowering ``dt_s`` from ever failing validation against a stale
         ``dt_min_s``.
 
-        Legacy ``decap_boost`` maps to ``decap_link`` (explicit
-        ``decap_link`` wins when both are present).
-
         ``strict``:
           - ``False`` (default): drop unknown keys (current behavior).
           - ``True``: raise ``ValueError`` listing the unknown keys.
         """
         payload = dict(data)
-        if "decap_link" not in payload and "decap_boost" in payload:
-            payload["decap_link"] = payload["decap_boost"]
         known = {f.name for f in fields(cls)}
         unknown = sorted(k for k in payload if k not in known)
         if strict and unknown:

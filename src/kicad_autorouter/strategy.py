@@ -72,27 +72,6 @@ def mode_owned_keys(mode: str) -> list:
     return list(MODE_PRESETS[mode].keys())
 
 
-def _preset_equal(have: object, want: object) -> bool:
-    """Preset-value equality with order-insensitive list comparison."""
-    if isinstance(have, (list, tuple)) and isinstance(want, (list, tuple)):
-        return sorted(str(v) for v in have) == sorted(str(v) for v in want)
-    return have == want
-
-
-def is_custom(effective: dict, mode: str) -> bool:
-    """True when a preset-owned key differs from the mode preset.
-
-    Non-preset keys are ignored. (Kept as a pure helper + unit-tested;
-    not exposed via ``/api/state`` — the Custom badge was cut.)
-    """
-    _check_mode(mode)
-    preset = MODE_PRESETS[mode]
-    for key, value in preset.items():
-        if key not in effective or not _preset_equal(effective[key], value):
-            return True
-    return False
-
-
 def mode_warning(mode: Optional[str], copper_layers: Collection[str] | tuple) -> Optional[str]:
     """Mismatch warning when mode disagrees with the stackup; else None.
 

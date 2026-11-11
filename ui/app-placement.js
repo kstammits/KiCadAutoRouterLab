@@ -957,10 +957,6 @@ function renderFootprintTable() {
   updateGhostSelUI();
 }
 
-// Net selection lives in the nets table + SVG copper click (selectNetFromCopper).
-// The top-20 net legend was removed: it duplicated the table and coupled
-// placement + routing selection in one click.
-
 // Load pinned on board load
 async function loadSelectionState() {
   illegalUuids.clear();
@@ -1895,7 +1891,6 @@ on("reset-btn", "click", async () => {
   }
 });
 
-// The original reset-btn handler for params (renamed to avoid conflict)
 on("reset-params-btn", "click", async () => {
   try {
     await loadParams(true);

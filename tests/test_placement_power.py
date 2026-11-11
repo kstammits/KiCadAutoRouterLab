@@ -316,11 +316,6 @@ class TestPowerParams:
         assert p.power_attraction_scale == 0.0
         assert p.decap_link == 0.0
 
-    def test_legacy_boost_alias(self):
-        assert PlacementParams.from_dict({"decap_boost": 8.0}).decap_link == 8.0
-        p = PlacementParams.from_dict({"decap_link": 3.0, "decap_boost": 8.0})
-        assert p.decap_link == 3.0
-
 
 @pytest.mark.unit
 class TestDecapChipLinks:

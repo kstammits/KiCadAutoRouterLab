@@ -1,6 +1,4 @@
 // app-docs.js — manual viewer (markdown render + /api/docs/* loading).
-// Standalone domain: only needs el/apiJson (core) and escapeHtml (core).
-// Loaded after app.js during the migration; last in final order.
 
 function renderInline(s) {
   let out = escapeHtml(s);

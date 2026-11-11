@@ -17,7 +17,6 @@ from ui.server import (
     STATE,
     load_routing_params,
     save_routing_params,
-    _routing_result_payload,
 )
 
 from ui.server_jobs import (
@@ -36,7 +35,6 @@ from kicad_autorouter.board_model import board_model, is_ground_net
 from kicad_autorouter.io import rip_up_nets
 from kicad_autorouter.routing.pipeline import (
     RoutingParams,
-    route_nets,
     resolve_clearance,
     resolve_track_width,
     terminals_for_net,
@@ -328,9 +326,6 @@ def handle_post(path, qs, body, handler):
             state = job.get("state")
         return 200, json.dumps({"ok": True, "job_id": job_id, "state": state}).encode(), "application/json"
 
-    if path == "/api/routing/run":
-        return _handle_run(body)
-
     if path == "/api/routing/polish":
         return _handle_polish(body)
 
@@ -338,79 +333,6 @@ def handle_post(path, qs, body, handler):
         return _handle_ripup(body)
 
     return None
-
-
-def _handle_run(body):
-    req = _require_json(body)
-    if req is None or not isinstance(req, dict):
-        return 400, b"invalid JSON", "text/plain"
-    model, _, _, _, _, _ = STATE.snapshot
-    if model is None:
-        return 404, b"no board loaded", "text/plain"
-    net_names = req.get("net_names", [])
-    if not isinstance(net_names, list) or not net_names:
-        return 400, b"net_names required (non-empty list)", "text/plain"
-    route_params_dict = req.get("params", {})
-    mode_info = STATE.mode_status()
-    if isinstance(route_params_dict, dict) and mode_info["mode"] is not None:
-        route_params_dict = apply_mode(route_params_dict, mode_info["mode"])
-    if not isinstance(route_params_dict, dict):
-        return 400, b"params must be an object", "text/plain"
-    try:
-        route_params = RoutingParams.from_dict(route_params_dict)
-    except (ValueError, TypeError) as exc:
-        return 400, f"bad routing params: {exc}".encode(), "text/plain"
-    protected_nets = STATE.get_protected_nets()
-
-    try:
-        result, cost_grid, routing_grid = route_nets(
-            model=model,
-            net_names=net_names,
-            protected_nets=protected_nets,
-            cost_grid=STATE.cost_grid,
-            routing_grid=STATE.routing_grid,
-            obstacle_cache=STATE.obstacle_cache,
-            params=route_params,
-            original_pcb_tree=STATE.pcb_tree,
-            extra_power_nets=STATE.get_power_override_nets(),
-        )
-    except ValueError as exc:
-        return 400, f"routing rejected: {exc}".encode(), "text/plain"
-    except Exception as exc:
-        logger.exception("routing failed")
-        return 500, f"routing failed: {exc}".encode(), "text/plain"
-
-    with STATE._lock:
-        STATE.cost_grid = cost_grid
-        STATE.routing_grid = routing_grid
-        if result.pcb_tree is not None:
-            STATE.pcb_tree = result.pcb_tree
-            try:
-                STATE.model = board_model(result.pcb_tree)
-            except Exception:
-                STATE.routing_model = model
-            else:
-                STATE.routing_model = STATE.model
-        else:
-            STATE.routing_model = model
-        STATE.version += 1
-        version = STATE.version
-
-    try:
-        STATE.set_last_failed(result.failed_reasons or {})
-    except (AttributeError, TypeError):
-        pass
-    try:
-        STATE.set_last_polishable(getattr(result, "net_routes", None) or {},
-                                  getattr(result, "width_map", None) or {})
-    except (AttributeError, TypeError):
-        pass
-    payload = _routing_result_payload(result)
-    payload["mode_warning"] = mode_info["warning"]
-    payload["version"] = version
-    if route_params.debug:
-        payload["debug"] = _cost_grid_to_debug(cost_grid, routing_grid)
-    return 200, json.dumps(payload).encode(), "application/json"
 
 
 def _handle_polish(body):
