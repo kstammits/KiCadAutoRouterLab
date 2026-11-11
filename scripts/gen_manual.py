@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Generate the self-contained placement user manual.
+"""Generate the self-contained Karltron Autorouter placement manual.
 
 The manual is one HTML file with prose, generated before/after board SVGs,
 and metrics from three real placement runs. No screenshots and no Quarto.
+Covers placement only; routing/pour/DRC live in the app Route tab.
 
 Usage:
     python scripts/gen_manual.py [--out ui/manual.html] [--check]
@@ -263,7 +264,7 @@ PAGE = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>KiCad AutoRouter — Placement Manual</title>
+<title>Karltron Autorouter — Placement Manual</title>
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
@@ -300,9 +301,11 @@ PAGE = """<!doctype html>
 </head>
 <body>
 <main>
-<h1>Placement Manual</h1>
+<h1>Karltron Autorouter — Placement Manual</h1>
 <p class="lede">A short, code-generated guide to the force-spring placement workflow.
 Every board below is rendered by the current engine; there are no screenshots.</p>
+<p class="muted">Placement only — routing, GND stitch/pour repair, power integrity,
+and DRC/export live in the app's Route tab and top bar. Generated {stamp}.</p>
 
 <h2>Start here</h2>
 <pre><code>./start_server.sh
@@ -385,11 +388,29 @@ def _example_html(result: Result, index: int) -> str:
 """
 
 
+def _stamp() -> str:
+    """Generated-on stamp: UTC date + short git sha when available."""
+    import datetime
+    import subprocess
+
+    when = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    try:
+        sha = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            cwd=str(REPO_ROOT),
+        ).stdout.strip()
+    except OSError:
+        sha = ""
+    return f"{when} ({sha})" if sha else when
+
+
 def render(results: Sequence[Result]) -> str:
     examples = "".join(
         _example_html(result, i + 1) for i, result in enumerate(results)
     )
-    return PAGE.replace("{examples}", examples)
+    return PAGE.replace("{stamp}", _stamp()).replace("{examples}", examples)
 
 
 def main(argv: list[str] | None = None) -> int:

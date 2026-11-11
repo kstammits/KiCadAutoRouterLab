@@ -63,7 +63,10 @@ async function refreshInletsDiag() {
       return `${n}@${lst.map(x => `${x.ref}.${x.pad}`).join("+")}`;
     }).join(", ") || "unset";
     const b = (data.bridges || []).map(x => `${x.a.ref}.${x.a.pad}↔${x.b.ref}.${x.b.pad}`).join(", ");
-    if (diag) diag.textContent = `GND inlet ${g} · PWR ${p}${b ? ` · bridges ${b}` : ""}`;
+  const hasGnd = (Array.isArray(gl) ? gl.length : !!gl) > 0;
+  const hasPwr = Object.keys(data.power || {}).length > 0;
+  if (diag) diag.textContent = `GND inlet ${g} · PWR ${p}${b ? ` · bridges ${b}` : ""}` +
+    ((!hasGnd && !hasPwr) ? " — Pick a pad, or type ref/pad + Set" : "");
   } catch (err) {
     if (diag) diag.textContent = `inlets unreadable: ${err}`;
   }
@@ -196,22 +199,62 @@ on("inlets-clear-btn", "click", clearGndInlet);
 let bridgePick = null; // 'a' | 'b' | null
 function setBridgePick(which) {
   bridgePick = (bridgePick === which) ? null : which;
+  if (bridgePick && inletPick) setInletPick(null); // one pad-pick mode at a time
   const pa = el("bridge-pick-a");
   const pb = el("bridge-pick-b");
   if (pa) pa.textContent = bridgePick === "a" ? "Picking…" : "Pick A";
   if (pb) pb.textContent = bridgePick === "b" ? "Picking…" : "Pick B";
 }
+// ---- Inlet picking: click a pad on the board to fill an inlet row ----
+let inletPick = null; // 'gnd' | 'pwr' | null
+function setInletPick(which) {
+  inletPick = (which === null || inletPick === which) ? null : which;
+  if (inletPick && bridgePick) setBridgePick(bridgePick); // disarm (toggles off)
+  const g = el("inlet-gnd-pick");
+  const p = el("inlet-pwr-pick");
+  if (g) g.textContent = inletPick === "gnd" ? "Picking…" : "Pick";
+  if (p) p.textContent = inletPick === "pwr" ? "Picking…" : "Pick";
+}
+// Fill an inlet ref from the single selected footprint (pad still typed/picked).
+function useSelectedForInlet(which) {
+  const fps = (typeof allFootprints !== "undefined" ? allFootprints : [])
+    .filter(f => typeof selectedUuids !== "undefined" && selectedUuids.has(f.uuid) && !f.ghost);
+  if (fps.length !== 1) {
+    toast("select exactly one footprint to fill the inlet ref");
+    return;
+  }
+  const input = el(which === "gnd" ? "inlet-gnd-ref" : "inlet-pwr-ref");
+  if (input) input.value = fps[0].ref || "";
+}
 // Capture-phase: claim pad clicks while picking, before footprint selection.
 viewport?.addEventListener("click", e => {
-  if (!bridgePick) return;
+  if (!bridgePick && !inletPick) return;
   const padEl = e.target.closest("[data-pad]");
   if (!padEl) return;
   const ref = padEl.getAttribute("data-ref") || "";
   const pad = padEl.getAttribute("data-pad") || "";
   if (!ref || !pad) return;
-  const _br = el(`bridge-${bridgePick}-ref`); if (_br) _br.value = ref;
-  const _bp = el(`bridge-${bridgePick}-pad`); if (_bp) _bp.value = pad;
-  setBridgePick(bridgePick); // disarm (toggles off)
+  if (bridgePick) {
+    const _br = el(`bridge-${bridgePick}-ref`); if (_br) _br.value = ref;
+    const _bp = el(`bridge-${bridgePick}-pad`); if (_bp) _bp.value = pad;
+    setBridgePick(bridgePick); // disarm (toggles off)
+  } else {
+    const _ir = el(inletPick === "gnd" ? "inlet-gnd-ref" : "inlet-pwr-ref");
+    const _ip = el(inletPick === "gnd" ? "inlet-gnd-pad" : "inlet-pwr-pad");
+    if (_ir) _ir.value = ref;
+    if (_ip) _ip.value = pad;
+    let filled = `${ref}.${pad}`;
+    if (inletPick === "pwr") {
+      const net = padEl.getAttribute("data-net") || "";
+      if (net) {
+        const _in = el("inlet-pwr-net");
+        if (_in) _in.value = net;
+        filled += ` on ${net}`;
+      }
+    }
+    toast(`${filled} → ${inletPick.toUpperCase()} inlet (Set to save)`, true);
+    setInletPick(null);
+  }
   e.stopPropagation();
   e.preventDefault();
 }, true);
@@ -319,6 +362,10 @@ async function suggestBridges() {
 }
 on("bridge-pick-a", "click", () => setBridgePick("a"));
 on("bridge-pick-b", "click", () => setBridgePick("b"));
+on("inlet-gnd-pick", "click", () => setInletPick("gnd"));
+on("inlet-pwr-pick", "click", () => setInletPick("pwr"));
+on("inlet-gnd-sel", "click", () => useSelectedForInlet("gnd"));
+on("inlet-pwr-sel", "click", () => useSelectedForInlet("pwr"));
 on("bridge-link-btn", "click", linkBridge);
 on("bridge-suggest-btn", "click", suggestBridges);
 refreshBridges();

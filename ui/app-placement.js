@@ -52,6 +52,8 @@ async function poll() {
     if (dlBtn) dlBtn.hidden = false;
     const resetBtn = el("reset-btn");
     if (resetBtn) resetBtn.hidden = false;
+    const legend = el("forces-legend");
+    if (legend) legend.style.display = el("forces-toggle")?.checked ? "" : "none";
     renderLayerToggles(st.copper_layers);
     updateModeUI(st);
     if (st.version !== lastVersion) {
@@ -65,6 +67,17 @@ async function poll() {
       gndIslandsVisible = false;
       const gndBtn = el("gnd-islands-btn");
       if (gndBtn) { gndBtn.textContent = "GND Islands"; gndBtn.disabled = false; }
+      // Same for power integrity: impedance results reference this board's
+      // pads, and inlet/bridge anchors belong to this board — re-read them.
+      impedanceData = null;
+      impedanceVisible = false;
+      const impBox = el("impedance-results");
+      if (impBox) impBox.hidden = true;
+      const impBtn = el("impedance-btn");
+      if (impBtn) { impBtn.textContent = "Impedance"; impBtn.disabled = false; }
+      if (typeof renderImpedanceOverlay === "function") renderImpedanceOverlay();
+      if (typeof refreshInletsDiag === "function") refreshInletsDiag();
+      if (typeof refreshBridges === "function") refreshBridges();
       await fetchAndInjectSVG(st.version);
       await loadSelectionState();
       await loadMotionFrames(true);
@@ -84,7 +97,17 @@ async function poll() {
     if (dlBtn) dlBtn.hidden = true;
     const resetBtn = el("reset-btn");
     if (resetBtn) resetBtn.hidden = true;
+    const legend = el("forces-legend");
+    if (legend) legend.style.display = "none";
     if (undoBtn) undoBtn.disabled = true;
+    // No board: impedance results (and their overlay) belong to the old one.
+    impedanceData = null;
+    impedanceVisible = false;
+    const impBox = el("impedance-results");
+    if (impBox) impBox.hidden = true;
+    const impBtn = el("impedance-btn");
+    if (impBtn) { impBtn.textContent = "Impedance"; impBtn.disabled = false; }
+    if (typeof renderImpedanceOverlay === "function") renderImpedanceOverlay();
     lastVersion = 0;
     (viewport?.querySelectorAll("svg") ?? []).forEach(elm => elm.remove());
     viewBox = null;
@@ -126,7 +149,7 @@ async function refreshForces() {
 
 forcesToggle?.addEventListener("change", async () => {
   const legend = el("forces-legend");
-  if (legend && forcesToggle) legend.style.display = forcesToggle.checked ? "inline-flex" : "none";
+  if (legend && forcesToggle) legend.style.display = forcesToggle.checked ? "" : "none";
   if (!lastVersion) return;
   if (forcesToggle.checked) {
     await refreshForces();

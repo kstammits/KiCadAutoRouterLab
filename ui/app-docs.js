@@ -65,6 +65,13 @@ function renderMarkdown(md) {
 let docsLoaded = false;
 let docsByName = {};
 
+// User-facing guides vs dev references, so first-time evaluators know
+// what to read. Mirrors the Learn More table in README.md.
+function docsKind(name) {
+  if (name === "README.md" || name === "docs/autorouting_glossary.md") return "user guide";
+  return "dev reference";
+}
+
 function stripDocsFrontMatter(md) {
   if (!md.startsWith("---\n") && !md.startsWith("---\r\n")) return md;
   const lines = md.split("\n");
@@ -85,7 +92,7 @@ async function loadDocsList() {
     for (const d of (data.docs || [])) {
       const opt = document.createElement("option");
       opt.value = d.name;
-      opt.textContent = `${d.title} (${d.name})`;
+      opt.textContent = `${d.title} [${docsKind(d.name)}] (${d.name})`;
       sel.appendChild(opt);
       docsByName[d.name] = d;
     }
@@ -134,7 +141,7 @@ async function loadDocContent(name) {
         });
       }
     });
-    if (diag) diag.textContent = data.truncated ? "truncated (size cap)" : `${data.title}`;
+    if (diag) diag.textContent = data.truncated ? "truncated (size cap)" : `${data.title} · ${docsKind(name)}`;
   } catch (err) {
     if (diag) diag.textContent = `docs failed: ${err.message}`;
   }

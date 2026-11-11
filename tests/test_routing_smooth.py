@@ -526,7 +526,16 @@ def test_polish_never_grows_wire_and_converts():
             continue
         assert entry["wire_after_mm"] <= entry["wire_before_mm"] + 1e-9
         assert entry["wire_before_mm"] == pytest.approx(before[net])
-    # Polished branches still convert to board copper.
+    # Polished branches still convert to board copper. Mirror the server
+    # polish conversion call (ui/server_jobs.py) kwarg-for-kwarg — a wrong
+    # keyword there once broke Polish end to end while this test stayed green.
+    xp = _xparams()
     tracks, vias, arcs = routes_to_tracks_vias(
-        new, rg, net_class_widths=raw.width_map)
+        new, rg, net_class_widths=raw.width_map,
+        default_width_mm=xp.track_width_mm,
+        power_width_mm=xp.power_width_mm,
+        via_size_mm=xp.via_size_mm,
+        via_drill_mm=xp.via_drill_mm,
+        tht_sites={},
+        extra_power=())
     assert tracks and all(t.net_name in ("X1", "X2") for t in tracks)

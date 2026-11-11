@@ -1,12 +1,19 @@
-# KiCad AutoRouter Lab
+# Karltron Autorouter
 
 > **Status:** Early stage — works on real boards (tube111, DCCF), DRC-validated. Expect rough edges. Use at your own risk.
+> Part of the KiCad AutoRouter Lab project.
 
 Pure-Python autorouter for KiCad: drop a `.kicad_pcb` into the web UI or run headless, get routed tracks back. No `pcbnew` scripting, no C++ plugins.
 
-- **Per-pad force placement** — connected pads attract, all pads repel; parts rotate and slide organically around locked anchors. Decap magnets snap caps to pins; silkscreen labels ride as tethered nodes.
-- **Grid A* routing** — full clearance awareness, per-net widths, power-rail overrides, GND pours passable-at-toll with auto-stitching.
-- **DRC gate** — `kicad-cli pcb drc` runs on writeback; nothing DRC-dirty is stamped silently.
+**Workflow: 1 Load → 2 Place (Step / Run + Accept) → 3 Route → 4 DRC + Download.**
+
+| What it does | How you reach it |
+|--------------|------------------|
+| **Per-pad force placement** — connected pads attract, all pads repel; parts rotate and slide around locked anchors | Place tab → Step / Run / Accept; Regime presets (Scatter start, Placed-board polish, Tidy align); ghosts as keepout walls / attractors |
+| **Grid A* routing** — clearance-aware, per-net widths, power-rail overrides, GND pours passable-at-toll with auto-stitching | Route tab → Route Selected / Route All / Refine Order / Polish; 2-layer / 4-layer mode switch |
+| **Power integrity (report only)** — inlet-anchored DC-resistance screening, mated-pair bridges | Route tab → Power integrity + Mated pairs sections |
+| **DRC gate** — `kicad-cli pcb drc` runs on writeback; nothing DRC-dirty is stamped silently | Top bar → Run DRC, then Download |
+| **Review & share** — motion playback, force vectors, context save/load, copy-link presets | Motion bar, Show proposal / forces toggles, Save/Load ctx, Copy link |
 
 ---
 
@@ -55,7 +62,7 @@ Details live in the manual and glossary (links below), not here.
 
 ## Performance
 
-Indicative desktop wall-clock (±30%). Raw data: `docs/benchmarks/`, newest per family.
+Indicative desktop wall-clock (±30%). Raw data: `docs/benchmarks/` — newest file per family wins (e.g. `signals_tube111_2026-11-11.json` over `...-11-10.json`).
 
 | Task | Typical time |
 |------|--------------|
@@ -73,14 +80,14 @@ Rules of thumb: placement costs ~N^1.2–1.5 per iteration — estimate per-iter
 
 | Doc | What You'll Find |
 |-----|------------------|
-| [`ui/manual.html`](ui/manual.html) | Placement manual with live before/after examples |
-| [`docs/autorouting_glossary.md`](docs/autorouting_glossary.md) | Pipeline stages, terminology, algorithm guidance |
-| [`docs/si_force_laws.md`](docs/si_force_laws.md) | Placement force laws and parameter defaults |
-| [`docs/physics_primer.qmd`](docs/physics_primer.qmd) | Force-law primer with figures and math |
-| [`docs/roadmap.md`](docs/roadmap.md) | Open work |
-| [`docs/README.md`](docs/README.md) | Upstream references with fetch recipes |
+| [`ui/manual.html`](ui/manual.html) | **User:** Placement manual with live before/after examples (placement only; routing lives in the app Route tab) |
+| [`docs/autorouting_glossary.md`](docs/autorouting_glossary.md) | **User:** Pipeline stages, terminology, algorithm guidance |
+| [`docs/si_force_laws.md`](docs/si_force_laws.md) | **Dev reference:** Placement force laws and parameter defaults |
+| [`docs/physics_primer.qmd`](docs/physics_primer.qmd) | **Dev reference:** Force-law primer with figures and math |
+| [`docs/roadmap.md`](docs/roadmap.md) | **Dev:** Open work |
+| [`docs/README.md`](docs/README.md) | **Dev:** Upstream references with fetch recipes |
 
-Regenerate the manual/figures/primer with `./scripts/regen_docs.sh`.
+Regenerate the manual/figures with `.venv/bin/python scripts/gen_manual.py`, or everything (figures + manual + primer) with `./scripts/regen_docs.sh [--only-manual | --skip-quarto | --pdf]`.
 
 ---
 

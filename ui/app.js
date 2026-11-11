@@ -122,7 +122,7 @@ loadAppVersion();
 loadParams().then(applyUrlPreset).catch(() => {});
 {
   const _fl = el("forces-legend");
-  if (_fl) _fl.style.display = el("forces-toggle")?.checked ? "inline-flex" : "none";
+  if (_fl) _fl.style.display = el("forces-toggle")?.checked ? "" : "none";
 }
 // Boot self-check: if an earlier panel script failed to evaluate, its
 // globals are missing and blind calls below would die with a bare

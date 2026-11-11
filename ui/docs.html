@@ -2,7 +2,8 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>KiCad AutoRouter — Docs</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Karltron Autorouter — Docs</title>
 <style>
   :root { color-scheme: dark; }
   body { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background:#101418; color:#d7e0e9; margin:0; padding:0; }
@@ -23,7 +24,7 @@
 </head>
 <body>
 <header>
-  <h1>KiCad AutoRouter — Docs</h1>
+  <h1>Karltron Autorouter — Docs</h1>
   <select id="docs-select" title="Select a doc"></select>
   <a href="/" style="color:#7ee0a0;font-size:.75rem;">← Back to board</a>
   <a href="/manual.html" target="_blank" rel="noopener" style="color:#7ee0a0;font-size:.75rem;">manual ↗</a>
@@ -103,6 +104,11 @@ function renderMarkdown(md) {
   return html;
 }
 
+function docsKind(name) {
+  if (name === "README.md" || name === "docs/autorouting_glossary.md") return "user guide";
+  return "dev reference";
+}
+
 async function loadDoc(name) {
   const el = document.getElementById("docs-content");
   const diag = document.getElementById("diag");
@@ -123,7 +129,7 @@ async function loadDoc(name) {
   } else {
     rl.style.display = "none";
   }
-  diag.textContent = data.truncated ? "truncated (size cap)" : data.title;
+  diag.textContent = data.truncated ? "truncated (size cap)" : `${data.title} · ${docsKind(name)}`;
 }
 
 async function init() {
@@ -135,7 +141,7 @@ async function init() {
   for (const d of (data.docs || [])) {
     const opt = document.createElement("option");
     opt.value = d.name;
-    opt.textContent = `${d.title} (${d.name})`;
+    opt.textContent = `${d.title} [${docsKind(d.name)}] (${d.name})`;
     sel.appendChild(opt);
   }
   sel.value = [...sel.options].some(o => o.value === wanted) ? wanted : (sel.options[0] ? sel.options[0].value : "");

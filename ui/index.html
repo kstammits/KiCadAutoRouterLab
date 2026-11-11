@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Karltron Autorouter — Workflow</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="style.css">
@@ -150,19 +151,11 @@
       </span>
       <span class="top-group">
         <label class="chk" title="Show the accepted proposal overlay (placement deltas on top of the committed board)"><input type="checkbox" id="overlay-toggle" checked> Show proposal</label>
-        <label class="chk" title="Show per-part force vectors in the placement colors below"><input type="checkbox" id="forces-toggle" checked> forces</label>
+        <label class="chk" title="Show per-part force vectors in the board key colors (key floats top-left on the board)"><input type="checkbox" id="forces-toggle" checked> forces</label>
         <label class="chk" id="cost-grid-label" hidden title="Show the routing cost-grid heatmap (needs Debug data from a route run)"><input type="checkbox" id="cost-grid-toggle"> Cost grid</label>
         <select id="cost-grid-net" hidden title="Per-net fanout halo overlay (soft/hard rings + terminal seals)">
           <option value="">occupancy only</option>
         </select>
-        <span id="forces-legend" class="chip" style="font-size:0.6rem; display:inline-flex; gap:0.5rem; align-items:center;">
-          <span><i style="display:inline-block; width:1.2rem; border-top:2px solid #22d3ee;"></i> repulsion</span>
-          <span><i style="display:inline-block; width:1.2rem; border-top:2px solid #a3e635;"></i> attraction</span>
-          <span><i style="display:inline-block; width:1.2rem; border-top:2px solid #f472b6;"></i> courtyard+wall</span>
-          <span><i style="display:inline-block; width:1.2rem; border-top:2px dotted #c4b5fd;"></i> ghost</span>
-          <span><i style="display:inline-block; width:1.2rem; border-top:2px solid #eab308;"></i> tangential</span>
-          <span><i style="display:inline-block; width:1.2rem; border-top:2px solid #fb923c;"></i> align</span>
-        </span>
         <label class="chk" title="Show poured-zone outlines and fills"><input type="checkbox" id="zones-toggle" checked> Zones</label>
         <label class="chk" title="Show KiCad's cached zone fills (stale after edits; use --refill-zones to refresh)"><input type="checkbox" id="zones-fill-toggle"> Zone fills (cached)</label>
       </span>
@@ -181,9 +174,12 @@
         <button class="tab-btn btn-mini color-mode-btn" data-color-mode="layer" title="Solid layer colors — F.Cu red, B.Cu green, inners teal/violet/amber/blue">Layer</button>
       </span>
       <span class="top-group">
+        <a href="/manual.html" target="_blank" rel="noopener" style="font-size:.65rem;color:#7ee0a0;" title="Generated placement manual (before/after examples)">Manual ↗</a>
+        <a href="/docs.html" target="_blank" rel="noopener" style="font-size:.65rem;color:#7ee0a0;" title="Docs viewer: user guides and dev references">Docs ↗</a>
+        <button id="shortcuts-btn" title="Keyboard: A select unlocked · Shift+click multi-select · Alt+click pin · wheel zoom · drag pan · Fit resets · Esc clears · Space steps placement · Left/Right scrub motion or nudge · P pin · U unpin">?</button>
         <span class="zoom-info" id="zoom-info">100%</span>
         <button id="fit-btn" title="Fit board to view">Fit</button>
-        <button id="download-btn" title="Download modified PCB" hidden>Download</button>
+        <button id="download-btn" title="Download modified PCB (appears after a board is loaded)" hidden>Download</button>
         <button id="ctx-save-btn" title="Save whole GUI context (board + params + attempt overlays) to one JSON file for review">Save ctx</button>
         <button id="ctx-load-btn" title="Load a saved context file (review only — re-route to rebuild). No board needed first.">Load ctx</button>
         <input type="file" id="ctx-load-input" accept="application/json,.json" hidden>
@@ -195,10 +191,22 @@
     <!-- Board viewport - takes remaining space -->
     <div class="board" id="board">
       <div class="board-viewport" id="board-viewport">
+        <!-- Force color key: floats top-left, mirrors #cost-legend (bottom-right). -->
+        <div id="forces-legend" title="Force vector colors">
+          <span><i style="display:inline-block; width:1.2rem; border-top:2px solid #22d3ee;"></i> repulsion</span>
+          <span><i style="display:inline-block; width:1.2rem; border-top:2px solid #a3e635;"></i> attraction</span>
+          <span><i style="display:inline-block; width:1.2rem; border-top:2px solid #f472b6;"></i> courtyard+wall</span>
+          <span><i style="display:inline-block; width:1.2rem; border-top:2px dotted #c4b5fd;"></i> ghost</span>
+          <span><i style="display:inline-block; width:1.2rem; border-top:2px solid #eab308;"></i> tangential</span>
+          <span><i style="display:inline-block; width:1.2rem; border-top:2px solid #fb923c;"></i> align</span>
+        </div>
         <!-- Drop zone shown when no board loaded -->
         <div class="drop" id="drop-zone" hidden>
-          Drop <code>.kicad_pcb</code> / <code>.kicad_sch</code> files here to load them.
-          <p style="margin-top:.5rem;font-size:.75rem;color:#5b6b7a;">Or click <button id="load-btn-drop" style="background:none;border:1px solid #3a4a5a;padding:.15rem .5rem;border-radius:4px;cursor:pointer;" title="Open a .kicad_pcb file (drop its .kicad_sch alongside for real net names)">Load…</button></p>
+          <div style="font-size:.9rem;color:#d7e0e9;font-weight:600;">Karltron Autorouter</div>
+          <div style="font-size:.72rem;color:#9fb0c0;margin:.3rem 0 .6rem;">1 Load → 2 Place (Step / Run + Accept) → 3 Route → 4 DRC + Download</div>
+          <p style="font-size:.8rem;color:#7d8b99;max-width:32rem;text-align:center;">Drop <code>.kicad_pcb</code> / <code>.kicad_sch</code> files here to load them.</p>
+          <p style="margin-top:.5rem;font-size:.75rem;color:#5b6b7a;">Or click <button id="load-btn-drop" style="background:none;border:1px solid #3a4a5a;padding:.15rem .5rem;border-radius:4px;cursor:pointer;" title="Open a .kicad_pcb file (drop its .kicad_sch alongside for real net names)">Load…</button> <button id="demo-load-btn" style="background:none;border:1px solid #3a4a5a;padding:.15rem .5rem;border-radius:4px;cursor:pointer;" title="Load the 4-part minimal demo board (no KiCad needed)">Try the demo board</button></p>
+          <p style="font-size:.68rem;color:#5b6b7a;max-width:34rem;text-align:center;">New here? <a href="/manual.html" target="_blank" rel="noopener" style="color:#7ee0a0;">Placement manual</a> · <a href="/docs.html" target="_blank" rel="noopener" style="color:#7ee0a0;">Docs</a> · hover any control for help · <span title="Keyboard: A select unlocked · Shift+click multi-select · Alt+click pin · wheel zoom · drag pan · Fit resets · Esc clears · Space steps placement · Left/Right scrub motion or nudge · P pin · U unpin">? for shortcuts</span></p>
         </div>
         <!-- SVG injected here -->
       </div>
@@ -249,7 +257,7 @@
           <div class="params" id="params-grid"></div>
           <div class="bar" id="regime-bar">
             <span class="num">Regime</span>
-            <button id="regime-cluster-btn" title="Scattered-start clustering: stronger attraction, softer walls (attraction ~0.05, wall ~0.025, damping 0.08, dt 2ms)">Scatter start</button>
+            <button id="regime-cluster-btn" title="Scattered-start clustering: stronger attraction, softer walls (attraction ~0.05, wall ~0.025, damping 0.08, dt 2ms)">Cluster (scattered start)</button>
             <button id="regime-legalize-btn" title="Placed-board polish: gentle attraction, firm walls, 4mm halo (attraction ~0.008, wall ~0.08, damping 0.12, dt 1ms)">Placed-board polish</button>
             <button id="regime-tidy-btn" title="Manhattan snap + row hold on a legalize base: outliers rotate to the nearest compass mode when neighbors agree; ragged rows get frozen baseline/pitch anchors under the same weak hold. Threads far from any mode are left alone. Accept/Clear like any placement run.">Tidy (align)</button>
           </div>
@@ -268,8 +276,8 @@
             <button id="route-all-btn" title="Route all unprotected nets">Route All Unprotected</button>
             <button id="select-unrouted-btn" title="Select unprotected nets with 2+ pads and no tracks/vias yet (failed and never-routed nets)">Select Unrouted</button>
             <button id="rip-selected-btn" title="Rip up (remove) copper for selected nets without re-routing">Rip Selected Nets</button>
-            <button id="refine-btn" class="primary" title="Re-route selected nets under several shuffled orders, keep the best by wire + vias (never worse than current copper)">Refine Order</button>
-            <button id="polish-btn" title="Re-smooth already-routed selected nets at the Smoothing Effort slider (no re-routing; keeps copper unless gate-clean and shorter)">Polish</button>
+            <button id="refine-btn" class="primary" title="Refine: re-route under several shuffled net orders, keep the best (wire + vias). Never worse than current copper.">Refine Order</button>
+            <button id="polish-btn" title="Polish: re-smooth only, no re-routing — arcs + cleanup at Smoothing Effort. Keeps copper unless gate-clean and shorter.">Polish</button>
             <button id="route-cancel-btn" hidden title="Stop after the current net (already-routed nets are kept)">Cancel</button>
             <progress id="route-progress" hidden max="1" value="0" style="width:8rem;" title="Per-net routing progress"></progress>
             <button id="gnd-islands-btn" title="Analyze GND pour continuity (islands per layer)">GND Islands</button>
@@ -279,24 +287,28 @@
           </div>
           <div class="bar">
             <span class="num">Shuffle</span>
-            <button id="shuffle-btn" title="Silly slot machine: rip and re-route a random routable net. Set ×N to queue a run of them.">🎲 Shuffle</button><label class="chk" title="How many random re-routes to queue (1–50)">×<input type="number" id="shuffle-count" value="10" min="1" max="50" step="1" style="width:3rem;"></label>
+            <button id="shuffle-btn" title="Random re-route: rip and re-route a random routable net. Set ×N to queue a run of them.">🎲 Random re-route</button><label class="chk" title="How many random re-routes to queue (1–50)">×<input type="number" id="shuffle-count" value="10" min="1" max="50" step="1" style="width:3rem;"></label>
             <button id="shuffle-cancel-btn" hidden title="Stop after the current roll (already-routed nets are kept)">Cancel</button>
             <progress id="shuffle-progress" hidden max="1" value="0" style="width:8rem;" title="Shuffle queue progress"></progress>
             <span id="shuffle-diag"></span>
           </div>
-          <p class="section-hint">Random re-route: picks a routable net (2+ pads, unprotected), rips its copper and routes it fresh. Queue ×N rolls and watch the totals below move.</p>
+          <p class="section-hint">Random re-route (ex-Shuffle): picks a routable net (2+ pads, unprotected), rips its copper and routes it fresh. Queue ×N rolls and watch the totals below move.</p>
           <div id="route-metrics" style="font-size:.72rem;padding:.2rem .7rem;" title="Board totals: routed nets, copper counts, DRC cache state">no board loaded</div>
           <div id="gnd-islands-results" style="font-size:.72rem;padding:.2rem .7rem;" hidden></div>
           <details class="route-section" id="impedance-details">
             <summary title="DC-resistance screening for GND + power nets. Report only — never changes copper.">Power integrity (report only)</summary>
-            <p class="section-hint">Picks where power enters the board, then grades every GND/power pad by DC resistance from that entry. Set one GND entry and one entry per power net, choose fail thresholds, then run Impedance. Report only — it never changes copper.</p>
+            <p class="section-hint">Picks where power enters the board, then grades every GND/power pad by DC resistance from that entry. Set one GND entry and one entry per power net, choose fail thresholds, then run Impedance. Pick fills from a board pad click (net too); Sel fills the ref from the selected footprint. Report only — it never changes copper.</p>
             <div id="inlets-bar" style="font-size:.72rem;padding:.2rem .7rem;display:flex;gap:.4rem;flex-wrap:wrap;align-items:center;">
               <span title="Power-entry anchors: where current enters the board, measured from here">Power entry:</span>
               <label>GND <input id="inlet-gnd-ref" size="5" placeholder="J1" title="GND entry footprint ref (e.g. power connector)"></label>
               <label><input id="inlet-gnd-pad" size="3" placeholder="1" title="GND entry pad number"></label>
+              <button id="inlet-gnd-pick" title="Click a pad on the board to fill the GND inlet">Pick</button>
+              <button id="inlet-gnd-sel" title="Fill the GND ref from the single selected footprint">Sel</button>
               <label>PWR net <input id="inlet-pwr-net" size="6" placeholder="VIN" title="Power net name"></label>
               <label><input id="inlet-pwr-ref" size="5" placeholder="J1" title="Power entry footprint ref"></label>
               <label><input id="inlet-pwr-pad" size="3" placeholder="2" title="Power entry pad number"></label>
+              <button id="inlet-pwr-pick" title="Click a pad on the board to fill the PWR inlet (net too)">Pick</button>
+              <button id="inlet-pwr-sel" title="Fill the PWR ref from the single selected footprint">Sel</button>
               <button id="inlets-save-btn" title="Save entry anchors">Set</button>
               <button id="inlets-clear-btn" title="Clear the GND entry">Clear GND</button>
               <label title="Pads above this resistance from the GND entry fail">GND fail over <input id="imp-gnd-max" size="4" value="50" title="GND fail threshold in mΩ">mΩ</label>

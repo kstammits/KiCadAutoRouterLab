@@ -378,7 +378,7 @@ def _run_polish_job(job_id: str) -> None:
                 via_size_mm=route_params.via_size_mm,
                 via_drill_mm=route_params.via_drill_mm,
                 tht_sites=_tht_sites_by_net(model, routing_grid),
-                extra_power_nets=extra_power,
+                extra_power=extra_power,
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception("polish job %s conversion failed", job_id)

@@ -161,6 +161,21 @@ loadInput?.addEventListener("change", async () => {
   loadInput.value = "";
 });
 
+// Demo board: loads the 4-part minimal fixture from the repo so first-time
+// evaluators can try Place/Route with no KiCad files on hand.
+on("demo-load-btn", "click", async () => {
+  try {
+    await apiFetch("/api/load?name=minimal.kicad_pcb&path=tests/fixtures/minimal.kicad_pcb", { method: "POST" });
+  } catch (err) {
+    toast(`demo load failed: ${err.message}`);
+  }
+});
+
+// Shortcuts button: same list as the tooltip, as a toast for touch users.
+on("shortcuts-btn", "click", () => {
+  toast("A select unlocked · Shift+click multi-select · Alt+click pin · wheel zoom · drag pan · Fit resets · Esc clears · Space steps · Left/Right scrub or nudge · P pin · U unpin", true);
+});
+
 // Single fetch helper: throws with server text on !ok.
 async function apiFetch(path, opts) {
   const res = await fetch(path, opts);

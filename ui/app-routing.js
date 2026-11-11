@@ -431,7 +431,7 @@ function renderPartialCopperOverlay() {
   });
 }
 
-function formatTotalsDiag({ totals, failures, doneCount, netCount, lastBoardVersion, elapsedTxt, cancelled }) {
+function formatTotalsDiag({ totals, failures, doneCount, netCount, lastBoardVersion, elapsedTxt, cancelled, maxFailures = Infinity }) {
   const kept = `v${lastBoardVersion} — ${totals.tracks} tracks` +
     (totals.arcs ? `, ${totals.arcs} arcs` : "") + `, ${totals.vias} vias, ` +
     `${totals.routed} routed, ${totals.failed} failed (${elapsedTxt} · ${fmtExpansions(totals.expansions)}` +
@@ -441,7 +441,11 @@ function formatTotalsDiag({ totals, failures, doneCount, netCount, lastBoardVers
         (totals.gndBefore ? ` (islands ${totals.gndBefore}→${totals.gndAfter})` : "")
       : "");
   if (cancelled) return `cancelled after ${doneCount}/${netCount} nets — kept ${totals.routed} — ${kept}`;
-  if (failures.length) return `${kept} — failures: ${failures.join("; ")}`;
+  if (failures.length) {
+    const shown = failures.slice(0, maxFailures);
+    const more = failures.length - shown.length;
+    return `${kept} — failures: ${shown.join("; ")}${more > 0 ? `; … +${more} more` : ""}`;
+  }
   return kept;
 }
 
@@ -480,6 +484,7 @@ async function routeSelectedNets() {
   routeCancelRequested = false;
   partialCopperData = [];
   renderPartialCopperOverlay();
+  await clearShuffleTail();
 
   const totals = { tracks: 0, arcs: 0, vias: 0, routed: 0, failed: 0, expansions: 0, astarS: 0 };
   const failures = [];
@@ -578,11 +583,13 @@ async function routeSelectedNets() {
     // the Debug checkbox and /api/routing/debug/cost-grid?net=).
     renderPartialCopperOverlay();
 
-    diag.textContent = formatTotalsDiag({
+    try { await refreshRouteMetrics([]); } catch { /* metrics are best-effort */ }
+    const summary = {
       totals, failures, doneCount, netCount: nets.length, lastBoardVersion,
       elapsedTxt: elapsed(), cancelled: routeCancelRequested,
-    });
-    diag.title = diag.textContent;
+    };
+    diag.textContent = formatTotalsDiag({ ...summary, maxFailures: 3 });
+    diag.title = formatTotalsDiag(summary);
     if (routeEst) routeEst.textContent = `done in ${elapsed()} (est ≈${Math.round(est.seconds)}s) · ${est.pairs} pair-searches`;
   } finally {
     setRouteBusy(false);
@@ -606,6 +613,7 @@ async function ripSelectedNets() {
   for (const b of [ripBtn, routeBtn, routeAllBtn, selectUnroutedBtn, shuffleBtn]) {
     if (b) { b.disabled = true; b.classList.add("loading"); }
   }
+  await clearShuffleTail();
   try {
     diag.textContent = `ripping ${nets.length} net${nets.length > 1 ? "s" : ""}…`;
     const r = await postJSON("/api/routing/ripup", { net_names: nets });
@@ -626,6 +634,7 @@ async function ripSelectedNets() {
       await fetchAndInjectSVG(r.version);
     }
     await fetchNets();
+    try { await refreshRouteMetrics([]); } catch { /* metrics are best-effort */ }
   } catch (err) {
     diag.textContent = `rip-up failed: ${err.message}`;
   } finally {
@@ -730,6 +739,7 @@ async function refineSelectedNets() {
   routeCancelRequested = false;
   partialCopperData = [];
   renderPartialCopperOverlay();
+  await clearShuffleTail();
 
   let jobId = null;
   try {
@@ -756,6 +766,7 @@ async function refineSelectedNets() {
         }
         await fetchNets();
         renderPartialCopperOverlay();
+        try { await refreshRouteMetrics([]); } catch { /* metrics are best-effort */ }
         diag.textContent = formatRefineSummary(r) + ` (${elapsed()})`;
         diag.title = diag.textContent;
         // Advance the base seed past the tried range so the next Refine
@@ -818,6 +829,7 @@ async function polishSelectedNets() {
   progress.value = 0;
   if (cancelBtn) cancelBtn.hidden = false;
   routeCancelRequested = false;
+  await clearShuffleTail();
 
   let jobId = null;
   try {
@@ -850,14 +862,17 @@ async function polishSelectedNets() {
           await fetchAndInjectSVG(r.version);
         }
         await fetchNets();
+        try { await refreshRouteMetrics([]); } catch { /* metrics are best-effort */ }
         const rep = r.report || {};
-        const per = Object.entries(rep.nets || {}).map(([n, s]) =>
-          `${n}:${s.status}${s.status === "polished" ? ` (-${(s.wire_before_mm - s.wire_after_mm).toFixed(2)}mm)` : ""}`).join(" · ");
+        const perEntries = Object.entries(rep.nets || {}).map(([n, s]) =>
+          `${n}:${s.status}${s.status === "polished" ? ` (-${(s.wire_before_mm - s.wire_after_mm).toFixed(2)}mm)` : ""}`);
+        const perShort = perEntries.slice(0, 5).join(" · ") +
+          (perEntries.length > 5 ? ` · … +${perEntries.length - 5} more` : "");
         diag.textContent = `polish done: ${rep.polished || 0} improved, ${rep.kept || 0} kept, ` +
           `${rep.reverted || 0} reverted, ${rep.skipped || 0} skipped` +
           (rep.wire_saved_mm ? `, saved ${rep.wire_saved_mm}mm` : "") +
-          (per ? ` [${per}]` : "") + ` (${elapsed()})`;
-        diag.title = diag.textContent;
+          (perShort ? ` [${perShort}]` : "") + ` (${elapsed()})`;
+        diag.title = diag.textContent + (perEntries.length > 5 ? ` — all nets: ${perEntries.join(" · ")}` : "");
         if (undoBtn) undoBtn.disabled = false;
         break;
       }
@@ -884,8 +899,16 @@ async function polishSelectedNets() {
 // (single-flight server jobs). Per-net failures don't abort the queue
 // (except HTTP 400, which would fail every net identically).
 // `rolls` is the per-roll log from the last shuffle run (kept across
-// refreshes so reopening the panel doesn't lose it).
+// refreshes so reopening the panel doesn't lose it). Any board-mutating
+// run supersedes it: call clearShuffleTail() at run start so no stale
+// summary laughs through the next (often minutes-long) batch.
 let lastShuffleRolls = [];
+async function clearShuffleTail() {
+  lastShuffleRolls = [];
+  const shuffleDiag = el("shuffle-diag");
+  if (shuffleDiag) shuffleDiag.textContent = "";
+  try { await refreshRouteMetrics(); } catch { /* metrics are best-effort */ }
+}
 async function refreshRouteMetrics(rolls) {
   if (Array.isArray(rolls)) lastShuffleRolls = rolls;
   const box = el("route-metrics");
@@ -922,19 +945,31 @@ async function refreshRouteMetrics(rolls) {
   let txt = `Board v${lastVersion} · nets ${routed}/${routable.length} routed` +
     ` · ${routable.length - routed} unrouted · ${prot} protected` +
     ` · copper ${tracks} tracks, ${arcs} arcs, ${vias} vias · ${drcTxt}`;
+  let titleTxt = null;
   if (lastShuffleRolls.length) {
-    const rollTxt = lastShuffleRolls.map((r) => {
+    const fmtRoll = (r) => {
       if (!r.ok) return `${r.net} failed${r.note ? ` (${r.note})` : ""}`;
       const bits = [];
       if (r.tracks) bits.push(`+${r.tracks}t`);
       if (r.arcs) bits.push(`+${r.arcs}a`);
       if (r.vias) bits.push(`+${r.vias}v`);
       return `${r.net} ok${bits.length ? ` (${bits.join("/")})` : ""}`;
-    }).join(", ");
-    txt += ` · last shuffle: ${rollTxt}`;
+    };
+    const rollFull = lastShuffleRolls.map(fmtRoll).join(", ");
+    const extra = lastShuffleRolls.length - 4;
+    const rollShort = lastShuffleRolls.slice(0, 4).map(fmtRoll).join(", ") +
+      (extra > 0 ? `, … +${extra} more` : "");
+    const okCount = lastShuffleRolls.filter((r) => r.ok).length;
+    const t = lastShuffleRolls.reduce((s, r) => s + (r.tracks || 0), 0);
+    const a = lastShuffleRolls.reduce((s, r) => s + (r.arcs || 0), 0);
+    const v = lastShuffleRolls.reduce((s, r) => s + (r.vias || 0), 0);
+    const baseTxt = txt;
+    txt += ` · last shuffle: ${okCount}/${lastShuffleRolls.length} ok` +
+      ` (+${t}t/+${a}a/+${v}v): ${rollShort}`;
+    titleTxt = `${baseTxt} · last shuffle: ${rollFull}`;
   }
   box.textContent = txt;
-  box.title = txt;
+  box.title = titleTxt || txt;
 }
 async function shuffleRandomNets() {
   const diag = el("shuffle-diag");
@@ -974,6 +1009,10 @@ async function shuffleRandomNets() {
   progress.value = 0;
   if (cancelBtn) cancelBtn.hidden = false;
   routeCancelRequested = false;
+  // A shuffle run supersedes the last route summary the same way.
+  if (routeDiag) routeDiag.textContent = "";
+  const routeEst = el("route-est");
+  if (routeEst) routeEst.textContent = "";
 
   const totals = { tracks: 0, arcs: 0, vias: 0, routed: 0, failed: 0, expansions: 0, astarS: 0 };
   const failures = [];
@@ -1058,12 +1097,14 @@ async function shuffleRandomNets() {
   await fetchNets();
   renderPartialCopperOverlay();
   try { await refreshRouteMetrics(perRoll); } catch { /* metrics are best-effort */ }
-  diag.textContent = `shuffled ${doneCount}/${queue.length} (${queue.slice(0, doneCount).join(", ")}) — ` +
-    formatTotalsDiag({
-      totals, failures, doneCount, netCount: queue.length, lastBoardVersion,
-      elapsedTxt: elapsed(), cancelled: routeCancelRequested,
-    });
-  diag.title = diag.textContent;
+  const summary = {
+    totals, failures, doneCount, netCount: queue.length, lastBoardVersion,
+    elapsedTxt: elapsed(), cancelled: routeCancelRequested,
+  };
+  diag.textContent = `shuffled ${doneCount}/${queue.length} — ` +
+    formatTotalsDiag({ ...summary, maxFailures: 3 });
+  diag.title = `queue: ${queue.slice(0, doneCount).join(", ")} — ` +
+    formatTotalsDiag(summary);
 
   setRouteBusy(false);
   if (countInput) countInput.disabled = false;

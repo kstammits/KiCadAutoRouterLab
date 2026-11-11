@@ -124,6 +124,15 @@
   #cost-legend .cost-legend-head { color:#5b6b7a; text-transform:uppercase;
     letter-spacing:.05em; font-size:.58rem; }
   #cost-legend .cost-probe { color:#d7e0e9; font-variant-numeric:tabular-nums; }
+  /* Force color key: floating board overlay like #cost-legend, top-left.
+     Pointer-transparent so it never blocks pan/marquee; hidden unless a
+     board is loaded and the forces toggle is on (synced in poll()). */
+  #forces-legend { position:absolute; left:.6rem; top:.6rem; z-index:5;
+    pointer-events:none; background:rgba(11,14,18,.88);
+    border:1px solid #3a4a5a; border-radius:6px; padding:.35rem .5rem;
+    font-size:.6rem; color:#9fb0c0; display:flex; gap:.35rem .6rem;
+    align-items:center; flex-wrap:wrap;
+    max-width:min(92%, 30rem); }
   .zoom-info { font-size:.65rem; color:#7d8b99; font-variant-numeric:tabular-nums; }
 
   /* Right side panel for Place/Route controls (pull-out drawer) */
@@ -153,25 +162,39 @@
   #toast { position:fixed; bottom:1rem; left:50%; transform:translateX(-50%); background:#3d1a1a; border:1px solid #5a2a2a; color:#f0b0b0; border-radius:6px; padding:.4rem .8rem; font-size:.72rem; z-index:50; max-width:80vw; }
   #toast.ok { background:#1a3a1a; border-color:#2e6b45; color:#7ee0a0; }
   
-  /* Loading spinner on button */
+  /* Loading spinner on button: text stays visible (labels must never go
+     blank mid-run), spinner sits in left padding instead of over the text. */
   button.loading {
     position: relative;
-    color: transparent !important;
     pointer-events: none;
+    padding-left: 1.7rem;
+    opacity: .8;
   }
   button.loading::after {
     content: "";
     position: absolute;
     top: 50%;
-    left: 50%;
-    width: 14px;
-    height: 14px;
-    margin: -7px 0 0 -7px;
+    left: .55rem;
+    width: 12px;
+    height: 12px;
+    margin-top: -6px;
     border: 2px solid currentColor;
     border-right-color: transparent;
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
-    opacity: 0.8;
+    opacity: 0.9;
+  }
+  /* Run-cancel buttons are only unhidden mid-run: red accent so Cancel
+     never gets lost next to the (dimmed, disabled) run buttons. */
+  #route-cancel-btn, #shuffle-cancel-btn {
+    border-color: #e06c75;
+    color: #f0b0b0;
+    background: rgba(224,108,117,.08);
+  }
+  #route-cancel-btn:hover:not(:disabled), #shuffle-cancel-btn:hover:not(:disabled) {
+    border-color: #e06c75;
+    background: rgba(224,108,117,.16);
+    color: #fff;
   }
   @keyframes spin {
     to { transform: rotate(360deg); }
@@ -214,6 +237,11 @@
   #route-est { flex:1 1 100%; min-width:0; color:#7d8b99;
     font-size:.62rem; font-variant-numeric:tabular-nums; white-space:nowrap;
     overflow:hidden; text-overflow:ellipsis; }
+  /* Shuffle status: same compact treatment as #route-diag — own wrapped
+     row, small figures, full detail one hover away (title). */
+  #shuffle-diag { flex:1 1 100%; min-width:0; color:#7d8b99;
+    font-size:.62rem; font-variant-numeric:tabular-nums; white-space:normal;
+    overflow-wrap:anywhere; }
   
   .params { display:grid; grid-template-columns:1fr 1fr; gap:.4rem .8rem; padding:.6rem .7rem; font-size:.7rem; }
   .param { display:flex; flex-direction:column; gap:.2rem; color:#9fb0c0; }
