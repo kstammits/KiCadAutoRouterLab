@@ -52,4 +52,4 @@ Two-layer frozen. Four-layer routes outer-only, keeps inners, taps planes for zo
 
 ## Docs
 
-None open — see `docs/tests.md` for the test map.
+None open (test map: `.venv/bin/python -m pytest --collect-only -q`).
