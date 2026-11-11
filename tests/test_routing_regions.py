@@ -10,6 +10,8 @@ confinement for all nets, not just multi-region ones).
 
 from pathlib import Path
 
+import pytest
+
 from shapely.geometry import Point as ShapelyPoint
 from shapely.geometry import Polygon as ShapelyPolygon
 
@@ -33,6 +35,9 @@ from tests.helpers import make_fp
 
 TUBE111_PCB = Path(__file__).parent / "fixtures" / "tube111.kicad_pcb"
 MINIMAL_PCB = Path(__file__).parent / "fixtures" / "minimal.kicad_pcb"
+
+
+pytestmark = pytest.mark.unit
 
 
 def _rect_cuts(x0, y0, x1, y1):

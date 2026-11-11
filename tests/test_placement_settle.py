@@ -17,11 +17,9 @@ Pinned contract (see PlacementProposal.stop_reason):
   with their residual attached, never "converged".
 """
 
-import math
-
 import pytest
 
-from kicad_autorouter.board_model import BoardModel, Point, Footprint, apply_deltas
+from kicad_autorouter.board_model import BoardModel, Point
 from kicad_autorouter.placement import PlacementParams, run_placement
 
 from .helpers import make_board, make_fp, overlap_area
@@ -39,42 +37,71 @@ def _deep_pair(x1=1.0):
 
 
 @pytest.mark.physics
-def test_settled_tail_reports_converged():
-    """A genuinely finished run still early-stops and says so.
+@pytest.mark.unit
+@pytest.mark.parametrize("case", ["tail", "frozen", "contact"])
+def test_honest_converged(case):
+    """Free, deadband-frozen, and contact-loaded runs all say converged.
 
-    Separated pair cruising down the Coulomb tail: friction freezes it,
-    post-friction residual reads 0, displacement reads 0 → converged.
+    tail: separated pair on the Coulomb tail — friction freezes it,
+    residual reads 0. frozen: deadband-frozen rest reads zero residual,
+    not budget. contact: net-settled contact (rigid bodies settle as
+    wholes) converges despite mN per-pad loads.
     """
-    # Start parts adjacent (outside wall halo): hw=3mm each, halo=6mm
-    # Part A at 0, Part B at 12 → gap = 9mm > halo (6mm), no wall force
-    fa = make_fp("A", "uuid-a", 0.0, 0.0, ("N1", "N2"),
-                 footprint_id="test:R", hw=3.0, hh=2.0,
-                 pad_layers=("F.Cu",), pad_shape="circle")
-    fb = make_fp("B", "uuid-b", 12.0, 0.0, ("N3", "N4"),
-                 footprint_id="test:R", hw=3.0, hh=2.0,
-                 pad_layers=("F.Cu",), pad_shape="circle")
-    model = make_board([fa, fb])
-    prop = run_placement(model, PlacementParams())
-    assert prop.stop_reason == "converged"
-    assert prop.iterations < 1000  # default budget
-    assert prop.residual_max_force_N < 1e-3
-    assert overlap_area(model, prop.deltas) < 1e-6
+    if case == "tail":
+        # Parts adjacent (outside wall halo): hw=3mm each, halo=6mm.
+        # A at 0, B at 12 → gap 9mm > halo, no wall force.
+        fa = make_fp("A", "uuid-a", 0.0, 0.0, ("N1", "N2"),
+                     footprint_id="test:R", hw=3.0, hh=2.0,
+                     pad_layers=("F.Cu",), pad_shape="circle")
+        fb = make_fp("B", "uuid-b", 12.0, 0.0, ("N3", "N4"),
+                     footprint_id="test:R", hw=3.0, hh=2.0,
+                     pad_layers=("F.Cu",), pad_shape="circle")
+        model = make_board([fa, fb])
+        prop = run_placement(model, PlacementParams())
+        assert prop.stop_reason == "converged"
+        assert prop.iterations < 1000  # default budget
+        assert prop.residual_max_force_N < 1e-3
+        assert overlap_area(model, prop.deltas) < 1e-6
+    elif case == "frozen":
+        model = _deep_pair(x1=60.0)
+        prop = run_placement(
+            model,
+            PlacementParams(max_iterations=10, convergence_eps_m=1e-15,
+                            friction_N=1e3),
+        )
+        assert prop.deltas == {}
+        assert prop.stop_reason == "converged"
+    else:
+        # Movable A pulled by a shared net into locked B, resting pressed
+        # against B's courtyard. Tangential assist off so the symmetric
+        # 1D contact isolates the normal-force balance.
+        fa = make_fp("A", "uuid-a", 2.0, 0.0, ("N1", "NX"),
+                     footprint_id="test:R", hw=3.0, hh=2.0,
+                     pad_layers=("F.Cu",), pad_shape="circle")
+        fb = make_fp("B", "uuid-b", 10.0, 0.0, ("N1", "NY"),
+                     footprint_id="test:R", hw=3.0, hh=2.0,
+                     pad_layers=("F.Cu",), pad_shape="circle",
+                     locked=True)
+        # A spans x -1..5, B spans 7..13: 2mm halo gap. Shared N1 pulls A
+        # east into B; the wall holds it off at a hover gap.
+        model = make_board([fa, fb], edge=100.0)
+        prop = run_placement(
+            model,
+            PlacementParams(max_iterations=500,
+                            repulsion_k_N_m2=1e-15, attraction_k_N=0.03,
+                            wall_k_N=0.05, wall_halo_m=0.006,
+                            contact_tangent_gamma=0.0),
+        )
+        assert prop.stop_reason == "converged", (
+            f"net-settled contact must converge, got {prop.stop_reason} "
+            f"with residual {prop.residual_max_force_N:.6f}"
+        )
+        assert prop.residual_max_force_N < 1e-3
+        assert overlap_area(model, prop.deltas) < 0.5
 
 
 @pytest.mark.physics
-def test_friction_frozen_reports_converged_empty():
-    """Deadband-frozen rest reads zero residual → converged, not budget."""
-    model = _deep_pair(x1=60.0)
-    prop = run_placement(
-        model,
-        PlacementParams(max_iterations=10, convergence_eps_m=1e-15,
-                        friction_N=1e3),
-    )
-    assert prop.deltas == {}
-    assert prop.stop_reason == "converged"
-
-
-@pytest.mark.physics
+@pytest.mark.unit
 def test_buried_in_rv1_keeps_working_until_out():
     """Resistor centered in a locked RV1 courtyard must travel out, not
     settle inside: every step carries ~mN wall forces, so no early stop is
@@ -121,135 +148,147 @@ def test_dccf_legalize_stop_is_honest(dccf_model):
 
 
 @pytest.mark.physics
-def test_loaded_contact_settles_despite_per_pad_loads():
-    """A part pressed into contact must converge once its NET force settles.
+@pytest.mark.unit
+@pytest.mark.parametrize("case", ["quiet", "overlap", "ghost", "wall"])
+def test_honest_stalled(case):
+    """Stuck runs say stalled, with the mechanism attached.
 
-    Movable A is pulled by a shared net into locked B and rests pressed
-    against B's courtyard: the wall push concentrates on the contact pads
-    while attraction spreads over all pads, so per-pad loads stay at mN
-    level forever. The residual gate reads net force per footprint (rigid
-    bodies settle as wholes — per-pad max can never vanish under contact
-    load), so this run must report converged, not budget. Regression for
-    the Q1 legalize case, which chattered to budget with the per-pad gate.
-
-    Tangential assist is disabled here so the symmetric 1D contact isolates
-    the normal-force balance and residual gate; tangential sliding is covered
-    by the pair-motion tests.
+    quiet: no window progress over a full stall window. overlap: illegal
+    courtyard overlap. ghost: movable overlapping a ghost is legal
+    (placement-only pseudo-part) — converges with an audit exemption.
+    wall: movable straddling the region edge.
     """
-    fa = make_fp("A", "uuid-a", 2.0, 0.0, ("N1", "NX"),
-                 footprint_id="test:R", hw=3.0, hh=2.0,
-                 pad_layers=("F.Cu",), pad_shape="circle")
-    fb = make_fp("B", "uuid-b", 10.0, 0.0, ("N1", "NY"),
-                 footprint_id="test:R", hw=3.0, hh=2.0,
-                 pad_layers=("F.Cu",), pad_shape="circle",
-                 locked=True)
-    # A spans x -1..5, B spans 7..13: 2mm halo gap. Shared N1 pulls A
-    # east into B; the wall holds it off at a hover gap.
-    model = make_board([fa, fb], edge=100.0)
-    prop = run_placement(
-        model,
-        PlacementParams(max_iterations=500,
-                        repulsion_k_N_m2=1e-15, attraction_k_N=0.03,
-                        wall_k_N=0.05, wall_halo_m=0.006,
-                        contact_tangent_gamma=0.0),
-    )
-    assert prop.stop_reason == "converged", (
-        f"net-settled contact must converge, got {prop.stop_reason} "
-        f"with residual {prop.residual_max_force_N:.6f}"
-    )
-    assert prop.residual_max_force_N < 1e-3
-    assert overlap_area(model, prop.deltas) < 0.5
+    from kicad_autorouter.board_model import BoardRegion, Footprint
 
-
-@pytest.mark.physics
-def test_quiet_without_progress_stops_stalled():
-    """No net progress of the window-averaged pose over a full stall window
-    stops early as stalled.
-
-    With a coarse eps the overlapping pair's mm-scale motion never moves
-    the window mean anywhere near the 400mm stall tolerance, so the run
-    reports "stalled" with residual attached after exactly one window
-    instead of burning the whole budget. Regression for a Q1 legalize case,
-    which sat at the wall for 900 idle iterations reporting budget.
-    """
-    model = _deep_pair()
-    prop = run_placement(
-        model,
-        PlacementParams(max_iterations=1000, convergence_eps_m=0.1,
-                        stall_window=10),
-    )
-    assert prop.stop_reason == "stalled"
-    assert prop.iterations == 10
-    assert prop.residual_max_force_N > 0.0
+    if case == "quiet":
+        # Coarse eps: the overlapping pair's mm-scale motion never moves
+        # the window mean near the 400mm stall tolerance — one window,
+        # then stalled with residual attached.
+        model = _deep_pair()
+        prop = run_placement(
+            model,
+            PlacementParams(max_iterations=1000, convergence_eps_m=0.1,
+                            stall_window=10),
+        )
+        assert prop.stop_reason == "stalled"
+        assert prop.iterations == 10
+        assert prop.residual_max_force_N > 0.0
+    elif case == "overlap":
+        # Two movable squares with shared net overlapping past tolerance.
+        fa = make_fp("A", "uuid-a", 0.0, 0.0, ("N1", "N2"),
+                     footprint_id="test:R", hw=3.0, hh=2.0,
+                     pad_layers=("F.Cu",), pad_shape="circle")
+        fb = make_fp("B", "uuid-b", 1.0, 0.0, ("N1", "N4"),  # Shared net N1
+                     footprint_id="test:R", hw=3.0, hh=2.0,
+                     pad_layers=("F.Cu",), pad_shape="circle")
+        model = make_board([fa, fb], edge=30.0)
+        assert overlap_area(model, {}) > 10.0
+        prop = run_placement(
+            model,
+            PlacementParams(max_iterations=200, convergence_eps_m=1e-3,
+                            repulsion_k_N_m2=1e-15, attraction_k_N=0.5,
+                            wall_k_N=0.02, wall_halo_m=0.006,
+                            ghost_k_N=1e-15, damping_Ns_m=0.12),
+        )
+        assert prop.stop_reason == "stalled", (
+            f"illegal overlap must stall, got {prop.stop_reason}")
+        assert not prop.legality_is_legal
+        assert len(prop.overlapping_pairs) == 1
+        ua, ub, area = prop.overlapping_pairs[0]
+        assert {ua, ub} == {"uuid-a", "uuid-b"}
+        assert area > 0.1
+    elif case == "ghost":
+        # Movable overlapping a ghost is legal: ghosts are placement-only
+        # pseudo-parts, so the run converges and the pair is exempted
+        # (audit only) instead of stalling on an illegal overlap.
+        fa = make_fp("A", "uuid-a", 0.0, 0.0, ("N1", "N2"),
+                     footprint_id="test:R", hw=3.0, hh=2.0,
+                     pad_layers=("F.Cu",), pad_shape="circle")
+        ghost = Footprint(
+            ref="GW1", footprint_id="test:wall", layer="F.Cu",
+            x_mm=0.0, y_mm=0.0, angle_deg=0.0, pads=(),
+            courtyard=(
+                (Point(-5, -5), Point(5, -5)),
+                (Point(5, -5), Point(5, 5)),
+                (Point(5, 5), Point(-5, 5)),
+                (Point(-5, 5), Point(-5, -5)),
+            ),
+            locked=False, uuid="uuid-gw", ghost=True, ghost_attractions=(),
+        )
+        model = make_board([fa, ghost], edge=30.0)
+        assert overlap_area(model, {}, uuids=("uuid-a", "uuid-gw")) > 10.0
+        prop = run_placement(
+            model,
+            PlacementParams(max_iterations=100, convergence_eps_m=1e-3,
+                            repulsion_k_N_m2=1e-15, attraction_k_N=1e-15,
+                            wall_k_N=0.08, wall_halo_m=0.006,
+                            ghost_k_N=1e-15, damping_Ns_m=0.12),
+        )
+        assert prop.stop_reason == "converged"
+        assert prop.legality_is_legal
+        assert len(prop.overlapping_pairs) == 0
+        assert ("uuid-a", "uuid-gw") in prop.exempt_pairs or ("uuid-gw", "uuid-a") in prop.exempt_pairs
+    else:
+        # Movable straddling the region edge, pulled out by a ghost.
+        fa = make_fp("A", "uuid-a", 15.0, 0.0, ("N1", "N2"),
+                     footprint_id="test:R", hw=3.0, hh=2.0,
+                     pad_layers=("F.Cu",), pad_shape="circle")
+        ghost = Footprint(
+            ref="GW1", footprint_id="test:wall", layer="F.Cu",
+            x_mm=30.0, y_mm=0.0, angle_deg=0.0, pads=(),
+            courtyard=(
+                (Point(25, -5), Point(35, -5)),
+                (Point(35, -5), Point(35, 5)),
+                (Point(35, 5), Point(25, 5)),
+                (Point(25, 5), Point(25, -5)),
+            ),
+            locked=False, uuid="uuid-gw", ghost=True,
+            ghost_attractions=(("A", 0.5),),  # Pull A toward x=30
+        )
+        # Board x in [-20, 20], ghost at x=30 (outside)
+        region_poly = (
+            Point(-20, -20), Point(20, -20),
+            Point(20, 20), Point(-20, 20), Point(-20, -20)
+        )
+        region = BoardRegion(
+            uuid='region-0',
+            polygon=region_poly,
+            bbox=(-20.0, 20.0, -20.0, 20.0)
+        )
+        model = BoardModel(
+            footprints=(fa,),
+            ghost_footprints=(ghost,),
+            keepout_zones=(),
+            nets={},
+            by_ref={fa.ref: fa},
+            edge_cuts=(
+                (Point(-20, -20), Point(20, -20)),
+                (Point(20, -20), Point(20, 20)),
+                (Point(20, 20), Point(-20, 20)),
+                (Point(-20, 20), Point(-20, -20)),
+            ),
+            board_regions=(region,),
+            footprint_region={fa.uuid: 0, ghost.uuid: 0},
+        )
+        prop = run_placement(
+            model,
+            PlacementParams(max_iterations=200, convergence_eps_m=1e-3,
+                            wall_k_N=0.05, wall_halo_m=0.006,
+                            ghost_k_N=1.0, damping_Ns_m=0.12),
+        )
+        assert prop.stop_reason == "stalled", (
+            f"wall penetration must stall, got {prop.stop_reason}")
+        assert not prop.legality_is_legal
+        assert len(prop.wall_violations) == 1
+        uuid, depth = prop.wall_violations[0]
+        assert uuid == "uuid-a"
+        assert depth > 0.1
 
 
 # --- Legality tests (per docs/legality_spec.md) ---
 
 @pytest.mark.physics
-def test_illegal_overlap_blocks_converged():
-    """Two movable squares with shared net overlapping must report stalled,
-    not converged, when overlap exceeds tolerance."""
-    fa = make_fp("A", "uuid-a", 0.0, 0.0, ("N1", "N2"),
-                 footprint_id="test:R", hw=3.0, hh=2.0,
-                 pad_layers=("F.Cu",), pad_shape="circle")
-    fb = make_fp("B", "uuid-b", 1.0, 0.0, ("N1", "N4"),  # Shared net N1
-                 footprint_id="test:R", hw=3.0, hh=2.0,
-                 pad_layers=("F.Cu",), pad_shape="circle")
-    model = make_board([fa, fb], edge=30.0)
-    assert overlap_area(model, {}) > 10.0
-    prop = run_placement(
-        model,
-        PlacementParams(max_iterations=200, convergence_eps_m=1e-3,
-                        repulsion_k_N_m2=1e-15, attraction_k_N=0.5,
-                        wall_k_N=0.02, wall_halo_m=0.006,
-                        ghost_k_N=1e-15, damping_Ns_m=0.12),
-    )
-    assert prop.stop_reason == "stalled", (
-        f"illegal overlap must stall, got {prop.stop_reason}")
-    assert not prop.legality_is_legal
-    assert len(prop.overlapping_pairs) == 1
-    ua, ub, area = prop.overlapping_pairs[0]
-    assert {ua, ub} == {"uuid-a", "uuid-b"}
-    assert area > 0.1
-
-
-@pytest.mark.physics
-def test_ghost_overlap_is_illegal():
-    """Movable overlapping a ghost wall must be illegal and report stalled."""
-    from kicad_autorouter.board_model import Footprint
-    fa = make_fp("A", "uuid-a", 0.0, 0.0, ("N1", "N2"),
-                 footprint_id="test:R", hw=3.0, hh=2.0,
-                 pad_layers=("F.Cu",), pad_shape="circle")
-    # Ghost wall at same position
-    ghost = Footprint(
-        ref="GW1", footprint_id="test:wall", layer="F.Cu",
-        x_mm=0.0, y_mm=0.0, angle_deg=0.0, pads=(),
-        courtyard=(
-            (Point(-5, -5), Point(5, -5)),
-            (Point(5, -5), Point(5, 5)),
-            (Point(5, 5), Point(-5, 5)),
-            (Point(-5, 5), Point(-5, -5)),
-        ),
-        locked=False, uuid="uuid-gw", ghost=True, ghost_attractions=(),
-    )
-    model = make_board([fa, ghost], edge=30.0)
-    assert overlap_area(model, {}, uuids=("uuid-a", "uuid-gw")) > 10.0
-    prop = run_placement(
-        model,
-        PlacementParams(max_iterations=100, convergence_eps_m=1e-3,
-                        repulsion_k_N_m2=1e-15, attraction_k_N=1e-15,
-                        wall_k_N=0.08, wall_halo_m=0.006,
-                        ghost_k_N=1e-15, damping_Ns_m=0.12),
-    )
-    assert prop.stop_reason == "stalled"
-    assert not prop.legality_is_legal
-    assert len(prop.overlapping_pairs) == 1
-    ua, ub, area = prop.overlapping_pairs[0]
-    assert {ua, ub} == {"uuid-a", "uuid-gw"}
-    assert area > 0.1
-
-
-@pytest.mark.physics
+@pytest.mark.unit
 def test_ghost_over_locked_is_exempt():
     """Ghost overlapping a locked part is exempt by design."""
     from kicad_autorouter.board_model import Footprint
@@ -280,67 +319,39 @@ def test_ghost_over_locked_is_exempt():
 
 
 @pytest.mark.physics
-def test_wall_penetration_blocks_converged():
-    """Movable straddling the region edge must be illegal and report stalled."""
-    from kicad_autorouter.board_model import BoardRegion
-    # Part inside board, pulled toward edge by ghost attraction
-    # Ghost outside board pulls part against wall
-    fa = make_fp("A", "uuid-a", 15.0, 0.0, ("N1", "N2"),
+@pytest.mark.unit
+def test_ghost_attractor_over_movable_is_exempt():
+    """Attractor square on its (movable) target is exempt, not illegal."""
+    from kicad_autorouter.board_model import Footprint
+    fa = make_fp("A", "uuid-a", 0.0, 0.0, ("N1", "N2"),
                  footprint_id="test:R", hw=3.0, hh=2.0,
                  pad_layers=("F.Cu",), pad_shape="circle")
     ghost = Footprint(
-        ref="GW1", footprint_id="test:wall", layer="F.Cu",
-        x_mm=30.0, y_mm=0.0, angle_deg=0.0, pads=(),
+        ref="GA1", footprint_id="test:attractor", layer="F.Cu",
+        x_mm=0.0, y_mm=0.0, angle_deg=0.0, pads=(),
         courtyard=(
-            (Point(25, -5), Point(35, -5)),
-            (Point(35, -5), Point(35, 5)),
-            (Point(35, 5), Point(25, 5)),
-            (Point(25, 5), Point(25, -5)),
+            (Point(-1, -1), Point(1, -1)),
+            (Point(1, -1), Point(1, 1)),
+            (Point(1, 1), Point(-1, 1)),
+            (Point(-1, 1), Point(-1, -1)),
         ),
-        locked=False, uuid="uuid-gw", ghost=True,
-        ghost_attractions=(("A", 0.5),),  # Pull A toward x=30
+        locked=False, uuid="uuid-ga", ghost=True,
+        ghost_attractions=(("A", 4000.0),),
     )
-    # Board x in [-20, 20], ghost at x=30 (outside)
-    region_poly = (
-        Point(-20, -20), Point(20, -20),
-        Point(20, 20), Point(-20, 20), Point(-20, -20)
-    )
-    region = BoardRegion(
-        uuid='region-0',
-        polygon=region_poly,
-        bbox=(-20.0, 20.0, -20.0, 20.0)
-    )
-    model = BoardModel(
-        footprints=(fa,),
-        ghost_footprints=(ghost,),
-        keepout_zones=(),
-        nets={},
-        by_ref={fa.ref: fa},
-        edge_cuts=(
-            (Point(-20, -20), Point(20, -20)),
-            (Point(20, -20), Point(20, 20)),
-            (Point(20, 20), Point(-20, 20)),
-            (Point(-20, 20), Point(-20, -20)),
-        ),
-        board_regions=(region,),
-        footprint_region={fa.uuid: 0, ghost.uuid: 0},
-    )
+    model = make_board([fa, ghost], edge=30.0)
     prop = run_placement(
         model,
-        PlacementParams(max_iterations=200, convergence_eps_m=1e-3,
-                        wall_k_N=0.05, wall_halo_m=0.006,
-                        ghost_k_N=1.0, damping_Ns_m=0.12),
+        PlacementParams(max_iterations=10, convergence_eps_m=1e-3),
     )
-    assert prop.stop_reason == "stalled", (
-        f"wall penetration must stall, got {prop.stop_reason}")
-    assert not prop.legality_is_legal
-    assert len(prop.wall_violations) == 1
-    uuid, depth = prop.wall_violations[0]
-    assert uuid == "uuid-a"
-    assert depth > 0.1
+    # Attractor-on-target overlap is exempt, so no overlapping_pairs recorded
+    assert prop.legality_is_legal
+    assert len(prop.overlapping_pairs) == 0
+    # Exempt pair should be recorded
+    assert ("uuid-a", "uuid-ga") in prop.exempt_pairs or ("uuid-ga", "uuid-a") in prop.exempt_pairs
 
 
 @pytest.mark.physics
+@pytest.mark.unit
 def test_depenetrated_flag_marks_post_loop_eject():
     """stop_reason must distinguish pure settle from settled-then-pushed.
 
@@ -366,6 +377,7 @@ def test_depenetrated_flag_marks_post_loop_eject():
 
 
 @pytest.mark.physics
+@pytest.mark.unit
 def test_uuidless_footprint_is_counted_not_silent():
     """Parts without a uuid are exempt from physics — surfaced, not silent.
 

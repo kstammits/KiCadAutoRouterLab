@@ -238,10 +238,10 @@ let routeCurrentJobId = null;
 // the run so a 66-pad GND never surprises: it auto-splits into chunks via
 // max_terminals_per_net / piecemeal_chunk_terminals instead of burning
 // hours of single-flight Steiner searches (chunking off = fail fast).
-// Time fit from docs/benchmarks/routing_2026-10-26.json: first net pays
+// Time fit from docs/benchmarks/routing_2026-11-05.json: first net pays
 // ~2-2.6s fixed (occupancy+grids+via_ok), then ~1s/net (DCCF
 // 1/2/5/10 nets: 2.6/3.3/5.3/11.6s; tube111 1/2: 1.3/1.6s). GND stitching
-// is a separate surcharge measured in docs/benchmarks/stitch_pour_2026-10-26.json.
+// is a separate surcharge measured in docs/benchmarks/stitch_pour_2026-11-05.json.
 function estimateRoutingWork(netNames) {
   let pairs = 0;
   let worst = { net: null, pairs: 0 };

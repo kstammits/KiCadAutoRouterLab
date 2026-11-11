@@ -21,6 +21,9 @@ from .helpers import make_fp
 FIXTURES = Path("tests/fixtures")
 
 
+pytestmark = pytest.mark.minimal
+
+
 def _two_pad_net(layer="F.Cu", net="AL1"):
     """Minimal board + two 1-pad footprints sharing one net (fast, <0.1s)."""
     pcb_tree = parse_file(FIXTURES / "minimal.kicad_pcb")

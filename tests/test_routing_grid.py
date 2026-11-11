@@ -22,6 +22,7 @@ def tube111_model():
     return board_model(parse_file(TUBE111_PCB))
 
 
+@pytest.mark.minimal
 class TestGridCreation:
     """Tests for RoutingGrid creation from board models."""
 
@@ -49,6 +50,7 @@ class TestGridCreation:
         assert abs(grid_fine.width_mm - grid_coarse.width_mm) < 1.0
 
 
+@pytest.mark.minimal
 class TestCoordinateTransforms:
     """Tests for board<->grid coordinate transforms."""
 
@@ -83,6 +85,7 @@ class TestCoordinateTransforms:
         assert row == grid.height_cells - 1
 
 
+@pytest.mark.dccf
 class TestDCCFGrid:
     """Tests specific to DCCF fixture (two board regions)."""
 

@@ -54,6 +54,9 @@ FOUR_LAYER = """(kicad_pcb
 )"""
 
 
+pytestmark = pytest.mark.minimal
+
+
 def test_collapse_removes_inner_copper():
     tree = parse_sexpr(FOUR_LAYER)
     new_tree, report = collapse_to_two_layer(tree)

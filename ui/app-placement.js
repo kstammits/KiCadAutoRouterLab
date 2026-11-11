@@ -1280,7 +1280,7 @@ on("ghost-kind", "change", e => {
 // UX STAGE 1 — estimate-first: the POST is synchronous, so we show a
 // pre-flight estimate + an elapsed ticker + a client-side timeout backstop.
 // Full-board ms/iter ≈ 0.0045*N^2 + 1 (N = movable non-ghost footprints,
-// from docs/benchmarks/placement_2026-10-26.json), scaled by the moved
+// from docs/benchmarks/placement_2026-11-04.json), scaled by the moved
 // fraction. Order-of-magnitude only — real boards deviate with courtyard
 // complexity — and worst-case (runs often converge early), so the line
 // reads "up to".

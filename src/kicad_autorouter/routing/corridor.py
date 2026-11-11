@@ -2,7 +2,7 @@
 
 Unguided A* floods the whole board when the only walkable corridor
 threads hundreds of tolled halo cells (DCCF VIN: a walkable path exists
-but needs >2M expansions to find). A 4-connected BFS on a downsampled
+but needs hundreds of thousands of expansions to find). A 4-connected BFS on a downsampled
 blockage grid finds that corridor in ~0.1s; the detailed search is then
 restricted to the dilated corridor instead of the open board.
 

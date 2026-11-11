@@ -21,8 +21,10 @@ from shapely.geometry import Point as ShapelyPoint
 from kicad_autorouter.board_model import (
     BoardModel,
     Footprint,
+    NetConnection,
     Pad,
     Point,
+    SilkLabel,
     arcs,
     sample_circular_arc,
     tracks,
@@ -260,6 +262,49 @@ def vias_in_path(path) -> set:
     return {(a[0], a[1]) for a, b in zip(path, path[1:]) if a[2] != b[2]}
 
 
+def zeros_grid(size=30, layers=1):
+    """Zeroed 3D cost grid ``(layers, size, size)`` (smoothing suites)."""
+    import numpy as np
+
+    return np.zeros((layers, size, size), dtype=np.int16)
+
+
+def zeros_plane(n=40):
+    """Zeroed 2D cost plane ``(n, n)`` (biarc suites)."""
+    import numpy as np
+
+    return np.zeros((n, n), dtype=np.int16)
+
+
+def ladder_board(n_pads: int, net: str = "BIG",
+                 uuid_prefix: str = "uuid-big") -> BoardModel:
+    """One single-pad footprint per terminal, spread along x.
+
+    Shared by the chunking/limits suites (previously duplicated
+    ``_ladder`` builders differing only in the uuid prefix).
+    """
+    fps = [
+        make_fp(f"U{i}", f"{uuid_prefix}-{i:03d}", x=float(i) * 4.0,
+                nets=(net,))
+        for i in range(n_pads)
+    ]
+    extent = n_pads * 4.0 + 10.0
+    return BoardModel(
+        footprints=tuple(fps),
+        keepout_zones=(),
+        nets={net: tuple(NetConnection(ref=f"U{i}", pad_number="1")
+                         for i in range(n_pads))},
+        by_ref={fp.ref: fp for fp in fps},
+        edge_cuts=(
+            (Point(0.0, 0.0), Point(extent, 0.0)),
+            (Point(extent, 0.0), Point(extent, extent)),
+            (Point(extent, extent), Point(0.0, extent)),
+            (Point(0.0, extent), Point(0.0, 0.0)),
+        ),
+        footprint_region={fp.uuid: 0 for fp in fps},
+    )
+
+
 def overlap_area(model, deltas: dict, uuids: Tuple[str, str] = ("uuid-a", "uuid-b")) -> float:
     """Courtyard intersection area of two footprints at posed positions."""
     import numpy as np
@@ -281,3 +326,34 @@ def overlap_area(model, deltas: dict, uuids: Tuple[str, str] = ("uuid-a", "uuid-
     if polys[0].is_empty or polys[1].is_empty:
         return 0.0
     return polys[0].intersection(polys[1]).area
+
+
+def facing_label_pair(label_w_mm: float = 6.0, gap_mm: float = 4.0):
+    """Two netted parts side by side with big facing labels.
+
+    Courtyards (hw=1.5) start ``gap_mm`` apart center-to-center: inside
+    the 6mm wall halo so the pair feels contact; the labels sit on the
+    facing edges to force label-body overlap only when solidity unions
+    them in. Shared by the label placement/orbit suites.
+    """
+    def _lab(ref, lx):
+        return SilkLabel(
+            text="REFDES",
+            local_x_mm=lx,
+            local_y_mm=0.0,
+            local_angle_deg=0.0,
+            layer="F.SilkS",
+            size_mm=(label_w_mm / (6 * 0.6), 1.0),
+            thickness_mm=0.15,
+            uuid=f"{ref}-label",
+        )
+
+    fa = replace(
+        make_fp("A", "uuid-a", 0.0, 0.0, ("N1", "N2"), hw=1.5, hh=1.0),
+        label=_lab("A", 2.0),
+    )
+    fb = replace(
+        make_fp("B", "uuid-b", gap_mm, 0.0, ("N1", "N3"), hw=1.5, hh=1.0),
+        label=_lab("B", -2.0),
+    )
+    return replace(make_board([fa, fb]), nets={"N1": (), "N2": (), "N3": ()})

@@ -21,6 +21,8 @@ const PARAM_DEFS = [
   { key: "max_iterations", label: "Max iterations", min: 1, max: 20000, step: 10 },
   { key: "label_clearance_m", label: "Label clearance (mm)", min: 0, max: 20, step: 0.1,
     display: { unit: "mm", scale: 1000, step: 0.1 } },
+  { key: "label_orbit_m", label: "Label orbit (mm)", min: 0, max: 20, step: 0.1,
+    display: { unit: "mm", scale: 1000, step: 0.1 } },
 ];
 
 const ADVANCED_PARAM_DEFS = [
@@ -53,7 +55,8 @@ const PARAM_DESC = {
   wall_halo_m: "Near-miss reach past part outlines. Shown in mm; stored in meters. Legalize: 4mm; Cluster and engine default: 6mm.",
   damping_Ns_m: "Viscous damping F = −c·v (N·s/m). The physics damper: higher settles faster with less overshoot. Legalize: 0.12; Cluster: 0.08. Log scale.",
   max_iterations: "Hard limit on simulation steps (dimensionless).",
-  label_clearance_m: "Label clearance around the estimated text bbox. Shown in mm; stored in meters. Orbit always on: each label is a low-mass node on a spring tether that finds a home near its parent; the clearance rect also collides via the wall law. Larger values give labels more board space.",
+  label_clearance_m: "Label clearance around the estimated text bbox. Shown in mm; stored in meters. The clearance rect collides via the wall law. Larger values give labels more board space.",
+  label_orbit_m: "Label orbit radius around the parent part. Shown in mm; stored in meters. Orbit always on: each label is a low-mass node on a spring tether that homes on its parent and finds spare room inside this disc.",
   power_attraction_scale: "Power-rail attraction trim (fanout-scaled k/(fanout-1) per edge). 1 = full participation; 0 restores the old exclude-power behavior.",
   decap_link: "Weight of the supplemental symmetric pull between a small cap and its nearest chip (<=15mm, U* only); global rail pull is never boosted. 0 removes decap GND edges and disables local links.",
   ghost_k_N: "Ghost attractor spring scale (newtons); file ka values weight it. Log scale. Only matters with ghost attractors.",

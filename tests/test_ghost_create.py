@@ -208,7 +208,11 @@ class TestCreatedGhostPhysics:
     def test_created_wall_repels(self):
         model = board_model(parse_file(GHOST_TEST_PCB))
         wall = make_ghost_wall("GHOST_WALL", 50, 42, 60, 4, uuid="ghost-wall-test")
-        model2 = replace(model, ghost_footprints=model.ghost_footprints + (wall,))
+        model2 = replace(
+            model,
+            ghost_footprints=model.ghost_footprints + (wall,),
+            footprint_region={**model.footprint_region, wall.uuid: 0},
+        )
         p = PlacementParams(
             max_iterations=30, wall_k_N=0.005,
             wall_halo_m=0.04, repulsion_k_N_m2=1e-08,
@@ -230,3 +234,27 @@ class TestCreatedGhostPhysics:
         r2 = "bbbbbbbb-1111-2222-3333-444444444444"
         assert r2 in prop.deltas
         assert prop.deltas[r2][1] < 0, "R2 should move up toward attractor"
+
+    def test_created_attractor_is_not_a_wall(self):
+        from .helpers import make_board, make_fp
+        # One part with a dead-spring attractor square centered exactly on
+        # it: with ka=0 nothing pulls, and the square must not push either
+        # (a wall ghost on the same square shoves the part out). Isolated
+        # board, so no fixture ghosts can interfere.
+        fa = make_fp("A", "uuid-a", 0.0, 0.0, ("N1", "N2"),
+                     footprint_id="test:R", hw=3.0, hh=2.0,
+                     pad_layers=("F.Cu",), pad_shape="circle")
+        attr = make_ghost_attractor(
+            "GHOST_SQUARE", 0.0, 0.0, "A", 0.0, uuid="ghost-square-test")
+        model = make_board([fa])
+        model = replace(
+            model,
+            ghost_footprints=(attr,),
+            footprint_region={fa.uuid: 0, attr.uuid: 0},
+        )
+        p = PlacementParams(
+            max_iterations=30, wall_k_N=0.05,
+            wall_halo_m=0.006, repulsion_k_N_m2=1e-08,
+            attraction_k_N=0.0)
+        prop = run_placement(model, p)
+        assert not prop.deltas

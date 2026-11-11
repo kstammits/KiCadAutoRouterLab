@@ -14,7 +14,7 @@
       "corridor_tried": 0,
       "corridor_used": 0
     },
-    "note": "sweep aborted by environment after first cell; corridor never triggered on easy nets (consistent with corridor_2026-10-21: guidance matters only on hard nets)"
+    "note": "sweep aborted by environment after first cell; corridor never triggered on easy nets (consistent with corridor_2026-11-05: guidance matters only on hard nets)"
   },
   "cases": [
     {

@@ -56,8 +56,9 @@ from kicad_autorouter.board_model import (  # noqa: E402
     commit_placement,
 )
 from kicad_autorouter.io import (  # noqa: E402
+    add_ghost_to_tree,
     nudge_footprint_by_uuid,
-    reset_label_anchors,
+    remove_all_ghosts_from_tree,
     rip_up_nets,
 )
 from kicad_autorouter.placement import PlacementParams, run_placement  # noqa: E402
@@ -127,12 +128,12 @@ OUT113 = "tube113.kicad_pcb"
 OUT114 = "tube114.kicad_pcb"
 OUT115 = "tube115_rails.kicad_pcb"
 OUT116 = "tube116_routed.kicad_pcb"
-CLUSTER_ITERS = 400
-LEGAL_ITERS = 1200
-TIDY_ITERS = 200
+CLUSTER_ITERS = 700
+LEGAL_ITERS = 1500
+TIDY_ITERS = 250
 # Slice size above stall_window (100): per-slice stop reasons are honest
 # (converged / stalled reachable), not budget-by-construction.
-STEP_ITERS = 200
+STEP_ITERS = 100
 
 
 # Window-LED guidance: the five middle-board diodes (D1-D5; D6/D7 are
@@ -191,13 +192,29 @@ def attach_led_ghosts(model):
     Ghosts without a footprint_region entry are skipped by the region
     simulation (region.py), so region-less ghosts are silently inert.
     Anchors are placed in-region by construction; the target's region is
-    the correct assignment.
+    the correct assignment. Merge, not append: stage files now persist
+    ghosts, so a reload already carries them (possibly user-adjusted) —
+    entries whose uuid or target is already present are skipped, and
+    file anchors always win over the LED_GHOSTS positions.
     """
     ghosts = led_ghosts()
     if not ghosts:
         return model
+    have_uuids = {g.uuid for g in model.ghost_footprints if g.uuid}
+    have_targets = {
+        t for g in model.ghost_footprints
+        for t, _ka in (g.ghost_attractions or ())
+    }
+    fresh = [
+        g for g in ghosts
+        if g.uuid not in have_uuids
+        and not (have_targets.intersection(
+            t for t, _ka in (g.ghost_attractions or ())))
+    ]
+    if not fresh:
+        return model
     region = dict(model.footprint_region)
-    for g in ghosts:
+    for g in fresh:
         for target_ref, _ka in g.ghost_attractions:
             tgt = model.by_ref.get(target_ref)
             if tgt is not None and tgt.uuid:
@@ -205,8 +222,25 @@ def attach_led_ghosts(model):
                 break
     return replace(
         model,
-        ghost_footprints=model.ghost_footprints + ghosts,
+        ghost_footprints=tuple(model.ghost_footprints) + tuple(fresh),
         footprint_region=region)
+
+
+def sync_ghosts_to_tree(model, tree):
+    """Persist model ghosts into the tree (F.Fab outline, idempotent).
+
+    The LED ghosts live in the model only; stage files would otherwise
+    lose them and reloads would duplicate them via attach_led_ghosts.
+    Strip-then-write keeps file ghosts exactly equal to model ghosts.
+    F.Fab (not F.CrtYd) keeps the 1mm anchor squares visible and
+    draggable in KiCad without tripping courtyard DRC against the
+    target parts they sit on.
+    """
+    tree = remove_all_ghosts_from_tree(tree)
+    for g in model.ghost_footprints:
+        tree = add_ghost_to_tree(
+            tree, g, g.footprint_id or "Ghost:Attractor", "F.Fab")
+    return tree
 
 
 def drop_zone_fills(tree: SExpr) -> SExpr:
@@ -285,7 +319,9 @@ def run_stage(model, tree, params, total_iters, step_iters, protected, tag,
     Each step: run -> commit footprints + rip affected copper (model and
     tree) -> the next step simulates on the stripped board. Pinned
     footprints (by uuid) are excluded from ``movable_uuids`` so they act
-    as fixed anchors without file-backed locks.
+    as fixed anchors without file-backed locks. Label home is structural
+    (the parent centroid — see the orbit setup in region.py), so no
+    anchor rebasing is needed between slices.
     """
     by_uuid = {fp.uuid: fp for fp in model.footprints if fp.uuid}
     movable = {u for u, f in by_uuid.items() if not f.locked} - set(pinned)
@@ -365,9 +401,26 @@ def drc_histogram(path, save_json=None):
         print(f"warning: {exc}; skipping DRC for {path}")
         return None, None
     report_path = Path(tempfile.gettempdir()) / f"strip_{_uuid.uuid4().hex}.json"
+    # Ghosts are placement-only: their 1mm F.Fab squares would pollute
+    # triage (lib mismatches), so run kicad-cli on a ghost-stripped
+    # temp copy. The saved file keeps its ghosts.
+    drc_path: Path = Path(path)
+    scrub_tmp: Path | None = None
+    try:
+        _tree = parse_file(drc_path)
+        _stripped = remove_all_ghosts_from_tree(_tree)
+        if _stripped is not _tree:
+            from kicad_autorouter.sexpr import to_sexpr as _dump
+            scrub_tmp = Path(tempfile.gettempdir()) / f"ghostless_{_uuid.uuid4().hex}.kicad_pcb"
+            scrub_tmp.write_text(_dump(_stripped) + "\n", encoding="utf-8")
+            drc_path = scrub_tmp
+    except Exception as exc:
+        print(f"DRC: ghost pre-strip failed for {path}: {exc}; DRC on file as-is")
+        scrub_tmp = None
+        drc_path = Path(path)
     try:
         proc = subprocess.run(
-            [cli, "pcb", "drc", str(path), "--format", "json", "-o", str(report_path)],
+            [cli, "pcb", "drc", str(drc_path), "--format", "json", "-o", str(report_path)],
             capture_output=True, text=True, timeout=300,
         )
         load_error = next(
@@ -384,10 +437,13 @@ def drc_histogram(path, save_json=None):
         print(f"DRC: failed on {path}: {exc}")
         return None, None
     finally:
-        try:
-            report_path.unlink()
-        except OSError:
-            pass
+        for _p in (report_path, scrub_tmp):
+            if _p is None:
+                continue
+            try:
+                _p.unlink()
+            except OSError:
+                pass
     hist = Counter(v.get("type", "?") for v in data.get("violations", []))
     return hist, len(data.get("unconnected_items", []))
 
@@ -788,7 +844,6 @@ def main(argv=None) -> int:
 
     tree = parse_file(Path(input_path))
     model = board_model(tree)
-    filed_tree = tree  # label-anchor source: the human-filed board
     locked = sum(fp.locked for fp in model.footprints)
     print(f"loaded {input_path}: {len(model.footprints)} footprints ({locked} locked)")
 
@@ -829,13 +884,9 @@ def main(argv=None) -> int:
                 tree = drop_zone_fills(tree)
                 model = board_model(tree)
             ran = True
-            # Rebase label anchors to filed before every stage: the orbit
-            # tether + clamp would otherwise compound up to 5mm of drift
-            # per stage. No-op on the filed input itself.
-            tree, n_reset = reset_label_anchors(tree, filed_tree)
-            if n_reset:
-                model = board_model(tree)
-                print(f"[{tag}] rebased {n_reset} label anchors to filed")
+            # Label anchors rebase to filed every slice inside run_stage
+            # (absolute association budget — see run_stage docstring), so
+            # no stage-level reset is needed here.
             if tag in ("cluster", "legalize", "tidy") and LED_GHOSTS:
                 model = attach_led_ghosts(model)
                 print(f"[{tag}] attached {len(LED_GHOSTS)} LED ghosts")
@@ -844,6 +895,7 @@ def main(argv=None) -> int:
                 model, tree, params, budget, STEP_ITERS, protected, tag,
                 pinned_uuids(model, PIN_REFS))
             out.parent.mkdir(parents=True, exist_ok=True)
+            tree = sync_ghosts_to_tree(model, tree)
             out.write_text(to_sexpr(tree) + "\n", encoding="utf-8")
             print(f"saved {tag} -> {out} ({used} iters)")
             if not args.no_drc:
@@ -925,6 +977,9 @@ def main(argv=None) -> int:
         def save_route(tag, new_tree, out_arg):
             out = Path(out_arg)
             out.parent.mkdir(parents=True, exist_ok=True)
+            # Routing writeback preserves footprint nodes, so ghosts
+            # ride along; re-sync to normalize layer/ids (no-op otherwise).
+            new_tree = sync_ghosts_to_tree(board_model(new_tree), new_tree)
             out.write_text(to_sexpr(new_tree) + "\n", encoding="utf-8")
             print(f"saved {tag} -> {out}")
             # Routing reports see true copper: refill first, then report

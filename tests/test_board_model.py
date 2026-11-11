@@ -1,5 +1,6 @@
 """Tests for board_model against the DCCF.sved and minimal fixtures."""
 
+import math
 from pathlib import Path
 
 import pytest
@@ -67,6 +68,7 @@ def _sw6(dccf_tree):
 
 
 class TestApplyDeltasMatchesNudge:
+    @pytest.mark.dccf
     def test_model_matches_reparsed_tree_all_angles(self, dccf_tree):
         """apply_deltas must agree with nudge_footprint_by_uuid + re-parse.
 
@@ -108,6 +110,7 @@ class TestApplyDeltasMatchesNudge:
 
 
 class TestFootprints:
+    @pytest.mark.dccf
     def test_pads_in_board_coordinates(self, dccf_tree):
         # pad "1" local (-3, 0) rotated -90 about (267.5, 206.5)
         # x=-3, y=0, rad=-90: bx = 267.5 + (-3)*0 - 0*(-1) = 267.5
@@ -116,6 +119,7 @@ class TestFootprints:
         pad1 = next(p for p in sw6.pads if p.number == "1")
         assert_point(pad1.position, 267.5, 209.5)
 
+    @pytest.mark.dccf
     def test_courtyard_in_board_coordinates(self, dccf_tree):
         # local (6.2, -2.9) rotate -90 in Y-down:
         # x=6.2, y=-2.9, rad=-90, cos=0, sin=-1
@@ -131,6 +135,7 @@ class TestFootprints:
 
 
 class TestLockState:
+    @pytest.mark.minimal
     def test_minimal_locks(self, minimal_tree):
         # MH4/MH2/MH3 carry a top-level (locked yes) token; MH1 does not
         by_ref = {fp.ref: fp for fp in footprints(minimal_tree)}
@@ -139,10 +144,12 @@ class TestLockState:
         assert by_ref["MH3"].locked is True
         assert by_ref["MH1"].locked is False
 
+    @pytest.mark.dccf
     def test_dccf_has_locked_footprints(self, dccf_tree):
         locked = [fp for fp in footprints(dccf_tree) if fp.locked]
         assert len(locked) == 33
 
+    @pytest.mark.minimal
     def test_aggregate_preserves_lock_state(self, minimal_tree):
         model = board_model(minimal_tree)
         assert model.by_ref["MH4"].locked is True
@@ -150,6 +157,7 @@ class TestLockState:
 
 
 class TestUuid:
+    @pytest.mark.dccf
     def test_dccf_uuids_all_unique(self, dccf_tree):
         uuids = [fp.uuid for fp in footprints(dccf_tree)]
         assert len(uuids) == 97
@@ -158,6 +166,7 @@ class TestUuid:
 
 
 class TestKeepoutZones:
+    @pytest.mark.dccf
     def test_dccf_has_no_keepout_zones(self, dccf_tree):
         # its single zone is a GND pour without a keepout block
         assert keepout_zones(dccf_tree) == []
@@ -166,6 +175,7 @@ class TestKeepoutZones:
 class TestZoneFillRules:
     """Zone fill settings mirror the (zone ...) block for pour analysis."""
 
+    @pytest.mark.unit
     def test_tube111_gnd_zone_fill_rules(self, tube111_model):
         gnd = [z for z in tube111_model.zones if z.net_name == "GND"]
         assert len(gnd) == 6
@@ -179,6 +189,7 @@ class TestZoneFillRules:
         assert z.island_removal_mode == 0
         assert len(z.polygon) == 5
 
+    @pytest.mark.unit
     def test_tube111_mixed_clearances(self, tube111_model):
         clearances = sorted({
             z.clearance_mm
@@ -187,12 +198,14 @@ class TestZoneFillRules:
         })
         assert clearances == pytest.approx([0.4, 0.508])
 
+    @pytest.mark.dccf
     def test_dccf_gnd_zone_spans_both_layers(self, dccf_tree):
         gnd = [z for z in zones(dccf_tree) if z.net_name == "GND"]
         assert len(gnd) == 1
         assert set(gnd[0].layers) == {"F.Cu", "B.Cu"}
         assert gnd[0].clearance_mm == pytest.approx(0.508)
 
+    @pytest.mark.minimal
     def test_keepout_zone_fill_defaults(self, minimal_tree):
         # keepout zones carry a (fill ...) block with thermals but their own
         # zero clearance; net stays unconnected.
@@ -203,6 +216,7 @@ class TestZoneFillRules:
             assert z.clearance_mm == pytest.approx(0.0)
             assert z.min_thickness_mm == pytest.approx(0.254)
 
+    @pytest.mark.unit
     def test_tube111_filled_polygons_parsed_stale(self, tube111_model):
         # KiCad's cached fills load for visualization (stale after edits).
         fills = [fp for z in tube111_model.zones for fp in z.filled_polygons]
@@ -214,6 +228,7 @@ class TestZoneFillRules:
 class TestCircularArcSampling:
     """KiCad arcs store three points ON the arc (mid is not a control)."""
 
+    @pytest.mark.unit
     def test_quarter_circle_passes_through_mid(self):
         import math
         r = 5.0
@@ -225,6 +240,7 @@ class TestCircularArcSampling:
         for x, y in pts:
             assert math.hypot(x, y) == pytest.approx(r, abs=1e-9)
 
+    @pytest.mark.unit
     def test_dccf_corner_arc_is_round_not_shallow(self):
         import math
         # Real DCCF Edge.Cuts corner: the sampler must pass through mid
@@ -249,24 +265,29 @@ class TestCircularArcSampling:
         for x, y in pts:
             assert math.hypot(x - cx, y - cy) == pytest.approx(r, abs=1e-6)
 
+    @pytest.mark.unit
     def test_collinear_falls_back_to_chord(self):
         pts = list(sample_circular_arc((0.0, 0.0), (5.0, 0.0), (10.0, 0.0), 4))
         assert pts == [(0.0, 0.0), (2.5, 0.0), (5.0, 0.0), (7.5, 0.0), (10.0, 0.0)]
 
 
 class TestNetlist:
+    @pytest.mark.dccf
     def test_dccf_net_count(self, dccf_tree):
         assert len(netlist(dccf_tree)) == 59
 
+    @pytest.mark.dccf
     def test_known_connection(self, dccf_tree):
         assert NetConnection("SW6", "1") in netlist(dccf_tree)["VR-"]
 
+    @pytest.mark.minimal
     def test_minimal_empty(self, minimal_tree):
         # mounting-hole pads carry no (net ...) references
         assert netlist(minimal_tree) == {}
 
 
 class TestBoardModel:
+    @pytest.mark.dccf
     def test_by_ref_first_wins_on_duplicate_refs(self, dccf_tree):
         # masked fixture has duplicate refs (e.g. H6 x5); by_ref keeps the first
         model = board_model(dccf_tree)
@@ -279,6 +300,7 @@ class TestBoardModel:
 class TestBoardRegions:
     """Tests for multi-board region detection and assignment."""
 
+    @pytest.mark.dccf
     def test_board_model_has_regions(self, dccf_tree):
         """BoardModel exposes board_regions and footprint_region."""
         model = board_model(dccf_tree)
@@ -298,6 +320,7 @@ class TestBoardRegions:
                 assert fp.uuid in model.footprint_region
                 assert model.footprint_region[fp.uuid] in (0, 1, -1)
 
+    @pytest.mark.unit
     def test_tube111_board_model_has_regions(self):
         """tube111 BoardModel has 3 regions with footprints assigned."""
         tube111_tree = parse_file(TUBE111_PCB)
@@ -313,6 +336,7 @@ class TestBoardRegions:
 class TestGhostFootprints:
     """Tests for ghost/pseudo footprint parsing."""
 
+    @pytest.mark.minimal
     def test_ghost_excluded_from_by_ref(self, ghost_test_tree):
         """Ghost footprints are not in by_ref mapping."""
         model = board_model(ghost_test_tree)
@@ -321,6 +345,7 @@ class TestGhostFootprints:
         assert "U1" in model.by_ref
         assert "R2" in model.by_ref
 
+    @pytest.mark.minimal
     def test_ghost_has_uuid(self, ghost_test_tree):
         """Ghost footprints have UUIDs."""
         model = board_model(ghost_test_tree)
@@ -380,3 +405,21 @@ def test_valid_rectangle_still_classifies():
     )
     assert _classify_rectangle(verts) is not None
     assert _polygon_bbox([Point(x, y) for x, y in verts]) == (0.0, 2.0, 0.0, 1.0)
+
+
+@pytest.mark.unit
+def test_silk_segments_parsed_with_widths(tube111_model):
+    # Every footprint imports its own silkscreen strokes (centerlines in
+    # filed board pose plus stroke widths) so placement can eject labels
+    # off their parent's ink. C2/C3 carry long silk outlines whose short
+    # labels park on the drawing without the push-off.
+    silk_counts = {fp.ref: len(fp.silk) for fp in tube111_model.footprints}
+    assert sum(silk_counts.values()) > 8000
+    for ref in ("C2", "C3"):
+        segs = tube111_model.by_ref[ref].silk
+        assert len(segs) > 100
+        assert {s.width_mm for s in segs} == {0.12}
+        for s in segs:
+            assert math.isfinite(s.start.x_mm + s.start.y_mm)
+            assert math.isfinite(s.end.x_mm + s.end.y_mm)
+            assert s.width_mm > 0

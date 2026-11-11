@@ -17,6 +17,9 @@ from kicad_autorouter.sexpr import SExpr
 from kicad_autorouter.svg_render import render_board_svg
 
 
+pytestmark = pytest.mark.unit
+
+
 def _arc_node(start, mid, end, width, layer, net):
     return SExpr("arc", (
         SExpr("start", start),

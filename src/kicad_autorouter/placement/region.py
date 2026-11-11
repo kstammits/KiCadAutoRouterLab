@@ -76,12 +76,13 @@ _LABEL_ORBIT_RADIUS_FLOOR_MM = 1.0
 
 
 def _label_orbit_radius_mm(params) -> float:
-    """Orbit clamp radius (mm) derived from ``label_clearance_m``.
+    """Orbit clamp radius (mm) derived from ``label_orbit_m``.
 
-    Single source of truth: the radius disc equals the clearance rect
-    reach, floored so a zero clearance still bounds the node.
+    Single source of truth: the radius disc equals the orbit reach,
+    floored so a zero orbit still bounds the node. Collision clearance
+    (``label_clearance_m``) is a separate knob and never sizes the disc.
     """
-    return max(float(params.label_clearance_m) * 1000.0, _LABEL_ORBIT_RADIUS_FLOOR_MM)
+    return max(float(params.label_orbit_m) * 1000.0, _LABEL_ORBIT_RADIUS_FLOOR_MM)
 
 
 def _posed_label_anchor(
@@ -456,7 +457,12 @@ def _clamp_labels_to_radius(
         fp = fp_by_uuid.get(uuid)
         if fp is None or len(rows) == 0:
             continue
-        entry = {}
+        # Parent-tracking anchor (same cy_cache entry as the force path):
+        # a static slice-start anchor would pin the node while the
+        # parent walks away, stranding labels millimeters behind moving
+        # parts. Falls back to the filed anchor when unmapped.
+        entry = getattr(fctx, "cy_cache", None) or {}
+        entry = entry.get(uuid, {}) or {}
         anchor, _ = _posed_label_anchor(
             positions, np.asarray(rows), entry.get("orig_pos"),
             lab_anchor_filed[k], fp.angle_deg,
@@ -683,6 +689,13 @@ def _run_region_simulation(
 
     for fp in model.ghost_footprints:
         if not fp.uuid or model.footprint_region.get(fp.uuid) != region_idx:
+            continue
+        # Attractor ghosts are pure pull: their anchor square must not
+        # act as a wall (it would shove the target off its own anchor —
+        # the spring and the square reach equilibrium ~1mm apart). Only
+        # wall ghosts (no attractions) join the body set. Attraction
+        # edges are built separately below from model.ghost_footprints.
+        if getattr(fp, "ghost_attractions", ()):
             continue
         fp_uuids.append(fp.uuid)
         fp_movable_list.append(False)
@@ -1008,6 +1021,12 @@ def _run_region_simulation(
     # them (called on [:n_pads] slices); label tether + contact forces are
     # computed separately in the loop below. Only movable, in-region,
     # labeled real footprints orbit — locked parents keep welded labels.
+    # Home is the parent part, never the filed offset: filed positions go
+    # stale the moment clustering moves parts, so the anchor is the
+    # parent's pad centroid (rigid-invariant local coords) and the orbit
+    # disc, tether, eject, and find-spare-room search all center on it.
+    # Clearance 0 welds labels at filed spots: no rows, so the whole
+    # label path below (forces, eject, commit) is a no-op.
 
     from ..board_model import label_board_pose
     from ..board_model.labels import label_ink_mass_kg
@@ -1025,7 +1044,10 @@ def _run_region_simulation(
     _lab_damp_c = np.zeros(0, dtype=np.float64)
     _lab_fric_N = np.zeros(0, dtype=np.float64)
     lab_anchor_prev: Optional[np.ndarray] = None
+    _labels_live = params.label_clearance_m > 0.0
     for _fp in model.footprints:
+        if not _labels_live:
+            break  # welded: filed spots stand, no rows built below
         if _fp.label is None or not _fp.uuid:
             continue
         if not freeze_bodies and not fp_movable.get(_fp.uuid, False):
@@ -1042,6 +1064,18 @@ def _run_region_simulation(
         _li = fp_uuid_to_local_idx.get(_fp.uuid)
         if _li is None:
             continue
+        # Parent centroid in board frame, converted to rigid-invariant
+        # parent-local coords: the orbit home. Filed label offsets are
+        # stale by construction after clustering, so they are not used.
+        try:
+            _lrows = fp_local_to_rows[_li] if _li < len(fp_local_to_rows) else []
+            _centroid = np.asarray(positions[_lrows]).mean(axis=0)
+            _home_local = _to_local(
+                float(_centroid[0]), float(_centroid[1]),
+                float(_fp.x_mm), float(_fp.y_mm),
+                float(_fp.angle_deg), _fp.layer)
+        except (TypeError, ValueError, IndexError):
+            continue
         lab_rows.append(n_pads + len(lab_rows))
         lab_parent_li.append(_li)
         lab_uuid.append(_fp.uuid)
@@ -1049,9 +1083,9 @@ def _run_region_simulation(
         lab_size.append(_fp.label.size_mm)
         lab_local_angle.append(_fp.label.local_angle_deg)
         lab_filed_local.append(
-            (_fp.label.local_x_mm, _fp.label.local_y_mm)
+            (float(_home_local.x_mm), float(_home_local.y_mm))
         )
-        lab_anchor_filed.append((_pose[0], _pose[1]))
+        lab_anchor_filed.append((float(_centroid[0]), float(_centroid[1])))
         lab_mass_list.append(
             label_ink_mass_kg(
                 _fp.label.text, _fp.label.size_mm,
@@ -1560,10 +1594,16 @@ def _run_region_simulation(
         from shapely.geometry import Polygon as _ShapelyPolygon
         from ..board_model import Point as _Point
         from ..board_model.labels import label_board_angle as _lba
+        from ..board_model.labels import label_halo_mm as _lhalo
         from ..board_model.labels import snap_label_angle as _sla
         from .contact import pad_copper_polygon as _pad_cu
         from .contact import pad_present_on_layer as _pad_on_layer
+        from .depenetrate import _body_poly_map as _bodymap
         from .depenetrate import _depenetrate_labels as _depen_labels
+        from .depenetrate import _find_spot as _findspot
+        from .depenetrate import _label_rect_poly as _labrect
+        from .depenetrate import _nearby_silk_obstacles as _silknear
+        from .depenetrate import _pose_parent_silk as _posesilk
         try:
             _edge_poly = _ShapelyPolygon(
                 [(p.x_mm, p.y_mm) for p in region.polygon]
@@ -1603,6 +1643,30 @@ def _run_region_simulation(
                 continue
         _lab_spec_rows: List[int] = []
         _lab_specs: List = []
+        # Anchor hygiene: the filed-carried anchor can sit in ink/copper
+        # (filed dirty, or ridden there by the parent), and the tether
+        # then holds the label there all run. Nudge dirty anchors to the
+        # nearest clean in-disc spot via the shared clean-spot search
+        # before depenetrating, so tether, clamp, eject, and search share
+        # one sane center. Obstacles are posed at final positions (bodies
+        # + copper already built above; silk posed per parent). Best
+        # effort: any failure keeps the filed-carried anchor.
+        _hy_radius = _label_orbit_radius_mm(params)
+        try:
+            _hy_bodies = _bodymap(
+                positions, fp_uuids, fp_local_to_rows, fp_by_uuid)
+            _hy_uuid_to_li = {u: i for i, u in enumerate(fp_uuids)}
+            _hy_silk: Dict[str, list] = {}
+            for _u in fp_uuids:
+                _fp = fp_by_uuid.get(_u)
+                if _fp is None or not _fp.silk:
+                    _hy_silk[_u] = []
+                    continue
+                _li = _hy_uuid_to_li.get(_u)
+                _rows = fp_local_to_rows[_li] if _li is not None else None
+                _hy_silk[_u], _ = _posesilk(_fp, positions, _rows)
+        except Exception:
+            _hy_bodies, _hy_silk = {}, {}
         for _k, _uuid in enumerate(lab_uuid):
             try:
                 _pose = new_poses.get(_uuid)
@@ -1612,12 +1676,41 @@ def _run_region_simulation(
                 _fx0, _fy0 = lab_filed_local[_k]
                 _anchor_b = _to_board(
                     _fx0, _fy0, _pose[0], _pose[1], _pose[2], _lfp.layer)
+                _anchor = (float(_anchor_b.x_mm), float(_anchor_b.y_mm))
+                _ang = _sla(_lba(lab_local_angle[_k], _pose[2]))
+                if params.label_clearance_m > 0.0:
+                    try:
+                        _rect0 = _labrect(
+                            lab_text[_k], _anchor, _ang, lab_size[_k],
+                            _lhalo(lab_size[_k]))
+                        _obs: List = [
+                            _o for _bu, _o in _hy_bodies.items()
+                            if _bu != _uuid
+                        ]
+                        _obs.extend(_copper_all)
+                        try:
+                            _minx, _miny, _maxx, _maxy = _rect0.bounds
+                            _hd = 0.5 * math.hypot(_maxx - _minx, _maxy - _miny)
+                        except Exception:
+                            _hd = 2.0
+                        _obs.extend(_silknear(
+                            _anchor, _hy_radius + _hd + 0.5, _hy_silk))
+                        _first, _best, _best_area, _cur = _findspot(
+                            _rect0, _obs, _anchor, _hy_radius,
+                            cover_poly=_edge_poly)
+                        _spot = _first
+                        if _spot is None and _best is not None \
+                                and _best_area < _cur - 1e-9:
+                            _spot = _best
+                        if _spot is not None and (
+                                abs(_spot[0] - _anchor[0]) > 1e-9
+                                or abs(_spot[1] - _anchor[1]) > 1e-9):
+                            _anchor = (float(_spot[0]), float(_spot[1]))
+                    except Exception:
+                        pass
                 _lab_spec_rows.append(lab_rows[_k])
                 _lab_specs.append((
-                    _uuid, lab_text[_k], lab_size[_k],
-                    _sla(_lba(lab_local_angle[_k], _pose[2])),
-                    (float(_anchor_b.x_mm), float(_anchor_b.y_mm)),
-                    _uuid,
+                    _uuid, lab_text[_k], lab_size[_k], _ang, _anchor, _uuid,
                 ))
             except (TypeError, ValueError, IndexError):
                 continue
@@ -1666,8 +1759,16 @@ def _run_region_simulation(
             local = _to_local(cx, cy, pose[0], pose[1], pose[2], fp.layer)
         except (TypeError, ValueError, IndexError):
             continue
-        if math.hypot(local.x_mm - fx0, local.y_mm - fy0) > 1e-9:
-            label_deltas[uuid] = (local.x_mm - fx0, local.y_mm - fy0)
+        # Sidecar delta is measured against the FILED local (the file's
+        # frame of reference), not the orbit home: lab_filed_local now
+        # carries the parent centroid, while the file still holds the
+        # stale filed offset.
+        try:
+            ffx, ffy = float(fp.label.local_x_mm), float(fp.label.local_y_mm)
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if math.hypot(local.x_mm - ffx, local.y_mm - ffy) > 1e-9:
+            label_deltas[uuid] = (local.x_mm - ffx, local.y_mm - ffy)
 
     if record_frames and _frame_fps:
         _final_frame = _capture_frame(positions)

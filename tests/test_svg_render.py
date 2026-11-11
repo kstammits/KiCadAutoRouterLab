@@ -58,6 +58,7 @@ def _courtyard_lines(svg: str, uuid: str):
     ]
 
 
+@pytest.mark.unit
 def test_selected_and_movable_courtyards_differ():
     """Selection must read at a glance: only selected parts glow green.
 
@@ -75,6 +76,7 @@ def test_selected_and_movable_courtyards_differ():
     assert sel.count('stroke="#7ee0a0"') >= 2
 
 
+@pytest.mark.unit
 def test_svg_renders_repaired_micro_gap_courtyard():
     """T1/T2-style 0.01mm gap renders the repaired collision polygon."""
     from dataclasses import replace
@@ -111,6 +113,7 @@ def test_svg_renders_repaired_micro_gap_courtyard():
     )
 
 
+@pytest.mark.unit
 def test_svg_renders_broken_courtyard_segment_bbox():
     """Open courtyard renders the segment-bbox fallback placement uses."""
     from dataclasses import replace
@@ -136,6 +139,7 @@ def test_svg_renders_broken_courtyard_segment_bbox():
     )
 
 
+@pytest.mark.dccf
 def test_preview_matches_accept_with_rotation():
     """Preview footprint groups must equal the post-Accept render.
 
@@ -174,6 +178,7 @@ def test_preview_matches_accept_with_rotation():
     assert "translate(" not in preview
 
 
+@pytest.mark.unit
 def test_mirrored_labels_render_upright():
     """B-side mirrored labels read upright (gerber-verified).
 
@@ -194,6 +199,7 @@ def test_mirrored_labels_render_upright():
     assert r16 and "rotate(90.000" in r16.group(0)
 
 
+@pytest.mark.unit
 def test_tube111_back_footprints_inside_region_in_svg():
     """D6/D7 courtyards must render inside board region 2 (not mirrored out).
 
@@ -228,6 +234,7 @@ def test_tube111_back_footprints_inside_region_in_svg():
         assert min(ys) >= min_y - 1e-6 and max(ys) <= max_y + 1e-6
 
 
+@pytest.mark.unit
 def test_tube111_back_pad_rect_uses_effective_angle():
     """Q1 (B.Cu, fp 90, pads file-angle 90) renders pads rotated 90.
 
@@ -251,6 +258,7 @@ def test_tube111_back_pad_rect_uses_effective_angle():
     assert 'rotate(270.000 130.630 94.345)' in grp.group(0)
 
 
+@pytest.mark.dccf
 def test_preview_rotates_square_pads_with_part():
     """DCCF Q1 pad 1 (rect 1.7x1.7, file-angle 270) advances by da in preview.
 
@@ -297,6 +305,7 @@ def test_preview_rotates_square_pads_with_part():
     assert copper_da == pytest.approx(row_da)
 
 
+@pytest.mark.dccf
 def test_forces_overlay_per_cause_arrows():
     """Each force cause gets its own colored arrow + marker."""
     m = board_model(parse_file(FIXTURES / "DCCF.sved.kicad_pcb"))
@@ -326,6 +335,7 @@ def test_forces_overlay_per_cause_arrows():
     assert "url(#force-boundary)" not in s
 
 
+@pytest.mark.dccf
 def test_forces_overlay_falls_back_to_total():
     """Proposals without a breakdown use one total-force arrow."""
     m = board_model(parse_file(FIXTURES / "DCCF.sved.kicad_pcb"))
@@ -340,6 +350,7 @@ def test_forces_overlay_falls_back_to_total():
     assert "url(#force-" not in s
 
 
+@pytest.mark.unit
 def test_zone_fills_render_without_stroke():
     """Cached fills draw fill-only: KiCad's single-ring islands join
     clearance cutouts with zero-width out-and-back slits, which a stroke
@@ -370,6 +381,7 @@ def test_zone_fills_render_without_stroke():
     assert 'stroke="none"' not in wash
 
 
+@pytest.mark.unit
 def test_layer_color_mode_colors_copper_by_layer():
     """In routing (layer) mode tracks/arcs/vias/pads read solid by copper
     layer while net identity stays in data-net / <title>."""

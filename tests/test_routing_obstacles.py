@@ -21,6 +21,9 @@ from kicad_autorouter.routing.obstacles import (
 from .helpers import make_fp as make_test_fp
 
 
+pytestmark = pytest.mark.unit
+
+
 class TestCourtyardBlocking:
     """Tests for _block_courtyard."""
 

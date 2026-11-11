@@ -4,12 +4,21 @@ Four 2-pad SMD resistors in the corners of the minimal fixture board form
 an X: net X1 joins NW-SE, net X2 joins NE-SW. The diagonals of a rectangle
 must intersect in plan view, so whatever paths the router finds, the two
 nets' copper crosses somewhere; with both nets' SMD pads on F.Cu the only
-sane way through is a layer hop. X1 routes first and takes F.Cu straight;
-X2 must drop to B.Cu and come back (2 vias).
+sane way through is a layer hop. X2 routes first and takes F.Cu straight;
+X1 must drop to B.Cu and come back (2 vias).
+
+Route order matters and is load-bearing: the second net is the one that
+hops. (X1 first lets X2 dodge around the empty board edge instead — on a
+4-directional grid every monotone path costs the same 440 cells, and the
+hop adds 2 via costs on top, so grid-optimal A* can never prefer it. The
+via saving only materializes after any-angle smoothing, which A* cannot
+see. Routing the diagonal first pins the middle and forces the hop.)
 
 Thresholds calibrated by running (0.5mm grid routes both nets in <0.1s
 with exactly 2 vias); the properties are structural, not numeric.
 """
+
+import pytest
 
 from dataclasses import replace as dc_replace
 from pathlib import Path
@@ -33,6 +42,9 @@ CORNERS = {
     "XSW": (65.0, 135.0),
     "XSE": (205.0, 135.0),
 }
+
+
+pytestmark = pytest.mark.minimal
 
 
 def _corner_resistor(ref: str, uuid: str, x_mm: float, y_mm: float,
@@ -94,13 +106,48 @@ def _xcross_model_with_keepout():
     return pcb_tree, model
 
 
+@pytest.mark.parametrize("net,pad_a,pad_b", [
+    ("X1", "XNW", "XSE"),
+    ("X2", "XNE", "XSW"),
+])
+def test_solo_diagonal_shortcuts_to_near_euclidean(net, pad_a, pad_b):
+    """A single diagonal must route near-Euclidean, not Manhattan.
+
+    Each net alone on an empty board: the straight corner-to-corner line
+    is 161.2mm; the Manhattan grid walk is 220mm. A* only emits Manhattan
+    stairs, so the diagonal comes entirely from the smoother — and the
+    emit gate must not veto it on raster dust (the 0.5mm raster cannot
+    resolve a legal pad entry, and the old fallback emitted the raw
+    220mm staircase). 1.1x Euclidean leaves room for pad entries and one
+    fillet while failing a full-Manhattan walk (1.37x).
+    """
+    import math
+
+    pcb_tree, model = _xcross_model()
+    assert {c.ref for c in model.nets[net]} == {pad_a, pad_b}
+    result, _, _ = route_nets(
+        model, [net], set(),
+        params=RoutingParams(run_drc=False, grid_resolution_mm=0.5),
+        original_pcb_tree=pcb_tree,
+    )
+    assert result.nets_routed == 1, f"solo diagonal must route: {result}"
+    assert result.nets_failed == 0, f"no net may fail: {result}"
+    straight = math.hypot(
+        CORNERS[pad_a][0] - CORNERS[pad_b][0],
+        CORNERS[pad_a][1] - CORNERS[pad_b][1])
+    assert result.total_wire_mm <= 1.1 * straight, (
+        f"solo diagonal {net} {result.total_wire_mm:.1f}mm should approach "
+        f"the {straight:.1f}mm straight line, not the 220mm Manhattan walk"
+    )
+
+
 def test_diagonal_nets_route_with_via_crossing():
     pcb_tree, model = _xcross_model()
     assert {c.ref for c in model.nets["X1"]} == {"XNW", "XSE"}
     assert {c.ref for c in model.nets["X2"]} == {"XNE", "XSW"}
 
     result, _, _ = route_nets(
-        model, ["X1", "X2"], set(),
+        model, ["X2", "X1"], set(),
         params=RoutingParams(run_drc=False, grid_resolution_mm=0.5),
         original_pcb_tree=pcb_tree,
     )
@@ -116,26 +163,26 @@ def test_diagonal_nets_route_with_via_crossing():
     )
 
     assert result.pcb_tree is not None
-    x1_front = plan_segments(result.pcb_tree, "X1", "F.Cu")
-    x2_back = plan_segments(result.pcb_tree, "X2", "B.Cu")
-    assert x1_front, "X1 should hold F.Cu (routed first, straight through)"
-    assert x2_back, "X2 should spend part of the route on B.Cu"
-    # The B.Cu span must genuinely bridge X1's F.Cu copper in plan view —
+    x2_front = plan_segments(result.pcb_tree, "X2", "F.Cu")
+    x1_back = plan_segments(result.pcb_tree, "X1", "B.Cu")
+    assert x2_front, "X2 should hold F.Cu (routed first, straight through)"
+    assert x1_back, "X1 should spend part of the route on B.Cu"
+    # The B.Cu span must genuinely bridge X2's F.Cu copper in plan view —
     # not a pointless hop elsewhere.
     assert any(
-        back.intersects(front) for back in x2_back for front in x1_front
-    ), "X2's B.Cu span must cross X1's F.Cu copper in plan view"
+        back.intersects(front) for back in x1_back for front in x2_front
+    ), "X1's B.Cu span must cross X2's F.Cu copper in plan view"
 
 
 def test_diagonal_nets_respect_keepout():
     """Central F.Cu keepout: routing still succeeds, block stays clean.
 
     The keepout covers the ideal-diagonal intersection, so a straight
-    shot would have to detour (F.Cu) or dive under it (B.Cu). X1 sweeps
-    a broad fillet arc through the middle while X2 threads past it on
-    F.Cu, dives to B.Cu, and bridges back under X1's arc to its far pad.
-    This guards the valuable property: an unrelated keepout neither
-    breaks the crossing nor collects copper/vias, and wire stays bounded
+    shot would have to detour (F.Cu) or dive under it (B.Cu). X2 holds
+    F.Cu around the block while X1 threads across on F.Cu and bridges
+    down the far side on B.Cu, crossing X2's copper in plan view. This
+    guards the valuable property: an unrelated keepout neither breaks
+    the crossing nor collects copper/vias, and wire stays bounded
     versus the no-keepout baseline (nothing goes wonky). Plan-view
     checks run on densely sampled arcs (see helpers.plan_segments):
     long sweeps bow far off their chords, so chord approximation would
@@ -144,14 +191,14 @@ def test_diagonal_nets_respect_keepout():
     params = RoutingParams(run_drc=False, grid_resolution_mm=0.5)
     base_tree, base_model = _xcross_model()
     base, _, _ = route_nets(
-        base_model, ["X1", "X2"], set(),
+        base_model, ["X2", "X1"], set(),
         params=params, original_pcb_tree=base_tree,
     )
     assert base.nets_routed == 2, f"baseline must route: {base}"
 
     pcb_tree, model = _xcross_model_with_keepout()
     result, _, _ = route_nets(
-        model, ["X1", "X2"], set(),
+        model, ["X2", "X1"], set(),
         params=params, original_pcb_tree=pcb_tree,
     )
 
@@ -162,13 +209,13 @@ def test_diagonal_nets_respect_keepout():
     )
 
     assert result.pcb_tree is not None
-    x1_front = plan_segments(result.pcb_tree, "X1", "F.Cu")
-    x2_back = plan_segments(result.pcb_tree, "X2", "B.Cu")
-    assert x1_front, "X1 should still hold F.Cu"
-    assert x2_back, "X2 should still bridge on B.Cu"
+    x2_front = plan_segments(result.pcb_tree, "X2", "F.Cu")
+    x1_back = plan_segments(result.pcb_tree, "X1", "B.Cu")
+    assert x2_front, "X2 should still hold F.Cu"
+    assert x1_back, "X1 should still bridge on B.Cu"
     assert any(
-        back.intersects(front) for back in x2_back for front in x1_front
-    ), "X2's B.Cu span must still cross X1's F.Cu copper in plan view"
+        back.intersects(front) for back in x1_back for front in x2_front
+    ), "X1's B.Cu span must still cross X2's F.Cu copper in plan view"
 
     # The block is F.Cu-only: no F.Cu copper and no via annulus may enter
     # it; B.Cu stays free to pass underneath.

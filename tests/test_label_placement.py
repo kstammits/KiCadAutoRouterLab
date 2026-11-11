@@ -15,8 +15,6 @@ from pathlib import Path
 import pytest
 
 from kicad_autorouter.board_model import (
-    Footprint,
-    SilkLabel,
     apply_deltas,
     board_model,
     label_board_pose,
@@ -35,7 +33,7 @@ from kicad_autorouter.io import (
 from kicad_autorouter.placement import PlacementParams, run_placement
 from kicad_autorouter.sexpr import parse_file, to_sexpr
 
-from .helpers import make_board, make_fp
+from .helpers import facing_label_pair as _labeled_pair
 
 FIXTURES = Path(__file__).parent / "fixtures"
 MINIMAL_PCB = FIXTURES / "minimal.kicad_pcb"
@@ -160,15 +158,38 @@ def test_model_and_tree_agree_on_rotated_label():
         if f.uuid == uuid
     )
     assert fp4.label.local_angle_deg == fp.label.local_angle_deg
+    # Orbited anchors round-trip too: label offsets travel both paths.
+    label_deltas = {uuid: (2.5, -1.0)}
+    fp5 = next(
+        f for f in apply_deltas(model, deltas,
+                                label_deltas=label_deltas).footprints
+        if f.uuid == uuid)
+    assert (fp5.label.local_x_mm, fp5.label.local_y_mm) == pytest.approx(
+        (fp.label.local_x_mm + 2.5, fp.label.local_y_mm - 1.0))
+    fp6 = next(
+        f for f in board_model(nudge_footprint_by_uuid(
+            tree, uuid, 1.0, 2.0, 90.0,
+            label_dx_mm=2.5, label_dy_mm=-1.0)).footprints
+        if f.uuid == uuid)
+    assert (fp6.label.local_x_mm, fp6.label.local_y_mm) == pytest.approx(
+        (fp5.label.local_x_mm, fp5.label.local_y_mm))
+    assert fp6.label.local_angle_deg == pytest.approx(fp5.label.local_angle_deg)
+    assert label_board_pose(fp6) == pytest.approx(label_board_pose(fp5))
 
 
 @pytest.mark.params
-def test_label_params_validate_and_round_trip():
-    p = PlacementParams.from_dict({"label_clearance_m": 0.005})
-    assert p.label_clearance_m == 0.005
-    assert p.to_dict()["label_clearance_m"] == 0.005
-    for bad in ({"label_clearance_m": -0.001}, {"label_clearance_m": 0.06},
-                {"label_clearance_m": "5mm"}):
+@pytest.mark.parametrize("good,bads", [
+    ({"label_clearance_m": 0.005},
+     ({"label_clearance_m": -0.001}, {"label_clearance_m": 0.06},
+      {"label_clearance_m": "5mm"})),
+    ({"label_clearance_m": 0.01},
+     ({"label_clearance_m": -1.0}, {"label_clearance_m": 0.06},
+      {"label_clearance_m": "wide"})),
+])
+def test_label_params_validate_and_round_trip(good, bads):
+    p = PlacementParams.from_dict(good)
+    assert p.to_dict()["label_clearance_m"] == good["label_clearance_m"]
+    for bad in bads:
         with pytest.raises(ValueError):
             PlacementParams.from_dict(bad)
     # Partial POST compat: unknown keys dropped, label keys default.
@@ -178,39 +199,6 @@ def test_label_params_validate_and_round_trip():
     legacy = PlacementParams.from_dict(
         {"label_solidity": 0.5, "label_orbit": True, "label_tether": "slot"})
     assert legacy.label_clearance_m == 0.005
-
-
-def _labeled_pair(label_w_mm=6.0):
-    """Two netted parts side by side with big facing labels.
-
-    Courtyards (hw=1.5) start 4mm apart center-to-center: inside the 6mm
-    wall halo so the pair feels contact; the labels sit on the facing
-    edges to force label-body overlap only when solidity unions them in.
-    """
-
-    def _lab(ref, lx):
-        return SilkLabel(
-            text="REFDES",
-            local_x_mm=lx,
-            local_y_mm=0.0,
-            local_angle_deg=0.0,
-            layer="F.SilkS",
-            size_mm=(label_w_mm / (6 * 0.6), 1.0),
-            thickness_mm=0.15,
-            uuid=f"{ref}-label",
-        )
-
-    fa = replace(
-        make_fp("A", "uuid-a", 0.0, 0.0, ("N1", "N2"), hw=1.5, hh=1.0),
-        label=_lab("A", 2.0),
-    )
-    fb = replace(
-        make_fp("B", "uuid-b", 4.0, 0.0, ("N1", "N3"), hw=1.5, hh=1.0),
-        label=_lab("B", -2.0),
-    )
-    nets = {"N1": (), "N2": (), "N3": ()}
-    model = make_board([fa, fb])
-    return replace(model, nets=nets)
 
 
 @pytest.mark.physics
@@ -246,13 +234,18 @@ def test_clearance_ejects_labels_not_parents():
     import math
 
     model = _labeled_pair(label_w_mm=2.0)
-    # Long run: real clearance ejects the facing labels within the cap.
+    # Long run: labels home to their parents (orbit cap) instead of
+    # lingering at the filed facing offsets.
     b = run_placement(
         model, PlacementParams(max_iterations=300, label_clearance_m=0.001))
     assert b.label_deltas
-    for dx, dy in b.label_deltas.values():
-        assert math.hypot(dx, dy) <= 1.0 + 1e-3  # cap derives from clearance
-        assert math.hypot(dx, dy) > 0.1  # ejected, not parked at anchor
+    moved = apply_deltas(model, b.deltas, label_deltas=b.label_deltas)
+    from kicad_autorouter.board_model import _to_board as _tb
+    for uuid in ("uuid-a", "uuid-b"):
+        fp = next(f for f in moved.footprints if f.uuid == uuid)
+        by = _tb(fp.label.local_x_mm, fp.label.local_y_mm,
+                 fp.x_mm, fp.y_mm, fp.angle_deg, fp.layer)
+        assert math.hypot(by.x_mm - fp.x_mm, by.y_mm - fp.y_mm) <= 3.0
     # Short horizon: pad course holds station either way.
     a = run_placement(
         model, PlacementParams(max_iterations=10, label_clearance_m=0.0))

@@ -32,6 +32,7 @@ SCH_FIXTURE = FIXTURES / "minimal.kicad_sch"
 MH1_UUID = "5c0af984-49c4-40a0-95aa-bb612ff4098b"
 
 
+@pytest.mark.minimal
 def test_nudge_moves_only_target_footprint():
     tree = parse_file(PCB_FIXTURE)
     moved = nudge_footprint(tree, "MH1", 1.0, 2.0)
@@ -42,12 +43,14 @@ def test_nudge_moves_only_target_footprint():
     assert list(new_mh2.args) == list(orig_mh2.args)
 
 
+@pytest.mark.minimal
 def test_find_footprint_by_uuid():
     tree = parse_file(PCB_FIXTURE)
     at = find_footprint_by_uuid(tree, MH1_UUID).find("at")
     assert (float(at.args[0]), float(at.args[1])) == pytest.approx((58.57, 50.55))
 
 
+@pytest.mark.minimal
 def test_nudge_by_uuid_moves_only_target_footprint():
     tree = parse_file(PCB_FIXTURE)
     moved = nudge_footprint_by_uuid(tree, MH1_UUID, 1.0, 2.0)
@@ -73,6 +76,7 @@ def _ref_texts(tree, ref):
 
 
 @pytest.mark.unit
+@pytest.mark.minimal
 def test_reset_label_anchors_restores_filed_positions():
     tree = parse_file(PCB_FIXTURE)
     drifted = nudge_footprint_by_uuid(
@@ -98,6 +102,7 @@ def test_reset_label_anchors_restores_filed_positions():
     assert n2 == 0
 
 
+@pytest.mark.minimal
 def test_fixture_sch_round_trip_tree_equality():
     tree = parse_file(SCH_FIXTURE)
     assert parse(to_sexpr(tree)) == tree
@@ -114,6 +119,7 @@ def _zero_nudge_roundtrip(out_dir: Path):
     )
 
 
+@pytest.mark.minimal
 def test_zero_nudge_roundtrip_preserves_trees(tmp_path):
     out_pcb, out_sch = _zero_nudge_roundtrip(tmp_path)
     pair = load_pair(PCB_FIXTURE, SCH_FIXTURE)
@@ -132,12 +138,14 @@ def cli() -> str:
         pytest.skip("kicad-cli not installed")
 
 
+@pytest.mark.cli
 def test_roundtripped_pair_passes_drc_and_erc(cli, tmp_path):
     out_pcb, out_sch = _zero_nudge_roundtrip(tmp_path)
     assert validate_pcb(out_pcb, cli=cli).ok
     assert validate_sch(out_sch, cli=cli).ok
 
 
+@pytest.mark.cli
 def test_valid_pcb_passes_drc(cli):
     report = validate_pcb(PCB_FIXTURE, cli=cli)
     assert report.loaded
@@ -146,6 +154,7 @@ def test_valid_pcb_passes_drc(cli):
     assert report.ok
 
 
+@pytest.mark.cli
 def test_valid_sch_passes_erc(cli):
     report = validate_sch(SCH_FIXTURE, cli=cli)
     assert report.loaded
@@ -167,6 +176,7 @@ def _reference(fp: SExpr):
     return None
 
 
+@pytest.mark.minimal
 def test_parse_minimal_fixture():
     board = parse_file(PCB_FIXTURE)
     assert board.head == "kicad_pcb"
@@ -192,6 +202,7 @@ def test_parse_minimal_fixture():
     assert len(zones) >= 1
 
 
+@pytest.mark.unit
 def test_digit_led_bare_words_stay_symbols():
     # Malformed-but-harmless tokens (e.g. unquoted 3v3) must not crash
     # the parse; they read back as bare symbols.
@@ -200,6 +211,7 @@ def test_digit_led_bare_words_stay_symbols():
     assert to_sexpr(parse(to_sexpr(node))) == to_sexpr(node)
 
 
+@pytest.mark.unit
 def test_unknown_string_escape_round_trips():
     # "\q" keeps its backslash so the serializer re-emits it identically.
     node = parse(r'(gr_text "a\qb" (layer "F.SilkS"))')
@@ -207,12 +219,14 @@ def test_unknown_string_escape_round_trips():
     assert to_sexpr(parse(to_sexpr(node))) == to_sexpr(node)
 
 
+@pytest.mark.unit
 def test_bare_word_token_columns_advance():
     toks = tokenize("(aa bb)")
     cols = [t.col for t in toks if t.kind == "symbol"]
     assert cols == [2, 5]
 
 
+@pytest.mark.minimal
 def test_fixture_serialize_reparse_stable():
     board = parse_file(PCB_FIXTURE)
     once = to_sexpr(board)

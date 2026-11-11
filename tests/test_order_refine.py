@@ -32,6 +32,9 @@ CORNERS = {
 }
 
 
+pytestmark = pytest.mark.minimal
+
+
 def _xcross_model():
     """Minimal fixture + 4 corner resistors wired into crossing X1/X2 nets."""
     pcb_tree = parse_file(FIXTURES / "minimal.kicad_pcb")
@@ -314,3 +317,54 @@ def test_split_route_raw_finish_matches_route_nets():
                   "stitch_tracks_added", "arcs_added", "fanout_vias_added",
                   "gnd_islands_before", "gnd_islands_after", "gnd_stripped"):
         assert getattr(r1, field) == getattr(r2, field), field
+
+
+def test_refine_order_failed_first():
+    # (Moved from test_smooth_polish.py: failure-first relay ordering
+    # belongs to the refine contract, not the smoother.)
+    from kicad_autorouter.routing.pipeline import _refine_order
+
+    groups = [["X1", "X2", "X3"]]
+    legacy = _refine_order(["X1", "X2", "X3"], groups, 7)
+    assert _refine_order(["X1", "X2", "X3"], groups, 7, ()) == legacy
+    assert _refine_order(["X1", "X2", "X3"], groups, 7, {"X9"}) == legacy
+    order = _refine_order(["X1", "X2", "X3"], groups, 7, {"X3"})
+    assert order[0] == "X3"
+    assert sorted(order) == ["X1", "X2", "X3"]
+
+
+def test_refine_relays_previous_failures(monkeypatch):
+    """Trial k+1 routes trial k's failed nets first."""
+    import kicad_autorouter.routing.pipeline as pipeline
+    from kicad_autorouter.routing.pipeline import RawRoutes, RoutingResult
+    from kicad_autorouter.routing.router import RipUpManager
+
+    calls = []
+
+    def _fake_route_raw(**kw):
+        order = tuple(kw["net_names"])
+        calls.append(order)
+        rip = RipUpManager()
+        if len(calls) == 1:
+            rip.record_failure("X2", "boom")  # first trial fails X2
+            routed, failed = 1, 1
+        else:
+            routed, failed = 2, 0
+        return RawRoutes(model=kw["model"], nets_routed=routed,
+                         nets_failed=failed, ripup=rip,
+                         total_wire_mm=1.0, expansions_total=5), "CG", "RG"
+
+    def _fake_finish(raw, params):
+        return RoutingResult(
+            tracks_added=1, vias_added=0, nets_routed=raw.nets_routed,
+            nets_failed=0, drc_clean=True, drc_violations=0,
+            pcb_tree="TREE"), "CG", "RG"
+
+    monkeypatch.setattr(pipeline, "route_raw", _fake_route_raw)
+    monkeypatch.setattr(pipeline, "finish_routes", _fake_finish)
+    _, model = _xcross_model()
+    refine_routing(model, ["X1", "X2"], set(),
+                   params=_params(refine_seeds=2, refine_seed=0),
+                   original_pcb_tree="TREE")
+    assert calls[0] == ("X1", "X2")  # identity trial first
+    assert calls[1][0] == "X2"  # relay: failed net first

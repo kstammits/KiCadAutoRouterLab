@@ -26,6 +26,7 @@ PROD = PlacementParams()  # engine defaults (legalize regime)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.regression
+@pytest.mark.unit
 def test_deep_overlap_resolves():
     """5mm-deep courtyard overlap (6x4mm parts, 1mm center distance)."""
     fa = make_fp("A", "uuid-a", 0.0, 0.0, ("N1", "N2"),
@@ -50,6 +51,7 @@ def test_deep_overlap_resolves():
 
 
 @pytest.mark.regression
+@pytest.mark.unit
 def test_three_part_linear_squeeze():
     """Mobile part off-center between two locked parts escapes along the axis."""
     left = make_fp("L", "uuid-l", -4.0, 0.0, ("L1", "L2"),
@@ -79,6 +81,7 @@ def test_three_part_linear_squeeze():
 
 
 @pytest.mark.regression
+@pytest.mark.unit
 def test_depenetration_round_shrinks_overlap():
     """Post-dynamics eject: one relaxed MTV round per overlapping pair.
 
@@ -106,6 +109,7 @@ def test_depenetration_round_shrinks_overlap():
 
 
 @pytest.mark.regression
+@pytest.mark.unit
 def test_corner_wedge_escapes():
     """Mobile part tucked into a locked corner (two walls) moves out."""
     wall_h = make_fp("H", "uuid-h", 0.0, -4.0, ("H1", "H2"),
@@ -138,6 +142,7 @@ def test_corner_wedge_escapes():
 
 
 @pytest.mark.regression
+@pytest.mark.unit
 def test_corridor_settles_without_overlap():
     """Mobile part between two locked rows settles centered, no overlap."""
     top = make_fp("T", "uuid-t", 0.0, 4.0, ("T1", "T2"),
@@ -233,6 +238,7 @@ def test_dccf_overlap_audit(dccf_model):
     )
 
 
+@pytest.mark.unit
 def test_wall_mag_linear_matches_legacy():
     """_wall_mag at p=1 reproduces F=k*(1-s/h): k at contact, 0 past halo."""
     from kicad_autorouter.placement import _wall_mag
@@ -246,6 +252,7 @@ def test_wall_mag_linear_matches_legacy():
 
 
 @pytest.mark.regression
+@pytest.mark.unit
 def test_wall_cap_clamps_deep_leaves_halo():
     """wall_cap_depth_mm saturates deep force; halo/contact untouched; 0 = off."""
     from kicad_autorouter.placement import _wall_mag
@@ -266,6 +273,7 @@ def test_wall_cap_clamps_deep_leaves_halo():
     assert _wall_mag(k, -3 * h, h, 2.0, 0.0) == pytest.approx(16 * k)
 
 @pytest.mark.regression
+@pytest.mark.unit
 def test_capped_deep_overlap_still_resolves():
     """Capped (4k saturating) wall still clears a deep overlap — the cap
     bounds runaway force, it must not strand buried parts."""
@@ -296,6 +304,7 @@ def test_capped_deep_overlap_still_resolves():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.regression
+@pytest.mark.unit
 def test_shear_torque_sign_consistent():
     """One-sided pad graze rotates the part toward the grazer, single-signed."""
     mover = make_fp("M", "uuid-m", 2.0, 0.0, ("N1", "N2"),
@@ -330,6 +339,7 @@ def test_shear_torque_sign_consistent():
 
 
 @pytest.mark.regression
+@pytest.mark.unit
 def test_mtv_tie_no_sustained_spin():
     """Square-on-square head-on tie: escape picks one axis, no sustained spin."""
     fa = make_fp("A", "uuid-a", 0.0, 0.0, ("N1", "N2"),
@@ -354,6 +364,7 @@ def test_mtv_tie_no_sustained_spin():
 
 
 @pytest.mark.regression
+@pytest.mark.unit
 def test_compass_needle_flip_is_single_signed():
     """Strong asymmetric net pull may rotate far, but monotonically (torque, not churn).
 

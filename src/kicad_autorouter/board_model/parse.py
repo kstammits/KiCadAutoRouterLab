@@ -7,7 +7,7 @@ import uuid as uuid_module
 from typing import Collection, Dict, List, Optional, Set, Tuple
 
 from ..sexpr import SExpr, get_generator_version
-from .model import ArcTrack, BoardModel, BoardRegion, EdgeCutArc, FilledPolygon, Footprint, KeepoutZone, NetClass, NetConnection, Pad, Point, Segment, SilkLabel, Track, Via, Zone
+from .model import ArcTrack, BoardModel, BoardRegion, EdgeCutArc, FilledPolygon, Footprint, KeepoutZone, NetClass, NetConnection, Pad, Point, Segment, SilkLabel, SilkSegment, Track, Via, Zone
 from .query import _assign_board_regions, _extract_board_polygons, _polygon_bbox, _to_board, sample_circular_arc
 
 def _point(node: SExpr) -> Point:
@@ -185,6 +185,46 @@ _COURTYARD_LAYERS = ("F.CrtYd", "B.CrtYd")
 _FAB_LAYERS = ("F.Fab", "B.Fab")
 
 _SILK_LAYERS = ("F.SilkS", "B.SilkS")
+
+_DEFAULT_SILK_WIDTH_MM = 0.12
+
+def _stroke_width_mm(node: SExpr) -> float:
+    """Stroke width of a graphic node, defaulting to KiCad's 0.12 mm."""
+    stroke = node.find("stroke")
+    width = _first_number(stroke.find("width")) if stroke is not None else None
+    if width is None or width <= 0:
+        return _DEFAULT_SILK_WIDTH_MM
+    return width
+
+def _silk_segments(
+    fp_node: SExpr, x_mm: float, y_mm: float, angle_deg: float, layer: str
+) -> Tuple[SilkSegment, ...]:
+    """Silkscreen strokes of a footprint in filed board-frame pose.
+
+    Same graphic kinds and ``to_board`` frame as the courtyard walk, but
+    restricted to ``*.SilkS`` layers and carrying each stroke's width, so
+    placement can buffer true ink extents. Segments are stored at the
+    filed pose (like ``courtyard``) and re-posed rigidly from the pad
+    cloud whenever the part moves.
+    """
+
+    def to_board(lx: float, ly: float) -> Point:
+        return _to_board(lx, ly, x_mm, y_mm, angle_deg, layer)
+
+    out: List[SilkSegment] = []
+    for kind in _GRAPHIC_KINDS:
+        for node in fp_node.children(kind):
+            lay = node.find("layer")
+            layer_name = str(lay.args[0]) if lay is not None and lay.args else ""
+            if layer_name not in _SILK_LAYERS:
+                continue
+            width = _stroke_width_mm(node)
+            for seg in _graphic_segments(node, to_board):
+                try:
+                    out.append(SilkSegment(start=seg[0], end=seg[1], width_mm=width))
+                except (TypeError, IndexError, AttributeError):
+                    continue
+    return tuple(out)
 
 _GRAPHIC_KINDS = ("fp_line", "fp_rect", "fp_poly", "fp_circle", "fp_arc")
 
@@ -404,6 +444,7 @@ def footprints(tree: SExpr) -> list[Footprint]:
                 angle_deg=angle,
                 pads=pads,
                 courtyard=_courtyard_segments(node, x, y, angle, layer),
+                silk=_silk_segments(node, x, y, angle, layer),
                 locked=_is_locked(node),
                 uuid=uuid,
                 ghost=_is_ghost(node),

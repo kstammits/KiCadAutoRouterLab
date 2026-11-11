@@ -250,6 +250,22 @@ class SilkLabel:
 
 
 @dataclass(frozen=True)
+class SilkSegment:
+    """One silkscreen stroke of a footprint in filed board-frame pose.
+
+    ``start``/``end`` are the stroke centerline endpoints as drawn in the
+    file (posed by ``_to_board`` at parse time, exactly like courtyard
+    segments); ``width_mm`` is the ``(stroke (width …))`` value, defaulting
+    to KiCad's 0.12 mm when the node carries none. Placement re-poses
+    these rigidly from the pad cloud (same fit as courtyard), so a moved
+    part drags its silk along instead of going stale.
+    """
+
+    start: Point
+    end: Point
+    width_mm: float = 0.12
+
+@dataclass(frozen=True)
 class Footprint:
     """A placed footprint with its courtyard outline in board coordinates.
 
@@ -271,6 +287,7 @@ class Footprint:
     angle_deg: float
     pads: Tuple[Pad, ...] = ()
     courtyard: Tuple[Segment, ...] = ()
+    silk: Tuple[SilkSegment, ...] = ()
     locked: bool = False
     uuid: str = ""
     ghost: bool = False

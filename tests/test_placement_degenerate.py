@@ -35,6 +35,9 @@ from kicad_autorouter.placement.model import (
 from .helpers import make_board, make_fp, make_rect_courtyard
 
 
+pytestmark = pytest.mark.unit
+
+
 def _dots_courtyard():
     """Five disjoint 0.2mm Fab-style marker squares (IC2 pattern)."""
     segs = []

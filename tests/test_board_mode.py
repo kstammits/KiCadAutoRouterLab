@@ -5,12 +5,10 @@ Markers: server, minimal
 
 import json
 import sys
-import threading
 import time
 import urllib.request
 import urllib.error
 from dataclasses import replace
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -20,11 +18,11 @@ FIXTURES = Path(__file__).parent / "fixtures"
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "ui"))
 import server  # noqa: E402
 from tests.helpers import post_fixture
+from tests.server_helpers import serve_client
 
 
 def _serve():
-    httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
-    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    httpd, _ = serve_client(server.Handler)
     return httpd
 
 

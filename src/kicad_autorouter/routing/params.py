@@ -80,7 +80,7 @@ class RoutingParams:
     arc_max_radius_mm: float = 10.0  # Tangent-length cap for corner fillets; R = t / tan(phi/2). API/POST accepts larger (e.g. 25.4 for a full inch); radii sliders stay hidden, set-and-forget at calibrated default.
     arc_min_leg_mm: float = 0.3  # Corners with a shorter leg keep the sharp joint
     arc_sample_mm: float = 0.05  # Arc clearance-gate sample spacing
-    arc_keep_min_radius_mm: float = 0.5  # Spare open corners admitting >= this fillet radius from the pull-string
+    arc_keep_min_radius_mm: float = 0.0  # Spare open corners admitting >= this fillet radius from the pull-string
     # (same pass, same clearance gate — kept corners always become arcs).
     # Census-tuned: 0.5 adds arcs with fewer sharp leftovers and ~2% wire;
     # 1.0 is nearly inert at default cap, 0.25 buys more arcs at ~4% wire

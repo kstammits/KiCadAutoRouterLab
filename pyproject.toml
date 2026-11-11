@@ -29,7 +29,7 @@ where = ["src"]
 testpaths = ["tests"]
 pythonpath = ["src"]
 markers = [
-    "unit: Pure unit tests - no fixtures, no I/O",
+    "unit: Fast tests (<5s) - synthetic or small fixtures, no kicad-cli, no server",
     "params: PlacementParams validation/serialization",
     "physics: MST force-spring simulation (requires nets)",
     "cli: CLI entry point tests",
@@ -37,5 +37,5 @@ markers = [
     "regression: Bug fix verification",
     "minimal: Uses minimal.kicad_pcb fixture (4 footprints, no nets)",
     "dccf: Uses DCCF.sved.kicad_pcb fixture (97 footprints, 59 nets)",
-    "slow: Tests taking >5s (excluded from the fast loop)",
+    "slow: Tests taking >3s (excluded from the fast loop)",
 ]

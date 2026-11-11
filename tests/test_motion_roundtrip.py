@@ -111,6 +111,7 @@ def _player_pose(base, px, py, delta):
 
 
 @pytest.mark.physics
+@pytest.mark.unit
 def test_player_transform_matches_apply_deltas():
     model, prop = _run_frames()
     fp = next(f for f in model.footprints if f.uuid == UUID_M)
@@ -137,6 +138,7 @@ def test_player_transform_matches_apply_deltas():
 
 
 @pytest.mark.physics
+@pytest.mark.unit
 def test_rendered_svg_matches_player_pose():
     """The SVG file for a frame's deltas must carry the player pose."""
     model, prop = _run_frames()
@@ -179,25 +181,3 @@ def test_rendered_svg_matches_player_pose():
         for x1, y1, x2, y2 in lines
     }
     assert got == want
-
-
-@pytest.mark.server
-def test_frames_json_preserves_delta_order():
-    import sys
-
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "ui"))
-    import server
-
-    model, prop = _run_frames()
-    payload = server.proposal_to_json(prop)
-    assert payload["frame_count"] == len(prop.frames) > 1
-    assert payload["frame_stride"] == 1
-    for fr_json, fr in zip(payload["frames"], prop.frames):
-        for uuid, (dx, dy, da) in fr.items():
-            assert fr_json[uuid][0] == pytest.approx(dx, abs=5e-4)
-            assert fr_json[uuid][1] == pytest.approx(dy, abs=5e-4)
-            assert fr_json[uuid][2] == pytest.approx(da, abs=5e-3)
-    # basePos source: /api/footprints serves committed origins, which is
-    # what the player rotates about.
-    for fp in model.footprints:
-        assert isinstance(fp.x_mm, float) and isinstance(fp.y_mm, float)

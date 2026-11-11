@@ -23,6 +23,7 @@ from kicad_autorouter.board_model import (
     apply_deltas,
     board_model,
 )
+from kicad_autorouter.ghost import make_ghost_wall
 from kicad_autorouter.placement import (
     PlacementParams,
     _collect_pad_nodes,
@@ -71,6 +72,7 @@ class TestPhysicsRunner:
         prop = run_placement(dccf_model, p, movable_uuids={locked_fp.uuid})
         assert prop.deltas == {}
 
+    @pytest.mark.slow
     def test_coarse_eps_does_not_stop_under_load(self, dccf_model):
         """A coarse displacement epsilon must not declare rest while large
         pushes remain (displacement-only stopping can halt legalize with
@@ -141,46 +143,60 @@ class TestGhostComponents:
     """Tests for ghost/pseudo component behavior in placement."""
 
     def test_ghost_repels_real_footprints(self, ghost_test_model):
-        """Ghost footprint with courtyard should repel real footprints via collision."""
+        """Ghost wall courtyard should repel real footprints via collision."""
+        # Explicit wall overlapping R2's west edge (attractor squares are
+        # pull-only and must not push — see test_created_attractor_is_not_a_wall).
+        wall = make_ghost_wall("GHOST_WALL", 65, 50, 30, 4,
+                               uuid="ghost-wall-probe")
+        model = replace(
+            ghost_test_model,
+            ghost_footprints=ghost_test_model.ghost_footprints + (wall,),
+            footprint_region={**ghost_test_model.footprint_region,
+                              wall.uuid: 0},
+        )
         # Run placement with strong courtyard repulsion
         p = PlacementParams(
             max_iterations=50,
             wall_k_N=0.005,
-            # Ghost rail (~y=15) sits ~35mm from R1/R2: halo must reach it.
             wall_halo_m=0.04,
             repulsion_k_N_m2=1e-08,  # Low Coulomb repulsion to isolate courtyard effect
+            attraction_k_N=0.0,  # Isolate the wall push from net pulls
         )
-        prop = run_placement(ghost_test_model, p)
+        prop = run_placement(model, p)
 
         # Ghost should not have deltas (never moves)
-        ghost_uuid = "ghost-rail-top-001"
-        assert ghost_uuid not in prop.deltas
+        assert "ghost-wall-probe" not in prop.deltas
 
-        # Real footprints should move away from ghost
-        assert prop.deltas
-        for uuid, (dx, dy, da) in prop.deltas.items():
-            fp = next(fp for fp in ghost_test_model.footprints if fp.uuid == uuid)
-            # Both R1 and R2 should move down (away from ghost at y=10)
-            assert dy > 0, f"{fp.ref} should move down (positive dy), got dy={dy}"
+        # R2 sits on the wall's east edge: pushed east, away from the wall.
+        r2 = "bbbbbbbb-1111-2222-3333-444444444444"
+        assert r2 in prop.deltas
+        dx, dy, da = prop.deltas[r2]
+        assert dx > 0, f"R2 should move east away from wall, got dx={dx}"
 
     def test_ghost_courtyard_collision_force(self, ghost_test_model):
-        """Ghost courtyard collision generates forces on real footprints."""
+        """Ghost wall courtyard collision generates forces on real footprints."""
+        wall = make_ghost_wall("GHOST_WALL", 65, 50, 30, 4,
+                               uuid="ghost-wall-probe")
+        model = replace(
+            ghost_test_model,
+            ghost_footprints=ghost_test_model.ghost_footprints + (wall,),
+            footprint_region={**ghost_test_model.footprint_region,
+                              wall.uuid: 0},
+        )
         p = PlacementParams(
             max_iterations=5,
             wall_k_N=0.002,
-            # ~35mm ghost-to-part gap: halo must reach it (bounded regime).
             wall_halo_m=0.04,
+            attraction_k_N=0.0,
         )
-        prop = run_placement(ghost_test_model, p)
+        prop = run_placement(model, p)
 
-        # Forces should be non-zero for real footprints near ghost
+        # Forces should be non-zero for R2 on the wall's east edge.
         assert prop.forces
-        for uuid, (fx, fy) in prop.forces.items():
-            fp = next((fp for fp in ghost_test_model.footprints if fp.uuid == uuid), None)
-            if fp:
-                # R1 and R2 start at y=50, ghost at y=10 with courtyard up to y=15
-                # They should feel downward repulsion (positive fy)
-                assert fy > 0, f"{fp.ref} should feel downward force, got fy={fy}"
+        r2 = "bbbbbbbb-1111-2222-3333-444444444444"
+        assert r2 in prop.forces
+        fx, fy = prop.forces[r2]
+        assert fx > 0, f"R2 should feel eastward force, got fx={fx}"
 
     def test_ghost_attraction_parsing(self, ghost_test_model):
         """Ghost attraction properties are parsed correctly."""
@@ -325,6 +341,7 @@ class TestGhostComponents:
 
 
 @pytest.mark.physics
+@pytest.mark.unit
 class TestForceComponents:
     """Per-cause force breakdown for the tuning overlay."""
 

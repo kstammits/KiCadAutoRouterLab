@@ -8,8 +8,8 @@ satisfy on fast synthetic 2-4 body boards:
 - per-iteration steps are neither too large (cap) nor too small (strangled),
 - paths don't ping-pong (path/net ratio + reversal bound),
 - attraction closes distance, repulsion separates without creating overlap,
-- settling scenarios stop early at the analytic equilibrium,
 - long runs stay finite and inside the board.
+(Analytic sqrt(kr/ka) equilibrium is pinned in test_placement_forces.)
 
 Tolerances are ratios/inequalities by design — dynamics retunes must not
 churn these; only real regressions (non-convergence, jitter, blowup) go red.
@@ -35,6 +35,9 @@ UUID_C = "uuid-c"
 UUID_D = "uuid-d"
 
 REGION = BoardRegion(uuid="r0", polygon=(), bbox=(-60.0, 60.0, -60.0, 60.0))
+
+
+pytestmark = pytest.mark.unit
 
 
 def _board(*fps):
@@ -79,7 +82,6 @@ def _frame_origins(model, frames, uuid):
 
 
 @pytest.mark.physics
-@pytest.mark.physics
 def test_overlap_decay_is_monotonic():
     m = _overlap_pair()
     prop = run_placement(m, _repulse_params(), record_frames=True, frame_stride=1)
@@ -90,31 +92,24 @@ def test_overlap_decay_is_monotonic():
 
 
 @pytest.mark.physics
-def test_single_step_capped_at_speed_budget():
-    """Deep overlap must saturate the speed budget, never exceed it."""
+def test_single_step_within_speed_budget():
+    """Deep overlap: the first step saturates the speed budget, never
+    exceeds it — and with huge forces it must move a macroscopic amount.
+
+    NOTE (SI damping-limited regime): the step is bounded by the viscous
+    terminal velocity (F_wall/c · dt ≈ 0.04mm here), not by the speed
+    budget. What the floor guards is progress-vs-freeze: the step must
+    beat the convergence scale by orders of magnitude while the ceiling
+    pins the cap.
+    """
     m = _overlap_pair(x1=2.0)  # 4mm deep overlap
     assert overlap_area(m, {}) == pytest.approx(16.0)
     prop = run_placement(m, _repulse_params(max_iterations=1,
                                             convergence_eps_m=1e-15))
+    disp = _max_pad_disp(m, prop.deltas)
     p0 = PlacementParams()
     cap = p0.vmax_m_s * p0.dt_s * 1000.0  # mm per step
-    assert _max_pad_disp(m, prop.deltas) <= cap + 1e-9
-
-
-@pytest.mark.physics
-def test_first_step_not_strangled():
-    """With huge forces the first step must move a macroscopic amount.
-
-    NOTE (SI damping-limited regime): the step is bounded by the viscous
-    terminal velocity (F_wall/c · dt ≈ 0.04mm here), not by the speed
-    budget. What this guards is progress-vs-freeze: the step must beat the
-    convergence scale by orders of magnitude while the companion test above
-    pins the ceiling.
-    """
-    m = _overlap_pair(x1=2.0)
-    prop = run_placement(m, _repulse_params(max_iterations=1,
-                                            convergence_eps_m=1e-15))
-    disp = _max_pad_disp(m, prop.deltas)
+    assert disp <= cap + 1e-9
     assert disp >= 0.01, f"huge force must move parts on step 1, got {disp}"
 
 
@@ -189,35 +184,6 @@ def test_friction_param_validation():
     assert PlacementParams.from_dict({}).friction_N == pytest.approx(1e-6)
     assert PlacementParams.from_dict(
         {"friction_N": 0.1}).friction_N == pytest.approx(0.1)
-
-
-@pytest.mark.physics
-def test_pair_settles_early_at_equilibrium():
-    """Analytic balance d=sqrt(kr/ka): run must early-stop, not budget out.
-
-    SI units: kr in N·m², ka in N. Equilibrium d = sqrt(kr/ka) in meters.
-
-    Forces chosen so speed cap (vmax=0.5 m/s, dt=1ms, m~8mg => F_cap~4mN)
-    is not hit; equilibrium should match undamped analytic within 40%.
-    """
-    kr, ka = 5e-7, 5e-3  # ~10mm equilibrium, forces ~1-2mN (below 4mN cap)
-    fa = make_test_fp("A1", UUID_A, 0.0, 0.0, ("NET",),
-                      footprint_id="T:R_0805", hw=1.5, hh=1.0,
-                      pad_shape="circle", pad_layers=("F.Cu",))
-    fb = make_test_fp("B1", UUID_B, 20.0, 0.0, ("NET",),
-                      footprint_id="T:R_0805", hw=1.5, hh=1.0,
-                      pad_shape="circle", pad_layers=("F.Cu",))
-    m = _board(fa, fb)
-    prop = run_placement(m, PlacementParams(
-        max_iterations=500, repulsion_k_N_m2=kr, attraction_k_N=ka,
-        wall_k_N=1e-15, wall_halo_m=0.003,
-        
-        convergence_eps_m=1e-6,  # small threshold to allow early stop
-        damping_Ns_m=1e-3))  # lighter damping so equilibrium is reachable
-    assert prop.iterations < 500, "settling run must early-stop"
-    moved = apply_deltas(m, prop.deltas)
-    ax, bx = moved.by_ref["A1"].x_mm, moved.by_ref["B1"].x_mm
-    assert abs(bx - ax) == pytest.approx(math.sqrt(kr / ka) * 1000.0, rel=0.4)
 
 
 @pytest.mark.physics

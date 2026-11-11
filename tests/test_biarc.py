@@ -14,10 +14,10 @@ from kicad_autorouter.routing.biarc import (
 )
 
 
-def _clear(n=40):
-    return np.zeros((n, n), dtype=np.int16)
+from .helpers import zeros_plane as _clear
 
 
+@pytest.mark.unit
 def test_simplify_strips_spikes_and_merges_collinear():
     """A->B->A collapses, straight middles drop, order preserved."""
     pts = [(0.0, 0.0), (5.0, 0.0), (5.0, 0.0), (10.0, 0.0),
@@ -32,6 +32,7 @@ def test_simplify_strips_spikes_and_merges_collinear():
         assert not (a == c and b != a)
 
 
+@pytest.mark.unit
 def test_simplify_never_moves_pinned():
     """Terminals/Steiner joints survive simplification untouched."""
     pts = [(0.0, 0.0), (5.0, 0.0), (10.0, 0.0)]
@@ -39,6 +40,7 @@ def test_simplify_never_moves_pinned():
     assert out == pts
 
 
+@pytest.mark.unit
 def test_corner_arc_is_tangent():
     """Fillet meets both legs tangentially and bulges off-chord."""
     t1, mid, t2 = _corner_arc((0.0, 0.0), (10.0, 0.0), (10.0, 10.0), 5.0)
@@ -56,47 +58,42 @@ def test_corner_arc_is_tangent():
     assert math.hypot(mid[0] - chord_mid[0], mid[1] - chord_mid[1]) > 0.5
 
 
+@pytest.mark.unit
 def test_corner_arc_rejects_straight_and_hairpin():
     """No arc for straight joints or 180-degree reversals."""
     assert _corner_arc((0.0, 0.0), (5.0, 0.0), (10.0, 0.0), 5.0) is None
     assert _corner_arc((0.0, 0.0), (5.0, 0.0), (0.0, 0.0), 5.0) is None
 
 
-def test_fit_replaces_corner_and_shortens_wire():
-    """Clear grid: 90-degree joint becomes arc + shorter copper."""
-    run = [(5, 5, 0), (15, 5, 0), (15, 15, 0)]
-    pieces = fit_branch_arcs(run, _clear(), None, 100, 1,
-                             max_radius_cells=10.0, min_leg_cells=3.0)
-    kinds = [p[0] for p in pieces]
-    assert kinds == ["seg", "arc", "seg"]
-    assert pieces_wire_cells(pieces) < 20.0  # sharp joint is 20 cells
-    # Layer tags ride along for stamping/emission.
-    assert all(p[-1] == 0 for p in pieces)
-
-
-def test_fit_keeps_sharp_joint_when_blocked():
-    """A BLOCKED cell under the fillet keeps the sharp joint."""
+@pytest.mark.unit
+@pytest.mark.parametrize("setup,expected", [
+    ("clear", ["seg", "arc", "seg"]),  # 90-degree joint becomes arc
+    ("blocked", ["seg", "seg"]),  # BLOCKED cell under the fillet
+    ("short_legs", ["seg", "seg"]),  # legs shorter than min_leg
+    ("pinned", ["seg", "seg"]),  # pinned corner keeps the joint
+])
+def test_fit_gate_table(setup, expected):
+    """Clearance gate: fillet only on a clear, long-legged, free corner."""
+    if setup == "short_legs":
+        run = [(5, 5, 0), (6, 5, 0), (6, 6, 0)]
+    else:
+        run = [(5, 5, 0), (15, 5, 0), (15, 15, 0)]
     cost = _clear()
-    cost[7, 12] = 100  # inside the (10,5)->(15,10) fillet band
-    run = [(5, 5, 0), (15, 5, 0), (15, 15, 0)]
-    pieces = fit_branch_arcs(run, cost, None, 100, 1,
-                             max_radius_cells=10.0, min_leg_cells=3.0)
-    assert [p[0] for p in pieces] == ["seg", "seg"]
-    assert pieces_wire_cells(pieces) == pytest.approx(20.0)
+    kwargs = dict(max_radius_cells=10.0, min_leg_cells=3.0)
+    if setup == "blocked":
+        cost[7, 12] = 100  # inside the (10,5)->(15,10) fillet band
+    if setup == "pinned":
+        kwargs["pinned"] = {(15, 5)}
+    pieces = fit_branch_arcs(run, cost, None, 100, 1, **kwargs)
+    assert [p[0] for p in pieces] == expected
+    if setup == "clear":
+        assert pieces_wire_cells(pieces) < 20.0  # sharp joint is 20 cells
+        assert all(p[-1] == 0 for p in pieces)  # layer tags ride along
+    if setup == "blocked":
+        assert pieces_wire_cells(pieces) == pytest.approx(20.0)
 
 
-def test_fit_respects_min_leg_and_pins():
-    """Short legs and pinned corners keep sharp joints."""
-    cost = _clear()
-    short = fit_branch_arcs([(5, 5, 0), (6, 5, 0), (6, 6, 0)], cost, None,
-                            100, 1, min_leg_cells=3.0)
-    assert [p[0] for p in short] == ["seg", "seg"]
-    pinned = fit_branch_arcs([(5, 5, 0), (15, 5, 0), (15, 15, 0)], cost, None,
-                             100, 1, pinned={(15, 5)},
-                             max_radius_cells=10.0, min_leg_cells=3.0)
-    assert [p[0] for p in pinned] == ["seg", "seg"]
-
-
+@pytest.mark.unit
 def test_fit_marks_via_transitions():
     """The fitter never invents via markers; the seam inserts them at splits."""
     run = [(5, 5, 0), (15, 5, 0), (15, 15, 0)]
@@ -106,6 +103,7 @@ def test_fit_marks_via_transitions():
     assert not any(p[0] == "via" for p in pieces)  # no layer info in a run
 
 
+@pytest.mark.unit
 def test_pipeline_splits_runs_at_vias():
     """Smoother seam keeps via nodes fixed and fillets each side."""
     from kicad_autorouter.routing.grid import RoutingGrid
@@ -129,6 +127,7 @@ def test_pipeline_splits_runs_at_vias():
     assert out.wire_mm < 40.0 * 0.1  # sharp wire is 40 cells
 
 
+@pytest.mark.unit
 def test_smooth_result_fillets_corner_single_pass():
     """Real seam: _smooth_result with fit_arcs on a cornered run."""
     from kicad_autorouter.routing.grid import RoutingGrid
@@ -148,6 +147,7 @@ def test_smooth_result_fillets_corner_single_pass():
     assert out.wire_mm < 2.0  # sharp joint is 2.0mm at 0.1mm grid
 
 
+@pytest.mark.unit
 def test_fillet_tangent_measures_roominess():
     """Ranking metric: long legs admit long tangents, short legs don't."""
     from kicad_autorouter.routing.biarc import fillet_tangent
@@ -159,6 +159,7 @@ def test_fillet_tangent_measures_roominess():
     assert fillet_tangent((0.0, 0.0), (5.0, 0.0), (10.0, 0.0), 5.0) == 0.0
 
 
+@pytest.mark.unit
 def test_greedy_prefers_roomier_corner_on_tie():
     """Fillet-aware ranking: a distance tie breaks on fillet radius.
 
@@ -219,6 +220,7 @@ def test_route_nets_end_to_end_with_fillets():
     assert len(back.arcs) == result.arcs_added
 
 
+@pytest.mark.unit
 def test_merge_keeps_arc_pieces_aligned():
     """Piecemeal/region splice carries fitted arc chains with their branches."""
     from kicad_autorouter.routing.pipeline import _merge_chunk_results
@@ -240,6 +242,7 @@ def test_merge_keeps_arc_pieces_aligned():
     assert merged.arc_pieces[1] == ()
 
 
+@pytest.mark.unit
 def test_emission_produces_arcs():
     """Fitted pieces emit (arc) copper + stubs, vias from the grid path."""
     from kicad_autorouter.routing.grid import RoutingGrid
@@ -415,6 +418,7 @@ def test_partial_arcs_carry_server_payload_shape():
 
 
 @pytest.mark.dccf
+@pytest.mark.slow
 def test_dccf_single_net_fillet_no_crash():
     """One DCCF signal net with fillets on: routes, never raises."""
     from pathlib import Path
@@ -429,6 +433,7 @@ def test_dccf_single_net_fillet_no_crash():
     assert result.nets_routed == 1, f"B1 must route: {result.failed_reasons}"
 
 
+@pytest.mark.unit
 def test_keep_rule_pipeline_broad_arc_on_tube111():
     """Pipeline integration: C2TubeOut fillets to a multi-mm arc.
 

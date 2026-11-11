@@ -162,9 +162,6 @@ def handle_post(path, qs, body, handler):
     if path == "/api/ghosts/resize":
         return _handle_ghost_resize(path, qs, body, handler)
 
-    if path == "/api/placement/apply":
-        return 501, b"writeback not implemented yet", "text/plain"
-
     if path == "/api/placement/pin":
         return _handle_pin(path, qs, body, handler)
 

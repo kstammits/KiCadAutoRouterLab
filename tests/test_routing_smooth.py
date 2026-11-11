@@ -3,19 +3,28 @@
 import math
 
 import numpy as np
+import pytest
 
+from kicad_autorouter.board_model import board_model
+from kicad_autorouter.io import add_footprint_to_tree
+from kicad_autorouter.routing.output import routes_to_tracks_vias
+from kicad_autorouter.routing.pipeline import RoutingParams
+from kicad_autorouter.routing.polish import polish_routes
+from kicad_autorouter.routing.route_raw import route_raw
 from kicad_autorouter.routing.smooth import (
     _line_walkable,
+    effort_rungs,
     own_net_soft_mask,
+    resolve_config,
     smooth_grid_path,
     smoothed_wire_mm,
 )
+from kicad_autorouter.sexpr import parse_file
+
+from .helpers import make_fp, zeros_grid as _open
 
 
-def _open(layers=1, size=30):
-    return np.zeros((layers, size, size), dtype=np.int16)
-
-
+@pytest.mark.unit
 def test_staircase_collapses_in_open_field():
     grid = _open()
     path = [(5, 5, 0)]
@@ -30,6 +39,7 @@ def test_staircase_collapses_in_open_field():
     assert len(smoothed) == 2  # straight diagonal line-of-sight
 
 
+@pytest.mark.unit
 def test_blocked_wall_prevents_shortcut():
     grid = _open()
     grid[0, 8:13, 8:13] = 100  # BLOCKED square in the middle
@@ -42,6 +52,7 @@ def test_blocked_wall_prevents_shortcut():
     assert len(smoothed) > 2
 
 
+@pytest.mark.unit
 def test_wall_hugging_staircase_survives_and_is_fixpoint():
     """A run hugging a blocked wall keeps its stairsteps (DRC protection).
 
@@ -66,6 +77,7 @@ def test_wall_hugging_staircase_survives_and_is_fixpoint():
     assert smooth_grid_path(smoothed, grid, corridor_radius=1) == smoothed
 
 
+@pytest.mark.unit
 def test_via_nodes_never_moved_or_removed():
     grid = _open(layers=2)
     path = [(5, 5, 0), (8, 5, 0), (8, 5, 1), (12, 8, 1)]
@@ -80,6 +92,7 @@ def test_via_nodes_never_moved_or_removed():
     assert smoothed2[idx + 1] == (5, 0, 1)  # via edge intact
 
 
+@pytest.mark.unit
 def test_corridor_radius_blocks_tight_shortcut():
     # A blocked cell adjacent to the diagonal: passable with radius 0,
     # blocked once the track footprint (radius 1) is considered.
@@ -90,6 +103,7 @@ def test_corridor_radius_blocks_tight_shortcut():
     assert len(smooth_grid_path(path, grid, corridor_radius=1)) > 2
 
 
+@pytest.mark.unit
 def test_endpoints_and_short_paths_untouched():
     grid = _open()
     assert smooth_grid_path([], grid) == []
@@ -98,6 +112,7 @@ def test_endpoints_and_short_paths_untouched():
     assert smooth_grid_path(two, grid) == two
 
 
+@pytest.mark.unit
 def test_high_cost_ring_blocks_shortcut_without_mask():
     # Another net's pad clearance ring (HIGH_COST) must block shortcuts —
     # blindly cutting through it caused DRC clearance/short violations.
@@ -107,6 +122,7 @@ def test_high_cost_ring_blocks_shortcut_without_mask():
     assert len(smooth_grid_path(path, grid)) > 2
 
 
+@pytest.mark.unit
 def test_soft_mask_allows_escape_through_own_pads():
     # The routed net's own pad ring is crossable (the track must escape).
     grid = _open()
@@ -118,6 +134,7 @@ def test_soft_mask_allows_escape_through_own_pads():
     assert len(smooth_grid_path(path, grid)) > 2
 
 
+@pytest.mark.unit
 def test_pinned_middle_terminal_survives():
     # MST-joined path through a middle pad: smoothing must not skip it,
     # or the pad would be left unconnected.
@@ -132,6 +149,7 @@ def test_pinned_middle_terminal_survives():
     assert unpinned[0] == path[0] and unpinned[-1] == path[-1]
 
 
+@pytest.mark.unit
 def test_smoothed_wire_mm_shorter_than_staircase():
     grid = _open()
     path = [(5, 5, 0)]
@@ -146,6 +164,7 @@ def test_smoothed_wire_mm_shorter_than_staircase():
     assert smooth_len > 0
 
 
+@pytest.mark.unit
 def test_courtyard_outline_allows_shortcut():
     """COURTYARD (25) cells must not block smoothing shortcuts.
 
@@ -175,6 +194,7 @@ def test_courtyard_outline_allows_shortcut():
     assert smoothed[-1] == path[-1]
 
 
+@pytest.mark.unit
 def test_steiner_branch_endpoints_preserved():
     """Branch endpoints (Steiner connections) must survive smoothing.
 
@@ -244,6 +264,7 @@ def _staircase_arc():
     return path
 
 
+@pytest.mark.unit
 def test_detour_arc_collapses_to_few_segments():
     cost, blocked = _detour_grid()
     path = _staircase_arc()
@@ -263,6 +284,7 @@ def test_detour_arc_collapses_to_few_segments():
     assert stairs == 0, f"{stairs} single-cell stairsteps left: {smoothed}"
 
 
+@pytest.mark.unit
 def test_detour_legs_keep_clearance():
     """Every emitted leg re-verifies walkable with the full corridor."""
     cost, blocked = _detour_grid()
@@ -278,6 +300,7 @@ def test_detour_legs_keep_clearance():
         ), f"leg {k} clips foreign copper: {smoothed[k]} -> {smoothed[k + 1]}"
 
 
+@pytest.mark.unit
 def test_bidirectional_no_start_bias():
     """Forward and reversed inputs converge to the same small count."""
     cost, blocked = _detour_grid()
@@ -306,6 +329,7 @@ _KEEP = dict(keep_min_radius_cells=2.0, keep_max_radius_cells=20.0,
              keep_min_leg_cells=0.6, keep_sample_spacing_cells=0.5)
 
 
+@pytest.mark.unit
 def test_keep_rule_preserves_open_90_for_fillet():
     """The pull-string must spare a roomy corner so the fitter can arc it."""
     from kicad_autorouter.routing.smooth import smooth_branch_pieces
@@ -323,6 +347,7 @@ def test_keep_rule_preserves_open_90_for_fillet():
     assert not any(p[0] == "arc" for p in legacy_pieces)
 
 
+@pytest.mark.unit
 def test_keep_rule_still_collapses_staircases():
     """Cell-scale legs admit only nub radii: staircases keep collapsing."""
     from kicad_autorouter.routing.smooth import _greedy_pass
@@ -337,6 +362,7 @@ def test_keep_rule_still_collapses_staircases():
     assert len(_greedy_pass(st, grid[0], None, 100, 0, **_KEEP)) == 2
 
 
+@pytest.mark.unit
 def test_keep_rule_vetoed_by_clearance_gate():
     """A corner whose fillet would clip copper is shortcut as before."""
     from kicad_autorouter.routing.smooth import _greedy_pass
@@ -352,6 +378,7 @@ def test_keep_rule_vetoed_by_clearance_gate():
     assert kept == run
 
 
+@pytest.mark.unit
 def test_keep_rule_idempotent():
     """A kept corner survives re-smoothing (forward/backward stability)."""
     from kicad_autorouter.routing.smooth import _smooth_run
@@ -360,3 +387,146 @@ def test_keep_rule_idempotent():
     twice = _smooth_run(once, grid[0], None, 100, 0, **_KEEP)
     assert twice == once
     assert (24, 5, 0) in twice
+
+
+# ---------------------------------------------------------------------------
+# Smoothing effort levels and the Polish re-smoothing pass.
+# (Folded from test_smooth_polish.py; refine-ordering tests moved to
+# test_order_refine.py. All synthetic + fast, 0.5mm grid.)
+# ---------------------------------------------------------------------------
+
+CORNERS = {
+    "XNW": (65.0, 55.0),
+    "XNE": (205.0, 55.0),
+    "XSW": (65.0, 135.0),
+    "XSE": (205.0, 135.0),
+}
+
+
+def _xcross_model():
+    pcb_tree = parse_file("tests/fixtures/minimal.kicad_pcb")
+    specs = [
+        ("XNW", "xcross-nw-uuid-0001", *CORNERS["XNW"], "X1", "STUB_NW"),
+        ("XNE", "xcross-ne-uuid-0002", *CORNERS["XNE"], "X2", "STUB_NE"),
+        ("XSW", "xcross-sw-uuid-0003", *CORNERS["XSW"], "X2", "STUB_SW"),
+        ("XSE", "xcross-se-uuid-0004", *CORNERS["XSE"], "X1", "STUB_SE"),
+    ]
+    for spec in specs:
+        pcb_tree = add_footprint_to_tree(
+            pcb_tree,
+            make_fp(spec[0], spec[1], spec[2], spec[3], (spec[4], spec[5]),
+                    footprint_id="Test:R_0805_XCross"),
+            "Test:R_0805_XCross")
+    return pcb_tree, board_model(pcb_tree)
+
+
+def _xparams(**kw):
+    base = dict(grid_resolution_mm=0.5, run_drc=False, refill_zones=False)
+    base.update(kw)
+    return RoutingParams(**base)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("effort,arcs,keep,sample", [
+    (2.0, True, 0.0, 0.05),  # default: shortcut-everything, no keep-cut
+    (1.0, False, 0.0, None),  # quick: no arcs or keep
+    (1.75, True, 0.0, None),  # fractional interpolates keep (from 0.0)
+    (3.0, True, 1.0, 0.025),  # hot rung
+])
+@pytest.mark.unit
+def test_resolve_config_anchors(effort, arcs, keep, sample):
+    cfg = resolve_config(effort, _xparams())
+    assert cfg["fit_arcs"] is arcs
+    assert cfg["keep_min_radius_mm"] == pytest.approx(keep)
+    if sample is not None:
+        assert cfg["sample_mm"] == pytest.approx(sample)
+
+
+@pytest.mark.unit
+def test_effort_rungs_shapes():
+    assert effort_rungs(2.0) == [2.0]
+    assert effort_rungs(1.0) == [1.0]
+    assert effort_rungs(2.5) == [2.0, 2.5]
+    assert effort_rungs(3.0) == [2.0, 2.5, 3.0]
+    assert max(len(effort_rungs(e)) for e in (0.0, 1.0, 2.0, 2.9, 3.0)) <= 3
+
+
+@pytest.mark.unit
+def test_smooth_effort_validation():
+    assert RoutingParams.from_dict({"smooth_effort": 3}).smooth_effort == 3
+    assert RoutingParams().to_dict()["smooth_effort"] == 2.0
+    for bad in (-0.5, 3.5, float("nan"), True, "high"):
+        with pytest.raises(ValueError):
+            RoutingParams.from_dict({"smooth_effort": bad})
+
+
+def _max_step(branches):
+    steps = []
+    for branch in branches:
+        for (c1, r1, _), (c2, r2, _) in zip(branch, branch[1:]):
+            steps.append(max(abs(c2 - c1), abs(r2 - r1)))
+    return max(steps) if steps else 0
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("effort", [0.0, 1.0])
+@pytest.mark.minimal
+def test_low_effort_emits_no_arcs(effort):
+    _, model = _xcross_model()
+    raw, _, _ = route_raw(model, ["X1", "X2"], set(),
+                          params=_xparams(smooth_effort=effort))
+    assert raw.nets_routed == 2
+    for net, result in raw.all_results.items():
+        pieces = tuple(getattr(result, "arc_pieces", ()) or ())
+        assert all(p == () for p in pieces)  # no fitted arcs emitted
+    if effort == 0.0:
+        # Raw emission: no shortcut chords either.
+        for result in raw.all_results.values():
+            branches = list(getattr(result, "branches", ()))
+            assert _max_step(branches) <= 1
+
+
+@pytest.mark.minimal
+def test_effort_three_beats_or_matches_default():
+    # The ladder's first rung is the default config, so best-of-rungs
+    # can never lose to the single pass on the same deterministic search.
+    _, model = _xcross_model()
+    base, _, _ = route_raw(model, ["X1", "X2"], set(), params=_xparams())
+    hot, _, _ = route_raw(model, ["X1", "X2"], set(),
+                          params=_xparams(smooth_effort=3.0))
+    assert hot.nets_routed == 2
+    base_wire = sum(r.wire_mm for r in base.all_results.values())
+    hot_wire = sum(r.wire_mm for r in hot.all_results.values())
+    assert hot_wire <= base_wire + 1e-9
+
+
+@pytest.mark.minimal
+def test_polish_noop_at_zero_effort():
+    tree, model = _xcross_model()
+    raw, _, rg = route_raw(model, ["X1", "X2"], set(), params=_xparams())
+    new, report = polish_routes(raw.all_results, raw.width_map, raw.model,
+                                rg, _xparams(), ["X1", "X2"], 0.0)
+    assert report["skipped"] == 2
+    assert new == raw.all_results
+
+
+@pytest.mark.minimal
+def test_polish_never_grows_wire_and_converts():
+    tree, model = _xcross_model()
+    raw, _, rg = route_raw(model, ["X1", "X2"], set(),
+                           params=_xparams(smooth_effort=1.0))
+    before = {n: r.wire_mm for n, r in raw.all_results.items()}
+    new, report = polish_routes(raw.all_results, raw.width_map, raw.model,
+                                rg, _xparams(), ["X1", "X2", "NOPE"], 3.0)
+    assert report["polished"] + report["kept"] + report["reverted"] + report["skipped"] == 3
+    assert report["nets"]["NOPE"]["status"] == "skipped"
+    assert report["wire_saved_mm"] >= 0.0
+    for net, entry in report["nets"].items():
+        if net == "NOPE":
+            continue
+        assert entry["wire_after_mm"] <= entry["wire_before_mm"] + 1e-9
+        assert entry["wire_before_mm"] == pytest.approx(before[net])
+    # Polished branches still convert to board copper.
+    tracks, vias, arcs = routes_to_tracks_vias(
+        new, rg, net_class_widths=raw.width_map)
+    assert tracks and all(t.net_name in ("X1", "X2") for t in tracks)

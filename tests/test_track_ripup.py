@@ -27,6 +27,7 @@ def tube111_model(tube111_tree):
 class TestCommitPlacementCore:
     """Core commit_placement tests."""
 
+    @pytest.mark.unit
     def test_commit_placement_rips_tracks_on_affected_nets(self, tube111_model):
         """Moving a footprint should rip up tracks on ALL its nets."""
         # Find a footprint with a net that has tracks/vias
@@ -74,6 +75,7 @@ class TestCommitPlacementCore:
 class TestRipUpNetsSexpr:
     """S-expression rip_up_nets tests."""
 
+    @pytest.mark.unit
     def test_rip_up_nets_removes_segments_and_vias(self, tube111_tree):
         """rip_up_nets should remove segments and vias on affected nets."""
         # Count initial vias on GND
@@ -96,6 +98,7 @@ class TestRipUpNetsSexpr:
                                 if _net_name_from_node(v.find("net")) not in (None, "GND"))
         assert other_vias == other_vias_before
 
+    @pytest.mark.unit
     def test_rip_up_nets_preserves_protected(self, tube111_tree):
         """Protected nets should be preserved even if in affected_nets."""
         gnd_vias_before = sum(1 for v in tube111_tree.children("via")
@@ -109,6 +112,7 @@ class TestRipUpNetsSexpr:
                              if _net_name_from_node(v.find("net")) == "GND")
         assert gnd_vias_after == gnd_vias_before
 
+    @pytest.mark.unit
     def test_rip_up_nets_indexed_net_form(self, tube111_tree):
         """rip_up_nets must handle (net <idx> NAME) segment/via form (KiCad 6+)."""
         assert _net_name_from_node(SExpr("net", (5, "GND"))) == "GND"
@@ -147,6 +151,7 @@ class TestRipUpNetsSexpr:
 class TestPCBTreeVsBoardModelSync:
     """Verify commit_placement and rip_up_nets produce identical track sets."""
 
+    @pytest.mark.unit
     def test_commit_placement_and_rip_up_nets_match(self, tube111_model, tube111_tree):
         """commit_placement (BoardModel) and rip_up_nets (SExpr) should remove same copper."""
         # Find a footprint on a net with copper
@@ -208,6 +213,7 @@ class TestPCBTreeVsBoardModelSync:
             assert len(board_tracks) == len(orig_board_tracks)
             assert len(tree_tracks) == len(orig_tree_tracks)
 
+    @pytest.mark.unit
     def test_footprint_on_multiple_nets_some_protected(self, tube111_model, tube111_tree):
         """Footprint on multiple nets (some protected, some not) - both handled correctly."""
         # C1 is on GND and +12V
@@ -271,6 +277,7 @@ class TestPCBTreeVsBoardModelSync:
             assert len(board_vias) == len(tree_vias), \
                 f"Unprotected net {net_name} via mismatch"
 
+    @pytest.mark.unit
     def test_placement_rip_removes_arcs_on_affected_nets(self, tube111_model, tube111_tree):
         """Placement-triggered rip must drop (arc) copper with the net.
 

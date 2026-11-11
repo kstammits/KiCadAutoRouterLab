@@ -154,12 +154,19 @@ class PlacementParams:
     # (meters, SI; the UI displays millimeters). Only the k-nearest (k=6)
     # parts inside count.
     align_radius_m: float = 0.020
-    # Label clearance (meters, SI): sizes the orbit clamp disc around the
-    # filed anchor (see _label_orbit_radius_mm). Contact halos are
-    # font-relative now (LABEL_HALO_FONT_FRACTION in board_model.labels),
-    # so this only bounds how far a label may roam, not how close it may
-    # sit to bodies. 5 mm typical; larger values give more board space.
+    # Label clearance (meters, SI): collision reach around the estimated
+    # text bbox (see the halo helpers in board_model.labels). Contact halos
+    # are font-relative now (LABEL_HALO_FONT_FRACTION), so this only sizes
+    # how closely a label may sit to bodies — never the orbit disc (that
+    # is label_orbit_m). 5 mm typical; larger values give more board space.
     label_clearance_m: float = 0.005
+    # Label orbit radius (meters, SI): the clamp disc around the parent
+    # part that orbiting labels live in. The orbit homes on the parent,
+    # never on the filed offset (filed positions are stale the moment a
+    # clustering run moves parts), so this — not clearance — bounds how
+    # far a label may sit from its own part. 2 mm keeps refdes readable
+    # next to dense parts; the find-spare-room search works inside it.
+    label_orbit_m: float = 0.002
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -226,6 +233,7 @@ def _validate(params: PlacementParams) -> None:
         "align_deadband_deg",
         "align_radius_m",
         "label_clearance_m",
+        "label_orbit_m",
     )
     for name in numeric:
         value = getattr(params, name)
@@ -257,6 +265,8 @@ def _validate(params: PlacementParams) -> None:
         raise ValueError("contact_tangent_gamma must be finite and >= 0.0")
     if not (0.0 <= params.label_clearance_m <= 0.05):
         raise ValueError("label_clearance_m must be in [0.0, 0.05] (meters)")
+    if not (0.0 <= params.label_orbit_m <= 0.05):
+        raise ValueError("label_orbit_m must be in [0.0, 0.05] (meters)")
     if params.decap_link < 0:
         raise ValueError("decap_link must be >= 0")
     if not isinstance(params.include_power_nets, bool):

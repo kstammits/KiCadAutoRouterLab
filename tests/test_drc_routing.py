@@ -194,6 +194,7 @@ def cli():
         pytest.skip("kicad-cli not installed")
 
 
+@pytest.mark.cli
 def test_magnet_placement_then_route_drc_clean(cli, tmp_path):
     """Place 7 resistors with magnet params, route nets, verify DRC clean."""
 

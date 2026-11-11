@@ -15,6 +15,9 @@ from kicad_autorouter.placement import _courtyard_outline_polygon, _footprint_co
 from tests.helpers import make_board, make_fp, make_rect_courtyard, overlap_area
 
 
+pytestmark = pytest.mark.unit
+
+
 def _board(fps):
     return make_board(fps, edge=100.0)
 

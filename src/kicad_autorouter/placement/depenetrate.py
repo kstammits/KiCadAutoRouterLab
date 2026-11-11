@@ -31,6 +31,7 @@ from ..board_model.labels import (
 from .contact import (
     _contact_weights,
     _footprint_courtyard_polygon,
+    _pose_ring,
 )
 from .force import _overlap_depth_mm
 from .rigid import _clamp_rigid_step, _project_rigid_poses
@@ -45,6 +46,253 @@ _DEPEN_MAX_ROT_RAD = math.radians(2.0)
 # round. Relax stays shared, so big penetrations still need ~25 rounds
 # to converge geometrically; the cap only bounds obstacle fights.
 _DEPEN_LABEL_MAX_ROUNDS = 30
+# Own-silk clearance for the label ejectors: ink edge to text-bbox gap in
+# mm. Matches KiCad's default silk-to-silk clearance order; the text side
+# already carries its halo in the label rect, so this buffers only the
+# silk side (half stroke width + this margin).
+_DEPEN_SILK_CLEARANCE_MM = 0.2
+# Candidate ring counts for the clean-spot search: the anchor plus two
+# rings of eight (half/full radius) spiral outward, nearest-first so the
+# first clean hit is also the closest to home.
+_CLEAN_SPOT_RING_N = 8
+
+
+def _overlap_area_mm2(cand, obs_list, bboxes):
+    """Total overlap area of candidate poly vs obstacles (dust included)."""
+    total = 0.0
+    try:
+        minx, miny, maxx, maxy = cand.bounds
+    except Exception:
+        return total
+    for obs, bb in zip(obs_list, bboxes):
+        try:
+            if obs is None or bb is None:
+                continue
+            if bb[2] < minx or bb[0] > maxx or bb[3] < miny or bb[1] > maxy:
+                continue
+            if cand.disjoint(obs):
+                continue
+            inter = cand.intersection(obs)
+            if not inter.is_empty:
+                total += float(inter.area)
+        except Exception:
+            continue
+    return total
+
+
+def _score_spots(rect_poly, obstacles, center_xy, radius_mm, cover_poly=None,
+                 bboxes=None):
+    """Yield ``(centroid, dirty_area)`` for the current pos then the spiral.
+
+    Shared candidate engine: current position first (clean labels test
+    clean immediately), then center plus two rings inside ``radius_mm``.
+    ``dirty_area`` is the raw total overlap (dust included); winners are
+    picked by the callers. Deterministic order. ``bboxes`` may carry
+    precomputed ``obs.bounds`` aligned with ``obstacles`` to skip the
+    per-scan rebuild.
+    """
+    try:
+        if rect_poly is None or rect_poly.is_empty:
+            return
+        cx0, cy0 = rect_poly.centroid.x, rect_poly.centroid.y
+        cenx, ceny = float(center_xy[0]), float(center_xy[1])
+    except (TypeError, ValueError, IndexError):
+        return
+    try:
+        radius = max(float(radius_mm), 0.0)
+    except (TypeError, ValueError):
+        radius = 0.0
+    try:
+        obs_list = list(obstacles)
+    except TypeError:
+        return
+    try:
+        from shapely.affinity import translate as _translate
+    except Exception:
+        return
+    if bboxes is None:
+        bboxes = []
+        for obs in obs_list:
+            try:
+                bboxes.append(obs.bounds if obs is not None and not obs.is_empty else None)
+            except Exception:
+                bboxes.append(None)
+
+    def _at(tx, ty):
+        try:
+            cand = _translate(rect_poly, xoff=(tx - cx0), yoff=(ty - cy0))
+        except Exception:
+            return None, None
+        if cover_poly is not None:
+            try:
+                if not cover_poly.covers(cand):
+                    return None, None
+            except Exception:
+                return None, None
+        return (tx, ty), _overlap_area_mm2(cand, obs_list, bboxes)
+
+    seen = set()
+    points = [(cx0, cy0), (cenx, ceny)]
+    for frac in (0.5, 1.0):
+        for i in range(_CLEAN_SPOT_RING_N):
+            a = 2.0 * math.pi * i / _CLEAN_SPOT_RING_N
+            points.append((cenx + radius * frac * math.cos(a),
+                           ceny + radius * frac * math.sin(a)))
+    for tx, ty in points:
+        key = (round(tx, 9), round(ty, 9))
+        if key in seen:
+            continue
+        seen.add(key)
+        spot, area = _at(tx, ty)
+        if spot is not None:
+            yield spot, area
+
+
+def _find_spot(rect_poly, obstacles, center_xy, radius_mm, cover_poly=None,
+               bboxes=None):
+    """Single scan over the shared candidate spiral.
+
+    Returns ``(first_clean, best, best_area, cur_area)`` where
+    ``first_clean`` is the nearest fully-clean centroid (or None),
+    ``best``/``best_area`` the least-dirty candidate, and ``cur_area``
+    the overlap at the current position (first candidate). One pass
+    replaces the old clean-then-best double traversal.
+    """
+    first_clean, best, best_area, cur_area = None, None, math.inf, None
+    for spot, area in _score_spots(
+        rect_poly, obstacles, center_xy, radius_mm, cover_poly,
+        bboxes=bboxes,
+    ):
+        if cur_area is None:
+            cur_area = area
+        if area < best_area - 1e-12:
+            best, best_area = spot, area
+        if first_clean is None and area <= _DEPEN_CLEAN_AREA_MM2:
+            first_clean = spot
+    if cur_area is None:
+        cur_area = math.inf
+    return first_clean, best, best_area, cur_area
+
+
+def _clean_spot(rect_poly, obstacles, center_xy, radius_mm, cover_poly=None,
+                bboxes=None):
+    """First fully-clean centroid for ``rect_poly``, spiraling out from center.
+
+    Body-agnostic (no label/part concepts): the current position is tested
+    first (clean labels never move), then the center plus two rings inside
+    ``radius_mm`` — nearest-to-center wins, which re-homes drifted labels
+    instead of wandering. Each candidate translates the rect so its
+    centroid lands on it, and wins when disjoint-or-dust from every
+    obstacle (and covered by ``cover_poly`` when given). Returns the
+    winning centroid ``(x, y)`` or ``None`` when no candidate is clean.
+    Deterministic: fixed candidate order, first hit wins.
+    """
+    first_clean, _best, _best_area, _cur = _find_spot(
+        rect_poly, obstacles, center_xy, radius_mm, cover_poly,
+        bboxes=bboxes,
+    )
+    return first_clean
+
+
+def _best_spot(rect_poly, obstacles, center_xy, radius_mm, cover_poly=None,
+               bboxes=None):
+    """Least-dirty ``(centroid, area)`` over the shared candidate spiral.
+
+    Fallback when :func:`_clean_spot` finds nothing fully clean: the
+    minimum-overlap candidate still improves on a stuck label (off pads
+    onto a ring edge beats sitting on copper). Ties keep the earliest —
+    current pos, then nearest-to-center. Returns ``(None, inf)`` when no
+    candidate is even testable.
+    """
+    _first, best, best_area, _cur = _find_spot(
+        rect_poly, obstacles, center_xy, radius_mm, cover_poly,
+        bboxes=bboxes,
+    )
+    return best, best_area
+
+
+def _pose_parent_silk(fp, positions, rows):
+    """Posed silk strokes + centroid for one footprint.
+
+    Returns ``([(x1, y1, x2, y2, width_mm), ...], (hx, hy))`` in board
+    frame. Ghosts (and pad-less footprints) use filed geometry; the rest
+    rigid-fit from the pad cloud exactly like courtyard posing. Never
+    raises: malformed input yields empty strokes and the filed centroid.
+    """
+    try:
+        home = (float(fp.x_mm), float(fp.y_mm))
+    except (TypeError, ValueError, AttributeError):
+        return [], (0.0, 0.0)
+    segs = getattr(fp, "silk", ()) or ()
+    if not segs:
+        return [], home
+    try:
+        if getattr(fp, "ghost", False) or rows is None or len(rows) == 0:
+            return [
+                (s.start.x_mm, s.start.y_mm, s.end.x_mm, s.end.y_mm,
+                 float(s.width_mm))
+                for s in segs
+            ], home
+        pad_rows = [int(r) for r in rows]
+        ends = []
+        for s in segs:
+            ends.append((s.start.x_mm, s.start.y_mm))
+            ends.append((s.end.x_mm, s.end.y_mm))
+        fitted = _pose_ring(ends, fp, positions, pad_rows)
+        posed = [
+            (fitted[i][0], fitted[i][1], fitted[i + 1][0], fitted[i + 1][1])
+            for i in range(0, len(fitted) - 1, 2)
+        ]
+        widths = [float(s.width_mm) for s in segs]
+        home = _pose_ring([(home[0], home[1])], fp, positions, pad_rows)[0]
+        out = []
+        for i, (x1, y1, x2, y2) in enumerate(posed):
+            try:
+                out.append((x1, y1, x2, y2, widths[i]))
+            except (IndexError, TypeError, ValueError):
+                continue
+        return out, (float(home[0]), float(home[1]))
+    except Exception:
+        return [], home
+
+
+def _nearby_silk_obstacles(center_xy, reach_mm, all_posed_silk,
+                           clearance_mm=_DEPEN_SILK_CLEARANCE_MM):
+    """Buffered silk polys of any parent near ``center_xy``.
+
+    ``all_posed_silk`` maps parent uuid to posed stroke tuples (as built
+    by :func:`_pose_parent_silk`); only strokes whose bbox (expanded by
+    ink half-width, clearance, and ``reach_mm``) meets the query disc are
+    buffered, so a giant decorative outline costs one bbox reject per
+    far stroke instead of a polygon buffer. Never raises.
+    """
+    from shapely.geometry import LineString as _LineString
+
+    try:
+        cx, cy = float(center_xy[0]), float(center_xy[1])
+        reach = max(float(reach_mm), 0.0)
+    except (TypeError, ValueError, IndexError):
+        return []
+    obs = []
+    for strokes in all_posed_silk.values():
+        for x1, y1, x2, y2, width in strokes:
+            try:
+                ink = float(width) / 2.0 + float(clearance_mm)
+            except (TypeError, ValueError):
+                continue
+            if (max(x1, x2) + ink < cx - reach
+                    or min(x1, x2) - ink > cx + reach
+                    or max(y1, y2) + ink < cy - reach
+                    or min(y1, y2) - ink > cy + reach):
+                continue
+            try:
+                poly = _LineString([(x1, y1), (x2, y2)]).buffer(ink, cap_style="round")
+            except Exception:
+                continue
+            if poly is None or poly.is_empty:
+                continue
+            obs.append(poly)
+    return obs
 
 
 def _depenetrate_positions(
@@ -59,8 +307,9 @@ def _depenetrate_positions(
 ) -> bool:
     """Eject residual courtyard overlaps left by the force dynamics.
 
-    For each intersecting same-layer body pair (including movable-vs-ghost
-    courtyard walls), translates bodies apart along the MTV by
+    For each intersecting same-layer body pair (including movable-vs-wall-
+    ghost courtyard walls; attractor ghosts are pull-only and never
+    bodies), translates bodies apart along the MTV by
     ``_DEPEN_RELAX`` of the penetration depth (locked / ghost sides never
     move; the movable side takes the full correction, split evenly when
     both are movable). Only true penetration (``s < 0``) is projected,
@@ -217,12 +466,15 @@ def _body_poly_map(
 
     Shared body set for both depenetrate passes: ghosts use their filed
     courtyards (static anchors), real footprints rebuild from current pad
-    positions. Skips degenerates, never raises.
+    positions. Attractor ghosts (pull-only) are not bodies — only wall
+    ghosts join the obstacle set. Skips degenerates, never raises.
     """
     polys: Dict[str, object] = {}
     for li, uuid in enumerate(fp_uuids):
         fp = fp_by_uuid.get(uuid)
         if fp is None:
+            continue
+        if getattr(fp, "ghost", False) and getattr(fp, "ghost_attractions", ()):
             continue
         try:
             rows = fp_local_to_rows[li]
@@ -264,13 +516,20 @@ def _depenetrate_labels(
     board_angle_deg, anchor_xy_mm, parent_uuid). Bodies, copper, and the
     region edge are static — the label always takes the full correction
     (one-way invariant); label-vs-label splits evenly like movable parts.
-    A label's own parent body is excluded (silk over its own courtyard
-    is DRC-legal); its copper still repels via ``copper_polys``. Every
-    move is clipped to the orbit disc around the filed anchor. Iterated
-    Jacobi rounds toward clean (capped): single nodes cannot spin, so
-    the ping-pong that caps the parts pass at one round does not apply.
-    Returns True when any label moved.
+    A label's own parent body is excluded (sitting inside its own
+    courtyard is DRC-legal), but the parent's own silk strokes still eject
+    (ink touching the text trips silk clearance, so only the courtyard —
+    never the artwork — is sit-able ground). Its copper still repels via
+    ``copper_polys``. Every move is clipped to the orbit disc around the
+    filed anchor. Iterated Jacobi eject rounds first (single nodes cannot
+    spin, so the ping-pong that caps the parts pass at one round does not
+    apply); then a clean-spot search relocates whatever is still dirty —
+    spiral candidates from the anchor against the full obstacle set
+    (own + nearby-neighbor silk included), nearest-first. Candidate
+    testing cannot cancel the way opposing pushes can, so ring traps and
+    straddles resolve here. Returns True when any label moved.
     """
+    from shapely.geometry import LineString as _LineString
     from shapely.ops import nearest_points as _nearest_points
 
     order = sorted(range(len(lab_rows)), key=lambda k: lab_specs[k][0])
@@ -283,6 +542,48 @@ def _depenetrate_labels(
     body_items = list(
         _body_poly_map(positions, fp_uuids, fp_local_to_rows, fp_by_uuid).items()
     )
+    silk_items: Dict[str, list] = {}
+    all_posed_silk: Dict[str, list] = {}
+    _uuid_to_li = {uuid: li for li, uuid in enumerate(fp_uuids)}
+    for uuid in fp_uuids:
+        fp = fp_by_uuid.get(uuid)
+        if fp is None or not fp.silk:
+            all_posed_silk[uuid] = []
+            continue
+        try:
+            li = _uuid_to_li.get(uuid)
+            rows = fp_local_to_rows[li] if li is not None else None
+            strokes, _home = _pose_parent_silk(fp, positions, rows)
+            all_posed_silk[uuid] = strokes
+        except Exception:
+            all_posed_silk[uuid] = []
+    for k in order:
+        parent = lab_specs[k][5]
+        if parent in silk_items:
+            continue
+        silk_items[parent] = []
+        try:
+            for x1, y1, x2, y2, width in all_posed_silk.get(parent, ()):
+                dx, dy = x2 - x1, y2 - y1
+                seg_len = math.hypot(dx, dy)
+                if seg_len <= 1e-12:
+                    nx, ny = None, None
+                else:
+                    nx, ny = -dy / seg_len, dx / seg_len
+                try:
+                    obs = _LineString([(x1, y1), (x2, y2)]).buffer(
+                        float(width) / 2.0 + _DEPEN_SILK_CLEARANCE_MM,
+                        cap_style="round",
+                    )
+                except Exception:
+                    continue
+                if obs is None or obs.is_empty:
+                    continue
+                silk_items[parent].append(
+                    (obs, nx, ny, (x1 + x2) / 2.0, (y1 + y2) / 2.0)
+                )
+        except Exception:
+            silk_items[parent] = []
 
     def _rects():
         rects = {}
@@ -293,8 +594,62 @@ def _depenetrate_labels(
                 text, positions[lab_rows[k]], angle, size, halo)
         return rects
 
-    def _push_from(poly, obs, share):
-        """Relaxed MTV eject of poly from blocker obs (or None)."""
+    def _bounds_of(poly):
+        try:
+            return poly.bounds if poly is not None and not poly.is_empty else None
+        except Exception:
+            return None
+
+    # Static per call: body/copper geometry never moves during the label
+    # pass (labels are one-way), so measure bounds once instead of per
+    # label per sweep. Silk strokes buffer on first touch and reuse the
+    # cached poly for every later label/sweep in this call.
+    _body_bboxes = [(bu, obs, _bounds_of(obs)) for bu, obs in body_items]
+    _copper_bboxes = [(_bounds_of(obs), obs) for obs in copper_polys]
+    _silk_cache: Dict[tuple, object] = {}
+
+    def _nearby_silk_cached(center_xy, reach_mm):
+        from shapely.geometry import LineString as _LineString
+
+        try:
+            cx, cy = float(center_xy[0]), float(center_xy[1])
+            reach = max(float(reach_mm), 0.0)
+        except (TypeError, ValueError, IndexError):
+            return []
+        obs = []
+        for strokes in all_posed_silk.values():
+            for x1, y1, x2, y2, width in strokes:
+                try:
+                    ink = float(width) / 2.0 + float(_DEPEN_SILK_CLEARANCE_MM)
+                except (TypeError, ValueError):
+                    continue
+                if (max(x1, x2) + ink < cx - reach
+                        or min(x1, x2) - ink > cx + reach
+                        or max(y1, y2) + ink < cy - reach
+                        or min(y1, y2) - ink > cy + reach):
+                    continue
+                key = (x1, y1, x2, y2, ink)
+                poly = _silk_cache.get(key)
+                if poly is None:
+                    try:
+                        poly = _LineString([(x1, y1), (x2, y2)]).buffer(
+                            ink, cap_style="round")
+                    except Exception:
+                        continue
+                    if poly is None or poly.is_empty:
+                        continue
+                    _silk_cache[key] = poly
+                obs.append(poly)
+        return obs
+
+    def _eject_from(poly, obs, share=1.0, ux=None, uy=None):
+        """Relaxed eject of poly from blocker obs (or None).
+
+        Shared gate (intersects, dust area, depth) for bodies, copper,
+        and silk. With no axis the MTV comes from nearest points (with
+        centroid fallback); silk passes its stroke normal so a label
+        centered on long ink lifts off instead of sliding along it.
+        """
         try:
             if poly is None or poly.is_empty or obs is None or obs.is_empty:
                 return None
@@ -303,8 +658,11 @@ def _depenetrate_labels(
             inter = poly.intersection(obs)
             if inter.is_empty or float(inter.area) <= _DEPEN_CLEAN_AREA_MM2:
                 return None
-            qa, qb = _nearest_points(poly, obs)
-            dx, dy = float(qa.x - qb.x), float(qa.y - qb.y)
+            if ux is None or uy is None:
+                qa, qb = _nearest_points(poly, obs)
+                dx, dy = float(qa.x - qb.x), float(qa.y - qb.y)
+            else:
+                dx, dy = ux, uy
         except Exception:
             return None
         dist = math.hypot(dx, dy)
@@ -322,6 +680,14 @@ def _depenetrate_labels(
             return None
         step = depth * _DEPEN_RELAX * share
         return (dx / dist * step, dy / dist * step)
+
+    def _push_from(poly, obs, share):
+        """Relaxed MTV eject of poly from blocker obs (or None)."""
+        return _eject_from(poly, obs, share)
+
+    def _silk_push(poly, obs, ux, uy):
+        """Relaxed eject of poly from a silk-stroke blocker along unit (ux, uy)."""
+        return _eject_from(poly, obs, 1.0, ux, uy)
 
     def _edge_push(poly):
         """Containment push for a rect outside the region polygon."""
@@ -376,6 +742,22 @@ def _depenetrate_labels(
                 push = _push_from(poly, obs, 1.0)
                 if push is not None:
                     mx, my = mx + push[0], my + push[1]
+            # Own-silk eject: side-tested stroke normals. Opposing sides of
+            # an enclosing outline can still cancel here — that trap is
+            # the search phase's job below (candidate testing cannot
+            # cancel), so the eject stays dumb and cheap.
+            for obs, nx, ny, sx, sy in silk_items.get(parent, ()):
+                if nx is None or ny is None:
+                    push = _push_from(poly, obs, 1.0)
+                else:
+                    try:
+                        cx, cy = poly.centroid.x, poly.centroid.y
+                    except Exception:
+                        continue
+                    side = 1.0 if (cx - sx) * nx + (cy - sy) * ny >= 0.0 else -1.0
+                    push = _silk_push(poly, obs, side * nx, side * ny)
+                if push is not None:
+                    mx, my = mx + push[0], my + push[1]
             push = _edge_push(poly)
             if push is not None:
                 mx, my = mx + push[0], my + push[1]
@@ -411,6 +793,90 @@ def _depenetrate_labels(
                 positions[lab_rows[k], 1] = ny
                 changed = True
         if changed:
+            moved_any = True
+        else:
+            break
+
+    # Space search: eject rounds only resolve overlap they already touch,
+    # so opposing pushes (ring traps, straddles, neighbor ink) can stall
+    # dirty. Candidate testing cannot cancel: for each still-dirty label,
+    # spiral outward from the anchor and take the first fully-clean spot
+    # (nearest-first, so D2-style drift re-homes instead of wandering).
+    # The obstacle set here is the full one — own + nearby-neighbor silk
+    # included — unlike the eject above. Two sweeps max: the second
+    # catches touches the first sweep's moves introduced. Labels with no
+    # clean spot in-disc stay put and are logged (leash-limited, not an
+    # ejector stall).
+    for _ in range(2):
+        rects = _rects()
+        swept = False
+        for k in order:
+            uuid = lab_specs[k][0]
+            parent = lab_specs[k][5]
+            anchor = lab_specs[k][4]
+            poly = rects.get(uuid)
+            if poly is None or poly.is_empty:
+                continue
+            try:
+                minx, _miny, maxx, _maxy = poly.bounds
+                half_diag = 0.5 * math.hypot(maxx - minx, _maxy - _miny)
+            except Exception:
+                continue
+            obstacles = [obs for bu, obs, _bb in _body_bboxes if bu != parent]
+            oboxes = [bb for bu, obs, bb in _body_bboxes if bu != parent]
+            for bb, obs in _copper_bboxes:
+                obstacles.append(obs)
+                oboxes.append(bb)
+            try:
+                reach = radius + half_diag + 0.5
+                for poly in _nearby_silk_cached(anchor, reach):
+                    obstacles.append(poly)
+                    oboxes.append(_bounds_of(poly))
+            except Exception:
+                pass
+            for ou, op in rects.items():
+                if ou != uuid and op is not None and not op.is_empty:
+                    obstacles.append(op)
+                    oboxes.append(_bounds_of(op))
+            try:
+                first_clean, best, best_area, cur_area = _find_spot(
+                    poly, obstacles, anchor, radius, cover_poly=edge_poly,
+                    bboxes=oboxes)
+                spot = first_clean
+                if spot is None:
+                    if best is None or not (
+                            best_area < cur_area - 1e-9):
+                        logger.debug(
+                            "label %s leash-limited (%.4f mm2)", uuid, cur_area)
+                        continue
+                    logger.debug(
+                        "label %s improves %.4f -> %.4f mm2",
+                        uuid, cur_area, best_area)
+                    spot = best
+            except Exception:
+                continue
+            try:
+                cx, cy = poly.centroid.x, poly.centroid.y
+            except Exception:
+                continue
+            dx, dy = spot[0] - cx, spot[1] - cy
+            if abs(dx) <= 1e-9 and abs(dy) <= 1e-9:
+                continue
+            node = positions[lab_rows[k]]
+            try:
+                nx, ny = clamp_orbit_radius(
+                    (float(node[0]) + dx, float(node[1]) + dy), anchor, radius,
+                )
+            except Exception:
+                continue
+            if abs(nx - float(node[0])) > 1e-9 or abs(ny - float(node[1])) > 1e-9:
+                positions[lab_rows[k], 0] = nx
+                positions[lab_rows[k], 1] = ny
+                rects[uuid] = _label_rect_poly(
+                    lab_specs[k][1], (nx, ny), lab_specs[k][3],
+                    lab_specs[k][2], label_halo_mm(lab_specs[k][2]))
+                swept = True
+        if swept:
             moved_any = True
         else:
             break

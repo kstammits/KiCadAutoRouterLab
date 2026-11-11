@@ -9,6 +9,8 @@ Markers: minimal
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
 from kicad_autorouter.board_model import Point, Zone, board_model
 from kicad_autorouter.io import add_footprint_to_tree
 from kicad_autorouter.routing.pipeline import RoutingParams, route_nets
@@ -43,6 +45,7 @@ def _gnd_board(net="GND"):
     return pcb_tree, model
 
 
+@pytest.mark.minimal
 def test_fanout_params_round_trip_and_mode_presets():
     assert RoutingParams().fanout_planes is False
     assert RoutingParams().fanout_plane_vias_max == 16
@@ -59,6 +62,7 @@ def test_fanout_params_round_trip_and_mode_presets():
     assert MODE_PRESETS["four-layer"]["fanout_planes"] is True
 
 
+@pytest.mark.minimal
 def test_two_layer_ignores_inner_zone():
     pcb_tree, model = _gnd_board()
     res, _, _ = route_nets(
@@ -72,6 +76,7 @@ def test_two_layer_ignores_inner_zone():
     assert res.nets_routed == 1, f"outer MST must still route: {res.failed_reasons}"
 
 
+@pytest.mark.minimal
 def test_four_layer_plane_fanout_stubs():
     pcb_tree, model = _gnd_board()
     res, _, _ = route_nets(
@@ -87,6 +92,7 @@ def test_four_layer_plane_fanout_stubs():
     assert not res.failed_reasons
 
 
+@pytest.mark.minimal
 def test_signal_net_with_inner_zone_still_routes_outer():
     pcb_tree, model = _gnd_board(net="SIG1")
     res, _, _ = route_nets(

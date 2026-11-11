@@ -29,7 +29,7 @@ from . import (
 from .output import routes_to_tracks_vias, apply_routes_to_tree
 from .output import Arc as OutputArc, Track as OutputTrack, Via as OutputVia
 from .biarc import pieces_wire_cells
-from .verify import fitted_pieces_violate, gate_touch_margin, share_group_key
+from .verify import fitted_pieces_violate, gate_touch_margin, rescue_eligible, share_group_key
 from .smooth import own_net_soft_mask, smooth_branch_pieces, smooth_grid_path, smoothed_wire_mm
 from .smooth import effort_rungs, resolve_config as resolve_smooth_config
 from .router import SECONDARY_BLOCKED, SingleNetRouter, diagnose_attempts
@@ -507,16 +507,19 @@ def _resume_progress(grouped_chunks, group_progress: Dict[int, List[NetRouteResu
 
 def _resolve_gate_trip(raw_res, smoothed_res, violations,
                        region_blocked_mask, routing_grid, model, net_name,
-                       track_half_mm):
+                       track_half_mm, clearance_mm=0.0, verify_share=None):
     """Decide a gate trip: real copper touch vs fallback to the raw path.
 
     ``violations`` tripped on the smoothed/fitted copper. When the emitted
     track never touches foreign copper (guard-ring graze or cell-corner
     clip — the smoother manufactured the geometry out of a legal search
-    path), fall back to the pre-smooth search path, which the gate is
-    re-run against; a clean raw path is returned for stamping instead of
-    failing the net. A real touch, or a raw path that also trips, stays a
-    loud ``("gate", reason)`` failure.
+    path), the trip is dust: if :func:`rescue_eligible` proves it
+    endpoint-local *and* clear of every hard-exclusion class by
+    ``clearance_mm``, the smoothed copper is stamped as-is; otherwise
+    fall back to the pre-smooth search path, which the gate is re-run
+    against, and a clean raw path is returned for stamping instead of
+    failing the net. A real touch, or a raw path that also trips (with
+    no rescue), stays a loud ``("gate", reason)`` failure.
 
     Returns ``(result|None, failure|None, fell_back: bool)``. Single
     fallback only — the raw re-gate is final, so this cannot loop. Future
@@ -541,6 +544,28 @@ def _resolve_gate_trip(raw_res, smoothed_res, violations,
             f"({detail}; {margin_txt}); failing loudly instead "
             f"of writing DRC-dirty copper"
         ), False
+    if not is_touch:
+        cells: list = []
+        try:
+            fitted_pieces_violate(
+                list(_branch_paths(smoothed_res)),
+                tuple(getattr(smoothed_res, "arc_pieces", ()) or ()),
+                region_blocked_mask, routing_grid,
+                share=verify_share, hit_cells=cells, full_scan=True,
+            )
+        except Exception:
+            cells = []
+        try:
+            rescued = rescue_eligible(
+                cells, list(_branch_paths(smoothed_res)),
+                tuple(getattr(smoothed_res, "arc_pieces", ()) or ()),
+                routing_grid, model, net_name, track_half_mm,
+                clearance_mm,
+            )
+        except Exception:
+            rescued = False
+        if rescued:
+            return smoothed_res, None, False
     raw_violations = fitted_pieces_violate(
         list(_branch_paths(raw_res)), (),
         region_blocked_mask, routing_grid,
@@ -858,6 +883,194 @@ def _setup_flight(
     )
 
 
+def _terminal_exit_stubs(raw_res, model, net_name, grid, cost_grid,
+                         soft_mask, blocked_mask, clearance_mm,
+                         track_half_mm, corridor_radius, hard_radius,
+                         pinned):
+    """Pad exit stubs for branch endpoints on crowded sibling pads.
+
+    Returns ``(branches, extra_pinned)`` with a straight stub waypoint
+    inserted after/before each terminal pad whose own footprint carries a
+    *different-net* sibling pad too close to fit a track between them
+    (gap < 2 * (clearance + track half) + one grid cell): the xcross
+    case, where a diagonal pulled straight out of the pad grazes the
+    sibling. The stub runs from the pad center directly away from the
+    nearest such sibling, long enough to clear the pad halo, and is only
+    inserted when the stub leg itself is walkable — otherwise that end
+    keeps legacy behavior. Pads without a crowding sibling (the common
+    case) are untouched, so open boards route exactly as before.
+
+    Callers add ``extra_pinned`` to the smoother's pinned set so the
+    pull never shortcuts across a stub (``_split_runs`` keeps each
+    terminal→stub leg verbatim) and starts its chords from the stub end
+    instead of from inside the pad halo.
+    """
+    from .smooth import _line_walkable
+
+    res_mm = float(getattr(grid, "resolution_mm", 0.0) or 0.0)
+    if not (res_mm > 0.0):
+        return None, set()
+    try:
+        branches = [list(b) for b in _branch_paths(raw_res)]
+    except Exception:
+        return None, set()
+    if not branches:
+        return None, set()
+    try:
+        ox, oy = grid.origin_mm
+    except (TypeError, ValueError, AttributeError):
+        return None, set()
+    try:
+        layer_names = list(getattr(grid, "layers", None) or ())
+        layer_to_idx = dict(getattr(grid, "layer_to_idx", None)
+                            or {n: i for i, n in enumerate(layer_names)})
+    except (TypeError, ValueError, AttributeError):
+        return None, set()
+    try:
+        cg = np.asarray(cost_grid)
+        sm = (np.asarray(soft_mask) if soft_mask is not None else None)
+        bm = (np.asarray(blocked_mask) if blocked_mask is not None else None)
+        H, W = int(cg.shape[1]), int(cg.shape[2])
+    except (TypeError, ValueError, AttributeError, IndexError):
+        return None, set()
+
+    # Same-net pads with crowding siblings (same footprint, other net,
+    # gap too tight for a track to pass between).
+    try:
+        fit_gap_mm = 2.0 * (float(clearance_mm) + float(track_half_mm))
+    except (TypeError, ValueError):
+        return None, set()
+    crowded = []
+    for fp in getattr(model, "footprints", ()):
+        fp_layer = getattr(fp, "layer", "")
+        try:
+            own_here = [p for p in getattr(fp, "pads", (None,)) or ()
+                        if getattr(p, "net_name", None) == net_name]
+            sibs = [p for p in getattr(fp, "pads", (None,)) or ()
+                    if getattr(p, "net_name", None) not in (None, "", net_name)]
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if not own_here or not sibs:
+            continue
+        for pad in own_here:
+            try:
+                px = float(pad.position.x_mm)
+                py = float(pad.position.y_mm)
+                w = float(pad.size_mm[0])
+                h = float(pad.size_mm[1])
+                thru = bool(getattr(pad, "is_through_hole", False))
+            except (TypeError, ValueError, AttributeError, IndexError):
+                continue
+            pc = int(round((px - ox) / res_mm - 0.5))
+            pr = int(round((py - oy) / res_mm - 0.5))
+            half = max(w, h) / 2.0
+            for sib in sibs:
+                try:
+                    sx = float(sib.position.x_mm)
+                    sy = float(sib.position.y_mm)
+                    sw = float(sib.size_mm[0])
+                    sh = float(sib.size_mm[1])
+                except (TypeError, ValueError, AttributeError, IndexError):
+                    continue
+                gap = (math.hypot(sx - px, sy - py) - half
+                       - max(sw, sh) / 2.0)
+                if gap < fit_gap_mm + res_mm:
+                    crowded.append((px, py, pc, pr, half, fp_layer, thru,
+                                    sx, sy))
+                    break
+    if not crowded:
+        return None, set()
+
+    def _walkable(c0, r0, c1, r1, layer):
+        try:
+            cL = cg[layer] if layer < cg.shape[0] else None
+            sL = (sm[layer] if sm is not None and layer < sm.shape[0]
+                  else None)
+            bL = (bm[layer] if bm is not None and layer < bm.shape[0]
+                  else None)
+        except (IndexError, TypeError, ValueError):
+            return False
+        if cL is None:
+            return False
+        try:
+            return bool(_line_walkable(
+                int(c0), int(r0), int(c1), int(r1), cL, sL,
+                int(BLOCKED), int(corridor_radius),
+                bL, int(hard_radius)))
+        except Exception:
+            return False
+
+    new_branches = []
+    extra_pinned = set()
+    for branch in branches:
+        if len(branch) < 2:
+            new_branches.append(list(branch))
+            continue
+        new_branch = list(branch)
+        # (end_idx, neighbor_idx): start runs forward, end runs backward.
+        for end_idx, n_idx in ((0, 1), (len(branch) - 1, len(branch) - 2)):
+            ec = int(branch[end_idx][0])
+            er = int(branch[end_idx][1])
+            try:
+                el = int(branch[end_idx][2])
+            except (TypeError, ValueError, IndexError):
+                continue
+            match = None
+            for (px, py, pc, pr, half, fp_layer, thru, sx, sy) in crowded:
+                if abs(pc - ec) + abs(pr - er) > 3:
+                    continue
+                try:
+                    li = int(layer_to_idx.get(fp_layer, el))
+                except (TypeError, ValueError):
+                    li = el
+                # Layer must agree unless the pad is plated through.
+                if li != el and not thru:
+                    continue
+                match = (px, py, pc, pr, half, sx, sy)
+                break
+            if match is None:
+                continue
+            px, py, pc, pr, half, sx, sy = match
+            # Straight out, away from the crowding sibling.
+            dx, dy = px - sx, py - sy
+            norm = math.hypot(dx, dy)
+            if norm <= 1e-9:
+                continue
+            ux, uy = dx / norm, dy / norm
+            stub_len_mm = half + clearance_mm + track_half_mm + res_mm
+            ex = int(round((px + ux * stub_len_mm - ox) / res_mm - 0.5))
+            ey = int(round((py + uy * stub_len_mm - oy) / res_mm - 0.5))
+            if not (0 <= ey < H and 0 <= ex < W):
+                continue
+            if (ex, ey) == (ec, er):
+                continue
+            if not _walkable(ec, er, ex, ey, el):
+                continue
+            if end_idx == 0:
+                new_branch = [(ec, er, el), (ex, ey, el)] + [
+                    w for w in new_branch[1:]
+                    if tuple(w[:2]) in pinned
+                    or tuple(w[:2]) in extra_pinned
+                    or abs(int(w[0]) - ec) + abs(int(w[1]) - er) > max(
+                        1, int(round(stub_len_mm / res_mm)) + 1)
+                    or w == new_branch[-1]
+                ]
+            else:
+                new_branch = [
+                    w for w in new_branch[:-1]
+                    if tuple(w[:2]) in pinned
+                    or tuple(w[:2]) in extra_pinned
+                    or abs(int(w[0]) - ec) + abs(int(w[1]) - er) > max(
+                        1, int(round(stub_len_mm / res_mm)) + 1)
+                    or w == new_branch[0]
+                ] + [(ex, ey, el), (ec, er, el)]
+            extra_pinned.add((ex, ey))
+        new_branches.append(new_branch)
+    if not extra_pinned:
+        return None, set()
+    return new_branches, extra_pinned
+
+
 def _route_chunk(
     router, term_set, region_secondary, progress_cb, should_cancel,
     seed_cells, cost_grid, routing_grid, corridor, soft_mask,
@@ -930,7 +1143,10 @@ def _route_chunk(
         # (2.0 reproduces the legacy kwargs exactly), and (2, 3] runs a
         # bounded deterministic ladder from 2.0 up to the effort, keeping
         # the best gate-clean rung by wire length. Gate trips below still
-        # funnel into the same touch-vs-graze resolution.
+        # funnel into the same touch-vs-graze resolution. (Pad exit stubs
+        # live in the gate-trip path below: they re-run only when the
+        # adopted copper trips on endpoint-local dust, so clean nets are
+        # untouched.)
         effort = float(getattr(params, "smooth_effort", 2.0))
         if effort <= 0.0:
             res = raw_res
@@ -976,6 +1192,36 @@ def _route_chunk(
                     if best is None or wire_mm < best_wire_mm:
                         best, best_wire_mm = cand, wire_mm
                 else:
+                    # Endpoint-local dust the emit gate would rescue ranks
+                    # alongside clean rungs (same verdict the gate would
+                    # reach), so the ladder never prefers a longer
+                    # dust-free detour over proven-clean copper.
+                    cells: list = []
+                    try:
+                        fitted_pieces_violate(
+                            list(_branch_paths(cand)),
+                            tuple(getattr(cand, "arc_pieces", ()) or ()),
+                            region_blocked_mask, routing_grid,
+                            share=verify_share, hit_cells=cells,
+                            full_scan=True,
+                        )
+                        rescued = rescue_eligible(
+                            cells, list(_branch_paths(cand)),
+                            tuple(getattr(cand, "arc_pieces", ()) or ()),
+                            routing_grid, model, net_name,
+                            resolve_track_width(model, params, net_name) / 2.0,
+                            params.clearance_mm,
+                        )
+                    except Exception:
+                        rescued = False
+                    if rescued:
+                        wire_mm = float(getattr(cand, "wire_mm", math.inf))
+                        if best is None or wire_mm < best_wire_mm:
+                            best, best_wire_mm = cand, wire_mm
+                        timings["emit_gate_dust_rescued"] = (
+                            timings.get("emit_gate_dust_rescued", 0) + 1
+                        )
+                        continue
                     res, violations = cand, cand_violations
             if best is not None:
                 res, violations = best, []
@@ -985,25 +1231,102 @@ def _route_chunk(
         # smoother both refused. Fail loudly here (before stamping) instead
         # of writing DRC-dirty copper downstream — unless the trip is
         # raster dust with no copper touched, in which case the legal
-        # search path is stamped as-is.
+        # search path is stamped as-is. Before that fallback, try pad
+        # exit stubs once: a trip hugging a terminal pad is often an
+        # entry/exit graze that a short straight stub avoids entirely.
+        # The retry only runs on tripped copper (never on clean runs),
+        # and its result is adopted only when gate-clean and no longer
+        # than the raw fallback — so clean runs and failing runs are
+        # untouched.
         if violations:
             if width_mm is None:
                 width_mm = resolve_track_width(model, params, net_name)
-            chosen, gate_failure, fell_back = _resolve_gate_trip(
-                raw_res, res, violations, region_blocked_mask,
-                routing_grid, model, net_name, width_mm / 2.0,
-            )
-            if gate_failure is not None:
-                # Deterministic on an unchanged grid like budget exhaustion:
-                # the same search + smoother will reproduce the same fitted
-                # copper, so retrying only burns time — fail immediately.
-                return _failed("gate", f"{tag}{gate_failure}",
-                               _search_diag("gate"))
-            res = chosen
-            if fell_back:
-                timings["emit_gate_fallback_raw"] = (
-                    timings.get("emit_gate_fallback_raw", 0) + 1
+            stub_adopted = False
+            if effort > 0.0:
+                try:
+                    _stub_width = resolve_track_width(
+                        model, params, net_name)
+                    _stub_branches, _stub_pinned = _terminal_exit_stubs(
+                        raw_res, model, net_name, routing_grid, cost_grid,
+                        soft_mask, region_blocked_mask,
+                        resolve_clearance(model, params, net_name),
+                        _stub_width / 2.0,
+                        max(max(0, corridor - 1), max(0, clearance_radius)),
+                        max(0, corridor - 1),
+                        set(pinned),
+                    )
+                except Exception:
+                    _stub_branches, _stub_pinned = None, set()
+                if _stub_branches is not None:
+                    try:
+                        _seen: Set[Tuple[int, int, int]] = set()
+                        _union: List[Tuple[int, int, int]] = []
+                        for _b in _stub_branches:
+                            for _c in _b:
+                                _t = (int(_c[0]), int(_c[1]), int(_c[2]))
+                                if _t not in _seen:
+                                    _seen.add(_t)
+                                    _union.append(_t)
+                        _stub_raw = replace(
+                            raw_res,
+                            branches=tuple(tuple(b) for b in _stub_branches),
+                            path=_union,
+                        )
+                        _cfg2 = resolve_smooth_config(2.0, params)
+                        _cand2 = _smooth_result(
+                            _stub_raw, cost_grid, routing_grid, corridor,
+                            pinned=set(pinned) | set(_stub_pinned),
+                            soft_mask=soft_mask,
+                            clearance_radius=clearance_radius,
+                            blocked_mask=region_blocked_mask,
+                            fit_arcs=_cfg2["fit_arcs"],
+                            max_radius_mm=_cfg2["max_radius_mm"],
+                            min_leg_mm=_cfg2["min_leg_mm"],
+                            sample_mm=_cfg2["sample_mm"],
+                            keep_min_radius_mm=_cfg2["keep_min_radius_mm"],
+                            timings=timings,
+                        )
+                        _v2 = fitted_pieces_violate(
+                            list(_branch_paths(_cand2)),
+                            tuple(getattr(_cand2, "arc_pieces", ()) or ()),
+                            region_blocked_mask, routing_grid,
+                            timings=timings, share=verify_share,
+                        )
+                        try:
+                            _raw_wire = float(getattr(raw_res, "wire_mm",
+                                                      math.inf))
+                            _w2 = float(getattr(_cand2, "wire_mm",
+                                                math.inf))
+                        except (TypeError, ValueError):
+                            _raw_wire, _w2 = math.inf, math.inf
+                        if not _v2 and _w2 <= _raw_wire:
+                            res, violations = _cand2, []
+                            stub_adopted = True
+                            timings["emit_gate_stub_used"] = (
+                                timings.get("emit_gate_stub_used", 0) + 1)
+                    except Exception:
+                        pass
+            if not stub_adopted:
+                chosen, gate_failure, fell_back = _resolve_gate_trip(
+                    raw_res, res, violations, region_blocked_mask,
+                    routing_grid, model, net_name, width_mm / 2.0,
+                    params.clearance_mm, verify_share,
                 )
+                if gate_failure is not None:
+                    # Deterministic on an unchanged grid like budget exhaustion:
+                    # the same search + smoother will reproduce the same fitted
+                    # copper, so retrying only burns time — fail immediately.
+                    return _failed("gate", f"{tag}{gate_failure}",
+                                   _search_diag("gate"))
+                res = chosen
+                if fell_back:
+                    timings["emit_gate_fallback_raw"] = (
+                        timings.get("emit_gate_fallback_raw", 0) + 1
+                    )
+                elif violations:
+                    timings["emit_gate_dust_rescued"] = (
+                        timings.get("emit_gate_dust_rescued", 0) + 1
+                    )
         timings["smooth_s"] = timings.get("smooth_s", 0.0) + (
             time.perf_counter() - t_smooth
         )

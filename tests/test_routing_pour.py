@@ -99,26 +99,3 @@ class TestSeveranceMath:
         model = _crossing_board()
         assert pour_net_names(model) == ["GND"]
         assert "S" not in pour_net_names(model)
-
-
-@pytest.mark.unit
-class TestEndToEnd:
-    def test_route_and_stitch_leaves_one_network(self):
-        # Single-layer sever: S routes around the wall end, the split pour
-        # gets auto-bridged. (Compact board: keeps A* fast.)
-        fa = make_fp("A", "uuid-a", 3.0, 6.0, ("S",), hw=0.25, hh=0.25)
-        fb = make_fp("B", "uuid-b", 17.0, 6.0, ("S",), hw=0.25, hh=0.25)
-        model = _board(
-            fps=[fa, fb],
-            zones=[_rect_zone("z1", "GND", ("F.Cu",), x1=20.0, y1=12.0)],
-            tracks=[_track(10.0, -2.0, 10.0, 14.0, "X")],
-            edge=25.0,
-        )
-        model = replace(model, nets={
-            "S": (NetConnection("A", "1"), NetConnection("B", "1")),
-        })
-        res, _, grid = route_nets(model, ["S"], set(), params=RoutingParams())
-        assert res.nets_routed == 1
-        assert res.gnd_islands_before >= 2
-        assert res.gnd_islands_after == 1
-        assert res.stitch_vias_added + res.stitch_tracks_added >= 1

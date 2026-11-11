@@ -16,29 +16,24 @@ from pathlib import Path
 
 from dataclasses import replace
 
-from kicad_autorouter.board_model import BoardRegion, Footprint, Point
+from kicad_autorouter.board_model import (
+    BoardRegion,
+    Footprint,
+    NetConnection,
+    Point,
+)
 from kicad_autorouter.routing.grid import board_to_grid, create_grid_from_model
-from kicad_autorouter.routing.pour import pour_islands
+from kicad_autorouter.routing.pipeline import RoutingParams, route_nets
+from kicad_autorouter.routing.pour import gnd_islands, pour_islands
 from kicad_autorouter.routing.stitch import (
     _foreign_mask,
     _verify_stitch_via,
     plan_stitches,
 )
 
+from .test_gnd_strip import _signal_board, _tree_for
 from .test_pour import _board, _rect_zone, _track
 from .helpers import make_fp, make_rect_courtyard, make_tht_pad
-
-
-@pytest.fixture(scope="module")
-def cli() -> str:
-    try:
-        from kicad_autorouter.validate import find_kicad_cli, KicadCliNotFound
-    except ImportError:
-        pytest.skip("kicad-cli not installed")
-    try:
-        return find_kicad_cli()
-    except KicadCliNotFound:
-        pytest.skip("kicad-cli not installed")
 
 
 def _two_layer_severed():
@@ -323,10 +318,63 @@ class TestRegionIsolation:
         assert plan.islands_after == 2  # one network per panel
 
 
-@pytest.mark.unit
-class TestWriteback:
-    """Stitch vias survive writeback and re-parse with their GND net."""
+class TestCopperEndToEnd:
+    """Route-level copper proofs: route + auto-stitch/rebuild on one board.
+
+    (Folded from test_routing_pour.TestEndToEnd, test_gnd_strip
+    signal-preservation, and the DCCF stitch writeback below: same
+    build-a-board / route / assert-copper contract.)
+    """
+
+    @pytest.mark.unit
+    def test_route_and_stitch_leaves_one_network(self):
+        # Single-layer sever: S routes around the wall end, the split pour
+        # gets auto-bridged. (Compact board: keeps A* fast.)
+        fa = make_fp("A", "uuid-a", 3.0, 6.0, ("S",), hw=0.25, hh=0.25)
+        fb = make_fp("B", "uuid-b", 17.0, 6.0, ("S",), hw=0.25, hh=0.25)
+        model = _board(
+            fps=[fa, fb],
+            zones=[_rect_zone("z1", "GND", ("F.Cu",), x1=20.0, y1=12.0)],
+            tracks=[_track(10.0, -2.0, 10.0, 14.0, "X")],
+            edge=25.0,
+        )
+        model = replace(model, nets={
+            "S": (NetConnection("A", "1"), NetConnection("B", "1")),
+        })
+        res, _, grid = route_nets(model, ["S"], set(), params=RoutingParams())
+        assert res.nets_routed == 1
+        assert res.gnd_islands_before >= 2
+        assert res.gnd_islands_after == 1
+        assert res.stitch_vias_added + res.stitch_tracks_added >= 1
+
+    @pytest.mark.unit
+    def test_signal_routing_preserves_bystander_and_strips_gnd(self):
+        from kicad_autorouter.board_model import board_model
+
+        model = _signal_board()
+        res, _, _ = route_nets(
+            model, ["S"], set(), params=RoutingParams(run_drc=False),
+            original_pcb_tree=_tree_for(model),
+        )
+        assert res.nets_routed == 1
+        assert res.gnd_stripped == 1
+        final = board_model(res.pcb_tree)
+        # Bystander signal copper survives exactly.
+        assert [(t.start, t.end, t.net_name) for t in final.tracks if t.net_name == "K"] == \
+               [(t.start, t.end, t.net_name) for t in model.tracks if t.net_name == "K"]
+        # Foreign wall X survives (never a victim).
+        assert any(t.net_name == "X" for t in final.tracks)
+        # Old GND via is gone; stitcher rebuilt continuity from scratch.
+        assert not any(
+            v.net_name == "GND" and v.position.x_mm == pytest.approx(10.0)
+            and v.position.y_mm == pytest.approx(6.0)
+            for v in final.vias
+        )
+
+    @pytest.mark.dccf
+    @pytest.mark.slow
     def test_stitch_vias_in_tree_and_reparsed(self):
+        """Stitch vias survive writeback and re-parse with their GND net."""
         from dataclasses import replace
         from pathlib import Path
 

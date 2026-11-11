@@ -209,6 +209,14 @@ def time_placement_tail(board: str) -> dict:
         "legality_s": round(legal_s, 3),
         "legal": bool(report.is_legal),
         "max_overlap_mm2": round(report.max_pair_overlap_mm2, 3),
+        "max_wall_penetration_mm": round(report.max_wall_penetration_mm, 3),
+        "wall_violations": [
+            [uuid, depth] for uuid, depth in report.wall_violations[:5]
+        ],
+        "overlapping_pairs": [
+            [a, b, round(area, 3)]
+            for a, b, area in report.overlapping_pairs[:5]
+        ],
     }
 
 

@@ -1,0 +1,431 @@
+{
+  "params": {
+    "grid_resolution_mm": 0.1,
+    "margin_mm": 2.0,
+    "via_cost_mm": 5.0,
+    "track_width_mm": 0.25,
+    "power_width_mm": 0.5,
+    "clearance_mm": 0.2,
+    "via_size_mm": 0.8,
+    "via_drill_mm": 0.4,
+    "max_attempts_per_net": 1,
+    "run_drc": false,
+    "debug": false,
+    "net_widths": {},
+    "heuristic_weight": 3.0,
+    "max_expansions": 2000000,
+    "max_expansions_per_net": 4000000,
+    "max_terminals_per_net": 16,
+    "piecemeal_chunk_terminals": 12,
+    "stitch_gnd_vias": false,
+    "strip_gnd_blockers": true,
+    "stitch_vias_max": 32,
+    "stitch_bridges_max": 16,
+    "stitch_bridge_max_mm": 30.0,
+    "stitch_bridge_width_mm": 0.3,
+    "stitch_min_island_mm2": 2.0,
+    "pour_severance_weight": 30.0,
+    "fanout_margin_mm": 0.0,
+    "window_margin_cells": 32,
+    "window_growth": 2.0,
+    "window_retries": 3,
+    "corridor": true,
+    "refill_zones": false,
+    "arc_fillets": true,
+    "arc_max_radius_mm": 10.0,
+    "arc_min_leg_mm": 0.3,
+    "arc_sample_mm": 0.05,
+    "arc_keep_min_radius_mm": 0.5,
+    "smooth_effort": 2.0,
+    "fanout_planes": false,
+    "fanout_plane_vias_max": 16,
+    "refine_seeds": 3,
+    "refine_seed": 0,
+    "retry_stages": true,
+    "allowed_layers": null
+  },
+  "cases": [
+    {
+      "case": "DCCFx3-route",
+      "board": "DCCF",
+      "mode": "route",
+      "nets": 3,
+      "net_names": [
+        "B1",
+        "B2",
+        "B3"
+      ],
+      "nets_routed": 3,
+      "nets_failed": 0,
+      "expansions": 24713,
+      "wall_s": 3.131,
+      "route_s": 1.544,
+      "astar_s": 0.962,
+      "smooth_s": 0.008,
+      "smooth_pull_s": 0.002,
+      "smooth_fit_s": 0.0,
+      "smooth_verify_s": 0.006,
+      "smooth_verify_build_s": 0.0,
+      "smooth_verify_segs": 3,
+      "pour_s": 0.824,
+      "occupancy_s": 0.19,
+      "grid_build_s": 0.0,
+      "total_s": 3.13,
+      "arcs": 0,
+      "wire_mm": 17.3,
+      "polish_s": 2.012,
+      "polished": 0,
+      "wire_saved_mm": 0.0
+    },
+    {
+      "case": "DCCFx3-refine3",
+      "board": "DCCF",
+      "mode": "refine3",
+      "nets": 3,
+      "net_names": [
+        "B1",
+        "B2",
+        "B3"
+      ],
+      "nets_routed": 3,
+      "nets_failed": 0,
+      "expansions": 24713,
+      "wall_s": 3.179,
+      "route_s": 1.529,
+      "astar_s": 0.951,
+      "smooth_s": 0.008,
+      "smooth_pull_s": 0.002,
+      "smooth_fit_s": 0.0,
+      "smooth_verify_s": 0.006,
+      "smooth_verify_build_s": 0.0,
+      "smooth_verify_segs": 3,
+      "pour_s": 0.832,
+      "occupancy_s": 0.188,
+      "grid_build_s": 0.0,
+      "total_s": 3.176,
+      "arcs": 0,
+      "wire_mm": 17.3,
+      "polish_s": 0.0
+    },
+    {
+      "case": "tube111x3-route",
+      "board": "tube111",
+      "mode": "route",
+      "nets": 3,
+      "net_names": [
+        "C1InCVLED",
+        "C1Input",
+        "C1OutCVLED"
+      ],
+      "nets_routed": 3,
+      "nets_failed": 0,
+      "expansions": 143402,
+      "wall_s": 1.7,
+      "route_s": 1.063,
+      "astar_s": 0.622,
+      "smooth_s": 0.083,
+      "smooth_pull_s": 0.076,
+      "smooth_fit_s": 0.0,
+      "smooth_verify_s": 0.006,
+      "smooth_verify_build_s": 0.0,
+      "smooth_verify_segs": 492,
+      "pour_s": 0.48,
+      "occupancy_s": 0.144,
+      "grid_build_s": 0.0,
+      "total_s": 1.7,
+      "arcs": 1,
+      "wire_mm": 112.06,
+      "polish_s": 1.839,
+      "polished": 0,
+      "wire_saved_mm": 0.0
+    },
+    {
+      "case": "tube111x3-refine3",
+      "board": "tube111",
+      "mode": "refine3",
+      "nets": 3,
+      "net_names": [
+        "C1InCVLED",
+        "C1Input",
+        "C1OutCVLED"
+      ],
+      "nets_routed": 3,
+      "nets_failed": 0,
+      "expansions": 143402,
+      "wall_s": 1.71,
+      "route_s": 1.065,
+      "astar_s": 0.622,
+      "smooth_s": 0.082,
+      "smooth_pull_s": 0.076,
+      "smooth_fit_s": 0.0,
+      "smooth_verify_s": 0.006,
+      "smooth_verify_build_s": 0.0,
+      "smooth_verify_segs": 492,
+      "pour_s": 0.479,
+      "occupancy_s": 0.151,
+      "grid_build_s": 0.0,
+      "total_s": 1.709,
+      "arcs": 1,
+      "wire_mm": 112.06,
+      "polish_s": 0.0
+    },
+    {
+      "case": "DCCF-largest",
+      "board": "DCCF",
+      "mode": "route",
+      "nets": 1,
+      "net_names": [
+        "VR+"
+      ],
+      "nets_routed": 1,
+      "nets_failed": 0,
+      "expansions": 296721,
+      "wall_s": 3.535,
+      "route_s": 1.885,
+      "astar_s": 1.532,
+      "smooth_s": 0.146,
+      "smooth_pull_s": 0.124,
+      "smooth_fit_s": 0.0,
+      "smooth_verify_s": 0.021,
+      "smooth_verify_build_s": 0.0,
+      "smooth_verify_segs": 2244,
+      "pour_s": 0.828,
+      "occupancy_s": 0.19,
+      "grid_build_s": 0.0,
+      "total_s": 3.534,
+      "arcs": 1,
+      "wire_mm": 171.68,
+      "polish_s": 0.0
+    },
+    {
+      "case": "tube111-largest",
+      "board": "tube111",
+      "mode": "route",
+      "nets": 1,
+      "net_names": [
+        "C1TubeOut"
+      ],
+      "nets_routed": 1,
+      "nets_failed": 0,
+      "expansions": 33353,
+      "wall_s": 0.933,
+      "route_s": 0.293,
+      "astar_s": 0.142,
+      "smooth_s": 0.031,
+      "smooth_pull_s": 0.024,
+      "smooth_fit_s": 0.001,
+      "smooth_verify_s": 0.006,
+      "smooth_verify_build_s": 0.0,
+      "smooth_verify_segs": 813,
+      "pour_s": 0.482,
+      "occupancy_s": 0.145,
+      "grid_build_s": 0.0,
+      "total_s": 0.933,
+      "arcs": 1,
+      "wire_mm": 34.16,
+      "polish_s": 0.0
+    }
+  ],
+  "cache": [
+    {
+      "case": "cache-DCCF",
+      "board": "DCCF",
+      "nets": 3,
+      "fresh_s": 3.597,
+      "reused_s": 3.416,
+      "fresh_occupancy_s": 0.202,
+      "reused_occupancy_s": 0.008,
+      "speedup": 1.05
+    },
+    {
+      "case": "cache-tube111",
+      "board": "tube111",
+      "nets": 3,
+      "fresh_s": 1.992,
+      "reused_s": 1.856,
+      "fresh_occupancy_s": 0.15,
+      "reused_occupancy_s": 0.014,
+      "speedup": 1.07
+    }
+  ],
+  "placement": [
+    {
+      "case": "placement-tube111",
+      "board": "tube111",
+      "footprints": 99,
+      "iterations": 50,
+      "sim_s": 2.416,
+      "ms_per_iter": 48.313,
+      "legality_s": 0.035,
+      "legal": false,
+      "max_overlap_mm2": 0.0
+    },
+    {
+      "case": "placement-DCCF",
+      "board": "DCCF",
+      "footprints": 97,
+      "iterations": 50,
+      "sim_s": 2.091,
+      "ms_per_iter": 41.81,
+      "legality_s": 0.049,
+      "legal": false,
+      "max_overlap_mm2": 4.855
+    }
+  ],
+  "profiles": {
+    "tube111": [
+      {
+        "func": "runner.py:76:run_placement",
+        "tottime": 0.0008,
+        "cumtime": 2.9999
+      },
+      {
+        "func": "region.py:470:_run_region_simulation",
+        "tottime": 0.0096,
+        "cumtime": 2.9168
+      },
+      {
+        "func": "depenetrate.py:468:_depenetrate_labels",
+        "tottime": 0.1174,
+        "cumtime": 1.7895
+      },
+      {
+        "func": "pipeline.py:104:route_nets",
+        "tottime": 0.0013,
+        "cumtime": 1.3869
+      },
+      {
+        "func": "route_raw.py:1277:route_raw",
+        "tottime": 0.0012,
+        "cumtime": 1.3856
+      },
+      {
+        "func": "decorators.py:182:wrapper",
+        "tottime": 0.0485,
+        "cumtime": 0.7914
+      },
+      {
+        "func": "depenetrate.py:83:_score_spots",
+        "tottime": 0.0355,
+        "cumtime": 0.7351
+      },
+      {
+        "func": "depenetrate.py:564:_push_from",
+        "tottime": 0.1555,
+        "cumtime": 0.5946
+      },
+      {
+        "func": "depenetrate.py:117:_at",
+        "tottime": 0.0037,
+        "cumtime": 0.5742
+      },
+      {
+        "func": "pour.py:409:pour_corridors",
+        "tottime": 0.0006,
+        "cumtime": 0.5617
+      },
+      {
+        "func": "route_raw.py:1822:_route_one_net_timed",
+        "tottime": 0.0005,
+        "cumtime": 0.5237
+      },
+      {
+        "func": "route_raw.py:1580:_route_one_net",
+        "tottime": 0.0001,
+        "cumtime": 0.5231
+      },
+      {
+        "func": "depenetrate.py:60:_overlap_area_mm2",
+        "tottime": 0.1416,
+        "cumtime": 0.5076
+      },
+      {
+        "func": "pour.py:143:pour_copper_mask",
+        "tottime": 0.235,
+        "cumtime": 0.4571
+      },
+      {
+        "func": "depenetrate.py:147:_clean_spot",
+        "tottime": 0.0016,
+        "cumtime": 0.407
+      }
+    ],
+    "DCCF": [
+      {
+        "func": "pipeline.py:104:route_nets",
+        "tottime": 0.1017,
+        "cumtime": 2.6598
+      },
+      {
+        "func": "route_raw.py:1277:route_raw",
+        "tottime": 0.0044,
+        "cumtime": 2.5581
+      },
+      {
+        "func": "runner.py:76:run_placement",
+        "tottime": 0.0009,
+        "cumtime": 2.4664
+      },
+      {
+        "func": "region.py:470:_run_region_simulation",
+        "tottime": 0.0095,
+        "cumtime": 2.3628
+      },
+      {
+        "func": "depenetrate.py:468:_depenetrate_labels",
+        "tottime": 0.1127,
+        "cumtime": 1.2589
+      },
+      {
+        "func": "pour.py:409:pour_corridors",
+        "tottime": 0.0014,
+        "cumtime": 0.8539
+      },
+      {
+        "func": "route_raw.py:1969:_tht_sites_by_net",
+        "tottime": 0.0535,
+        "cumtime": 0.6897
+      },
+      {
+        "func": "route_raw.py:1822:_route_one_net_timed",
+        "tottime": 0.0008,
+        "cumtime": 0.6139
+      },
+      {
+        "func": "route_raw.py:1580:_route_one_net",
+        "tottime": 0.0,
+        "cumtime": 0.6131
+      },
+      {
+        "func": "depenetrate.py:564:_push_from",
+        "tottime": 0.1582,
+        "cumtime": 0.544
+      },
+      {
+        "func": "pour.py:143:pour_copper_mask",
+        "tottime": 0.3553,
+        "cumtime": 0.5363
+      },
+      {
+        "func": "obstacles.py:328:tht_drill_cells",
+        "tottime": 0.0002,
+        "cumtime": 0.4797
+      },
+      {
+        "func": "obstacles.py:337:<setcomp>",
+        "tottime": 0.3403,
+        "cumtime": 0.479
+      },
+      {
+        "func": "force.py:143:_compute_total_force",
+        "tottime": 0.2316,
+        "cumtime": 0.4622
+      },
+      {
+        "func": "decorators.py:182:wrapper",
+        "tottime": 0.0298,
+        "cumtime": 0.4484
+      }
+    ]
+  }
+}

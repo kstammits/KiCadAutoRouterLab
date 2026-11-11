@@ -29,6 +29,9 @@ FIXTURES = Path(__file__).parent / "fixtures"
 MINIMAL_PCB = FIXTURES / "minimal.kicad_pcb"
 
 
+pytestmark = pytest.mark.unit
+
+
 def _model(fps, ghosts=()):
     region = BoardRegion(
         uuid="r0",
@@ -118,15 +121,6 @@ class TestAlignConsensus:
         assert prop.deltas.get("uuid-a", (0, 0, 0))[2] == pytest.approx(0.0, abs=1.0)
         assert prop.deltas.get("uuid-e", (0, 0, 0))[2] == pytest.approx(0.0, abs=1.0)
 
-    def test_diagonal_thread_far_from_modes_untouched(self):
-        # A 30-degree thread has no mode agreement: every member sees
-        # neighbors far from both modes, so nobody moves.
-        fps = _row5(middle_angle=30.0, base_angle=30.0)
-        uuids = {fp.uuid for fp in fps}
-        model = _model(fps)
-        prop = run_placement(model, _align_only(), uuids)
-        assert prop.deltas == {}
-
     def test_ic_snaps_to_nearest_90(self):
         # Multi-pad part at 105 deg: nearest mode is 90, neighbors at 90
         # agree, so it corrects by -15 (never a 180 flip). Wide
@@ -152,17 +146,53 @@ class TestAlignConsensus:
         prop = run_placement(model, _align_only(), uuids)
         assert prop.deltas.get("uuid-c", (0, 0, 0))[2] == pytest.approx(0.0, abs=1.0)
 
-    def test_deadband_leaves_small_deviation_alone(self):
-        a, _, c = _row(middle_angle=0.0)
-        b = _placed_fp("R2", "uuid-b", 10.0, 5.0, nets=("N3", "N4"))
-        model = _model([a, b, c])
-        prop = run_placement(model, _align_only(), {"uuid-a", "uuid-b", "uuid-c"})
-        assert prop.deltas == {}
-
     def test_off_is_noop(self):
         model = _model(list(_row(middle_angle=30.0)))
         params = _align_only(align_angle_k_N=0.0, align_pos_k_N_m=0.0)
         prop = run_placement(model, params, {"uuid-a", "uuid-b", "uuid-c"})
+        assert prop.deltas == {}
+
+    @pytest.mark.parametrize("case", [
+        "diagonal_thread",  # 30-degree thread: no mode agreement
+        "deadband",  # 5-degree deviation inside the deadband
+        "neat_row",  # already straight
+        "two_part",  # two parts never form a row
+        "mixed_mode",  # middle part reads mode 90: excluded, no row
+        "diagonal_band",  # 30-degree band: no row, no angle agreement
+        "row_hold_no_leash",  # ragged row, angle-only params: no-op
+        "knobs_off",  # alignment knobs off: no-op
+    ])
+    def test_quiet_boards_stay_put(self, case):
+        if case == "diagonal_thread":
+            fps = _row5(middle_angle=30.0, base_angle=30.0)
+            params = _align_only()
+        elif case == "deadband":
+            a, _, c = _row(middle_angle=0.0)
+            b = _placed_fp("R2", "uuid-b", 10.0, 5.0, nets=("N3", "N4"))
+            fps, params = [a, b, c], _align_only()
+        elif case == "neat_row":
+            fps, params = _row4(), _row_only()
+        elif case == "two_part":
+            fps, params = _row4()[:2], _row_only()
+        elif case == "mixed_mode":
+            fps = _row4(dy=0.0)
+            fps[1] = _placed_fp("R2", "uuid-b", 10.0, 90.0, nets=("N3", "N4"))
+            fps[2] = _shifted_fp(fps[2], 0.0, 2.5)
+            params = _row_only()
+        elif case == "diagonal_band":
+            fps = [
+                _placed_fp(f"R{i + 1}", f"uuid-{c}", i * 10.0, 30.0,
+                           nets=(f"N{2 * i + 1}", f"N{2 * i + 2}"))
+                for i, c in enumerate("abc")
+            ]
+            params = _row_only()
+        elif case == "row_hold_no_leash":
+            fps, params = _row4(dy=2.5), _align_only()
+        else:
+            fps = list(_row(middle_angle=30.0))
+            params = _align_only(align_angle_k_N=0.0, align_pos_k_N_m=0.0)
+        prop = run_placement(
+            _model(fps), params, {fp.uuid for fp in fps})
         assert prop.deltas == {}
 
     def test_deterministic(self):
@@ -421,47 +451,6 @@ class TestAlignRows:
         assert "uuid-d" in prop.deltas
         assert prop.deltas["uuid-d"][0] < -1.0
         assert prop.deltas["uuid-d"][1] == pytest.approx(0.0, abs=0.3)
-
-    def test_neat_row_untouched(self):
-        fps = _row4()
-        prop = run_placement(
-            _model(fps), _row_only(), {fp.uuid for fp in fps})
-        assert prop.deltas == {}
-
-    def test_two_part_band_ignored(self):
-        fps = _row4()[:2]
-        prop = run_placement(
-            _model(fps), _row_only(), {fp.uuid for fp in fps})
-        assert prop.deltas == {}
-
-    def test_mixed_mode_band_ignored(self):
-        # Middle part reads mode 90: excluded, leaving two — no row.
-        fps = _row4(dy=0.0)
-        fps[1] = _placed_fp("R2", "uuid-b", 10.0, 90.0, nets=("N3", "N4"))
-        fps[2] = _shifted_fp(fps[2], 0.0, 2.5)
-        prop = run_placement(
-            _model(fps), _row_only(), {fp.uuid for fp in fps})
-        assert prop.deltas == {}
-
-    def test_diagonal_band_ignored(self):
-        # 30-degree thread: no member sits near a mode, so no row forms
-        # (and no angle agreement either).
-        fps = [
-            _placed_fp(f"R{i + 1}", f"uuid-{c}", i * 10.0, 30.0,
-                       nets=(f"N{2 * i + 1}", f"N{2 * i + 2}"))
-            for i, c in enumerate("abc")
-        ]
-        prop = run_placement(
-            _model(fps), _row_only(), {fp.uuid for fp in fps})
-        assert prop.deltas == {}
-
-    def test_row_hold_needs_leash(self):
-        # Row targets ride the leash anchors: pos k off means no-op even
-        # with a ragged row (angle-only params).
-        fps = _row4(dy=2.5)
-        prop = run_placement(
-            _model(fps), _align_only(), {fp.uuid for fp in fps})
-        assert prop.deltas == {}
 
     def test_frozen_row_frame_survives_churn(self):
         from kicad_autorouter.placement.align import (

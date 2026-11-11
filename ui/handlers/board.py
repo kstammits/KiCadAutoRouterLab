@@ -7,8 +7,6 @@ from __future__ import annotations
 
 import json
 import logging
-import tempfile
-import tomllib
 from pathlib import Path
 
 from ui.server import (
@@ -29,9 +27,8 @@ from ui.server import (
 from kicad_autorouter.board_model import copper_layers as tree_copper_layers
 from kicad_autorouter.io import collapse_to_two_layer
 from kicad_autorouter.placement import PlacementProposal
-from kicad_autorouter.sexpr import parse_file, to_sexpr
+from kicad_autorouter.sexpr import to_sexpr
 from kicad_autorouter.svg_render import render_board_svg
-from kicad_autorouter.validate import refill_zones
 from kicad_autorouter.strategy import (
     MODES,
     MODE_PRESETS,
@@ -42,9 +39,6 @@ from kicad_autorouter.strategy import (
 from ui.server_jobs import _drc_lock, _run_drc_now
 
 logger = logging.getLogger(__name__)
-
-# `tempfile`, `tomllib`, `parse_file`, `refill_zones` are used by /api/drc
-# and /api/board.svg keep-alive paths; keep imports for signature parity.
 
 
 def handle_get(path, qs, handler):

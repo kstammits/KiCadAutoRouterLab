@@ -9,69 +9,14 @@ exercises all three stages for real.
 
 import pytest
 
-from kicad_autorouter.board_model import NetConnection
-from kicad_autorouter.io import add_footprint_to_tree
-from kicad_autorouter.routing.pipeline import RoutingParams
 from kicad_autorouter.routing.retry import route_with_retry
 from kicad_autorouter.routing.router import RoutingCancelled
-from kicad_autorouter.sexpr import SExpr, parse_file
 
-from .helpers import make_fp, stamp_edge_cuts
-from .test_pour import _board, _track
-
-FIXTURES = "tests/fixtures"
-
-
-def _params(**kw):
-    base = dict(grid_resolution_mm=0.5, run_drc=False,
-                strip_gnd_blockers=False, stitch_gnd_vias=False)
-    base.update(kw)
-    return RoutingParams(**base)
-
-
-def _tree_for(model, footprints=()):
-    tree = parse_file(f"{FIXTURES}/minimal.kicad_pcb")
-    for fp, lib in footprints:
-        tree = add_footprint_to_tree(tree, fp, lib)
-    tree = stamp_edge_cuts(tree, half=25.0)
-    for t in model.tracks:
-        tree = SExpr(tree.head, tree.args + (SExpr("segment", (
-            SExpr("start", (t.start.x_mm, t.start.y_mm)),
-            SExpr("end", (t.end.x_mm, t.end.y_mm)),
-            SExpr("width", (t.width_mm,)),
-            SExpr("layer", (t.layer,)),
-            SExpr("net", (t.net_name,)),
-        )),))
-    return tree
-
-
-def _easy_board():
-    fa = make_fp("A", "uuid-a", 3.0, 6.0, ("S",), hw=0.25, hh=0.25)
-    fb = make_fp("B", "uuid-b", 17.0, 6.0, ("S",), hw=0.25, hh=0.25)
-    from dataclasses import replace
-    model = _board(fps=[fa, fb], edge=25.0)
-    model = replace(model, nets={
-        "S": (NetConnection("A", "1"), NetConnection("B", "1")),
-    })
-    return model, _tree_for(model, [(fa, "Test:R_0805"), (fb, "Test:R_0805")])
-
-
-def _wall_board():
-    fa = make_fp("A", "uuid-a", 3.0, 6.0, ("S",), hw=0.25, hh=0.25)
-    fb = make_fp("B", "uuid-b", 17.0, 6.0, ("S",), hw=0.25, hh=0.25)
-    from dataclasses import replace
-    model = _board(
-        fps=[fa, fb],
-        tracks=[
-            _track(5.0, -30.0, 5.0, 30.0, "GND", layer="F.Cu", width=0.5),
-            _track(5.0, -30.0, 5.0, 30.0, "GND", layer="B.Cu", width=0.5),
-        ],
-        edge=25.0,
-    )
-    model = replace(model, nets={
-        "S": (NetConnection("A", "1"), NetConnection("B", "1")),
-    })
-    return model, _tree_for(model, [(fa, "Test:R_0805"), (fb, "Test:R_0805")])
+from ._shove_boards import (
+    easy_board as _easy_board,
+    retry_wall_board as _wall_board,
+    shove_params as _params,
+)
 
 
 def _fake_result(routed, failed, reasons=None, tree=None):
@@ -85,42 +30,77 @@ def _fake_result(routed, failed, reasons=None, tree=None):
 
 @pytest.mark.unit
 class TestRouteWithRetry:
-    def test_clean_board_single_pass_no_retries(self):
-        model, tree = _easy_board()
-        params = _params()
-        result, info = route_with_retry(model, tree, ["S"], set(), params=params)
-        assert result.nets_routed == 1 and result.nets_failed == 0
-        assert info["refine_result"] is None
-        assert info["refine_adopted"] is False
-        assert info["shove_reports"] == {}
-        assert info["trial_result"] is result
+    @pytest.mark.parametrize("case", [
+        # Real route, clean board: one pass, trial stands.
+        dict(board="easy", nets=["S"], trial=None, params={}),
+        # Real route, walled board, refine seeds on: refine gated off,
+        # shove finds nothing, signal stage still runs for real.
+        dict(board="wall", nets=["S"], trial=None,
+             params={"refine_seeds": 1}, expect_failed=1,
+             shove_runs=True, signal_runs=True),
+        # Fake failing trial, stages off: trial returns as-is.
+        dict(board="easy", nets=["S"], trial=(0, 1, {"S": "no path"}),
+             params={"retry_stages": False}),
+        # Fake clean trial: no refine, no repair, exactly one call.
+        dict(board="easy", nets=["A", "B"], trial=(2, 0, {}), params={}),
+    ])
+    def test_no_retry_pass(self, case):
+        import unittest.mock as mock
 
-    def test_refine_gated_by_seeds(self):
         import kicad_autorouter.routing.retry as retry_mod
 
-        model, tree = _wall_board()
-        params = _params(refine_seeds=1)
+        board = _easy_board() if case["board"] == "easy" else _wall_board()
+        model, tree = board
+        params = _params(**case["params"])
+        trial = None
+        if case["trial"] is not None:
+            trial = _fake_result(*case["trial"][:2],
+                                 dict(case["trial"][2]), tree)
         calls = []
         real_route = retry_mod.route_nets
 
         def spy_route(**kw):
             calls.append(kw["net_names"])
-            return real_route(**kw)
+            if trial is None:
+                return real_route(**kw)
+            return (trial, None, None)
 
-        import unittest.mock as mock
+        if case.get("shove_runs"):
+            shove_patch = mock.patch.object(
+                retry_mod, "retry_failed_with_shove",
+                return_value=(model, tree, {}))
+        else:
+            shove_patch = mock.patch.object(
+                retry_mod, "retry_failed_with_shove",
+                side_effect=AssertionError("must not run"))
+        # The gated case exercises the real signal stage; the rest forbid it.
+        signal_patch = mock.patch.object(
+            retry_mod, "retry_failed_with_signal_shove",
+            side_effect=AssertionError("must not run"))
+        if case.get("signal_runs"):
+            signal_patch = mock.patch.object(
+                retry_mod, "retry_failed_with_signal_shove",
+                wraps=retry_mod.retry_failed_with_signal_shove)
         with mock.patch.object(retry_mod, "route_nets", spy_route):
             with mock.patch.object(
                     retry_mod, "refine_routing",
                     side_effect=AssertionError("must not run")):
-                with mock.patch.object(
-                        retry_mod, "retry_failed_with_shove",
-                        return_value=(model, tree, {})):
-                    result, info = route_with_retry(
-                        model, tree, ["S"], set(), params=params)
-        assert result.nets_failed == 1
+                with shove_patch:
+                    with signal_patch:
+                        result, info = route_with_retry(
+                            model, tree, case["nets"], set(), params=params)
+        assert calls == [case["nets"]]
         assert info["refine_result"] is None
+        assert info["refine_adopted"] is False
+        assert info["repair_reports"] == {}
         assert info["shove_reports"] == {}
-        assert calls == [["S"]]
+        if not case.get("signal_runs"):
+            assert info["signal_shove_reports"] == {}
+        if trial is None:
+            assert result is info["trial_result"]
+            assert result.nets_failed == case.get("expect_failed", 0)
+        else:
+            assert result is trial
 
     def test_refine_adopted_only_on_strict_win(self):
         import unittest.mock as mock
@@ -255,42 +235,6 @@ class TestRouteWithRetry:
         assert result.nets_failed == 1
         assert result.failed_reasons == {"B": "walled"}
 
-    def test_retry_stages_off_returns_trial_untouched(self):
-        # Master flag off: trial 0 returns as-is, no refine/repair/shove
-        # runs at all (clean single pass, UI parity path).
-        import unittest.mock as mock
-
-        import kicad_autorouter.routing.retry as retry_mod
-
-        model, tree = _easy_board()
-        params = _params(retry_stages=False)
-        trial = _fake_result(0, 1, {"S": "no path"}, tree)
-        calls = []
-
-        def spy_route(**kw):
-            calls.append(kw["net_names"])
-            return (trial, None, None)
-
-        with mock.patch.object(retry_mod, "route_nets", spy_route):
-            with mock.patch.object(
-                    retry_mod, "refine_routing",
-                    side_effect=AssertionError("must not run")):
-                with mock.patch.object(
-                        retry_mod, "retry_failed_with_shove",
-                        side_effect=AssertionError("must not run")):
-                    with mock.patch.object(
-                            retry_mod, "retry_failed_with_signal_shove",
-                            side_effect=AssertionError("must not run")):
-                        result, info = route_with_retry(
-                            model, tree, ["S"], set(), params=params)
-        assert result is trial
-        assert calls == [["S"]]
-        assert info["refine_result"] is None
-        assert info["refine_adopted"] is False
-        assert info["repair_reports"] == {}
-        assert info["shove_reports"] == {}
-        assert info["signal_shove_reports"] == {}
-
     def test_recovery_boundary_no_core_imports_recovery(self):
         # One-way dependency, enforced: importing engine core must not
         # pull in the recovery layer (same package by history, not by
@@ -315,38 +259,6 @@ class TestRouteWithRetry:
         proc = subprocess.run(
             [sys.executable, "-c", code], capture_output=True, text=True)
         assert proc.returncode == 0, proc.stderr
-
-    def test_no_casualties_no_extra_pass(self):
-        # Clean trial: no refine, no repair, exactly one route_nets call.
-        import unittest.mock as mock
-
-        import kicad_autorouter.routing.retry as retry_mod
-
-        model, tree = _easy_board()
-        params = _params()
-        trial = _fake_result(2, 0, {}, tree)
-        calls = []
-
-        def spy_route(**kw):
-            calls.append(kw["net_names"])
-            return (trial, None, None)
-
-        with mock.patch.object(retry_mod, "route_nets", spy_route):
-            with mock.patch.object(
-                    retry_mod, "refine_routing",
-                    side_effect=AssertionError("must not run")):
-                with mock.patch.object(
-                        retry_mod, "retry_failed_with_shove",
-                        side_effect=AssertionError("must not run")):
-                    with mock.patch.object(
-                            retry_mod, "retry_failed_with_signal_shove",
-                            side_effect=AssertionError("must not run")):
-                        result, info = route_with_retry(
-                            model, tree, ["A", "B"], set(), params=params)
-        assert calls == [["A", "B"]]
-        assert info["refine_adopted"] is False
-        assert info["repair_reports"] == {}
-        assert result is trial
 
     def test_cancel_propagates(self):
         model, tree = _easy_board()

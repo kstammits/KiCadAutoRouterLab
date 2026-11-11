@@ -23,6 +23,9 @@ from kicad_autorouter.routing.router import (
 )
 
 
+pytestmark = pytest.mark.unit
+
+
 def _grid(w=80, h=40):
     return RoutingGrid(
         resolution_mm=1.0, layers=("F.Cu", "B.Cu"),
@@ -509,3 +512,156 @@ class TestFailureDiagnostics:
             corridor_enabled=router.corridor_enabled)
         assert any("per-search cap" in h for h in diag["hints"])
         assert not any("sealed by obstacles" in h for h in diag["hints"])
+
+
+# ---------------------------------------------------------------------------
+# A* behavioral properties + foreign-THT hard-exclusion stamp contract.
+# (Folded from test_routing_astar.py and test_routing_exclusion_guard.py:
+# same synthetic grids, same search layer. All fast, marked unit.)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestAStar:
+    """A* search algorithm behavioral properties."""
+
+    def test_secondary_steers_but_never_traps(self, routing_setup):
+        """A per-net halo steers the path around foreign copper without
+        blocking: terminals stay reachable even inside halo cells."""
+        grid, cost_grid, router = routing_setup
+        # Long free horizontal run to route across
+        for r in range(grid.height_cells):
+            free_cols = [c for c in range(grid.width_cells) if cost_grid[0, r, c] == 0]
+            if len(free_cols) >= 40:
+                c1, c2 = free_cols[0], free_cols[39]
+                mid = (c1 + c2) // 2
+                secondary = np.zeros_like(cost_grid)
+                # Impassable-looking disc (would trap if it blocked)
+                secondary[0, r - 3:r + 4, mid - 3:mid + 4] = 500
+                result = router.route([(c1, r, 0), (c2, r, 0)], secondary)
+                assert result.success
+                assert result.path[0] == (c1, r, 0)
+                assert result.path[-1] == (c2, r, 0)
+                # Path detours around the penalized disc center
+                assert (mid, r, 0) not in result.path
+                return
+        pytest.skip("No long free row found")
+
+    def test_a_star_returns_full_path_chain(self, routing_setup):
+        """Regression: parent pointers must be recorded so reconstruction
+        yields the complete start→goal chain, not just the final step."""
+        grid, cost_grid, router = routing_setup
+        # Two free cells far apart on the same row band
+        for r in range(grid.height_cells):
+            free_cols = [c for c in range(grid.width_cells) if cost_grid[0, r, c] == 0]
+            if len(free_cols) >= 30:
+                c1, c2 = free_cols[0], free_cols[29]
+                result = router._a_star((c1, r, 0), (c2, r, 0))
+                assert result.success
+                assert result.path[0] == (c1, r, 0)
+                assert result.path[-1] == (c2, r, 0)
+                assert len(result.path) > 2
+                # Every step moves to a 4-neighbor (or layer change)
+                for (a, b) in zip(result.path, result.path[1:]):
+                    dc, dr, dl = abs(a[0] - b[0]), abs(a[1] - b[1]), abs(a[2] - b[2])
+                    assert (dc + dr == 1 and dl == 0) or (dc == 0 and dr == 0 and dl == 1)
+                return
+        pytest.skip("No long free row found")
+
+
+def _tht_victim_board(px=0.0, py=0.0, size=2.0):
+    """One THT pad (net B) on a bare board; routed net is A (no pads)."""
+    from dataclasses import replace
+
+    from kicad_autorouter.board_model import Pad, Point
+
+    from .helpers import make_board, make_fp
+
+    fp = make_fp("J1", "uuid-j1", px, py, ("B",), tht=True)
+    pads = []
+    for p in fp.pads:
+        pads.append(
+            Pad(
+                number=p.number,
+                net_name=p.net_name,
+                position=p.position,
+                size_mm=(size, size),
+                shape="circle",
+                angle_deg=0.0,
+                pad_type="thru_hole",
+                drill_mm=0.8,
+                layers=p.layers,
+            )
+        )
+    fp = replace(fp, pads=tuple(pads))
+    return make_board([fp], edge=30.0)
+
+
+@pytest.mark.unit
+def test_tht_exclusion_covers_copper_plus_track_plus_guard():
+    """Every cell touching foreign copper (at routed width) is hard-excluded.
+
+    Center sampling can miss boundary cells by up to half a diagonal, and
+    a track whose centerline threads such a cell still overlaps copper by
+    up to its half-width. The hard-core tier must therefore cover copper
+    + the routed track half-width + the sampling miss distance — checked
+    here for signal (0.125) and power (0.25) widths.
+    """
+    import math
+
+    from kicad_autorouter.routing.grid import (
+        board_to_grid,
+        create_grid_from_model,
+        grid_to_board,
+    )
+    from kicad_autorouter.routing.obstacles import build_fanout_cost
+    from kicad_autorouter.routing.router import SECONDARY_BLOCKED
+
+    model = _tht_victim_board()
+    grid = create_grid_from_model(model, resolution_mm=0.1, margin_mm=2.0)
+    res = grid.resolution_mm
+    guard = res * math.sqrt(2) / 2.0
+    copper_half = 1.0  # size 2.0 disc
+    for track_half in (0.125, 0.25):
+        secondary = build_fanout_cost(
+            model, grid, "A", clearance_mm=0.2, track_half_mm=track_half)
+        assert secondary.shape[0] == len(grid.layers)
+        inner = copper_half + track_half + guard
+        for layer in range(secondary.shape[0]):
+            for r in range(grid.height_cells):
+                for c in range(grid.width_cells):
+                    x, y = grid_to_board(grid, c, r)
+                    if math.hypot(x, y) <= inner + 1e-9:
+                        assert secondary[layer, r, c] >= SECONDARY_BLOCKED, (
+                            f"track_half={track_half} cell {(c, r)} at dist "
+                            f"{math.hypot(x, y):.4f} not hard-excluded")
+            # ... and the guard must not balloon: cells well clear stay soft.
+            c, r = board_to_grid(grid, inner + 0.3, 0.0)
+            if 0 <= r < grid.height_cells and 0 <= c < grid.width_cells:
+                assert secondary[layer, r, c] < SECONDARY_BLOCKED
+
+
+@pytest.mark.unit
+def test_tht_exclusion_scales_with_track_width():
+    """A wide track excludes strictly more cells than a narrow one."""
+    from kicad_autorouter.routing.grid import create_grid_from_model
+    from kicad_autorouter.routing.obstacles import build_fanout_cost
+    from kicad_autorouter.routing.router import SECONDARY_BLOCKED
+
+    model = _tht_victim_board()
+    grid = create_grid_from_model(model, resolution_mm=0.1, margin_mm=2.0)
+    narrow = build_fanout_cost(
+        model, grid, "A", clearance_mm=0.2, track_half_mm=0.125)
+    wide = build_fanout_cost(
+        model, grid, "A", clearance_mm=0.2, track_half_mm=0.25)
+    assert (wide >= SECONDARY_BLOCKED).sum() > (
+        narrow >= SECONDARY_BLOCKED).sum()
+
+
+@pytest.mark.unit
+def test_tht_exclusion_value_still_impassable():
+    """The guarded tier keeps impassable semantics for the search."""
+    from kicad_autorouter.routing.obstacles import THT_EXCLUSION
+    from kicad_autorouter.routing.router import SECONDARY_BLOCKED
+
+    assert THT_EXCLUSION >= SECONDARY_BLOCKED

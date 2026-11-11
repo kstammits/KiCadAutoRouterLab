@@ -16,7 +16,6 @@ Figures (all PNG, committed under `docs/figures/`):
     fig_repulsion_vs_distance.png  Coulomb k/d^2 vs constant attraction + equilibrium
     fig_attraction_fanout.png       signal / power /(fanout-1) / local decap-chip link
     fig_wall_profile.png            unified wall law F=k*(1-s/h)^p, halo variants
-    fig_wall_exponent.png           wall-law exponent F=k*(1-s/h)^p comparison
     fig_ghost_pullin.png            ghost pull-in vs per-spring weight ka
     fig_overlap_heatmap.png         overlap resolution vs wall_k_N and damping
     fig_damping_decay.png           implicit-Euler velocity decay for several damping values
@@ -208,34 +207,6 @@ def fig_mass_acceleration(p: PlacementParams, out: pathlib.Path, dpi: int) -> pa
     plt.close(fig)
     # Silence unused-variable lint for the anchor mass (kept for documentation).
     _ = m_0805
-    return dest
-
-
-def fig_wall_exponent(p: PlacementParams, out: pathlib.Path, dpi: int) -> pathlib.Path:
-    """Wall-law exponent comparison: F = k*(1-s/h)^p for p in {1, 1.5, 2, 3}.
-
-    p > 1 softens the far-halo approach (gentler near-miss) and stiffens
-    deep penetration; all curves meet at k_wall at contact (s=0).
-    """
-    k_wall = p.wall_k_N
-    halo_mm = p.wall_halo_m * 1000.0
-    s_mm = np.linspace(halo_mm, -halo_mm, 400)
-    fig, ax = plt.subplots(figsize=(10, 5))
-    for exp in (1.0, 1.5, 2.0, 3.0):
-        f = np.array([_wall_mag(k_wall, s, halo_mm, exp) for s in s_mm])
-        lw = 2.5 if exp == 1.0 else 1.4
-        ax.plot(s_mm, f * 1000, linewidth=lw,
-                label=f"p = {exp:g}" + (" (default)" if exp == 1.0 else ""))
-    ax.axvline(0, color="k", linestyle=":", alpha=0.5, label="contact (s=0)")
-    ax.set_xlabel("Signed separation s (mm) [gap +  ←→  - penetration]")
-    ax.set_ylabel("Force magnitude (mN)")
-    ax.set_title(f"Wall-Law Exponent: F = k·(1−s/h)^p (k={k_wall * 1000:.0f} mN, h={halo_mm:.0f} mm)")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    fig.tight_layout()
-    dest = out / "fig_wall_exponent.png"
-    _save_optimized(fig, dest, dpi)
-    plt.close(fig)
     return dest
 
 
@@ -453,7 +424,6 @@ FIGURES = (
     ("repulsion", fig_repulsion_vs_distance),
     ("fanout", fig_attraction_fanout),
     ("wall", fig_wall_profile),
-    ("wall_exponent", fig_wall_exponent),
     ("ghost", fig_ghost_pullin),
     ("heatmap", fig_overlap_heatmap),
     ("damping", fig_damping_decay),

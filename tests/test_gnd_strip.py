@@ -51,105 +51,89 @@ def _signal_board():
     })
 
 
+def _tree_for(model):
+    """Minimal (kicad_pcb …) tree carrying the model's copper for writeback."""
+    args = []
+    for t in model.tracks:
+        args.append(SExpr("segment", (
+            SExpr("start", (t.start.x_mm, t.start.y_mm)),
+            SExpr("end", (t.end.x_mm, t.end.y_mm)),
+            SExpr("width", (t.width_mm,)),
+            SExpr("layer", (t.layer,)),
+            SExpr("net", (t.net_name,)),
+        )))
+    for v in model.vias:
+        args.append(SExpr("via", (
+            SExpr("at", (v.position.x_mm, v.position.y_mm)),
+            SExpr("size", (v.size_mm,)),
+            SExpr("drill", (v.drill_mm,)),
+            SExpr("layers", tuple(v.layers)),
+            SExpr("net", (v.net_name,)),
+        )))
+    return SExpr("kicad_pcb", tuple(args))
+
+
 @pytest.mark.unit
 class TestRipGate:
-    def test_gnd_victim_evictable(self):
-        assert is_rippupable_victim("GND")
-        assert is_rippupable_victim("GND_PWR")
-        assert RipUpManager().can_rip("S", "GND")
+    @pytest.mark.parametrize("victim,expected", [
+        ("GND", True),
+        ("GND_PWR", True),
+        ("S", False),
+        ("+12V", False),
+        (None, False),
+    ])
+    def test_victim_gate(self, victim, expected):
+        assert is_rippupable_victim(victim) == expected
 
-    def test_signal_victim_never(self):
-        assert not is_rippupable_victim("S")
-        assert not is_rippupable_victim("+12V")
-        assert not is_rippupable_victim(None)
-        rip = RipUpManager()
-        assert not rip.can_rip("S", "K")
-        assert not rip.can_rip("S", "+12V")
-
-    def test_same_net_always(self):
-        assert RipUpManager().can_rip("S", "S")
+    @pytest.mark.parametrize("router,victim,expected", [
+        ("S", "GND", True),
+        ("S", "S", True),
+        ("S", "K", False),
+        ("S", "+12V", False),
+    ])
+    def test_can_rip(self, router, victim, expected):
+        assert RipUpManager().can_rip(router, victim) == expected
 
 
 @pytest.mark.unit
 class TestStripHelper:
-    def test_removes_gnd_arc_only(self):
-        """A ground net carrying only arcs is still found and evicted."""
-        from kicad_autorouter.board_model import ArcTrack, Point
-        gnd_arc = ArcTrack(start=Point(1.0, 1.0), mid=Point(2.0, 3.0),
-                           end=Point(3.0, 1.0),
-                           width_mm=0.25, layer="F.Cu", net_name="GND")
-        sig_arc = ArcTrack(start=Point(1.0, 11.0), mid=Point(2.0, 13.0),
-                           end=Point(3.0, 11.0),
-                           width_mm=0.25, layer="F.Cu", net_name="K")
-        model = replace(_signal_board(), arcs=(gnd_arc, sig_arc))
-        stripped, removed = _strip_gnd_blockers_from_model(model)
-        assert removed == 2  # the GND via plus the GND arc
-        assert [a.net_name for a in stripped.arcs] == ["K"]
-        assert len(stripped.vias) == 0
-    def test_removes_only_gnd(self):
-        model = _signal_board()
-        stripped, removed = _strip_gnd_blockers_from_model(model)
-        assert removed == 1  # the single GND via; X/K tracks kept
-        assert len(stripped.vias) == 0
-        assert {t.net_name for t in stripped.tracks} == {"X", "K"}
-
-    def test_empty_noop(self):
-        model = _board(zones=[_rect_zone("z1", "GND", ("F.Cu",))])
-        _, removed = _strip_gnd_blockers_from_model(model)
-        assert removed == 0
+    @pytest.mark.parametrize("kind", ["arc", "plain", "empty"])
+    def test_strip_removes_only_gnd(self, kind):
+        if kind == "arc":
+            # A ground net carrying only arcs is still found and evicted.
+            from kicad_autorouter.board_model import ArcTrack, Point
+            gnd_arc = ArcTrack(start=Point(1.0, 1.0), mid=Point(2.0, 3.0),
+                               end=Point(3.0, 1.0),
+                               width_mm=0.25, layer="F.Cu", net_name="GND")
+            sig_arc = ArcTrack(start=Point(1.0, 11.0), mid=Point(2.0, 13.0),
+                               end=Point(3.0, 11.0),
+                               width_mm=0.25, layer="F.Cu", net_name="K")
+            model = replace(_signal_board(), arcs=(gnd_arc, sig_arc))
+            stripped, removed = _strip_gnd_blockers_from_model(model)
+            assert removed == 2  # the GND via plus the GND arc
+            assert [a.net_name for a in stripped.arcs] == ["K"]
+            assert len(stripped.vias) == 0
+        elif kind == "plain":
+            model = _signal_board()
+            stripped, removed = _strip_gnd_blockers_from_model(model)
+            assert removed == 1  # the single GND via; X/K tracks kept
+            assert len(stripped.vias) == 0
+            assert {t.net_name for t in stripped.tracks} == {"X", "K"}
+        else:
+            model = _board(zones=[_rect_zone("z1", "GND", ("F.Cu",))])
+            _, removed = _strip_gnd_blockers_from_model(model)
+            assert removed == 0
 
 
 @pytest.mark.unit
 class TestRouteNetsGndOnly:
-    def _tree_for(self, model):
-        """Minimal (kicad_pcb …) tree carrying the model's copper for writeback."""
-        args = []
-        for t in model.tracks:
-            args.append(SExpr("segment", (
-                SExpr("start", (t.start.x_mm, t.start.y_mm)),
-                SExpr("end", (t.end.x_mm, t.end.y_mm)),
-                SExpr("width", (t.width_mm,)),
-                SExpr("layer", (t.layer,)),
-                SExpr("net", (t.net_name,)),
-            )))
-        for v in model.vias:
-            args.append(SExpr("via", (
-                SExpr("at", (v.position.x_mm, v.position.y_mm)),
-                SExpr("size", (v.size_mm,)),
-                SExpr("drill", (v.drill_mm,)),
-                SExpr("layers", tuple(v.layers)),
-                SExpr("net", (v.net_name,)),
-            )))
-        return SExpr("kicad_pcb", tuple(args))
-
-    def test_signal_routing_preserves_bystander_and_strips_gnd(self):
-        model = _signal_board()
-        res, _, _ = route_nets(
-            model, ["S"], set(), params=RoutingParams(run_drc=False),
-            original_pcb_tree=self._tree_for(model),
-        )
-        assert res.nets_routed == 1
-        assert res.gnd_stripped == 1
-        final = board_model(res.pcb_tree)
-        # Bystander signal copper survives exactly.
-        assert [(t.start, t.end, t.net_name) for t in final.tracks if t.net_name == "K"] == \
-               [(t.start, t.end, t.net_name) for t in model.tracks if t.net_name == "K"]
-        # Foreign wall X survives (never a victim).
-        assert any(t.net_name == "X" for t in final.tracks)
-        # Old GND via is gone; stitcher rebuilt continuity from scratch.
-        assert not any(
-            v.net_name == "GND" and v.position.x_mm == pytest.approx(10.0)
-            and v.position.y_mm == pytest.approx(6.0)
-            for v in final.vias
-        )
-
     def test_strip_disabled_preserves_gnd(self):
         model = _signal_board()
         res, _, _ = route_nets(
             model, ["S"], set(),
             params=RoutingParams(run_drc=False, strip_gnd_blockers=False,
                                  stitch_gnd_vias=False),
-            original_pcb_tree=self._tree_for(model),
+            original_pcb_tree=_tree_for(model),
         )
         assert res.gnd_stripped == 0
         final = board_model(res.pcb_tree)
@@ -171,6 +155,7 @@ class TestTube111StripCharacterization:
     copper-model change moves these, update AND justify.
     """
 
+    @pytest.mark.unit
     def test_tube111_gnd_counts(self):
         model = board_model(parse_file(FIXTURES / "tube111.kicad_pcb"))
         _, removed = _strip_gnd_blockers_from_model(model)

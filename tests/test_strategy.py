@@ -16,6 +16,9 @@ from kicad_autorouter.strategy import (
 )
 
 
+pytestmark = pytest.mark.unit
+
+
 def test_infer_table():
     assert infer_mode(()) == "two-layer"
     assert infer_mode(("F.Cu",)) == "two-layer"

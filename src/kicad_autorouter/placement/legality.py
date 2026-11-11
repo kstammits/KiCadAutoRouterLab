@@ -36,7 +36,7 @@ class LegalityReport:
     overlapping_pairs: Tuple[Tuple[str, str, float], ...]  # (uuid_a, uuid_b, area_mm2), sorted
     max_wall_penetration_mm: float
     wall_violations: Tuple[Tuple[str, float], ...]  # (uuid, depth_mm), sorted
-    exempt_pairs: Tuple[Tuple[str, str], ...]  # ghost-locked overlaps seen but exempt
+    exempt_pairs: Tuple[Tuple[str, str], ...]  # ghost-involved overlaps seen but exempt
 
 
 def _get_footprint_type(fp: Footprint) -> str:
@@ -175,12 +175,12 @@ def _check_pairwise_overlaps(
 
     Same-layer pairs use courtyard-vs-courtyard as before. Cross-layer pairs
     of real footprints use pin-vs-opposite-courtyard (bodies stack, THT pins
-    don't); pairs involving ghosts keep the courtyard test. Layers come from
+    don't); pairs involving ghosts are exempt (audit only). Layers come from
     the posed (moved) model.
 
     Returns:
         overlapping_pairs: list of (uuid_a, uuid_b, area_mm2) where area > tolerance
-        exempt_pairs: list of (ghost_uuid, locked_uuid) that overlap but are exempt
+        exempt_pairs: list of (uuid_a, uuid_b) ghost-involved overlaps seen but exempt
         max_overlap: maximum overlap area found
     """
     overlapping_pairs = []
@@ -255,9 +255,11 @@ def _check_pairwise_overlaps(
                 if type_a == "locked" and type_b == "locked":
                     continue
 
-                # Ghost-locked pairs are exempt by design
-                if (type_a == "ghost" and type_b == "locked") or (type_a == "locked" and type_b == "ghost"):
-                    # Check if they actually overlap for audit
+                # Ghost-involved pairs are exempt by design: ghosts are
+                # placement-only pseudo-parts (KiCad DRC strips them), so
+                # an attractor square sitting on its own target is not a
+                # real collision. Recorded for audit, never illegal.
+                if type_a == "ghost" or type_b == "ghost":
                     if not pa.is_empty and not pb.is_empty:
                         inter = pa.intersection(pb)
                         if not inter.is_empty and inter.area > 1e-12:
@@ -266,7 +268,7 @@ def _check_pairwise_overlaps(
 
                 # Cross-layer real footprints: bodies stack freely, so the
                 # courtyard test is replaced by THT-pin-vs-opposite-body.
-                # Ghosts keep the courtyard test (no pads to measure).
+                # Ghosts never reach this branch (exempt above).
                 la = layers.get(ua, "")
                 lb = layers.get(ub, "")
                 if la and lb and la != lb and type_a != "ghost" and type_b != "ghost":

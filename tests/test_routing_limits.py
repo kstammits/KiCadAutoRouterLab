@@ -23,34 +23,13 @@ from kicad_autorouter.board_model import (
 )
 from kicad_autorouter.io import parse_file
 from kicad_autorouter.routing.pipeline import RoutingParams, route_nets
-from tests.helpers import make_fp
+from tests.helpers import ladder_board as _ladder, make_fp
 
 FIXTURES = Path(__file__).parent / "fixtures"
 DCCF_PCB = FIXTURES / "DCCF.sved.kicad_pcb"
 
 
-def _ladder(n_pads: int, net: str = "BIG") -> BoardModel:
-    """One single-pad footprint per terminal, spread along x."""
-    fps = [
-        make_fp(f"U{i}", f"uuid-big-{i:03d}", x=float(i) * 4.0, nets=(net,))
-        for i in range(n_pads)
-    ]
-    extent = n_pads * 4.0 + 10.0
-    return BoardModel(
-        footprints=tuple(fps),
-        keepout_zones=(),
-        nets={net: tuple(NetConnection(ref=f"U{i}", pad_number="1") for i in range(n_pads))},
-        by_ref={fp.ref: fp for fp in fps},
-        edge_cuts=(
-            (Point(0.0, 0.0), Point(extent, 0.0)),
-            (Point(extent, 0.0), Point(extent, extent)),
-            (Point(extent, extent), Point(0.0, extent)),
-            (Point(0.0, extent), Point(0.0, 0.0)),
-        ),
-        footprint_region={fp.uuid: 0 for fp in fps},
-    )
-
-
+@pytest.mark.unit
 def test_massive_net_routes_piecemeal():
     model = _ladder(40)
     params = RoutingParams(run_drc=False, stitch_gnd_vias=False)
@@ -64,6 +43,7 @@ def test_massive_net_routes_piecemeal():
     assert elapsed < 120, f"chunked route took {elapsed:.1f}s"
 
 
+@pytest.mark.unit
 def test_massive_net_fail_fast_when_chunking_disabled():
     model = _ladder(40)
     params = RoutingParams(run_drc=False, stitch_gnd_vias=False,
@@ -79,6 +59,7 @@ def test_massive_net_fail_fast_when_chunking_disabled():
     assert elapsed < 30, f"guard must fail fast, took {elapsed:.1f}s"
 
 
+@pytest.mark.unit
 def test_cap_boundary_and_opt_out():
     small = _ladder(3)
     # At the cap: no guard failure (may route or fail on merit, but not
@@ -116,6 +97,7 @@ def test_cap_boundary_and_opt_out():
     assert "max_terminals_per_net" not in res.failed_reasons.get("BIG", "")
 
 
+@pytest.mark.unit
 def test_params_round_trip_terminal_caps():
     params = RoutingParams(max_terminals_per_net=7, piecemeal_chunk_terminals=5)
     rt = RoutingParams.from_dict(params.to_dict())
@@ -162,6 +144,7 @@ def _walled_board() -> BoardModel:
     )
 
 
+@pytest.mark.unit
 def test_per_net_budget_fails_fast_with_reason():
     model = _walled_board()
     params = RoutingParams(run_drc=False, stitch_gnd_vias=False,
@@ -178,6 +161,7 @@ def test_per_net_budget_fails_fast_with_reason():
     assert elapsed < 30
 
 
+@pytest.mark.unit
 def test_per_net_budget_zero_disables():
     model = _ladder(2)
     params = RoutingParams(run_drc=False, stitch_gnd_vias=False,
@@ -187,6 +171,7 @@ def test_per_net_budget_zero_disables():
     assert "max_expansions_per_net" not in result.failed_reasons.get("BIG", "")
 
 
+@pytest.mark.unit
 def test_per_net_budget_generous_leaves_normal_nets_alone():
     model = _ladder(2)
     params = RoutingParams(run_drc=False, stitch_gnd_vias=False)
@@ -195,6 +180,7 @@ def test_per_net_budget_generous_leaves_normal_nets_alone():
     assert result.nets_routed == 1
 
 
+@pytest.mark.unit
 def test_per_net_budget_round_trip():
     params = RoutingParams(max_expansions_per_net=123)
     assert RoutingParams.from_dict(params.to_dict()).max_expansions_per_net == 123

@@ -141,7 +141,7 @@ sub-contacts cannot inflate one pair's penalty.
 
 All response graphs are generated from the engine's live defaults with
 `python scripts/plot_force_laws.py --outdir docs/figures`
-(`fig_wall_profile.png` and `fig_wall_exponent.png` cover the wall law).
+(`fig_wall_profile.png` covers the wall law).
 
 **Heatmap: Overlap resolution vs. wall_k_N and damping**
 

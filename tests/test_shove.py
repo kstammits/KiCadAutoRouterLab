@@ -10,102 +10,20 @@ signal-owned walls are never victims.
 
 import pytest
 
-from dataclasses import replace
-
-from kicad_autorouter.board_model import NetConnection, board_model
-from kicad_autorouter.io import add_footprint_to_tree
-from kicad_autorouter.routing.pipeline import RoutingParams, route_nets
+from kicad_autorouter.board_model import board_model
+from kicad_autorouter.routing.pipeline import route_nets
 from kicad_autorouter.routing.shove import (
     boxes_for_net,
     evict_gnd_in_boxes,
     gnd_pad_components,
     retry_failed_with_shove,
 )
-from kicad_autorouter.sexpr import SExpr, parse_file
 
-from .helpers import make_fp, stamp_edge_cuts
-from .test_pour import _board, _track
-
-FIXTURES = "tests/fixtures"
-
-
-def _wall_board(wall_net="GND"):
-    fa = make_fp("A", "uuid-a", 3.0, 6.0, ("S",), hw=0.25, hh=0.25)
-    fb = make_fp("B", "uuid-b", 17.0, 6.0, ("S",), hw=0.25, hh=0.25)
-    g1 = make_fp("G1", "uuid-g1", 2.0, -15.0, ("GND",), hw=0.25, hh=0.25,
-                 layer="B.Cu")
-    g2 = make_fp("G2", "uuid-g2", 17.0, -15.0, ("GND",), hw=0.25, hh=0.25,
-                 layer="B.Cu")
-    model = _board(
-        fps=[fa, fb, g1, g2],
-        tracks=[
-            _track(5.0, -30.0, 5.0, 30.0, wall_net, layer="F.Cu", width=0.5),
-            _track(5.0, -30.0, 5.0, 30.0, wall_net, layer="B.Cu", width=0.5),
-            _track(2.0, -15.0, 17.0, -15.0, "GND", layer="B.Cu", width=0.5),
-        ],
-        edge=25.0,
-    )
-    model = replace(model, nets={
-        "S": (NetConnection("A", "1"), NetConnection("B", "1")),
-    })
-    tree = parse_file(f"{FIXTURES}/minimal.kicad_pcb")
-    for fp, lib in ((fa, "Test:R_0805"), (fb, "Test:R_0805"),
-                    (g1, "Test:R_0805"), (g2, "Test:R_0805")):
-        tree = add_footprint_to_tree(tree, fp, lib)
-    tree = stamp_edge_cuts(tree, half=25.0)
-    for t in model.tracks:
-        tree = SExpr(tree.head, tree.args + (SExpr("segment", (
-            SExpr("start", (t.start.x_mm, t.start.y_mm)),
-            SExpr("end", (t.end.x_mm, t.end.y_mm)),
-            SExpr("width", (t.width_mm,)),
-            SExpr("layer", (t.layer,)),
-            SExpr("net", (t.net_name,)),
-        )),))
-    return model, tree
-
-
-def _rail_board():
-    # GND continuity depends on one full-width rail: S must cross it,
-    # and the crossing middle cannot restore, so the fracture gate
-    # fails without gap healing (G1 | G2 split). The B.Cu K-wall seals
-    # S's via-dive escape (padless obstacle net, never evicted), so S
-    # also fails on the intact board.
-    fa = make_fp("A", "uuid-a", 9.0, 4.0, ("S",), hw=0.25, hh=0.25)
-    fb = make_fp("B", "uuid-b", 9.0, 10.0, ("S",), hw=0.25, hh=0.25)
-    g1 = make_fp("G1", "uuid-g1", -20.0, 6.0, ("GND",), hw=0.25, hh=0.25)
-    g2 = make_fp("G2", "uuid-g2", 20.0, 6.0, ("GND",), hw=0.25, hh=0.25)
-    model = _board(
-        fps=[fa, fb, g1, g2],
-        tracks=[
-            _track(-30.0, 6.0, 30.0, 6.0, "GND", layer="F.Cu", width=0.5),
-            _track(-30.0, 6.0, 30.0, 6.0, "K", layer="B.Cu", width=0.5),
-        ],
-        edge=25.0,
-    )
-    model = replace(model, nets={
-        "S": (NetConnection("A", "1"), NetConnection("B", "1")),
-    })
-    tree = parse_file(f"{FIXTURES}/minimal.kicad_pcb")
-    for fp, lib in ((fa, "Test:R_0805"), (fb, "Test:R_0805"),
-                    (g1, "Test:R_0805"), (g2, "Test:R_0805")):
-        tree = add_footprint_to_tree(tree, fp, lib)
-    tree = stamp_edge_cuts(tree, half=25.0)
-    for t in model.tracks:
-        tree = SExpr(tree.head, tree.args + (SExpr("segment", (
-            SExpr("start", (t.start.x_mm, t.start.y_mm)),
-            SExpr("end", (t.end.x_mm, t.end.y_mm)),
-            SExpr("width", (t.width_mm,)),
-            SExpr("layer", (t.layer,)),
-            SExpr("net", (t.net_name,)),
-        )),))
-    return model, tree
-
-
-def _params(**kw):
-    base = dict(grid_resolution_mm=0.5, run_drc=False,
-                strip_gnd_blockers=False, stitch_gnd_vias=False)
-    base.update(kw)
-    return RoutingParams(**base)
+from ._shove_boards import (
+    rail_board as _rail_board,
+    shove_params as _params,
+    wall_board as _wall_board,
+)
 
 
 @pytest.mark.unit
@@ -133,27 +51,25 @@ class TestShoveRetry:
         assert any(t.net_name == "GND" and t.start.y_mm == -15.0
                    for t in final.tracks)
 
-    def test_no_gnd_in_boxes_leaves_board_untouched(self):
-        model, tree = _wall_board()
+    @pytest.mark.parametrize("wall_net,radius", [
+        ("GND", 0.05),  # boxes too small to hold any GND
+        ("K", 4.0),  # signal-owned walls are never victims
+    ])
+    def test_no_gnd_victim_leaves_board_untouched(self, wall_net, radius):
+        model, tree = _wall_board(wall_net=wall_net)
         params = _params()
+        if wall_net == "K":
+            res, _, _ = route_nets(model, ["S"], set(), params=params,
+                                   original_pcb_tree=tree)
+            assert res.nets_failed == 1
         model2, tree2, reports = retry_failed_with_shove(
-            model, tree, ["S"], set(), params, radius_mm=0.05)
+            model, tree, ["S"], set(), params, radius_mm=radius)
         rep = reports["S"]
         assert not rep.routed
         assert rep.evicted == 0
-        assert rep.reason == "no GND in shove boxes"
-        assert tree2 is tree and model2 is model
-
-    def test_signal_wall_is_never_a_victim(self):
-        model, tree = _wall_board(wall_net="K")
-        params = _params()
-        res, _, _ = route_nets(model, ["S"], set(), params=params,
-                               original_pcb_tree=tree)
-        assert res.nets_failed == 1
-        _, _, reports = retry_failed_with_shove(
-            model, tree, ["S"], set(), params, radius_mm=4.0)
-        assert not reports["S"].routed
-        assert reports["S"].evicted == 0
+        if wall_net == "GND":
+            assert rep.reason == "no GND in shove boxes"
+            assert tree2 is tree and model2 is model
 
     def test_evict_splits_tracks_not_amputates(self):
         model, tree = _wall_board()

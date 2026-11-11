@@ -26,6 +26,9 @@ from tests.helpers import make_fp, make_rect_courtyard, make_smd_pad
 # Analytical contact functions (to be implemented in Phase 3)
 # ============================================================
 
+pytestmark = pytest.mark.unit
+
+
 def rect_from_verts(verts: np.ndarray) -> dict:
     """Extract rectangle parameters from 4+1 vertices (closed ring).
     

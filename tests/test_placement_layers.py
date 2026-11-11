@@ -32,6 +32,9 @@ from kicad_autorouter.placement import (
 from .helpers import make_fp, overlap_area
 
 
+pytestmark = pytest.mark.unit
+
+
 def _two_part_board(layer_b: str = "F.Cu", tht_b: bool = False, shared_net: bool = False):
     """Two 6x4mm parts 1mm apart in x, staggered 2mm in y (heavy overlap).
 

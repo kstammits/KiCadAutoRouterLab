@@ -1,16 +1,14 @@
-"""Tight-spot routing: tiny pads inside cramped foreign clusters (DCCF VIN).
+"""Tight-spot routing: small pads inside cramped foreign clusters (DCCF VIN).
 
-VIN marked as power fails on the *unrouted* DCCF fixture: Q2:1 is a
-0.4x1.35mm SMD pad buried in a GND-shield cluster whose foreign halos
-overlap its own terminal cell, and the ~1000-cell corridor to Q1/C6
-threads hundreds of tolled halo cells. The search then floods the whole
-board and quits at the expansion cap after tens of seconds.
-
-Users cannot move pads or retune costs, so the open directions are
-pushing/ripping lower-priority copper and halo retuning. These tests pin
-the scenario with tight budgets (seconds, not minutes) and require
-graceful bounded behavior — no hangs — plus the technical facts any
-future fix must address. A small synthetic cluster covers the same
+VIN marked as power failed on the *unrouted* DCCF fixture while Q2:1
+was a 0.4x1.35mm SMD pad buried in a GND-shield cluster whose foreign
+halos overlapped its own terminal cell: the ~1000-cell corridor to
+Q1/C6 threaded hundreds of tolled halo cells, the search flooded the
+whole board and quit at the expansion cap after tens of seconds. After
+the Q2 enlargement (0.7x2.55mm pad) the Q1-Q2 thread is open and the
+coarse corridor finder reaches it; the pair routes or fails gracefully
+within tight budgets. These tests pin the scenario with tight budgets
+(seconds, not minutes). A small synthetic cluster covers the same
 shape without the DCCF fixture cost.
 """
 
@@ -123,13 +121,14 @@ class TestVinTightSpot:
             assert result.path[0][:2] == terminals[1][:2]
             assert result.path[-1][:2] == terminals[2][:2]
 
-    def test_corridor_rejects_copper_crossing_thread(self, dccf_model):
-        """The Q1–Q2 thread stays sealed: the only fine-grid opening crosses
-        real foreign copper (the pre-guard corridor mask intersects 20
-        foreign pads' copper + half-track: J6, Q1 pins), so the widened
-        hard core (copper + half-track + raster guard) correctly seals it
-        and the finder returns None. Loud refusal beats DRC-dirty copper.
-        Pins the refusal plus graceful bounded behavior either way.
+    def test_corridor_opens_q1_q2_thread(self, dccf_model):
+        """The enlarged Q2 pad opens the Q1-Q2 thread to the corridor finder.
+
+        Before the Q2 enlargement the only fine-grid opening crossed real
+        foreign copper (20 foreign pads' copper + half-track: J6, Q1 pins),
+        so the widened hard core sealed the thread and the finder returned
+        None. With room to connect, the finder now reaches a corridor and
+        the pair stays bounded either way (routes or graceful refusal).
         """
         from kicad_autorouter.routing.corridor import find_corridor
         from kicad_autorouter.routing.pipeline import RoutingParams
@@ -150,7 +149,7 @@ class TestVinTightSpot:
             cost_grid, secondary, terminals[1], terminals[2], 100,
             SECONDARY_BLOCKED,
         )
-        assert corridor is None
+        assert corridor is not None and int(corridor.sum()) > 0
         t0 = time.perf_counter()
         result = router.route([terminals[1], terminals[2]], secondary)
         elapsed = time.perf_counter() - t0
@@ -184,6 +183,7 @@ class TestVinTightSpot:
         assert isinstance(result.success, bool)
 
 
+@pytest.mark.unit
 class TestTinyPadCluster:
     """Synthetic tight spot: tiny SMD terminal inside a foreign cluster.
 
@@ -272,6 +272,7 @@ class TestTinyPadCluster:
             assert result.path[-1] == terminals[1]
 
 
+@pytest.mark.unit
 class TestTightSpotRipupPolicy:
     """Today's eviction policy, as it applies to a VIN-like tight spot.
 
@@ -284,6 +285,7 @@ class TestTightSpotRipupPolicy:
     """
 
 
+@pytest.mark.unit
 class TestViaHaloAndForeignExclusion:
     """Tests for via halo reservation and foreign-via exclusion."""
 

@@ -107,6 +107,7 @@ SEPARATION_PARAMS = PlacementParams(
 
 
 @pytest.mark.regression
+@pytest.mark.unit
 @pytest.mark.parametrize("first_locked,dx_sign", [(True, 1.0), (False, -1.0)])
 def test_movable_separates_from_immobile(first_locked, dx_sign):
     """Movable part separates from the locked one regardless of sort order.
@@ -135,6 +136,7 @@ def test_movable_separates_from_immobile(first_locked, dx_sign):
 
 
 @pytest.mark.regression
+@pytest.mark.unit
 def test_shear_produces_finite_rotation():
     """Rotational shear is governed by rigid projection + contact weighting.
 
@@ -188,6 +190,7 @@ def test_shear_produces_finite_rotation():
 
 
 @pytest.mark.regression
+@pytest.mark.unit
 def test_contact_weighting_conserves_total():
     """F4: the contact-weighted spread conserves the footprint total.
 
@@ -240,6 +243,7 @@ def test_contact_weighting_conserves_total():
 
 
 @pytest.mark.regression
+@pytest.mark.unit
 def test_contact_weights_unit():
     """_contact_weights: contact side loaded, sum exactly 1, single -> 1."""
     import numpy as np
@@ -254,6 +258,7 @@ def test_contact_weights_unit():
 
 
 @pytest.mark.regression
+@pytest.mark.unit
 def test_boundary_force_bounded_near_edge():
     """Integration: a 60x40mm part starting near the left edge on a
     wide board. The boundary force should push it right (positive x) when
@@ -323,6 +328,7 @@ def _make_locked_neighbors(center_x: float, center_y: float, radius: float, coun
 
 
 @pytest.mark.regression
+@pytest.mark.unit
 def test_mobile_part_surrounded_by_multiple_locked():
     """One mobile part centered among 6 locked parts: it will stay trapped.
     """
@@ -353,6 +359,7 @@ def test_mobile_part_surrounded_by_multiple_locked():
 
 
 @pytest.mark.regression
+@pytest.mark.unit
 def test_mobile_between_two_locked_linear():
     """Mobile part between two locked parts on a line: should be pushed
     along the line to escape, not perpendicular.
@@ -394,6 +401,7 @@ def test_mobile_between_two_locked_linear():
 
 
 @pytest.mark.regression
+@pytest.mark.unit
 def test_mobile_near_locked_cluster_with_attraction():
     """Mobile part attracted to a net on a locked part, but repelled by
     courtyard: should settle at courtyard edge near the pad.

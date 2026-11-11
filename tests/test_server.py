@@ -5,10 +5,8 @@ Markers: server, minimal
 
 import json
 import sys
-import threading
 import urllib.error
 import urllib.request
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -18,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "ui"))
 import server  # noqa: E402
 import server_state  # noqa: E402
 from tests.helpers import post_fixture
+from tests.server_helpers import post_json, serve_client
 
 
 @pytest.fixture(autouse=True)
@@ -27,14 +26,26 @@ def _reset_state(tmp_path):
     server.STATE.name = ""
     server.STATE.version = 0
     server.STATE.proposal = None
+    server.STATE.pcb_tree = None
+    server.STATE.mode = None
     server.PARAMS_PATH = tmp_path / "placement.json"
     yield
 
 
 def _client():
-    httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
-    threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    return httpd, f"http://127.0.0.1:{httpd.server_address[1]}"
+    return serve_client(server.Handler)
+
+
+def _code(base, path, payload):
+    try:
+        post_json(base, path, payload)
+    except urllib.error.HTTPError as exc:
+        return exc.code
+    return 200
+
+
+def _load(base):
+    return post_fixture(base)
 
 
 @pytest.mark.server
@@ -428,3 +439,105 @@ def test_recovery_job_uses_retry_service():
     job = server_jobs._JOBS.pop(job_id)
     assert job["state"] == "done"
     _json.dumps(job)  # poll-safe: no report objects leak into the job dict
+
+
+# ---------------------------------------------------------------------------
+# Input validation: bad client input yields 400, never 500 or poisoned state.
+# (Folded from test_server_validation.py; same server+minimal markers.)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.server
+@pytest.mark.minimal
+def test_routing_params_rejects_bad_values():
+    httpd, base = _client()
+    try:
+        assert _code(base, "/api/routing/params", {"grid_resolution_mm": -1}) == 400
+        assert _code(base, "/api/routing/params", {"grid_resolution_mm": 0}) == 400
+        assert _code(base, "/api/routing/params", {"max_expansions": "x"}) == 400
+        assert _code(base, "/api/routing/params", {"stitch_gnd_vias": "yes"}) == 400
+        assert _code(base, "/api/routing/params", {"allowed_layers": "F.Cu"}) == 400
+        assert _code(base, "/api/routing/params", {}) == 200
+    finally:
+        httpd.shutdown()
+
+
+@pytest.mark.server
+@pytest.mark.minimal
+def test_routing_run_validates_net_names_and_params():
+    httpd, base = _client()
+    try:
+        _load(base)
+        assert _code(base, "/api/routing/run", {"net_names": "GND"}) == 400
+        assert _code(base, "/api/routing/run", {"net_names": []}) == 400
+        assert _code(base, "/api/routing/run",
+                    {"net_names": ["X"], "params": {"grid_resolution_mm": 0}}) == 400
+    finally:
+        httpd.shutdown()
+
+
+@pytest.mark.server
+@pytest.mark.minimal
+def test_routing_jobs_rejects_empty_and_bad_params():
+    httpd, base = _client()
+    try:
+        _load(base)
+        assert _code(base, "/api/routing/jobs", {"net_names": [123]}) == 400
+        assert _code(base, "/api/routing/jobs",
+                    {"net_names": ["X"], "params": {"heuristic_weight": float("nan")}}) == 400
+    finally:
+        httpd.shutdown()
+
+
+@pytest.mark.server
+@pytest.mark.minimal
+def test_placement_forces_rejects_bad_params():
+    httpd, base = _client()
+    try:
+        _load(base)
+        assert _code(base, "/api/placement/forces", {"wall_k_N": "x"}) == 400
+        assert _code(base, "/api/placement/forces", {"wall_halo_m": -1}) == 400
+        assert _code(base, "/api/placement/forces", {}) == 200
+    finally:
+        httpd.shutdown()
+
+
+@pytest.mark.server
+@pytest.mark.minimal
+def test_ghost_create_rejects_nonfinite_geometry():
+    httpd, base = _client()
+    try:
+        _load(base)
+        wall = {"kind": "wall", "ref": "GHX", "x_mm": 0.0, "y_mm": 0.0,
+                "w_mm": 5.0, "h_mm": 5.0}
+        assert _code(base, "/api/ghosts", {**wall, "x_mm": float("inf")}) == 400
+        assert _code(base, "/api/ghosts", {**wall, "w_mm": -2.0}) == 400
+        assert _code(base, "/api/ghosts", {**wall, "ref": "GHOK"}) == 200
+    finally:
+        httpd.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# Frames JSON: proposal_to_json serves frames as [dx, dy, da] per uuid,
+# which is what the motion player consumes. (Moved from
+# test_motion_roundtrip.py; the only server-marked test in that file.)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.server
+def test_frames_json_preserves_delta_order():
+    from tests.test_motion_roundtrip import _run_frames
+
+    model, prop = _run_frames()
+    payload = server.proposal_to_json(prop)
+    assert payload["frame_count"] == len(prop.frames) > 1
+    assert payload["frame_stride"] == 1
+    for fr_json, fr in zip(payload["frames"], prop.frames):
+        for uuid, (dx, dy, da) in fr.items():
+            assert fr_json[uuid][0] == pytest.approx(dx, abs=5e-4)
+            assert fr_json[uuid][1] == pytest.approx(dy, abs=5e-4)
+            assert fr_json[uuid][2] == pytest.approx(da, abs=5e-3)
+    # basePos source: /api/footprints serves committed origins, which is
+    # what the player rotates about.
+    for fp in model.footprints:
+        assert isinstance(fp.x_mm, float) and isinstance(fp.y_mm, float)

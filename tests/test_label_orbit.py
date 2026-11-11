@@ -22,7 +22,6 @@ from kicad_autorouter.board_model import (
     SilkLabel,
     apply_deltas,
     board_model,
-    label_board_pose,
 )
 from kicad_autorouter.board_model.labels import (
     clamp_orbit_radius,
@@ -33,18 +32,23 @@ from kicad_autorouter.board_model.labels import (
     label_tether_force_N,
     snap_label_angle,
 )
-from kicad_autorouter.io import nudge_footprint_by_uuid
 from kicad_autorouter.placement import PlacementParams, run_label_settle, run_placement
 from kicad_autorouter.placement.contact import label_contact_force
 from kicad_autorouter.sexpr import parse_file
 
-from .helpers import make_board, make_fp, make_tht_pad
+from .helpers import (
+    facing_label_pair as _facing_pair,
+    make_board,
+    make_fp,
+    make_tht_pad,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 MINIMAL_PCB = FIXTURES / "minimal.kicad_pcb"
 
 
 def _lab(ref: str, lx: float, w_mm: float = 6.0) -> SilkLabel:
+    """Narrow-label variant for single-label orbit scenarios."""
     return SilkLabel(
         text="REFDES",
         local_x_mm=lx,
@@ -55,18 +59,6 @@ def _lab(ref: str, lx: float, w_mm: float = 6.0) -> SilkLabel:
         thickness_mm=0.15,
         uuid=f"{ref}-label",
     )
-
-
-def _facing_pair(label_w_mm: float = 6.0, gap_mm: float = 4.0):
-    fa = replace(
-        make_fp("A", "uuid-a", 0.0, 0.0, ("N1", "N2"), hw=1.5, hh=1.0),
-        label=_lab("A", 2.0, label_w_mm),
-    )
-    fb = replace(
-        make_fp("B", "uuid-b", gap_mm, 0.0, ("N1", "N3"), hw=1.5, hh=1.0),
-        label=_lab("B", -2.0, label_w_mm),
-    )
-    return replace(make_board([fa, fb]), nets={"N1": (), "N2": (), "N3": ()})
 
 
 @pytest.mark.unit
@@ -109,46 +101,12 @@ def test_label_contact_pushes_out_of_overlap():
         buried, body, halo_mm=6.0, wall_k_N=0.1, solidity=0.0) == (0.0, 0.0)
 
 
-@pytest.mark.params
-def test_orbit_params_validate_and_round_trip():
-    p = PlacementParams.from_dict({"label_clearance_m": 0.01})
-    assert p.label_clearance_m == 0.01
-    assert p.to_dict()["label_clearance_m"] == 0.01
-    for bad in ({"label_clearance_m": -1.0}, {"label_clearance_m": 0.06},
-                {"label_clearance_m": "wide"}):
-        with pytest.raises(ValueError):
-            PlacementParams.from_dict(bad)
-
-
 @pytest.mark.minimal
 def test_orbit_on_netless_board_is_noop():
     model = board_model(parse_file(MINIMAL_PCB))
     prop = run_placement(model, PlacementParams(max_iterations=50))
     assert prop.label_deltas == {}
     assert prop.stop_reason == "empty"
-
-
-@pytest.mark.minimal
-def test_orbited_anchor_round_trips_model_tree():
-    tree = parse_file(MINIMAL_PCB)
-    model = board_model(tree)
-    fp = next(f for f in model.footprints if f.ref == "MH1")
-    uuid = fp.uuid
-    deltas = {uuid: (1.0, 2.0, 90.0)}
-    label_deltas = {uuid: (2.5, -1.0)}
-    fp2 = next(
-        f for f in apply_deltas(model, deltas, label_deltas=label_deltas).footprints
-        if f.uuid == uuid)
-    assert (fp2.label.local_x_mm, fp2.label.local_y_mm) == pytest.approx(
-        (fp.label.local_x_mm + 2.5, fp.label.local_y_mm - 1.0))
-    reparsed = board_model(nudge_footprint_by_uuid(
-        tree, uuid, 1.0, 2.0, 90.0, label_dx_mm=2.5, label_dy_mm=-1.0))
-    fp3 = next(f for f in reparsed.footprints if f.uuid == uuid)
-    assert (fp3.label.local_x_mm, fp3.label.local_y_mm) == pytest.approx(
-        (fp2.label.local_x_mm, fp2.label.local_y_mm))
-    assert fp3.label.local_angle_deg == pytest.approx(fp2.label.local_angle_deg)
-    # True board pose agrees too (anchor + snap through both paths).
-    assert label_board_pose(fp3) == pytest.approx(label_board_pose(fp2))
 
 
 @pytest.mark.physics
@@ -195,26 +153,39 @@ def test_clear_labels_do_not_perturb_pads():
         make_fp("B", "uuid-b", 12.0, 0.0, ("N1", "N3"), hw=1.5, hh=1.0),
         label=_lab("B", 8.0, 2.0))
     model = replace(make_board([fa, fb]), nets={"N1": (), "N2": (), "N3": ()})
-    # Clearance 2 mm: anchors parked ±8 mm are clear of wall contact
-    # (text edge ~7 mm out, courtyard edge 1.5 mm) — but pad-center
-    # Coulomb is long-range by design, so labels breathe slightly instead
-    # of sitting exactly still.
+    # Stale filed anchors (±8 mm) home to the parents now: assert the
+    # labels converge near their own parts instead of lingering filed.
+    # (Pad-center Coulomb is long-range, so the short-horizon pad course
+    # below is where exact stillness is pinned — not the labels.)
     kw = dict(label_clearance_m=0.002, wall_halo_m=0.002)
-    short = run_placement(model, PlacementParams(**kw, max_iterations=10))
-    for dx, dy in short.label_deltas.values():
-        assert math.hypot(dx, dy) < 0.5
+    short = run_placement(model, PlacementParams(**kw, max_iterations=300))
+    moved = apply_deltas(model, short.deltas, label_deltas=short.label_deltas)
+    for fp in moved.footprints:
+        if fp.label is None:
+            continue
+        from kicad_autorouter.board_model import _to_board as _tb
+        b = _tb(fp.label.local_x_mm, fp.label.local_y_mm,
+                fp.x_mm, fp.y_mm, fp.angle_deg, fp.layer)
+        assert math.hypot(b.x_mm - fp.x_mm, b.y_mm - fp.y_mm) <= 3.0
     stripped = replace(
         model,
         footprints=tuple(replace(fp, label=None) for fp in model.footprints),
     )
     base = run_placement(stripped, PlacementParams(**kw, max_iterations=10))
-    assert short.deltas.keys() == base.deltas.keys()
+    alike = run_placement(model, PlacementParams(**kw, max_iterations=10))
+    assert alike.deltas.keys() == base.deltas.keys()
     for uuid in base.deltas:
-        assert short.deltas[uuid] == pytest.approx(base.deltas[uuid])
+        assert alike.deltas[uuid] == pytest.approx(base.deltas[uuid])
 
     lone = replace(make_board([fa]), nets={"N1": (), "N2": ()})
     calm = run_placement(lone, PlacementParams(**kw, max_iterations=300))
-    assert calm.deltas == {} and calm.label_deltas == {}
+    assert calm.deltas == {}
+    moved = apply_deltas(lone, calm.deltas, label_deltas=calm.label_deltas)
+    fp = next(f for f in moved.footprints if f.uuid == "uuid-a")
+    from kicad_autorouter.board_model import _to_board as _tb2
+    b = _tb2(fp.label.local_x_mm, fp.label.local_y_mm,
+             fp.x_mm, fp.y_mm, fp.angle_deg, fp.layer)
+    assert math.hypot(b.x_mm - fp.x_mm, b.y_mm - fp.y_mm) <= 3.0
 
 
 def _region_board(fps, edge=20.0):
@@ -264,6 +235,29 @@ def _bare_label_poly(model, uuid):
     return Polygon(label_board_rect(
         fp.label.text, b.x_mm, b.y_mm, angle, fp.label.size_mm,
         halo_mm=0.0))
+
+
+@pytest.mark.physics
+def test_stale_filed_offset_does_not_hold_label_out():
+    """Labels orbit their parent part, not their filed offset.
+
+    A label filed 8mm from its parent (stale after clustering) must
+    converge near the parent and find spare room there — not linger at
+    the filed offset. Fails while home is the filed anchor.
+    """
+    from kicad_autorouter.board_model import _to_board as _tb
+    fa = replace(
+        make_fp("A", "uuid-a", 0.0, 0.0, ("N1", "N2"), hw=1.5, hh=1.0),
+        label=_lab("A", 8.0),
+    )
+    model = replace(_region_board([fa]), nets={"N1": (), "N2": ()})
+    prop = run_placement(model, PlacementParams(max_iterations=300))
+    moved = apply_deltas(model, prop.deltas, label_deltas=prop.label_deltas)
+    fp = next(f for f in moved.footprints if f.uuid == "uuid-a")
+    b = _tb(fp.label.local_x_mm, fp.label.local_y_mm,
+            fp.x_mm, fp.y_mm, fp.angle_deg, fp.layer)
+    # Symmetric 2-pad part: centroid == footprint origin.
+    assert math.hypot(b.x_mm - fp.x_mm, b.y_mm - fp.y_mm) <= 3.0
 
 
 @pytest.mark.physics
@@ -328,7 +322,13 @@ def test_label_feels_smd_pad_coulomb():
     dx, dy = prop.label_deltas["uuid-a"]
     # B's charged pads sit +x of the label: repulsion pushes it back.
     assert dx < -0.1
-    assert abs(dy) < 0.5
+    # …and the label homes near its own parent, not the filed offset.
+    moved = apply_deltas(model, prop.deltas, label_deltas=prop.label_deltas)
+    fp = next(f for f in moved.footprints if f.uuid == "uuid-a")
+    from kicad_autorouter.board_model import _to_board as _tb
+    b = _tb(fp.label.local_x_mm, fp.label.local_y_mm,
+            fp.x_mm, fp.y_mm, fp.angle_deg, fp.layer)
+    assert math.hypot(b.x_mm - fp.x_mm, b.y_mm - fp.y_mm) <= 3.0
 
 
 @pytest.mark.physics

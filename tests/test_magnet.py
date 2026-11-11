@@ -64,6 +64,9 @@ PAD_OFFSET = 1.0
 PAD_SIZE = (1.0, 1.0)
 
 
+pytestmark = pytest.mark.minimal
+
+
 def _make_pad(number: str, net_name: str, local_x: float, local_y: float) -> Pad:
     """Create a pad in local coordinates (will be transformed to board coords)."""
     return Pad(

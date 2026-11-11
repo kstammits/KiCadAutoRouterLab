@@ -5,10 +5,8 @@ Markers: server, minimal
 
 import json
 import sys
-import threading
 import urllib.error
 import urllib.request
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -17,7 +15,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "ui"))
 
 import server  # noqa: E402
 import server_state  # noqa: E402 (nudge clock lives here; see below)
-from tests.helpers import post_fixture
+from tests.server_helpers import (
+    get_json as _get,
+    load_fixture,
+    post_json as _post,
+    serve_client,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -37,29 +40,11 @@ def _reset_state(tmp_path):
 
 
 def _client():
-    httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
-    threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    return httpd, f"http://127.0.0.1:{httpd.server_address[1]}"
-
-
-def _post(base, path, body):
-    req = urllib.request.Request(
-        f"{base}{path}",
-        data=json.dumps(body).encode(),
-        method="POST",
-        headers={"Content-Type": "application/json"},
-    )
-    with urllib.request.urlopen(req) as r:
-        return json.load(r)
-
-
-def _get(base, path):
-    with urllib.request.urlopen(f"{base}{path}") as r:
-        return json.load(r)
+    return serve_client(server.Handler)
 
 
 def _load(base, fixture="ghost_test.kicad_pcb", name="ghost_test"):
-    return post_fixture(base, fixture, name)
+    return load_fixture(base, fixture, name)
 
 
 def _footprints(base):

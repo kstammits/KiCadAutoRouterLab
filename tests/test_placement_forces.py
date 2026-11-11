@@ -27,6 +27,9 @@ from .helpers import make_fp, overlap_area
 EDGE = 30.0
 
 
+pytestmark = pytest.mark.unit
+
+
 def _board(fps):
     """Create a board model with a single region from edge cuts."""
     edge_cuts = (
@@ -195,35 +198,27 @@ class TestAttractionRepulsionEquilibrium:
         assert abs(bx - ax) == pytest.approx(
             math.sqrt(kr / ka) * 1000.0, rel=0.25)
 
-    def test_attraction_pulls_together(self):
+    @pytest.mark.parametrize("net_b,params,check", [
+        # Shared net + attraction: parts move together.
+        ("N1", dict(max_iterations=5, repulsion_k_N_m2=1e-18,
+                    attraction_k_N=0.001, wall_k_N=1e-15), "together"),
+        # Distinct nets, no attraction: repulsion drifts them apart.
+        ("N2", dict(max_iterations=5, attraction_k_N=0.0,
+                    wall_k_N=1e-15), "apart"),
+    ])
+    def test_attraction_moves_shared_net(self, net_b, params, check):
         model = _board([
             _single_pad("A", "uuid-a", 0.0, 0.0, "N1"),
-            _single_pad("B", "uuid-b", 10.0, 0.0, "N1"),
+            _single_pad("B", "uuid-b", 10.0, 0.0, net_b),
         ])
-        prop = run_placement(
-            model,
-            _base_params(max_iterations=5, repulsion_k_N_m2=1e-18,
-                         attraction_k_N=0.001, wall_k_N=1e-15,
-                         ),
-        )
+        prop = run_placement(model, _base_params(**params))
         moved = apply_deltas(model, prop.deltas)
-        assert moved.by_ref["B"].x_mm < 10.0
-        assert moved.by_ref["A"].x_mm > 0.0
-
-    def test_no_attraction_parts_drift_apart(self):
-        model = _board([
-            _single_pad("A", "uuid-a", 0.0, 0.0, "N1"),
-            _single_pad("B", "uuid-b", 10.0, 0.0, "N2"),
-        ])
-        prop = run_placement(
-            model,
-            _base_params(max_iterations=5, attraction_k_N=0.0,
-                         wall_k_N=1e-15,
-                         ),
-        )
-        moved = apply_deltas(model, prop.deltas)
-        assert moved.by_ref["B"].x_mm > 10.0
-        assert moved.by_ref["A"].x_mm < 0.0
+        if check == "together":
+            assert moved.by_ref["B"].x_mm < 10.0
+            assert moved.by_ref["A"].x_mm > 0.0
+        else:
+            assert moved.by_ref["B"].x_mm > 10.0
+            assert moved.by_ref["A"].x_mm < 0.0
 
 
 @pytest.mark.physics

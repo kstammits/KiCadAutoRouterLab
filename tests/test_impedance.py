@@ -265,6 +265,7 @@ class TestFixtureImpedance:
         from kicad_autorouter.board_model import board_model
         return board_model(parse_file(FIXTURES / name))
 
+    @pytest.mark.unit
     def test_tube111_gnd_from_j11_6(self):
         model = self._load("tube111.kicad_pcb")
         grid = create_grid_from_model(model, resolution_mm=0.2)
@@ -280,6 +281,7 @@ class TestFixtureImpedance:
         assert net.failures == len(remote)
         assert next(p for p in net.pads if p.ref == "J11" and p.pad == "6").verdict == "pass"
 
+    @pytest.mark.unit
     def test_tube111_gnd_with_header_bridges(self):
         # The long 1x08 headers mate panel 2 to panel 3 (same-net pins);
         # with those 8 bridges (default 20 mΩ contact each) the middle
@@ -302,6 +304,7 @@ class TestFixtureImpedance:
             {"a_ref": a, "a_pad": b, "b_ref": c, "b_pad": d, "r_mohm": 20.0}
             for a, b, c, d in pairs], "auto": 0, "cross_net": 0}
 
+    @pytest.mark.unit
     def test_cross_net_bridges_join_declared_mates(self):
         # Net names differ deliberately (DRC trick); a declared mate joins
         # them anyway. I1 feeds net A; T1 on net A is reachable only via
@@ -334,6 +337,7 @@ class TestFixtureImpedance:
             2.0 + track_resistance_mohm(30.0, 1.0) + 2.0, rel=0.05)
         assert report.to_dict()["bridges"]["cross_net"] == 2
 
+    @pytest.mark.unit
     def test_tube111_cross_net_mates_leave_gnd_untouched(self):
         # All 16 header mate pairs declared (incl. the C1/C2 signal pairs
         # with deliberately different names): GND verdicts must be identical
@@ -357,6 +361,7 @@ class TestFixtureImpedance:
         assert net.worst_mohm == pytest.approx(22.113, abs=0.05)
         assert report.to_dict()["bridges"]["cross_net"] == 8
 
+    @pytest.mark.unit
     def test_tube111_header_mate_suggestions(self):
         model = self._load("tube111.kicad_pcb")
         mates = suggest_header_mates(model)
@@ -371,6 +376,7 @@ class TestFixtureImpedance:
         assert len(warned) == 8  # C1/C2 signal pins need the user's call
         assert {d["a"]["ref"] for d in warned} == {"J7", "J8"}
 
+    @pytest.mark.unit
     def test_tube111_power_rails_are_thin(self):
         # Long thin rails: tens of mΩ from the J7 power header. If the
         # rails get widened, update these bands.
@@ -385,6 +391,7 @@ class TestFixtureImpedance:
         assert 40.0 < by_net["+12V"].worst_mohm < 70.0
         assert 30.0 < by_net["-12V"].worst_mohm < 60.0
 
+    @pytest.mark.dccf
     def test_dccf_gnd_from_q2_5(self):
         model = self._load("DCCF.sved.kicad_pcb")
         grid = create_grid_from_model(model, resolution_mm=0.2)

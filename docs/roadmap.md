@@ -77,9 +77,8 @@ the full 5-tuple on oversized grids (was a 4-tuple crash). Still open: the
   smoother no longer kinks walkable chords into copper), and the big
   tube rails route on the current board (+12V/−12V/GND in ~13 s).
   Leftover: sealed tight clusters can still beat A* at any chunk size;
-  that needs a thread-preserving finder, not smaller chunks. Revisit
-  only if it reappears — don't re-litigate the old benchmark logs
-  (kept under `docs/benchmarks/`).
+   that needs a thread-preserving finder, not smaller chunks. Revisit
+   only if it reappears — old benchmark runs live in git history.
 - **Corridor guidance**: keep as-is. It only runs after the first
   search window fails, costs nothing elsewhere, and saves the VIN
   tight spot. No retuning needed.

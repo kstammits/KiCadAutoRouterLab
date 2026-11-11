@@ -22,7 +22,7 @@ browser workflow UI. Works on real boards, DRC-validated.
   `ui/docs.html` — docs viewer.
 - `tests/fixtures/` — `tube111.*` (105 parts, 73 nets, reference board),
   `DCCF.sved.*` (audio board, split rails), `minimal.*` (4 parts, no nets),
-  plus `ghost_test.*`, `minimal_placed.*`, and `placement_parity_golden.json`.
+  plus `ghost_test.*` and `minimal_placed.*`.
   Don't add fixtures without a test that needs them.
 - `scripts/` — `benchmark_*.py` (perf; newest JSON per family in
   `docs/benchmarks/`), `run_autoroute.py` (headless), `calibrate_si.py`,
@@ -46,7 +46,7 @@ browser workflow UI. Works on real boards, DRC-validated.
 - JS syntax: `./scripts/check_js.sh` (`node --check` all `ui/app-*.js`;
   warns and passes when node is absent).
 - Markers: `unit params physics cli server regression minimal dccf slow`
-  (see `[tool.pytest.ini_options]`). `slow` marks tests taking >5s; they're
+  (see `[tool.pytest.ini_options]`). `slow` marks tests taking >3s; they're
   excluded from the fast loop via `-m "not slow"`. Fast loop:
   `-m "minimal or unit or (dccf and not slow)"`. Always use
   `.venv/bin/python` — system `python` lacks project deps (`scipy`,

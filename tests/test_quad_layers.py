@@ -183,6 +183,7 @@ def test_board_svg_colors_param_accepted():
         server.STATE.version = 0
 
 
+@pytest.mark.minimal
 def test_board_model_preserves_copper_layers_on_ripup():
     from kicad_autorouter.routing.pipeline import _rip_up_nets_from_model
 

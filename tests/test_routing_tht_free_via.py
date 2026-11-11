@@ -17,6 +17,8 @@ properties are structural, not numeric.
 """
 
 import math
+import pytest
+
 from dataclasses import replace
 from pathlib import Path
 
@@ -62,6 +64,9 @@ THT_POS = (135.0, 95.0)  # TFREE through-hole, same net
 # passes exactly through the hole center.
 F1_POS = (135.0, 70.0)
 F2_POS = (135.0, 120.0)
+
+
+pytestmark = pytest.mark.minimal
 
 
 def _smd_resistor(ref: str, uuid: str, x_mm: float, y_mm: float,
