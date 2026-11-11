@@ -14,6 +14,7 @@ import numpy as np
 from scipy import ndimage
 
 from ..board_model import is_ground_net
+from ._numba import njit
 from .corridor import find_corridor
 from .dsu import DisjointSet
 from .grid import RoutingGrid
@@ -88,6 +89,194 @@ class CostMap:
 # rings). Soft halos (INNER 500 / OUTER 100) stay below, so they steer
 # without ever trapping — see build_fanout_cost.
 SECONDARY_BLOCKED = 1000
+
+
+# A/B flag for the expansion kernel: True (default) evaluates the six
+# neighbors of a pop in one njit call; False runs the identical
+# numpy/Python mirror. Heap, parent map, goal tests, and push order stay
+# in Python either way, so paths and expansion counts are identical —
+# only per-neighbor evaluation cost differs. The bench harness toggles
+# this for before/after numbers on the same nets.
+ASTAR_USE_NUMBA = True
+
+
+@njit
+def _expand_neighbors_nb(
+    c, r, l,
+    cost_grid, secondary, has_secondary,
+    allow_mask, has_allow,
+    passable, has_passable,
+    tht_via_mask, via_block_mask, via_ok, has_via_ok,
+    via_cost_cells,
+    base_cost, edge_p, high_p, pour_p, court_p,
+    blocked_thr, secondary_blocked, pour_cells,
+    c0, r0, c1, r1, n_layers,
+    p_ok, p_cost, v_ok, v_cost, v_fallback,
+):
+    """Evaluate all six neighbors of one A* pop (numba path).
+
+    planar dirs [(1,0),(-1,0),(0,1),(0,-1)] fill p_ok/p_cost[4]; via
+    layers [l-1, l+1] fill v_ok/v_cost/v_fallback[2]. v_fallback=1 means
+    the caller must run the slow exact ``_via_landing_blocked`` halo scan
+    (only when no precomputed via_ok mask was supplied). Semantics match
+    the inlined checks in ``SingleNetRouter._a_star`` exactly.
+    """
+    for d in range(4):
+        if d == 0:
+            dc = 1
+            dr = 0
+        elif d == 1:
+            dc = -1
+            dr = 0
+        elif d == 2:
+            dc = 0
+            dr = 1
+        else:
+            dc = 0
+            dr = -1
+        nc = c + dc
+        nr = r + dr
+        if nc < c0 or nc > c1 or nr < r0 or nr > r1:
+            p_ok[d] = False
+            continue
+        if has_allow and not allow_mask[nr, nc]:
+            p_ok[d] = False
+            continue
+        kept = has_passable and passable[l, nr, nc]
+        cell_val = cost_grid[l, nr, nc]
+        if cell_val >= blocked_thr and not kept:
+            p_ok[d] = False
+            continue
+        sec = secondary[l, nr, nc] if has_secondary else 0
+        if has_secondary and sec >= secondary_blocked and not kept:
+            p_ok[d] = False
+            continue
+        cc = base_cost
+        if cell_val >= 80:
+            cc += edge_p
+        elif cell_val >= 50:
+            cc += high_p
+        elif cell_val >= pour_cells:
+            cc += pour_p
+        elif cell_val >= 25:
+            cc += court_p
+        if has_secondary:
+            cc += sec
+        p_ok[d] = True
+        p_cost[d] = cc
+    for vi in range(2):
+        nl = l - 1 if vi == 0 else l + 1
+        if nl < 0 or nl >= n_layers:
+            v_ok[vi] = False
+            continue
+        if has_allow and not allow_mask[r, c]:
+            v_ok[vi] = False
+            continue
+        kept = has_passable and passable[nl, r, c]
+        if cost_grid[nl, r, c] >= blocked_thr and not kept:
+            v_ok[vi] = False
+            continue
+        if has_secondary and secondary[nl, r, c] >= secondary_blocked and not kept:
+            v_ok[vi] = False
+            continue
+        if tht_via_mask[r, c]:
+            v_ok[vi] = True
+            v_cost[vi] = 0
+            v_fallback[vi] = False
+            continue
+        if via_block_mask[r, c] and not kept:
+            v_ok[vi] = False
+            continue
+        if has_via_ok:
+            if not via_ok[r, c] and not kept:
+                v_ok[vi] = False
+                continue
+            v_ok[vi] = True
+            v_fallback[vi] = False
+            v_cost[vi] = via_cost_cells + (secondary[nl, r, c] if has_secondary else 0)
+        else:
+            v_ok[vi] = True
+            v_fallback[vi] = True
+            v_cost[vi] = via_cost_cells + (secondary[nl, r, c] if has_secondary else 0)
+
+
+def _expand_neighbors_py(
+    c, r, l,
+    cost_grid, secondary, has_secondary,
+    allow_mask, has_allow,
+    passable, has_passable,
+    tht_via_mask, via_block_mask, via_ok, has_via_ok,
+    via_cost_cells,
+    base_cost, edge_p, high_p, pour_p, court_p,
+    blocked_thr, secondary_blocked, pour_cells,
+    c0, r0, c1, r1, n_layers,
+    p_ok, p_cost, v_ok, v_cost, v_fallback,
+):
+    """Pure-Python mirror of _expand_neighbors_nb (fallback + A/B baseline)."""
+    dirs = ((1, 0), (-1, 0), (0, 1), (0, -1))
+    for d, (dc, dr) in enumerate(dirs):
+        nc, nr = c + dc, r + dr
+        if not (c0 <= nc <= c1 and r0 <= nr <= r1):
+            p_ok[d] = False
+            continue
+        if has_allow and not allow_mask[nr, nc]:
+            p_ok[d] = False
+            continue
+        kept = bool(has_passable and passable[l, nr, nc])
+        cell_val = int(cost_grid[l, nr, nc])
+        if cell_val >= blocked_thr and not kept:
+            p_ok[d] = False
+            continue
+        sec = int(secondary[l, nr, nc]) if has_secondary else 0
+        if has_secondary and sec >= secondary_blocked and not kept:
+            p_ok[d] = False
+            continue
+        cc = base_cost
+        if cell_val >= 80:
+            cc += edge_p
+        elif cell_val >= 50:
+            cc += high_p
+        elif cell_val >= pour_cells:
+            cc += pour_p
+        elif cell_val >= 25:
+            cc += court_p
+        if has_secondary:
+            cc += sec
+        p_ok[d] = True
+        p_cost[d] = cc
+    for vi, nl in enumerate((l - 1, l + 1)):
+        if not (0 <= nl < n_layers):
+            v_ok[vi] = False
+            continue
+        if has_allow and not allow_mask[r, c]:
+            v_ok[vi] = False
+            continue
+        kept = bool(has_passable and passable[nl, r, c])
+        if int(cost_grid[nl, r, c]) >= blocked_thr and not kept:
+            v_ok[vi] = False
+            continue
+        if has_secondary and int(secondary[nl, r, c]) >= secondary_blocked and not kept:
+            v_ok[vi] = False
+            continue
+        if tht_via_mask[r, c]:
+            v_ok[vi] = True
+            v_cost[vi] = 0
+            v_fallback[vi] = False
+            continue
+        if via_block_mask[r, c] and not kept:
+            v_ok[vi] = False
+            continue
+        if has_via_ok:
+            if not via_ok[r, c] and not kept:
+                v_ok[vi] = False
+                continue
+            v_ok[vi] = True
+            v_fallback[vi] = False
+            v_cost[vi] = via_cost_cells + (int(secondary[nl, r, c]) if has_secondary else 0)
+        else:
+            v_ok[vi] = True
+            v_fallback[vi] = True
+            v_cost[vi] = via_cost_cells + (int(secondary[nl, r, c]) if has_secondary else 0)
 
 
 # Raised when a routing search is cancelled via ``should_cancel``.
@@ -1006,6 +1195,44 @@ class SingleNetRouter:
         heappop = heapq.heappop
         heappush = heapq.heappush
 
+        # Normalized contiguous views for the expansion kernel (one cast
+        # per search, not per neighbor): int32 grids so the njit path and
+        # the Python mirror read identical values; 1x1x1 dummies stand in
+        # for absent optionals behind the has_* flags.
+        cost32 = np.ascontiguousarray(cost_grid, dtype=np.int32)
+        if has_secondary:
+            sec32 = np.ascontiguousarray(secondary, dtype=np.int32)
+        else:
+            sec32 = np.zeros((1, 1, 1), dtype=np.int32)
+        if allow_mask is not None:
+            allow = np.ascontiguousarray(allow_mask, dtype=np.bool_)
+            has_allow = True
+        else:
+            allow = np.ones((1, 1), dtype=np.bool_)
+            has_allow = False
+        if passable is not None:
+            psb = np.ascontiguousarray(passable, dtype=np.bool_)
+            has_psb = True
+        else:
+            psb = np.zeros((1, 1, 1), dtype=np.bool_)
+            has_psb = False
+        tht = np.ascontiguousarray(tht_via_mask, dtype=np.bool_)
+        vblk = np.ascontiguousarray(via_block_mask, dtype=np.bool_)
+        if via_ok is not None:
+            vok = np.ascontiguousarray(via_ok, dtype=np.bool_)
+            has_vok = True
+        else:
+            vok = np.ones((1, 1), dtype=np.bool_)
+            has_vok = False
+        expand = _expand_neighbors_nb if ASTAR_USE_NUMBA else _expand_neighbors_py
+        # Reused per-pop outputs: avoids 6 small allocs per expansion.
+        p_ok = np.zeros(4, dtype=np.bool_)
+        p_cost = np.zeros(4, dtype=np.int64)
+        v_ok = np.zeros(2, dtype=np.bool_)
+        v_cost = np.zeros(2, dtype=np.int64)
+        v_fallback = np.zeros(2, dtype=np.bool_)
+        planar_dirs = ((1, 0), (-1, 0), (0, 1), (0, -1))
+
         # Parent pointers for path reconstruction
         parent = {}
 
@@ -1052,32 +1279,29 @@ class SingleNetRouter:
             if g > g_score[l, r - r0, c - c0]:
                 continue
 
+            # Six-neighbor evaluation in one kernel call (planar + via);
+            # heap, parent map, and push order stay in Python exactly as
+            # before, so paths and expansion counts are unchanged.
+            expand(
+                c, r, l,
+                cost32, sec32, has_secondary,
+                allow, has_allow,
+                psb, has_psb,
+                tht, vblk, vok, has_vok,
+                via_cost_cells,
+                base_cost, edge_keepout_penalty, high_cost_penalty,
+                pour_penalty, courtyard_penalty,
+                blocked_threshold, secondary_blocked, pour_cells,
+                c0, r0, c1, r1, n_layers,
+                p_ok, p_cost, v_ok, v_cost, v_fallback,
+            )
+
             # 4 neighbors on same layer
-            for dc, dr in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+            for d, (dc, dr) in enumerate(planar_dirs):
+                if not p_ok[d]:
+                    continue
                 nc, nr = c + dc, r + dr
-                if not (c0 <= nc <= c1 and r0 <= nr <= r1):
-                    continue
-                if allow_mask is not None and not allow_mask[nr, nc]:
-                    continue
-                cell_val = cost_grid[l, nr, nc]
-                if cell_val >= blocked_threshold and not (
-                        passable is not None and passable[l, nr, nc]):
-                    continue
-                if has_secondary and int(secondary[l, nr, nc]) >= secondary_blocked and not (
-                        passable is not None and passable[l, nr, nc]):
-                    continue
-                cell_cost = base_cost
-                if cell_val >= 80:  # EDGE_KEEPOUT
-                    cell_cost += edge_keepout_penalty
-                elif cell_val >= 50:  # HIGH_COST
-                    cell_cost += high_cost_penalty
-                elif cell_val >= pour_cells:  # POUR
-                    cell_cost += pour_penalty
-                elif cell_val >= 25:  # COURTYARD
-                    cell_cost += courtyard_penalty
-                if has_secondary:
-                    cell_cost += int(secondary[l, nr, nc])
-                ng = g + cell_cost
+                ng = g + int(p_cost[d])
                 if ng < g_score[l, nr - r0, nc - c0]:
                     g_score[l, nr - r0, nc - c0] = ng
                     parent[(nc, nr, l)] = (c, r, l)
@@ -1087,49 +1311,22 @@ class SingleNetRouter:
                     heappush(open_set, (nf, nspread, nh, ng, next(seq), nc, nr, l))
 
             # Via transitions (up/down)
-            for nl in [l - 1, l + 1]:
-                if 0 <= nl < n_layers:
-                    # Check same cell on other layer
-                    if allow_mask is not None and not allow_mask[r, c]:
+            for vi, nl in enumerate((l - 1, l + 1)):
+                if not v_ok[vi]:
+                    continue
+                if v_fallback[vi]:
+                    # No precomputed via_ok mask (direct _a_star callers):
+                    # slow exact halo scan, as before.
+                    if self._via_landing_blocked(r, c, secondary):
                         continue
-                    if cost_grid[nl, r, c] >= blocked_threshold and not (
-                            passable is not None and passable[nl, r, c]):
-                        continue
-                    if has_secondary and int(secondary[nl, r, c]) >= secondary_blocked and not (
-                            passable is not None and passable[nl, r, c]):
-                        continue
-                    # Landing on kept same-net copper is always legal (the
-                    # trunk joins it), so via-block and halo checks are
-                    # waived for passable targets only.
-                    target_kept = passable is not None and passable[nl, r, c]
-                    # Via cost: free at THT pad locations; forbidden inside
-                    # SMD pad solder/fanout areas (THT wins ties).
-                    if tht_via_mask[r, c]:
-                        cell_cost = 0
-                    elif via_block_mask[r, c] and not target_kept:
-                        continue
-                    elif via_ok is not None:
-                        # Precomputed clearance halo (same disc semantics as
-                        # _via_landing_blocked, evaluated once per net).
-                        if not via_ok[r, c] and not target_kept:
-                            continue
-                        cell_cost = via_cost_cells
-                    else:
-                        # Fallback for direct _a_star callers without a mask:
-                        # scan the halo now (slow, exact).
-                        if self._via_landing_blocked(r, c, secondary):
-                            continue
-                        cell_cost = via_cost_cells
-                    if has_secondary:
-                        cell_cost += int(secondary[nl, r, c])
-                    ng = g + cell_cost
-                    if ng < g_score[nl, r - r0, c - c0]:
-                        g_score[nl, r - r0, c - c0] = ng
-                        parent[(c, r, nl)] = (c, r, l)
-                        nf = ng + heuristic(c, r, nl)
-                        nh = abs(c - gc) + abs(r - gr) + abs(nl - gl)
-                        nspread = max(abs(c - gc), abs(r - gr))
-                        heappush(open_set, (nf, nspread, nh, ng, next(seq), c, r, nl))
+                ng = g + int(v_cost[vi])
+                if ng < g_score[nl, r - r0, c - c0]:
+                    g_score[nl, r - r0, c - c0] = ng
+                    parent[(c, r, nl)] = (c, r, l)
+                    nf = ng + heuristic(c, r, nl)
+                    nh = abs(c - gc) + abs(r - gr) + abs(nl - gl)
+                    nspread = max(abs(c - gc), abs(r - gr))
+                    heappush(open_set, (nf, nspread, nh, ng, next(seq), c, r, nl))
 
         return RouteResult([], 0.0, 0, 0.0, False, expansions)
 
