@@ -1519,8 +1519,92 @@ def _stamp_copper_region(tile, grid, item, clearance_mm, ro, co) -> None:
                         layer_grid[r - ro, c - co] = BLOCKED
 
 
+# Polygon fill path: True runs the njit scanline kernel below, False the
+# identical numpy/Python mirror (numba-missing fallback and A/B harness).
+# Grids written either way are bit-identical — only fill cost differs.
+FILL_POLYGON_USE_NUMBA = True
+
+
+@njit
+def _scanline_fill_nb(grid, er1, ec1, er2, ec2, r_min, r_max, W, value):
+    """Scalar scanline fill (numba path).
+
+    Same half-open edge rule as :func:`_fill_polygon_numpy`: an edge
+    contributes to row ``r`` iff ``(y1 <= r < y2) or (y2 <= r < y1)``
+    (horizontal edges never satisfy it, so no divide-by-zero); the
+    intersection column is the exact scalar formula, crossings are
+    insertion-sorted (few per row), and pairs fill with max semantics
+    and board clipping.
+    """
+    n = er1.shape[0]
+    xs = np.empty(n, dtype=np.float64)
+    for r in range(r_min, r_max + 1):
+        rf = float(r)
+        k = 0
+        for i in range(n):
+            y1 = er1[i]
+            y2 = er2[i]
+            if (y1 <= rf and rf < y2) or (y2 <= rf and rf < y1):
+                xs[k] = ec1[i] + (rf - y1) / (y2 - y1) * (ec2[i] - ec1[i])
+                k += 1
+        for a in range(1, k):
+            key = xs[a]
+            b = a - 1
+            while b >= 0 and xs[b] > key:
+                xs[b + 1] = xs[b]
+                b -= 1
+            xs[b + 1] = key
+        j = 0
+        while j + 1 < k:
+            c0 = math.ceil(xs[j])
+            c1 = math.floor(xs[j + 1])
+            if c0 < 0:
+                c0 = 0
+            if c1 >= W:
+                c1 = W - 1
+            if c0 <= c1:
+                for c in range(c0, c1 + 1):
+                    if value > grid[r, c]:
+                        grid[r, c] = value
+            j += 2
+
+
 def _fill_polygon(grid: np.ndarray, points: List[Tuple[int, int]], value: int):
-    """Fill polygon using scanline fill.
+    """Fill polygon using scanline fill (numba kernel or numpy mirror).
+
+    ``points`` are (row, col) cell coordinates (note: ``board_to_grid``
+    returns (col, row), so callers must swap). Both paths implement the
+    same rule and write bit-identical grids; see ``FILL_POLYGON_USE_NUMBA``.
+    """
+    if FILL_POLYGON_USE_NUMBA:
+        _fill_polygon_numba(grid, points, value)
+    else:
+        _fill_polygon_numpy(grid, points, value)
+
+
+def _fill_polygon_numba(grid: np.ndarray, points: List[Tuple[int, int]],
+                        value: int):
+    """Njit scanline fill: edge setup in numpy, rows in one kernel call."""
+    if len(points) < 3:
+        return
+    H, W = grid.shape
+
+    pts = np.asarray(points, dtype=np.float64)
+    er1, ec1 = pts[:, 0], pts[:, 1]
+    er2 = np.roll(er1, -1)
+    ec2 = np.roll(ec1, -1)
+
+    # Find y bounds
+    r_min = max(0, int(np.min(er1)))
+    r_max = min(H - 1, int(np.max(er1)))
+    if r_max < r_min:
+        return
+    _scanline_fill_nb(grid, er1, ec1, er2, ec2, r_min, r_max, W, value)
+
+
+def _fill_polygon_numpy(grid: np.ndarray, points: List[Tuple[int, int]],
+                        value: int):
+    """Fill polygon using scanline fill (numpy/Python mirror).
 
     ``points`` are (row, col) cell coordinates (note: ``board_to_grid``
     returns (col, row), so callers must swap).

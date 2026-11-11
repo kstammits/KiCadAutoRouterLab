@@ -6,6 +6,7 @@ from shapely.geometry import Polygon
 
 from kicad_autorouter.board_model import BoardModel, Footprint, Pad, Point
 from kicad_autorouter.routing.grid import create_grid_from_model, board_to_grid, grid_to_board
+from kicad_autorouter.routing import obstacles as obstacles_mod
 from kicad_autorouter.routing.obstacles import (
     build_occupancy_grid,
     build_fanout_cost,
@@ -13,6 +14,7 @@ from kicad_autorouter.routing.obstacles import (
     FREE, COURTYARD, BLOCKED, HIGH_COST, EDGE_KEEPOUT,
     FANOUT_HALO_INNER, FANOUT_HALO_OUTER, THT_EXCLUSION,
     _block_courtyard,
+    _fill_polygon,
     _mark_pad,
     _mark_zone,
     _mark_edge_keepout,
@@ -229,6 +231,71 @@ class TestZoneMarking:
             else:
                 full_height_cols = np.where(blocked.sum(axis=0) >= H - 2)[0]
             assert len(full_height_cols) == 0
+
+
+class TestFillPolygon:
+    """Golden tests for _fill_polygon (numba kernel + numpy mirror).
+
+    Hand-derived expectations pin the half-open scanline rule: the top
+    and left edges of a rect fill, the bottom row does not. The
+    paths-agree test keeps the mirror from drifting (differential fuzz
+    over 10k random polygons lives in scratch, not the suite).
+    """
+
+    def test_rect_fills_top_and_left_not_bottom(self):
+        grid = np.zeros((5, 6), dtype=np.int16)
+        _fill_polygon(grid, [(1, 1), (1, 4), (3, 4), (3, 1)], 7)
+        expected = np.zeros((5, 6), dtype=np.int16)
+        expected[1, 1:5] = 7
+        expected[2, 1:5] = 7
+        assert np.array_equal(grid, expected)
+
+    def test_triangle_tapers(self):
+        grid = np.zeros((5, 5), dtype=np.int16)
+        _fill_polygon(grid, [(0, 0), (0, 3), (3, 0)], 5)
+        expected = np.zeros((5, 5), dtype=np.int16)
+        expected[0, 0:4] = 5
+        expected[1, 0:3] = 5
+        expected[2, 0:2] = 5
+        assert np.array_equal(grid, expected)
+
+    def test_fewer_than_three_points_is_noop(self):
+        grid = np.zeros((4, 4), dtype=np.int16)
+        _fill_polygon(grid, [(1, 1), (2, 2)], 9)
+        assert not np.any(grid)
+
+    def test_max_semantics_keep_higher_existing(self):
+        grid = np.full((4, 4), 9, dtype=np.int16)
+        _fill_polygon(grid, [(0, 0), (0, 3), (3, 3), (3, 0)], 7)
+        assert np.all(grid == 9)
+
+    def test_offboard_polygon_clips(self):
+        grid = np.zeros((4, 4), dtype=np.int16)
+        _fill_polygon(grid, [(-2, -2), (-2, 2), (2, 2), (2, -2)], 4)
+        assert grid[0, 0:3].tolist() == [4, 4, 4]
+        assert grid[1, 0:3].tolist() == [4, 4, 4]
+        assert grid[2, 0].tolist() == 0
+
+    def test_numba_and_mirror_agree(self):
+        polys = [
+            [(1, 1), (1, 4), (3, 4), (3, 1)],
+            [(0, 0), (0, 3), (3, 0)],
+            [(0.5, 0.5), (0.5, 3.5), (3.5, 3.5), (3.5, 0.5)],
+            [(2, 2), (8, 8), (2, 8), (8, 2)],  # bowtie
+            [(1, 1), (1, 1), (2, 3), (3, 1)],  # duplicate vertex
+        ]
+        prev = obstacles_mod.FILL_POLYGON_USE_NUMBA
+        try:
+            for pts in polys:
+                grids = []
+                for use_nb in (False, True):
+                    obstacles_mod.FILL_POLYGON_USE_NUMBA = use_nb
+                    g = np.zeros((10, 10), dtype=np.int16)
+                    _fill_polygon(g, pts, 100)
+                    grids.append(g)
+                assert np.array_equal(grids[0], grids[1])
+        finally:
+            obstacles_mod.FILL_POLYGON_USE_NUMBA = prev
 
 
 class TestPadInsideCourtyard:

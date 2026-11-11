@@ -795,8 +795,15 @@ def _setup_flight(
     corridors=None,
     corridor_min_thick: float = 0.0,
     pour_nets: Collection[str] = (),
+    static_fp: Optional[int] = None,
 ) -> _FlightSetup:
-    """Build the per-net search context (code-motion from _route_one_net)."""
+    """Build the per-net search context (code-motion from _route_one_net).
+
+    ``static_fp`` is the batch-level :func:`static_fingerprint` value:
+    non-copper inputs never change as nets route, so callers route the
+    batch through one computation instead of paying ~17 ms per net.
+    None (single-flight callers) computes it directly.
+    """
     region_masks: List = []
     if model.board_regions:
         try:
@@ -871,7 +878,10 @@ def _setup_flight(
         _verify_vias_fp = hash(tuple(model.vias))
     except TypeError:
         _verify_vias_fp = hash(repr(tuple(model.vias)))
-    _verify_base_fp = (static_fingerprint(model), _verify_vias_fp)
+    _verify_base_fp = (
+        static_fp if static_fp is not None else static_fingerprint(model),
+        _verify_vias_fp,
+    )
     _verify_group_keys: Dict[int, tuple] = {}
 
     def _verify_share_for(region_idx: int) -> tuple:
@@ -898,7 +908,10 @@ def _setup_flight(
             return secondary, secondary >= SECONDARY_BLOCKED
         mask = region_masks[region_idx]
         confined = secondary.copy()
-        confined[:, ~mask] = SECONDARY_BLOCKED
+        # copyto, not boolean-mask assignment: the fancy-index scatter
+        # costs ~26 ms on a 2x1385x1190 grid, the single C pass ~1.4 ms.
+        # Elementwise-identical (same cells written, same value).
+        np.copyto(confined, SECONDARY_BLOCKED, where=~mask)
         if term_set:
             # Terminals stay enterable: the region raster can clip a
             # pad cell at the polygon edge, and the secondary has no
@@ -1994,6 +2007,7 @@ def route_raw(
             model, routing_grid, cost_grid, cost_map, tht_via_mask,
             via_block_mask, obstacle_cache, params, net_name,
             extra_power_nets, corridors, corridor_min_thick, pour_nets,
+            static_fp=batch_static_fp,
         )
         width_mm = setup.width_mm
         width_map[net_name] = width_mm
@@ -2188,6 +2202,12 @@ def route_raw(
                 "wall_s": time.perf_counter() - t0,
                 "timings": delta,
             }
+
+    # Batch static fingerprint (non-copper inputs only: footprints,
+    # pads, zones, regions — routed copper appended below never changes
+    # it, and rip-up/GND-strip above remove copper alone). Threaded into
+    # each flight so the ~17 ms recompute is paid once, not per net.
+    batch_static_fp = static_fingerprint(model)
 
     t_route = time.perf_counter()
     try:
