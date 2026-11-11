@@ -91,12 +91,37 @@ class CostMap:
 SECONDARY_BLOCKED = 1000
 
 
-# A/B flag for the expansion kernel: True (default) evaluates the six
+# Diagonal (8-connectivity) planar search. Raw paths may cut 45° across
+# open ground; the smoother, stampers, emitter, and verify gate are all
+# any-angle already (hypot/LineString/Bresenham/8-conn flood) — the search
+# is the only 4-connected stage. Vias stay vertical transitions.
+SQRT2 = 1.4142135623730951
+# Planar connectivity of the expansion kernel (4 or 8). Recorded by
+# benchmarks so 4-dir baselines and 8-dir rows never mix silently.
+ROUTER_TOPOLOGY = 8
+
+
+def _octile(dx: float, dy: float, dl: float) -> float:
+    """Octile distance: exact shortest-path length on 8-connected grid.
+
+    Replaces Manhattan wherever the search needs a length bound or the
+    heuristic needs admissibility (Manhattan overestimates once a
+    diagonal step costs sqrt(2) < 2).
+    """
+    dx = abs(dx)
+    dy = abs(dy)
+    dl = abs(dl)
+    mx = dx if dx >= dy else dy
+    mn = dy if dx >= dy else dx
+    return mx + (SQRT2 - 1.0) * mn + dl
+
+
+# A/B flag for the expansion kernel: True (default) evaluates the
 # neighbors of a pop in one njit call; False runs the identical
 # numpy/Python mirror. Heap, parent map, goal tests, and push order stay
-# in Python either way, so paths and expansion counts are identical —
-# only per-neighbor evaluation cost differs. The bench harness toggles
-# this for before/after numbers on the same nets.
+# in Python either way, so the two impls agree exactly on a fixed
+# topology — only per-neighbor evaluation cost differs. The bench
+# harness toggles this for before/after numbers on the same nets.
 ASTAR_USE_NUMBA = True
 
 
@@ -113,27 +138,51 @@ def _expand_neighbors_nb(
     c0, r0, c1, r1, n_layers,
     p_ok, p_cost, v_ok, v_cost, v_fallback,
 ):
-    """Evaluate all six neighbors of one A* pop (numba path).
+    """Evaluate all eight planar neighbors of one A* pop (numba path).
 
-    planar dirs [(1,0),(-1,0),(0,1),(0,-1)] fill p_ok/p_cost[4]; via
-    layers [l-1, l+1] fill v_ok/v_cost/v_fallback[2]. v_fallback=1 means
-    the caller must run the slow exact ``_via_landing_blocked`` halo scan
-    (only when no precomputed via_ok mask was supplied). Semantics match
-    the inlined checks in ``SingleNetRouter._a_star`` exactly.
+    Planar dirs [4 ortho + 4 diagonal] fill p_ok/p_cost[8]; via layers
+    [l-1, l+1] fill v_ok/v_cost/v_fallback[2]. Diagonal steps cost
+    base*sqrt(2) (tolls stay per-entry); a diagonal is forbidden only
+    when BOTH side cells are impassable (narrow cuts allowed — the
+    exact-geometry verify gate downstream rejects copper that is too
+    close). v_fallback=1 means the caller must run the slow exact
+    ``_via_landing_blocked`` halo scan (only when no precomputed via_ok
+    mask was supplied). Semantics match the inlined checks in
+    ``SingleNetRouter._a_star`` exactly.
     """
-    for d in range(4):
+    for d in range(8):
         if d == 0:
             dc = 1
             dr = 0
+            diag = False
         elif d == 1:
             dc = -1
             dr = 0
+            diag = False
         elif d == 2:
             dc = 0
             dr = 1
-        else:
+            diag = False
+        elif d == 3:
             dc = 0
             dr = -1
+            diag = False
+        elif d == 4:
+            dc = 1
+            dr = 1
+            diag = True
+        elif d == 5:
+            dc = 1
+            dr = -1
+            diag = True
+        elif d == 6:
+            dc = -1
+            dr = 1
+            diag = True
+        else:
+            dc = -1
+            dr = -1
+            diag = True
         nc = c + dc
         nr = r + dr
         if nc < c0 or nc > c1 or nr < r0 or nr > r1:
@@ -151,7 +200,37 @@ def _expand_neighbors_nb(
         if has_secondary and sec >= secondary_blocked and not kept:
             p_ok[d] = False
             continue
-        cc = base_cost
+        if diag:
+            s1c = c + dc
+            s1r = r
+            s1_ok = not (
+                s1c < c0 or s1c > c1 or s1r < r0 or s1r > r1
+            )
+            if s1_ok and has_allow and not allow_mask[s1r, s1c]:
+                s1_ok = False
+            if s1_ok:
+                ks = has_passable and passable[l, s1r, s1c]
+                if cost_grid[l, s1r, s1c] >= blocked_thr and not ks:
+                    s1_ok = False
+                elif has_secondary and secondary[l, s1r, s1c] >= secondary_blocked and not ks:
+                    s1_ok = False
+            s2c = c
+            s2r = r + dr
+            s2_ok = not (
+                s2c < c0 or s2c > c1 or s2r < r0 or s2r > r1
+            )
+            if s2_ok and has_allow and not allow_mask[s2r, s2c]:
+                s2_ok = False
+            if s2_ok:
+                ks = has_passable and passable[l, s2r, s2c]
+                if cost_grid[l, s2r, s2c] >= blocked_thr and not ks:
+                    s2_ok = False
+                elif has_secondary and secondary[l, s2r, s2c] >= secondary_blocked and not ks:
+                    s2_ok = False
+            if not s1_ok and not s2_ok:
+                p_ok[d] = False
+                continue
+        cc = base_cost * (1.4142135623730951 if diag else 1.0)
         if cell_val >= 80:
             cc += edge_p
         elif cell_val >= 50:
@@ -213,8 +292,10 @@ def _expand_neighbors_py(
     p_ok, p_cost, v_ok, v_cost, v_fallback,
 ):
     """Pure-Python mirror of _expand_neighbors_nb (fallback + A/B baseline)."""
-    dirs = ((1, 0), (-1, 0), (0, 1), (0, -1))
+    dirs = ((1, 0), (-1, 0), (0, 1), (0, -1),
+            (1, 1), (1, -1), (-1, 1), (-1, -1))
     for d, (dc, dr) in enumerate(dirs):
+        diag = d >= 4
         nc, nr = c + dc, r + dr
         if not (c0 <= nc <= c1 and r0 <= nr <= r1):
             p_ok[d] = False
@@ -231,7 +312,24 @@ def _expand_neighbors_py(
         if has_secondary and sec >= secondary_blocked and not kept:
             p_ok[d] = False
             continue
-        cc = base_cost
+        if diag:
+            # Narrow-cut rule mirrors the njit kernel: forbid only when
+            # BOTH side cells are impassable.
+            def _side_free(scc, srr):
+                if not (c0 <= scc <= c1 and r0 <= srr <= r1):
+                    return False
+                if has_allow and not allow_mask[srr, scc]:
+                    return False
+                ks = bool(has_passable and passable[l, srr, scc])
+                if int(cost_grid[l, srr, scc]) >= blocked_thr and not ks:
+                    return False
+                if has_secondary and int(secondary[l, srr, scc]) >= secondary_blocked and not ks:
+                    return False
+                return True
+            if not _side_free(c + dc, r) and not _side_free(c, r + dr):
+                p_ok[d] = False
+                continue
+        cc = base_cost * (SQRT2 if diag else 1.0)
         if cell_val >= 80:
             cc += edge_p
         elif cell_val >= 50:
@@ -932,13 +1030,17 @@ class SingleNetRouter:
             # Use the A* cost for this edge (includes free via handling)
             total_cost += edge_cost
 
-            # Count wire length and vias for reporting
+            # Count wire length and vias for reporting (planar diagonal
+            # steps contribute hypot(dc, dr), i.e. sqrt(2); vias count a
+            # unit step as before)
             for k in range(len(edge_path) - 1):
                 c1, r1, l1 = edge_path[k]
                 c2, r2, l2 = edge_path[k + 1]
                 if l1 != l2:
                     total_vias += 1
-                total_wire += 1
+                    total_wire += 1
+                else:
+                    total_wire += math.hypot(c2 - c1, r2 - r1)
 
         wire_mm = total_wire * self.grid.resolution_mm
 
@@ -1126,14 +1228,16 @@ class SingleNetRouter:
             return RouteResult([], 0.0, 0, 0.0, False)
 
         # Heuristic: Weighted A* (weight from CostMap; must stay small
-        # enough that cell penalties still steer the search).
-        # Admissible heuristic is Manhattan * base_cost (min step cost = 1).
-        # Corridor-restricted searches use weight 1.0: inside a narrow
-        # tolled corridor an inflated heuristic thrashes (repeated
+        # enough that cell penalties still steer the search). The planar
+        # part is octile (admissible under 8-connectivity: max + (sqrt2-1)
+        # * min); Manhattan would overestimate once a diagonal costs
+        # sqrt(2) < 2. Corridor-restricted searches use weight 1.0: inside
+        # a narrow tolled corridor an inflated heuristic thrashes (repeated
         # re-expansion) instead of guiding.
         hw = self.cost_map.heuristic_weight if heuristic_weight is None else heuristic_weight
+        base = self.cost_map.base_cost
         def heuristic(c, r, l):
-            return (abs(c - gc) + abs(r - gr) + abs(l - gl)) * self.cost_map.base_cost * hw
+            return _octile(c - gc, r - gr, l - gl) * base * hw
 
         # Quick goal_mask check for start cell (passable alone does not
         # trivially succeed: connector searches start on kept copper and
@@ -1143,32 +1247,31 @@ class SingleNetRouter:
 
         # A* with (f, spread, h, g, seq, col, row, layer)
         # f = g + h. Ties (the common case on open ground, where every
-        # goal-ward step costs the same) break toward the diagonal:
-        # ``spread`` (the larger remaining axis) prefers shrinking the
-        # long axis first, so raw paths come out as diagonal-hugging
-        # stairs instead of single-axis L runs. Tie-breaks never
-        # override f, so optimality is unchanged; ``seq`` keeps entries
-        # totally ordered so heapq never reaches the coordinates.
-        # Parents live in the ``parent`` dict only (not duplicated in
-        # heap entries) to keep pushes small.
+        # goal-ward step costs the same) break toward the goal axis:
+        # ``spread`` (the larger remaining axis) plus the unweighted
+        # octile residual keep raw paths tight instead of wandering.
+        # Tie-breaks never override f, so optimality is unchanged; ``seq``
+        # keeps entries totally ordered so heapq never reaches the
+        # coordinates. Parents live in the ``parent`` dict only (not
+        # duplicated in heap entries) to keep pushes small. Costs are
+        # float (diagonal steps cost sqrt(2)); g_score is float64.
         open_set = []
         seq = itertools.count()
         start_h = heuristic(sc, sr, sl)
         start_spread = max(abs(sc - gc), abs(sr - gr))
-        start_h_unweighted = abs(sc - gc) + abs(sr - gr) + abs(sl - gl)
-        heapq.heappush(open_set, (start_h, start_spread, start_h_unweighted, 0, next(seq), sc, sr, sl))
+        start_h_unweighted = _octile(sc - gc, sr - gr, sl - gl)
+        heapq.heappush(open_set, (start_h, start_spread, start_h_unweighted, 0.0, next(seq), sc, sr, sl))
 
         # g_score array clipped to the window: [layer, row - r0, col - c0].
         # Small windows shrink both the allocation and the expansion flood.
-        INF = 1 << 30
         if window is None:
             c0, r0, c1, r1 = 0, 0, self.W - 1, self.H - 1
         else:
             c0, r0, c1, r1 = window.c0, window.r0, window.c1, window.r1
         g_score = np.full(
-            (self.n_layers, r1 - r0 + 1, c1 - c0 + 1), INF, dtype=np.int32
+            (self.n_layers, r1 - r0 + 1, c1 - c0 + 1), np.inf, dtype=np.float64
         )
-        g_score[sl, sr - r0, sc - c0] = 0
+        g_score[sl, sr - r0, sc - c0] = 0.0
 
         # Local bindings for the hot expansion loop: per-neighbor method
         # calls and ``self.`` attribute lookups dominate A* runtime, so
@@ -1225,13 +1328,14 @@ class SingleNetRouter:
             vok = np.ones((1, 1), dtype=np.bool_)
             has_vok = False
         expand = _expand_neighbors_nb if ASTAR_USE_NUMBA else _expand_neighbors_py
-        # Reused per-pop outputs: avoids 6 small allocs per expansion.
-        p_ok = np.zeros(4, dtype=np.bool_)
-        p_cost = np.zeros(4, dtype=np.int64)
+        # Reused per-pop outputs: avoids small allocs per expansion.
+        p_ok = np.zeros(8, dtype=np.bool_)
+        p_cost = np.zeros(8, dtype=np.float64)
         v_ok = np.zeros(2, dtype=np.bool_)
-        v_cost = np.zeros(2, dtype=np.int64)
+        v_cost = np.zeros(2, dtype=np.float64)
         v_fallback = np.zeros(2, dtype=np.bool_)
-        planar_dirs = ((1, 0), (-1, 0), (0, 1), (0, -1))
+        planar_dirs = ((1, 0), (-1, 0), (0, 1), (0, -1),
+                       (1, 1), (1, -1), (-1, 1), (-1, -1))
 
         # Parent pointers for path reconstruction
         parent = {}
@@ -1279,9 +1383,9 @@ class SingleNetRouter:
             if g > g_score[l, r - r0, c - c0]:
                 continue
 
-            # Six-neighbor evaluation in one kernel call (planar + via);
+            # Eight-neighbor evaluation in one kernel call (planar + via);
             # heap, parent map, and push order stay in Python exactly as
-            # before, so paths and expansion counts are unchanged.
+            # before (orthogonal dirs push before diagonals, then vias).
             expand(
                 c, r, l,
                 cost32, sec32, has_secondary,
@@ -1296,17 +1400,17 @@ class SingleNetRouter:
                 p_ok, p_cost, v_ok, v_cost, v_fallback,
             )
 
-            # 4 neighbors on same layer
+            # 8 neighbors on same layer (4 orthogonal + 4 diagonal)
             for d, (dc, dr) in enumerate(planar_dirs):
                 if not p_ok[d]:
                     continue
                 nc, nr = c + dc, r + dr
-                ng = g + int(p_cost[d])
+                ng = g + float(p_cost[d])
                 if ng < g_score[l, nr - r0, nc - c0]:
                     g_score[l, nr - r0, nc - c0] = ng
                     parent[(nc, nr, l)] = (c, r, l)
                     nf = ng + heuristic(nc, nr, l)
-                    nh = abs(nc - gc) + abs(nr - gr) + abs(l - gl)
+                    nh = _octile(nc - gc, nr - gr, l - gl)
                     nspread = max(abs(nc - gc), abs(nr - gr))
                     heappush(open_set, (nf, nspread, nh, ng, next(seq), nc, nr, l))
 
@@ -1319,12 +1423,12 @@ class SingleNetRouter:
                     # slow exact halo scan, as before.
                     if self._via_landing_blocked(r, c, secondary):
                         continue
-                ng = g + int(v_cost[vi])
+                ng = g + float(v_cost[vi])
                 if ng < g_score[nl, r - r0, c - c0]:
                     g_score[nl, r - r0, c - c0] = ng
                     parent[(c, r, nl)] = (c, r, l)
                     nf = ng + heuristic(c, r, nl)
-                    nh = abs(c - gc) + abs(r - gr) + abs(nl - gl)
+                    nh = _octile(c - gc, r - gr, nl - gl)
                     nspread = max(abs(c - gc), abs(r - gr))
                     heappush(open_set, (nf, nspread, nh, ng, next(seq), c, r, nl))
 

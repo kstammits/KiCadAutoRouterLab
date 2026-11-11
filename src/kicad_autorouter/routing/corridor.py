@@ -2,9 +2,11 @@
 
 Unguided A* floods the whole board when the only walkable corridor
 threads hundreds of tolled halo cells (DCCF VIN: a walkable path exists
-but needs hundreds of thousands of expansions to find). A 4-connected BFS on a downsampled
-blockage grid finds that corridor in ~0.1s; the detailed search is then
-restricted to the dilated corridor instead of the open board.
+but needs hundreds of thousands of expansions to find). An 8-connected
+BFS on a downsampled blockage grid finds that corridor in ~0.1s; the
+detailed search is then restricted to the dilated corridor instead of
+the open board. Diagonal coarse steps use the same narrow-cut rule as
+the search (forbidden only when both side supercells are blocked).
 
 Conservative by construction: a supercell is blocked when ANY subcell
 is hard-blocked on ANY layer, so a found corridor always contains a
@@ -68,7 +70,9 @@ def find_corridor(
     if blocked[qs[1], qs[0]] or blocked[gs[1], gs[0]]:
         return None
 
-    # 4-connectivity BFS with parent pointers (bounded: Hb x Wb cells).
+    # 8-connectivity BFS with parent pointers (bounded: Hb x Wb cells).
+    # Diagonal steps use the narrow-cut rule (same as the search): a
+    # diagonal is forbidden only when BOTH side supercells are blocked.
     prev = np.zeros((Hb, Wb, 2), dtype=np.int32)
     seen = np.zeros((Hb, Wb), dtype=bool)
     dq = deque([qs])
@@ -79,17 +83,21 @@ def find_corridor(
         if (cc, rr) == gs:
             found = True
             break
-        for dc, dr in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        for dc, dr in ((1, 0), (-1, 0), (0, 1), (0, -1),
+                       (1, 1), (1, -1), (-1, 1), (-1, -1)):
             nc, nr = cc + dc, rr + dr
-            if (
-                0 <= nr < Hb
-                and 0 <= nc < Wb
-                and not seen[nr, nc]
-                and not blocked[nr, nc]
-            ):
-                seen[nr, nc] = True
-                prev[nr, nc] = (cc, rr)
-                dq.append((nc, nr))
+            if not (0 <= nr < Hb and 0 <= nc < Wb):
+                continue
+            if seen[nr, nc] or blocked[nr, nc]:
+                continue
+            if dc != 0 and dr != 0:
+                s1_blocked = not (0 <= cc + dc < Wb) or blocked[rr, cc + dc]
+                s2_blocked = not (0 <= rr + dr < Hb) or blocked[rr + dr, cc]
+                if s1_blocked and s2_blocked:
+                    continue
+            seen[nr, nc] = True
+            prev[nr, nc] = (cc, rr)
+            dq.append((nc, nr))
     if not found:
         return None
 
