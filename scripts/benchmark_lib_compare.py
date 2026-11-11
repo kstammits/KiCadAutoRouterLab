@@ -128,7 +128,6 @@ def main() -> None:
         "date": str(date.today()),
         "params": params.to_dict(),
         "numba_version": NUMBA_VERSION,
-        "topology": getattr(router_mod, "ROUTER_TOPOLOGY", 4),
         "impls": list(impls),
         "cases": rows,
     }
