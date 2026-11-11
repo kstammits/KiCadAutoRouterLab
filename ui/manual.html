@@ -165,7 +165,7 @@ Each example asserts its own invariant; generation fails if the engine drifts.</
 <tr><th>Overlaps</th><td colspan="4">none</td></tr>
 </table>
 <p class="note">B moved 8.04 mm toward A; final courtyard overlap 0.00 mm².</p>
-<p class="muted">Attraction is constant-magnitude. The spring keeps pulling after contact, so the courtyard wall is what finally stops the part; the run ends at the iteration budget with the part held at the wall.</p>
+<p class="muted">Attraction pulls at constant magnitude; the courtyard wall stops the part, which then rests at the wall until the iteration budget ends.</p>
 </section>
 
 <section class="example">
@@ -254,7 +254,7 @@ Each example asserts its own invariant; generation fails if the engine drifts.</
 <tr><th>Overlaps</th><td colspan="4">none</td></tr>
 </table>
 <p class="note">Overlap fell from 20.0 mm² to 0.00 mm²; the courtyard wall found the shortest escape.</p>
-<p class="muted">Every contact reports a signed separation. The deepest sub-contact wins, so stacked pad/pin paths cannot multiply the force.</p>
+<p class="muted">Contacts report signed separation; the deepest wins per pair, so stacked pad/pin paths can&#x27;t multiply the force.</p>
 </section>
 
 <section class="example">
@@ -392,7 +392,7 @@ Each example asserts its own invariant; generation fails if the engine drifts.</
 <tr><th>Overlaps</th><td colspan="4">none</td></tr>
 </table>
 <p class="note">The caged part moved 0.00 mm and rotated 0.4°; the locked walls held it in place.</p>
-<p class="muted">Locked parts are anchors: they feel and apply forces but never move. A legalized part settles with only a small nudge.</p>
+<p class="muted">Locked parts are anchors — they apply forces but never move.</p>
 </section>
 
 

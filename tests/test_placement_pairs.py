@@ -75,10 +75,6 @@ def _board(first_locked: bool):
     )
 
 
-def _overlap_area(model: BoardModel, deltas: dict) -> float:
-    return overlap_area(model, deltas)
-
-
 PARAMS = PlacementParams(
     max_iterations=10,
     convergence_eps_m=1e-15,
@@ -117,10 +113,10 @@ def test_movable_separates_from_immobile(first_locked, dx_sign):
     j > i) share one setup; only the push direction flips with geometry.
     """
     model = _board(first_locked=first_locked)
-    before = _overlap_area(model, {})
+    before = overlap_area(model, {})
     assert before > 10.0
     prop = run_placement(model, SEPARATION_PARAMS, movable_uuids={"uuid-b"})
-    assert _overlap_area(model, prop.deltas) < before  # pushed apart
+    assert overlap_area(model, prop.deltas) < before  # pushed apart
     # Locked part untouched, movable part pushed away along x.
     assert "uuid-a" not in prop.deltas
     dx, _, _ = prop.deltas["uuid-b"]
@@ -148,12 +144,10 @@ def test_shear_produces_finite_rotation():
     motion (no NaN, no full spins in a single step from a sub-mm
     layout), with rotation read out via Kabsch as before.
     """
-    from .helpers import make_fp as _make_fp
-
-    mover = _make_fp("M", "uuid-m", 2.0, 0.0, ("N1", "N2"),
+    mover = make_fp("M", "uuid-m", 2.0, 0.0, ("N1", "N2"),
                      footprint_id="test:R", hw=1.5, hh=1.0,
                      pad_layers=("F.Cu",), pad_shape="circle")
-    locked = _make_fp("L", "uuid-l", 1.0, 0.3, ("N9",),
+    locked = make_fp("L", "uuid-l", 1.0, 0.3, ("N9",),
                       footprint_id="test:R", hw=1.5, hh=1.0,
                       pad_layers=("F.Cu",), pad_shape="circle",
                       locked=True)
@@ -200,8 +194,6 @@ def test_contact_weighting_conserves_total():
     the pair force across pads while preserving the total). Repulsion
     differs by pad count, so only courtyard components are compared.
     """
-    from .helpers import make_fp as _make_fp
-
     model = _board(first_locked=True)
     params = PlacementParams(
         max_iterations=0,
@@ -216,7 +208,7 @@ def test_contact_weighting_conserves_total():
     total_fx, total_fy = prop.forces["uuid-b"]
     # SI newtons: Coulomb ~0.1N in x, wall ~0.06N in y (MTV escape axis).
     assert math.hypot(total_fx, total_fy) > 1e-3  # sanity: the pair push exists
-    single = _make_fp("S", "uuid-s", 1.0, 0.0, ("N3",),
+    single = make_fp("S", "uuid-s", 1.0, 0.0, ("N3",),
                       footprint_id="test:R", hw=3.0, hh=2.0,
                       pad_layers=("F.Cu",), pad_shape="circle")
     locked_a = _fp("A", "uuid-a", 0.0, True, "N1", "N2")

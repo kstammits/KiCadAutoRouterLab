@@ -72,10 +72,6 @@ def _two_part_board(layer_b: str = "F.Cu", tht_b: bool = False, shared_net: bool
     )
 
 
-def _overlap_area(model: BoardModel, deltas: dict) -> float:
-    return overlap_area(model, deltas)
-
-
 def _centroid_gap(model: BoardModel, deltas: dict) -> float:
     ca = model.by_ref["A"]
     cb = model.by_ref["B"]
@@ -96,9 +92,9 @@ PARAMS = PlacementParams(
 
 def test_same_layer_overlap_resolves():
     model = _two_part_board()
-    before = _overlap_area(model, {})
+    before = overlap_area(model, {})
     prop = run_placement(model, PARAMS)
-    after = _overlap_area(model, prop.deltas)
+    after = overlap_area(model, prop.deltas)
     assert before > 10.0  # heavy initial overlap (6x4 rects 1mm apart)
     assert after == 0.0  # pushed fully apart
 
@@ -112,7 +108,7 @@ def test_cross_layer_no_courtyard_force():
     moves (via layer-blind pad repulsion).
     """
     model = _two_part_board(layer_b="B.Cu")
-    before = _overlap_area(model, {})
+    before = overlap_area(model, {})
     assert before > 10.0
     prop = run_placement(model, PARAMS)
     assert prop.deltas, "pair must still move via pad Coulomb"
@@ -125,7 +121,7 @@ def test_cross_layer_no_courtyard_force():
 def test_tht_collides_across_layers():
     model = _two_part_board(layer_b="B.Cu", tht_b=True)
     prop = run_placement(model, PARAMS)
-    assert _overlap_area(model, prop.deltas) == 0.0
+    assert overlap_area(model, prop.deltas) == 0.0
 
 
 def test_pad_copper_polygon_true_shapes():
@@ -175,7 +171,7 @@ def test_cross_layer_smd_overlap_is_legal():
     from kicad_autorouter.placement.legality import check_legality
 
     model = _two_part_board(layer_b="B.Cu")
-    assert _overlap_area(model, {}) > 10.0
+    assert overlap_area(model, {}) > 10.0
     rep = check_legality(model, {})
     assert rep.is_legal
     assert rep.overlapping_pairs == ()
@@ -187,12 +183,11 @@ def test_cross_layer_tht_pin_keepout_in_legality():
     A B.Cu body nested inside an F.Cu THT courtyard but clear of the pin
     copper is legal; the same body sitting on a pin is illegal.
     """
-    from .helpers import make_fp as _make_fp
     from kicad_autorouter.board_model import Pad
     from kicad_autorouter.placement.legality import check_legality
 
     def _tht_a():
-        fa = _make_fp("A", "uuid-a", 0.0, 0.0, ("N1", "N2"),
+        fa = make_fp("A", "uuid-a", 0.0, 0.0, ("N1", "N2"),
                       layer="F.Cu", footprint_id="test:THT", hw=3.0, hh=2.0,
                       pad_dx=1.0, pad_shape="circle")
         tht_pads = tuple(
@@ -225,16 +220,16 @@ def test_cross_layer_tht_pin_keepout_in_legality():
 
     # B nested under A's courtyard (2.5mm^2 plan overlap) but 0.09mm clear
     # of the +x pin copper (r=1.41 at (1,0); B body bottom edge y=1.5).
-    fb_clear = _make_fp("B", "uuid-b", 1.0, 3.5, ("N3", "N4"),
+    fb_clear = make_fp("B", "uuid-b", 1.0, 3.5, ("N3", "N4"),
                         layer="B.Cu", footprint_id="test:R", hw=3.0, hh=2.0,
                         pad_shape="rect")
     model = _board(fb_clear)
-    assert _overlap_area(model, {}) > 1.0
+    assert overlap_area(model, {}) > 1.0
     rep = check_legality(model, {})
     assert rep.is_legal, rep.overlapping_pairs
 
     # Slide B onto A's +x pin: pin copper now inside B's courtyard.
-    fb_on_pin = _make_fp("B", "uuid-b", 1.0, 0.0, ("N3", "N4"),
+    fb_on_pin = make_fp("B", "uuid-b", 1.0, 0.0, ("N3", "N4"),
                          layer="B.Cu", footprint_id="test:R", hw=3.0, hh=2.0,
                          pad_shape="rect")
     rep2 = check_legality(_board(fb_on_pin), {})

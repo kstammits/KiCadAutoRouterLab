@@ -15,9 +15,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "ui"))
 
 import server  # noqa: E402
 import server_state  # noqa: E402 (nudge clock lives here; see below)
+from tests.helpers import post_fixture
 from tests.server_helpers import (
     get_json as _get,
-    load_fixture,
     post_json as _post,
     serve_client,
 )
@@ -44,7 +44,7 @@ def _client():
 
 
 def _load(base, fixture="ghost_test.kicad_pcb", name="ghost_test"):
-    return load_fixture(base, fixture, name)
+    return post_fixture(base, fixture, name)
 
 
 def _footprints(base):

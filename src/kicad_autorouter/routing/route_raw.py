@@ -50,6 +50,28 @@ from .params import (
 )
 
 
+def _default_cost_map(params) -> CostMap:
+    """Per-net search pricing: via price in mm, fixed block threshold."""
+    return CostMap(
+        base_cost=1,
+        via_cost_mm=params.via_cost_mm,
+        blocked_threshold=100,
+        heuristic_weight=params.heuristic_weight,
+    )
+
+
+def _default_transition_masks(model, routing_grid, params):
+    """Free THT hop sites + via-block mask at default clearance/width."""
+    return (
+        _build_tht_via_mask(model, routing_grid),
+        build_via_block_mask(
+            model, routing_grid,
+            clearance_mm=params.clearance_mm,
+            track_half_mm=params.track_width_mm / 2.0,
+        ),
+    )
+
+
 def _resolve_grid_layers(model: BoardModel, params: RoutingParams) -> Tuple[str, ...]:
     """Ordered grid layers for this route: the outer-only grid intersected
     with ``params.allowed_layers`` (``None`` = all stackup layers, i.e.
@@ -386,6 +408,20 @@ def _chunk_terminals(
     return chunks
 
 
+def union_paths(branches, coerce_int: bool = False) -> list:
+    """First-seen union of branch cells, matching single-flight shape."""
+    seen = set()
+    union: list = []
+    for b in branches:
+        for cell in b:
+            c = ((int(cell[0]), int(cell[1]), int(cell[2]))
+                 if coerce_int else cell)
+            if c not in seen:
+                seen.add(c)
+                union.append(c)
+    return union
+
+
 def _merge_chunk_results(results: List[NetRouteResult]) -> NetRouteResult:
     """Concatenate per-chunk routes into one net result (piecemeal splice).
 
@@ -405,13 +441,7 @@ def _merge_chunk_results(results: List[NetRouteResult]) -> NetRouteResult:
             arc_pieces.extend(fitted)
         else:
             arc_pieces.extend([() for _ in brs])
-    seen = set()
-    union: List[Tuple[int, int, int]] = []
-    for b in branches:
-        for cell in b:
-            if cell not in seen:
-                seen.add(cell)
-                union.append(cell)
+    union = union_paths(branches)
     return NetRouteResult(
         path=union,
         wire_mm=sum(r.wire_mm for r in results),
@@ -451,21 +481,22 @@ def _branch_cells(result) -> List[Tuple[int, int, int]]:
     return cells
 
 
-def _check_chunk_coverage(
-    terminals: List[Tuple[int, int, int]], merged: NetRouteResult
+def _flood_cover(
+    terminals: List[Tuple[int, int, int]], cells, kind: str, copper: str
 ) -> Optional[str]:
-    """Merged copper must connect every terminal (BFS over branch cells)."""
-    cells = set(_branch_cells(merged))
-    missing = sum(1 for t in terminals if tuple(t) not in cells)
+    """Every terminal mutually reachable through ``cells`` (or a reason).
+
+    Shared flood behind chunk and seeded coverage: 8-neighbourhood steps
+    plus layer vias, from the first terminal through walkable cells only.
+    Membership alone is not enough — disjoint sub-trees each cover their
+    own terminals. 8-connectivity (not 4) because Bresenham waypoint
+    chords step diagonally.
+    """
+    walk = set(cells)
+    missing = sum(1 for t in terminals if tuple(t) not in walk)
     if missing:
-        return (
-            f"piecemeal splice disconnected: {missing} terminal(s) "
-            f"outside routed copper"
-        )
-    # Reachability: 8-neighbourhood steps plus layer vias, from the first
-    # terminal through merged cells only. Membership alone is not enough —
-    # disjoint sub-trees each cover their own terminals. 8-connectivity
-    # (not 4) because Bresenham waypoint chords step diagonally.
+        return (f"{kind} splice disconnected: {missing} terminal(s) "
+                f"outside {copper}")
     seen = {tuple(terminals[0])}
     stack = [tuple(terminals[0])]
     while stack:
@@ -475,21 +506,27 @@ def _check_chunk_coverage(
                 if dc == 0 and dr == 0:
                     continue
                 nb = (c + dc, r + dr, l)
-                if nb in cells and nb not in seen:
+                if nb in walk and nb not in seen:
                     seen.add(nb)
                     stack.append(nb)
         for nl in (l - 1, l + 1):
             nb = (c, r, nl)
-            if nb in cells and nb not in seen:
+            if nb in walk and nb not in seen:
                 seen.add(nb)
                 stack.append(nb)
     unreachable = sum(1 for t in terminals if tuple(t) not in seen)
     if unreachable:
-        return (
-            f"piecemeal splice disconnected: {unreachable} terminal(s) "
-            f"unreachable in routed copper"
-        )
+        return (f"{kind} splice disconnected: {unreachable} terminal(s) "
+                f"unreachable in {copper}")
     return None
+
+
+def _check_chunk_coverage(
+    terminals: List[Tuple[int, int, int]], merged: NetRouteResult
+) -> Optional[str]:
+    """Merged copper must connect every terminal (BFS over branch cells)."""
+    return _flood_cover(terminals, set(_branch_cells(merged)),
+                        "piecemeal", "routed copper")
 
 
 def _resume_progress(grouped_chunks, group_progress: Dict[int, List[NetRouteResult]]) -> int:
@@ -1259,14 +1296,7 @@ def _route_chunk(
                     _stub_branches, _stub_pinned = None, set()
                 if _stub_branches is not None:
                     try:
-                        _seen: Set[Tuple[int, int, int]] = set()
-                        _union: List[Tuple[int, int, int]] = []
-                        for _b in _stub_branches:
-                            for _c in _b:
-                                _t = (int(_c[0]), int(_c[1]), int(_c[2]))
-                                if _t not in _seen:
-                                    _seen.add(_t)
-                                    _union.append(_t)
+                        _union = union_paths(_stub_branches, coerce_int=True)
                         _stub_raw = replace(
                             raw_res,
                             branches=tuple(tuple(b) for b in _stub_branches),
@@ -1492,13 +1522,7 @@ def _smooth_result(result, cost_grid, routing_grid, corridor: int, blocked_thres
                 changed = True
     if not changed and not any_arc:
         return result
-    seen = set()
-    union_path = []
-    for branch in new_branches:
-        for cell in branch:
-            if cell not in seen:
-                seen.add(cell)
-                union_path.append(cell)
+    union_path = union_paths(new_branches)
     # Wire matches emission branch by branch: fitted pieces where arcs
     # exist (emission uses them), smoothed chords elsewhere (legacy path).
     wire_mm = 0.0
@@ -1766,26 +1790,15 @@ def route_raw(
         # Footprint-only inputs, already keyed by the sync above.
         tht_via_mask, via_block_mask = obstacle_cache.masks()
     else:
-        # 3. Create THT via mask for free layer transitions at through-hole pads
-        tht_via_mask = _build_tht_via_mask(model, routing_grid)
-
-        # 3b. Via-block mask: no vias inside SMD pad solder/fanout areas
-        via_block_mask = build_via_block_mask(
-            model, routing_grid,
-            clearance_mm=params.clearance_mm,
-            track_half_mm=params.track_width_mm / 2.0,
-        )
+        # 3/3b. Free THT hop sites + via-block mask (SMD solder/fanout).
+        tht_via_mask, via_block_mask = _default_transition_masks(
+            model, routing_grid, params)
 
     # 4. Via price in mm; the router scales to cells. The router itself
     # is built per net below (own THT drill discs punched FREE), since
     # the search grid differs per net while stamping stays on the
     # shared cost grid.
-    cost_map = CostMap(
-        base_cost=1,
-        via_cost_mm=params.via_cost_mm,
-        blocked_threshold=100,
-        heuristic_weight=params.heuristic_weight,
-    )
+    cost_map = _default_cost_map(params)
 
     # 5. Identify net classes (user-marked power membership included)
     power_nets, ground_nets, signal_nets = identify_power_nets(model, extra_power_nets)
@@ -2320,32 +2333,8 @@ def _seeded_coverage(
     """
     cells = set(seed_cells or ()) | set(_branch_cells(result))
     cells |= set(join_cells)
-    missing = sum(1 for t in join_cells if tuple(t) not in cells)
-    if missing:
-        return (f"seeded splice disconnected: {missing} terminal(s) "
-                f"outside kept+routed copper")
-    seen = {tuple(join_cells[0])}
-    stack = [tuple(join_cells[0])]
-    while stack:
-        c, r, l = stack.pop()
-        for dc in (-1, 0, 1):
-            for dr in (-1, 0, 1):
-                if dc == 0 and dr == 0:
-                    continue
-                nb = (c + dc, r + dr, l)
-                if nb in cells and nb not in seen:
-                    seen.add(nb)
-                    stack.append(nb)
-        for nl in (l - 1, l + 1):
-            nb = (c, r, nl)
-            if nb in cells and nb not in seen:
-                seen.add(nb)
-                stack.append(nb)
-    unreachable = sum(1 for t in join_cells if tuple(t) not in seen)
-    if unreachable:
-        return (f"seeded splice disconnected: {unreachable} terminal(s) "
-                f"unreachable in kept+routed copper")
-    return None
+    return _flood_cover(list(join_cells), cells,
+                        "seeded", "kept+routed copper")
 
 
 def route_gap_terminals(
@@ -2459,16 +2448,9 @@ def route_gap_terminals(
             if (c, r, li) not in hard_foreign:
                 cost_grid[li, r, c] = FREE
             terms_pre.append((c, r, li))
-    tht_via_mask = _build_tht_via_mask(model, routing_grid)
-    via_block_mask = build_via_block_mask(
-        model, routing_grid, clearance_mm=params.clearance_mm,
-        track_half_mm=params.track_width_mm / 2.0)
-    cost_map = CostMap(
-        base_cost=1,
-        via_cost_mm=params.via_cost_mm,
-        blocked_threshold=100,
-        heuristic_weight=params.heuristic_weight,
-    )
+    tht_via_mask, via_block_mask = _default_transition_masks(
+        model, routing_grid, params)
+    cost_map = _default_cost_map(params)
     setup = _setup_flight(
         model, routing_grid, cost_grid, cost_map, tht_via_mask,
         via_block_mask, None, params, net_name, extra_power_nets,

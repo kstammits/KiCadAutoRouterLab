@@ -257,11 +257,6 @@ def closest_approach(segs: list, x_mm: float, y_mm: float) -> float:
     return min(s.distance(pt) for s in segs)
 
 
-def vias_in_path(path) -> set:
-    """Cells (c, r) where the grid path changes layer."""
-    return {(a[0], a[1]) for a, b in zip(path, path[1:]) if a[2] != b[2]}
-
-
 def zeros_grid(size=30, layers=1):
     """Zeroed 3D cost grid ``(layers, size, size)`` (smoothing suites)."""
     import numpy as np

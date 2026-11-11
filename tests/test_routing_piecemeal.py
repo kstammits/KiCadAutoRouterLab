@@ -14,7 +14,6 @@ from pathlib import Path
 import pytest
 
 from kicad_autorouter.board_model import (
-    BoardModel,
     Point,
     board_model,
 )
@@ -31,10 +30,6 @@ from kicad_autorouter.routing.router import RouteResult as NetRouteResult
 from tests.helpers import ladder_board
 
 DCCF_PCB = Path(__file__).parent / "fixtures" / "DCCF.sved.kicad_pcb"
-
-
-def _ladder(n_pads: int, net: str = "BIG") -> BoardModel:
-    return ladder_board(n_pads, net, uuid_prefix="uuid-piece")
 
 
 def _terms(n: int):
@@ -95,7 +90,7 @@ def test_ladder_sizes_route_chunked(n):
 
     21 (+12V) and 17 (-12V) are the previously hanging rail sizes.
     """
-    model = _ladder(n)
+    model = ladder_board(n)
     t0 = time.perf_counter()
     result, _, _ = route_nets(
         model, ["BIG"], set(),
@@ -115,7 +110,7 @@ def test_forced_chunks_on_small_net():
     params = RoutingParams(run_drc=False, stitch_gnd_vias=False,
                            max_terminals_per_net=10,
                            piecemeal_chunk_terminals=6)
-    result, _, _ = route_nets(_ladder(12), ["BIG"], set(), params=params)
+    result, _, _ = route_nets(ladder_board(12), ["BIG"], set(), params=params)
     assert result.nets_routed == 1
     assert result.nets_failed == 0
 
@@ -149,7 +144,7 @@ def test_failed_chunk_keeps_partial_copper():
     name for the viewer overlay and nothing is committed (tracks_added
     stays 0 — partials are excluded from writeback).
     """
-    model = _ladder(20)
+    model = ladder_board(20)
     keepout = KeepoutZone(
         uuid="kz-sealed",
         layers=("F.Cu", "B.Cu"),

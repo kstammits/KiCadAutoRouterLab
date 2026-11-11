@@ -484,12 +484,12 @@ def via_halo_radius_cells(
     """Halo radius in cells covering via copper + clearance + track half-width.
 
     A drilled via is an annulus of ``via_size_mm`` OD plus manufacturing
-    tolerance; foreign copper (prior tracks/vias, exclusion rings) must keep
-    ``clearance_mm + track_half_mm`` beyond the annulus edge. Same
-    ``max(1, ceil(...))`` spelling as :func:`pad_halo_radius_cells`.
+    tolerance; foreign copper must keep ``clearance_mm + track_half_mm``
+    beyond the annulus edge. Same formula as pads (half-extent +
+    clearance + track half), so it delegates.
     """
-    return mm_to_cells(
-        via_size_mm / 2.0 + clearance_mm + track_half_mm, res_mm)
+    return pad_halo_radius_cells(
+        via_size_mm / 2.0, clearance_mm, track_half_mm, res_mm)
 
 
 def track_corridor_radius_cells(
