@@ -29,6 +29,14 @@ tmp/
 # Quarto rendered output (regenerated on demand via scripts/regen_*.sh)
 docs/_output/
 
+# Local benchmark results (regenerate via scripts/benchmark_*.py;
+# only the derived constants in code comments/README travel with the repo)
+docs/benchmarks/*.json
+
+# Internal dev notes (rot fast, not needed by checkouts)
+docs/tests.md
+docs/emit_gate_smoother_proposal.md
+
 # KiCad project-local / cache files (not for version control;
 # the engine and tests read .kicad_pcb only, KiCad regenerates these)
 *.kicad_pro

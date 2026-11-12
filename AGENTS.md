@@ -17,12 +17,14 @@ browser workflow UI. Works on real boards, DRC-validated.
 - `tests/fixtures/` — `tube111.*` (105 parts, 73 nets), `DCCF.sved.*`
   (audio, split rails), `minimal.*` (4 parts, no nets), `ghost_test.*`,
   `minimal_placed.*`. Don't add fixtures without a test that needs them.
-- `scripts/` — `benchmark_*.py` (newest JSON per family in
-  `docs/benchmarks/`), `run_autoroute.py` (headless), `calibrate_si.py`,
-  `sweep_*.py`, `plot_force_laws.py`, `gen_manual.py` (`ui/manual.html`),
-  `regen_docs.sh`, `clean.sh`.
+- `scripts/` — `benchmark_*.py` (results land untracked in
+  `docs/benchmarks/` — see its README), `run_autoroute.py` (headless),
+  `calibrate_si.py`, `sweep_*.py`, `plot_force_laws.py`,
+  `gen_manual.py` (`ui/manual.html`), `regen_docs.sh`, `clean.sh`.
 - `docs/` — glossary, `si_force_laws.md` + `physics_primer.qmd`, `roadmap.md`,
-  `benchmarks/*.json`, `figures/` (generated).
+  `figures/` (generated). Untracked locally: `benchmarks/*.json`
+  (regenerate via `scripts/benchmark_*.py`), `tests.md`,
+  `emit_gate_smoother_proposal.md`.
 
 ## Commands
 
@@ -30,6 +32,9 @@ browser workflow UI. Works on real boards, DRC-validated.
 - Tests: `.venv/bin/python -m pytest tests/ -q` (always `.venv` — system
   `python` lacks deps and fails at collection). Fast loop:
   `-m "minimal or unit or (dccf and not slow)"` (`slow` = >3s).
+  Deps are pinned in `requirements-lock.txt` (`pip install -e ".[dev]"
+  --constraint requirements-lock.txt`); re-freeze from a clean green venv
+  when bumping.
 - Docs: `./scripts/regen_docs.sh` (figures + manual + primer);
   `gen_manual.py` alone rebuilds just the manual.
 - JS syntax: `./scripts/check_js.sh` (`node --check` all `ui/app-*.js`).

@@ -88,8 +88,9 @@ class TestPadSpine:
 
     def test_rect_corners_axis_aligned(self):
         corners = _pad_rect_corners_mm(_pad(50, 50, 4, 2, shape="rect"), 0.5)
-        assert corners == pytest.approx(
-            [(47.5, 48.5), (52.5, 48.5), (52.5, 51.5), (47.5, 51.5)])
+        # Flat list: pytest.approx no longer accepts nested sequences (>=9.2).
+        assert [c for pt in corners for c in pt] == pytest.approx(
+            [47.5, 48.5, 52.5, 48.5, 52.5, 51.5, 47.5, 51.5])
 
     def test_rect_corners_rotated_90(self):
         corners = _pad_rect_corners_mm(

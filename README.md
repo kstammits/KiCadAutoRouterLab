@@ -23,7 +23,7 @@ Pure-Python autorouter for KiCad: drop a `.kicad_pcb` into the web UI or run hea
 git clone https://github.com/kstammits/KiCadAutoRouterLab.git
 cd KiCadAutoRouterLab
 python -m venv .venv
-.venv/bin/pip install -e .
+.venv/bin/pip install -e ".[dev]" --constraint requirements-lock.txt
 .venv/bin/python ui/server.py
 # Opens http://127.0.0.1:8000
 ```
@@ -62,7 +62,7 @@ Details live in the manual and glossary (links below), not here.
 
 ## Performance
 
-Indicative desktop wall-clock (±30%). Raw data: `docs/benchmarks/` — newest file per family wins (e.g. `signals_tube111_2026-11-11.json` over `...-11-10.json`).
+Indicative desktop wall-clock (±30%), measured locally — regenerate with `scripts/benchmark_*.py` (`docs/benchmarks/` is untracked; see its README).
 
 | Task | Typical time |
 |------|--------------|
@@ -93,7 +93,7 @@ Regenerate the manual/figures with `.venv/bin/python scripts/gen_manual.py`, or 
 
 ## Requirements
 
-- Python 3.11+, `.venv` with project deps (`pip install -e .`)
+- Python 3.11+, `.venv` with project deps (`pip install -e ".[dev]" --constraint requirements-lock.txt`, ~600 MB with dev extras)
 - KiCad 10.x `kicad-cli` for DRC validation (recommended; `pcbnew` module not needed)
 
 ---
