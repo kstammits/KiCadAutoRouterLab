@@ -126,7 +126,7 @@ def polish_routes(
         if progress_cb is not None:
             try:
                 progress_cb(net_name, done, total)
-            except Exception:
+            except Exception:  # user callback must not break routing
                 pass
         if should_cancel is not None and should_cancel():
             raise RoutingCancelled("cancelled before polish of "
@@ -174,7 +174,7 @@ def polish_routes(
     if progress_cb is not None:
         try:
             progress_cb("", total, total)
-        except Exception:
+        except Exception:  # user callback must not break routing
             pass
     report["wire_saved_mm"] = round(report["wire_saved_mm"], 3)
     return new_results, report
@@ -226,7 +226,7 @@ def _polish_one(
                 confined = secondary.copy()
                 confined[:, ~union] = SECONDARY_BLOCKED
                 blocked = confined >= SECONDARY_BLOCKED
-        except Exception:
+        except (ValueError, TypeError, AttributeError, IndexError):
             pass
     # Cross-net shared emit-gate index (same scheme as the route path):
     # own hard cells + a group key covering confinement identity, so

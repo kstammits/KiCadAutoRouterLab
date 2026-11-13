@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kicad-autorouter"
-version = "0.5.8"
+version = "0.5.9"
 license = {text = "GPL-3.0-or-later"}
 description = "KiCad autorouter: force-spring placement and grid routing for .kicad_pcb boards"
 readme = "README.md"
@@ -20,7 +20,19 @@ dependencies = [
 dev = [
     "pytest>=7.0.0",
     "matplotlib>=3.5.0",
+    "ruff>=0.1.0",
 ]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+# Floor, not style police: syntax-level risks only. Niche rules off until
+# the 1400-line splits land (E501 would fire hundreds of times today).
+select = ["E9", "F", "B"]
+ignore = ["E501", "B008"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["kicad_autorouter", "ui"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -23,9 +23,7 @@ from ui.server_jobs import (
     _JOBS,
     _JOBS_LOCK,
     _ROUTING_JOB_LOCK,
-    _drc_lock,
     _prune_jobs_locked,
-    _run_drc_now,
     _run_polish_job,
     _run_routing_job,
 )
@@ -204,39 +202,12 @@ def handle_get(path, qs, handler):
 
 
 def handle_post(path, qs, body, handler):
-    """POST dispatch for /api/routing/* and /api/drc.
+    """POST dispatch for /api/routing/*.
 
-    Returns ``(code, body: bytes, content_type)`` or ``None``.
+    ``/api/drc`` lives in ``handlers.board``; it is intentionally not
+    handled here so there is a single owner (routing previously shadowed
+    board because ``_HANDLERS`` probes routing first).
     """
-    if path == "/api/drc":
-        with _drc_lock:
-            tree, current_version = STATE.snapshot_pcb()
-            if tree is None:
-                return 404, b"no board loaded", "text/plain"
-            status = STATE.get_drc_status()
-            if (
-                not status["running"]
-                and status["for_version"] == current_version
-                and status["error"] is None
-            ):
-                by_type = {}
-                for v in STATE.get_drc_violations():
-                    t = v.get("type", "unknown")
-                    by_type[t] = by_type.get(t, 0) + 1
-                payload = {
-                    "ok": True, "cached": True,
-                    "for_version": current_version,
-                    "current_version": current_version,
-                    "stale": False,
-                    "violations": status["violations"],
-                    "unconnected": status["unconnected"],
-                    "by_type": by_type,
-                    "error": None,
-                }
-            else:
-                payload = _run_drc_now(tree, current_version)
-        return 200, json.dumps(payload).encode(), "application/json"
-
     if path == "/api/routing/params":
         req = _require_json(body)
         if req is None or not isinstance(req, dict):

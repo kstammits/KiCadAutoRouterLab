@@ -16,6 +16,7 @@ from ..board_model import (
     Via,
     sample_circular_arc,
 )
+from ..board_model.query import rotate_offset
 from ._numba import njit
 from .grid import RoutingGrid, board_to_grid, mm_to_cells
 
@@ -587,7 +588,7 @@ def _pad_rect_corners_mm(pad: Pad, halo_mm: float) -> list:
     hw, hh = w / 2.0 + halo_mm, h / 2.0 + halo_mm
 
     def rot(sx: float, sy: float) -> tuple:
-        return (cx + sx * ca - sy * sa, cy + sx * sa + sy * ca)
+        return rotate_offset(cx, cy, ca, sa, sx, sy)
 
     return [rot(-hw, -hh), rot(hw, -hh), rot(hw, hh), rot(-hw, hh)]
 

@@ -198,6 +198,7 @@ def _astar_path(free: np.ndarray, start: Tuple[int, int],
     gr0, gr1, gc0, gc1 = goals_r.min(), goals_r.max(), goals_c.min(), goals_c.max()
 
     def heur(r: int, c: int) -> float:
+        # (row, col) grid coords; Chebyshev distance to goal bbox.
         return max(gr0 - r, r - gr1, gc0 - c, c - gc1, 0)
 
     DIRS = ((-1, 0, 1.0), (1, 0, 1.0), (0, -1, 1.0), (0, 1, 1.0),

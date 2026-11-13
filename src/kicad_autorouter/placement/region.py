@@ -106,7 +106,7 @@ def _posed_label_anchor(
             motion = _rigid_motion_params(orig_pos, positions[pad_rows])
             if motion is not None:
                 angle = float(fp_angle_deg) + math.degrees(motion[6])
-    except Exception:
+    except (ValueError, TypeError, AttributeError, IndexError):
         pass
     try:
         if len(pad_rows):
@@ -279,7 +279,7 @@ def _orbit_label_forces(
                 _p2f_arr = np.asarray(_p2f)
                 if _p2f_arr.shape[0] == _ppos.shape[0]:
                     _keep[_p2f_arr[None, :] == np.asarray(lab_parent_li)[:, None]] = False
-            except Exception:
+            except (ValueError, TypeError, AttributeError, IndexError):
                 pass
             _mag[~_keep] = 0.0
             with np.errstate(divide="ignore", invalid="ignore"):
@@ -287,7 +287,7 @@ def _orbit_label_forces(
                 _vec = _diff * (_mag[:, :, None] / _d)
             _vec[~np.isfinite(_vec)] = 0.0
             out += np.sum(_vec, axis=1)
-    except Exception:
+    except (ValueError, TypeError, AttributeError, IndexError):
         pass
     for i in range(n_lab):
         uuid = lab_uuid[i]
@@ -1835,7 +1835,7 @@ def _run_region_simulation(
                                 abs(_spot[0] - _anchor[0]) > 1e-9
                                 or abs(_spot[1] - _anchor[1]) > 1e-9):
                             _anchor = (float(_spot[0]), float(_spot[1]))
-                    except Exception:
+                    except (ValueError, TypeError, AttributeError, IndexError):
                         pass
                 _lab_spec_rows.append(lab_rows[_k])
                 _lab_specs.append((
@@ -1852,7 +1852,7 @@ def _run_region_simulation(
                     _edge_poly, _label_orbit_radius_mm(params),
                 ):
                     _vel[:] = 0.0
-            except Exception:
+            except (ValueError, TypeError, AttributeError, IndexError):
                 pass
 
     # Orbit-mode label offsets: final node board position expressed in the

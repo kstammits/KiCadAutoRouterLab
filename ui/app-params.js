@@ -18,11 +18,11 @@ const PARAM_DEFS = [
   { key: "damping_Ns_m", label: "Damping (N·s/m)", min: 1e-3, max: 1, step: 1e-4, log: true },
   { key: "align_angle_k_N", label: "Align angle k (N)", min: 1e-6, max: 1e-2, step: 1e-6, log: true },
   { key: "align_pos_k_N_m", label: "Align hold k (N/m)", min: 1e-3, max: 10, step: 1e-3, log: true },
-  { key: "max_iterations", label: "Max iterations", min: 1, max: 20000, step: 10 },
-  { key: "label_clearance_m", label: "Label clearance (mm)", min: 0, max: 20, step: 0.1,
-    display: { unit: "mm", scale: 1000, step: 0.1 } },
-  { key: "label_orbit_m", label: "Label orbit (mm)", min: 0, max: 20, step: 0.1,
-    display: { unit: "mm", scale: 1000, step: 0.1 } },
+  { key: "max_iterations", label: "Max iterations", min: 1, max: 20000, step: 10, nstep: 1 },
+  { key: "label_clearance_m", label: "Label clearance (mm)", min: 0, max: 0.02, step: 0.001,
+    display: { unit: "mm", scale: 1000, step: 0.5 } },
+  { key: "label_orbit_m", label: "Label orbit (mm)", min: 0, max: 0.02, step: 0.001,
+    display: { unit: "mm", scale: 1000, step: 0.5 } },
 ];
 
 const ADVANCED_PARAM_DEFS = [
@@ -30,8 +30,8 @@ const ADVANCED_PARAM_DEFS = [
   { key: "decap_link", label: "Decap\u2013chip link", min: 0, max: 16, step: 0.5 },
   { key: "ghost_k_N", label: "Ghost pull (N)", min: 1e-7, max: 1e-3, step: 1e-7, log: true },
   { key: "wall_exponent", label: "Wall exponent", min: 1.0, max: 3.0, step: 0.1 },
-  { key: "cross_layer_pin_halo_m", label: "X-layer pin halo (mm)", min: 0, max: 5, step: 0.05,
-    display: { unit: "mm", scale: 1000, step: 0.05 } },
+  { key: "cross_layer_pin_halo_m", label: "X-layer pin halo (mm)", min: 0, max: 0.02, step: 0.0001,
+    display: { unit: "mm", scale: 1000, step: 0.1 } },
   { key: "momentum_alpha", label: "Momentum alpha", min: 0.0, max: 1.0, step: 0.05 },
   { key: "contact_tangent_gamma", label: "Contact tangent γ", min: 0.0, max: 0.5, step: 0.01 },
   { key: "convergence_eps_m", label: "Convergence eps (mm)", min: 1e-7, max: 1e-3, step: 1e-7, log: true,
@@ -88,6 +88,35 @@ function fromDisplay(val, def) {
 function dispStep(def) {
   return def.display && def.display.step ? def.display.step : def.step;
 }
+// Number-box arrow increment in display units. Log params span decades, so
+// a fixed SI step (e.g. 1e-6) is an unusable arrow; linear params use their
+// own step (or nstep when the slider wants coarser ticks, e.g. iterations).
+function numStep(def) {
+  if (def.nstep) return def.nstep;
+  if (def.log) return dispStep(def); // replaced by adaptive step at sync/load
+  return dispStep(def);
+}
+// ~10% of the current display value, snapped to 1/2/5 x 10^n (adaptive
+// arrow for log-scale number boxes: 1e-6 -> 1.1e-6, 0.05 -> 0.055, ...).
+// Falls back to the def step for non-positive values (0 = off).
+function adaptiveStep(displayVal, def) {
+  const v = Math.abs(Number(displayVal));
+  if (!Number.isFinite(v) || v <= 0) return dispStep(def);
+  const raw = v * 0.1;
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const norm = raw / mag;
+  const snap = norm >= 5 ? 5 : norm >= 2 ? 2 : 1;
+  return snap * mag;
+}
+// Significant-figure formatting for log values (3 sig figs): 2e-5m in mm
+// shows "0.02", not "0.0000" (toFixed(dispDecimals) caps at 4 decimals and
+// loses sub-millimicron values on drag).
+function fmtSig(displayVal, sig = 3) {
+  const v = Number(displayVal);
+  if (!Number.isFinite(v)) return String(displayVal);
+  if (v === 0) return "0";
+  return Number(v.toPrecision(sig)).toString();
+}
 function dispDecimals(def) {
   const s = dispStep(def);
   if (s >= 1) return 0;
@@ -109,20 +138,25 @@ function buildParamRow(def, desc) {
   const dstep = dispStep(def);
 
   if (isLog) {
-    // Log-scale parameter
-    const logMin = Math.log10(dmin);
+    // Log-scale parameter: slider moves in decades (0.01/decade); the
+    // number box allows 0 = off (presets pin align stiffnesses at 0) and
+    // gets an adaptive ~10% arrow set on sync/load (fixed SI steps like
+    // 1e-6 are unusable as arrows).
+    const logMin = Math.log10(dmin > 0 ? dmin : def.step);
     const logMax = Math.log10(dmax);
+    const nstep = numStep(def);
     el.innerHTML = `<span title="${desc}">${def.label}</span>
       <div class="row">
         <input type="range" data-key="${def.key}" data-log="true" min="${logMin}" max="${logMax}" step="0.01">
-        <input type="number" data-key="${def.key}" min="${dmin}" max="${dmax}" step="${dstep}">
+        <input type="number" data-key="${def.key}" min="0" max="${dmax}" step="${nstep}">
       </div>`;
   } else {
-    // Linear parameter
+    // Linear parameter (nstep lets the number arrow differ from slider ticks).
+    const nstep = numStep(def);
     el.innerHTML = `<span title="${desc}">${def.label}</span>
       <div class="row">
         <input type="range" data-key="${def.key}" min="${dmin}" max="${dmax}" step="${dstep}">
-        <input type="number" data-key="${def.key}" min="${dmin}" max="${dmax}" step="${dstep}">
+        <input type="number" data-key="${def.key}" min="${dmin}" max="${dmax}" step="${nstep}">
       </div>`;
   }
   return el;
@@ -156,13 +190,23 @@ function syncParamInputs(key, def, source) {
 
   if (source?.type === "range") {
     if (isLog) {
-      num.value = logToValue(Number(range.value), def).toFixed(dispDecimals(def));
+      const v = logToValue(Number(range.value), def);
+      num.value = fmtSig(v);
+      num.step = String(adaptiveStep(v, def));
     } else {
       num.value = range.value;
     }
   } else if (source?.type === "number") {
     if (isLog) {
-      range.value = valueToLog(Number(num.value), def).toFixed(2);
+      const v = Number(num.value);
+      num.step = String(adaptiveStep(v, def));
+      // 0 = off (align/ghost presets): pin thumb at min, keep exact in box.
+      const lo = Math.log10(toDisplay(def.min, def) > 0
+        ? toDisplay(def.min, def) : def.step);
+      const hi = Math.log10(toDisplay(def.max, def));
+      range.value = (!Number.isFinite(v) || v <= 0)
+        ? lo.toFixed(2)
+        : Math.min(Math.max(valueToLog(v, def), lo), hi).toFixed(2);
     } else {
       range.value = num.value;
     }
@@ -211,17 +255,28 @@ async function loadParams(defaultsOnly = false) {
     const range = document.querySelector(`input[type=range][data-key="${def.key}"]`);
     const num = document.querySelector(`input[type=number][data-key="${def.key}"]`);
     if (range && def.log) {
-      // Guard non-positive saved values (log undefined): pin slider at min.
-      const logVal = shown > 0 ? valueToLog(shown, def) : Math.log10(toDisplay(def.min, def));
-      range.value = Math.min(Math.max(logVal,
-        Math.log10(toDisplay(def.min, def))), Math.log10(toDisplay(def.max, def))).toFixed(2);
+      // Guard non-positive saved values (log undefined): pin slider at min,
+      // keep exact (0 = off) in the number box with a usable arrow.
+      const logMin = Math.log10(toDisplay(def.min, def) > 0
+        ? toDisplay(def.min, def) : def.step);
+      const logMax = Math.log10(toDisplay(def.max, def));
+      const logVal = shown > 0 ? valueToLog(shown, def) : logMin;
+      range.value = Math.min(Math.max(logVal, logMin), logMax).toFixed(2);
     } else if (range) {
       // Clamp the slider thumb into range; the number box keeps the exact
       // saved value so out-of-range params stay visible, not silent.
       range.value = Math.min(Math.max(shown,
         toDisplay(def.min, def)), toDisplay(def.max, def));
     }
-    if (num) num.value = shown;
+    if (num) {
+      if (def.log) {
+        num.min = "0";
+        num.value = fmtSig(shown);
+        num.step = String(adaptiveStep(shown, def));
+      } else {
+        num.value = shown;
+      }
+    }
   }
 }
 

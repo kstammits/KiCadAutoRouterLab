@@ -37,6 +37,16 @@ def transform_local(fp: Footprint, local_x_mm: float, local_y_mm: float) -> Poin
     """Map a point in ``fp``'s local coordinate system to board coordinates."""
     return _to_board(local_x_mm, local_y_mm, fp.x_mm, fp.y_mm, fp.angle_deg, fp.layer)
 
+
+def rotate_offset(cx: float, cy: float, cos_a: float, sin_a: float,
+                  sx: float, sy: float) -> Tuple[float, float]:
+    """Rotate local offset ``(sx, sy)`` by ``(cos_a, sin_a)`` about ``(cx, cy)``.
+
+    Shared by courtyard-pad rect construction in placement and obstacle
+    stamping in routing (previously duplicated one-line closures).
+    """
+    return (cx + sx * cos_a - sy * sin_a, cy + sx * sin_a + sy * cos_a)
+
 def arc_chords(model: BoardModel, n: int = 16) -> List[Track]:
     """Straight-chord approximations of copper arcs for analysis code.
 

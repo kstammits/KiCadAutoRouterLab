@@ -21,6 +21,7 @@ from ui.server import (
     _STATIC_MIME,
     _docs_entry,
     _docs_title,
+    _is_within,
     _safe_filename,
 )
 
@@ -59,7 +60,7 @@ def handle_get(path, qs, handler):
         if name not in DOCS_ALLOWLIST:
             return 404, b"unknown doc", "text/plain"
         full = DOCS_ALLOWLIST[name].resolve()
-        if not str(full).startswith(str(REPO_ROOT.resolve())) or not full.is_file():
+        if not _is_within(REPO_ROOT.resolve(), full) or not full.is_file():
             return 404, b"unknown doc", "text/plain"
         try:
             text = full.read_text(encoding="utf-8")
@@ -129,7 +130,7 @@ def handle_get(path, qs, handler):
             return 404, b"unknown doc", "text/plain"
         out_path, _ = DOCS_RENDERED[base]
         full = out_path.resolve()
-        if not str(full).startswith(str(REPO_ROOT.resolve())) or not full.is_file():
+        if not _is_within(REPO_ROOT.resolve(), full) or not full.is_file():
             return 404, b"unknown doc", "text/plain"
         return 200, full.read_bytes(), "text/html"
 

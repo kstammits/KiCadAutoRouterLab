@@ -72,7 +72,7 @@ def refine_routing(
             return
         try:
             stage_cb(idx, total)
-        except Exception:
+        except Exception:  # user callback must not break routing
             pass
 
     # Gate: pad counts decide the over-cap refusals.

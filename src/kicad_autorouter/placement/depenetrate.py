@@ -198,9 +198,9 @@ def _best_spot(rect_poly, obstacles, center_xy, radius_mm, cover_poly=None,
                bboxes=None):
     """Least-dirty ``(centroid, area)`` over the shared candidate spiral.
 
-    Fallback when :func:`_clean_spot` finds nothing fully clean: the
-    minimum-overlap candidate still improves on a stuck label (off pads
-    onto a ring edge beats sitting on copper). Ties keep the earliest —
+    Tested fallback companion to :func:`_clean_spot` (see
+    ``test_best_spot_minimizes_when_nothing_is_clean``): minimum-overlap
+    candidate from :func:`_find_spot`. Ties keep the earliest —
     current pos, then nearest-to-center. Returns ``(None, inf)`` when no
     candidate is even testable.
     """
@@ -832,7 +832,7 @@ def _depenetrate_labels(
                 for poly in _nearby_silk_cached(anchor, reach):
                     obstacles.append(poly)
                     oboxes.append(_bounds_of(poly))
-            except Exception:
+            except (ValueError, TypeError, AttributeError, IndexError):
                 pass
             for ou, op in rects.items():
                 if ou != uuid and op is not None and not op.is_empty:

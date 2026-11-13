@@ -559,19 +559,6 @@ def _shift_label_pose(
     return replace(text, args=tuple(new_at if a is at else a for a in text.args))
 
 
-def _shift_label_angle(
-    text: SExpr,
-    fp: SExpr,
-    fp_old_angle: float,
-    fp_new_angle: float,
-) -> SExpr:
-    """Legacy alias: angle-only snap without anchor motion."""
-    return _shift_label_pose(
-        text, fp, fp_old_angle, fp_new_angle,
-        snap=True,
-    )
-
-
 def reset_label_anchors(tree: SExpr, filed_tree: SExpr) -> Tuple[SExpr, int]:
     """Rebase label anchors to the filed board (same tree shape required).
 

@@ -1340,7 +1340,7 @@ def _route_chunk(
                             stub_adopted = True
                             timings["emit_gate_stub_used"] = (
                                 timings.get("emit_gate_stub_used", 0) + 1)
-                    except Exception:
+                    except (ValueError, TypeError, AttributeError, IndexError):
                         pass
             if not stub_adopted:
                 chosen, gate_failure, fell_back = _resolve_gate_trip(
@@ -1664,7 +1664,7 @@ def route_raw(
             return
         try:
             progress_cb(net_name, done, total, expansions)
-        except Exception:
+        except Exception:  # user callback must not break routing
             pass
 
     # 0. Rip up selected nets from model so router can find new paths
@@ -2515,7 +2515,7 @@ def route_gap_terminals(
             return
         try:
             progress_cb(net_name, done, total, exp)
-        except Exception:
+        except Exception:  # user callback must not break routing
             pass
 
     timings: Dict = {}

@@ -378,7 +378,7 @@ def _check_wall_violations(
                     _finite = _d[np.isfinite(_d)]
                     if _finite.size:
                         depth = float(_finite.max())
-            except Exception:
+            except (ValueError, TypeError, AttributeError, IndexError):
                 pass
 
         if depth > wall_tolerance_mm:

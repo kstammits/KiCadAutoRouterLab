@@ -635,6 +635,7 @@ def victim_net_components(model: BoardModel, net: str) -> int:
     parent = list(range(len(geoms)))
 
     def find(a):
+        # DSU find with path halving (local to via clustering).
         while parent[a] != a:
             parent[a] = parent[parent[a]]
             a = parent[a]

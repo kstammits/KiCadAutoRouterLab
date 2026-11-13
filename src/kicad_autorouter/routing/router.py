@@ -102,7 +102,7 @@ ASTAR_USE_NUMBA = True
 
 @njit
 def _expand_neighbors_nb(
-    c, r, l,
+    col, row, lay,
     cost_grid, secondary, has_secondary,
     allow_mask, has_allow,
     passable, has_passable,
@@ -116,7 +116,7 @@ def _expand_neighbors_nb(
     """Evaluate all six neighbors of one A* pop (numba path).
 
     planar dirs [(1,0),(-1,0),(0,1),(0,-1)] fill p_ok/p_cost[4]; via
-    layers [l-1, l+1] fill v_ok/v_cost/v_fallback[2]. v_fallback=1 means
+    layers [lay-1, lay+1] fill v_ok/v_cost/v_fallback[2]. v_fallback=1 means
     the caller must run the slow exact ``_via_landing_blocked`` halo scan
     (only when no precomputed via_ok mask was supplied). Semantics match
     the inlined checks in ``SingleNetRouter._a_star`` exactly.
@@ -134,20 +134,20 @@ def _expand_neighbors_nb(
         else:
             dc = 0
             dr = -1
-        nc = c + dc
-        nr = r + dr
-        if nc < c0 or nc > c1 or nr < r0 or nr > r1:
+        ncol = col + dc
+        nrow = row + dr
+        if ncol < c0 or ncol > c1 or nrow < r0 or nrow > r1:
             p_ok[d] = False
             continue
-        if has_allow and not allow_mask[nr, nc]:
+        if has_allow and not allow_mask[nrow, ncol]:
             p_ok[d] = False
             continue
-        kept = has_passable and passable[l, nr, nc]
-        cell_val = cost_grid[l, nr, nc]
+        kept = has_passable and passable[lay, nrow, ncol]
+        cell_val = cost_grid[lay, nrow, ncol]
         if cell_val >= blocked_thr and not kept:
             p_ok[d] = False
             continue
-        sec = secondary[l, nr, nc] if has_secondary else 0
+        sec = secondary[lay, nrow, ncol] if has_secondary else 0
         if has_secondary and sec >= secondary_blocked and not kept:
             p_ok[d] = False
             continue
@@ -165,43 +165,43 @@ def _expand_neighbors_nb(
         p_ok[d] = True
         p_cost[d] = cc
     for vi in range(2):
-        nl = l - 1 if vi == 0 else l + 1
-        if nl < 0 or nl >= n_layers:
+        nlay = lay - 1 if vi == 0 else lay + 1
+        if nlay < 0 or nlay >= n_layers:
             v_ok[vi] = False
             continue
-        if has_allow and not allow_mask[r, c]:
+        if has_allow and not allow_mask[row, col]:
             v_ok[vi] = False
             continue
-        kept = has_passable and passable[nl, r, c]
-        if cost_grid[nl, r, c] >= blocked_thr and not kept:
+        kept = has_passable and passable[nlay, row, col]
+        if cost_grid[nlay, row, col] >= blocked_thr and not kept:
             v_ok[vi] = False
             continue
-        if has_secondary and secondary[nl, r, c] >= secondary_blocked and not kept:
+        if has_secondary and secondary[nlay, row, col] >= secondary_blocked and not kept:
             v_ok[vi] = False
             continue
-        if tht_via_mask[r, c]:
+        if tht_via_mask[row, col]:
             v_ok[vi] = True
             v_cost[vi] = 0
             v_fallback[vi] = False
             continue
-        if via_block_mask[r, c] and not kept:
+        if via_block_mask[row, col] and not kept:
             v_ok[vi] = False
             continue
         if has_via_ok:
-            if not via_ok[r, c] and not kept:
+            if not via_ok[row, col] and not kept:
                 v_ok[vi] = False
                 continue
             v_ok[vi] = True
             v_fallback[vi] = False
-            v_cost[vi] = via_cost_cells + (secondary[nl, r, c] if has_secondary else 0)
+            v_cost[vi] = via_cost_cells + (secondary[nlay, row, col] if has_secondary else 0)
         else:
             v_ok[vi] = True
             v_fallback[vi] = True
-            v_cost[vi] = via_cost_cells + (secondary[nl, r, c] if has_secondary else 0)
+            v_cost[vi] = via_cost_cells + (secondary[nlay, row, col] if has_secondary else 0)
 
 
 def _expand_neighbors_py(
-    c, r, l,
+    col, row, lay,
     cost_grid, secondary, has_secondary,
     allow_mask, has_allow,
     passable, has_passable,
@@ -215,19 +215,19 @@ def _expand_neighbors_py(
     """Pure-Python mirror of _expand_neighbors_nb (fallback + A/B baseline)."""
     dirs = ((1, 0), (-1, 0), (0, 1), (0, -1))
     for d, (dc, dr) in enumerate(dirs):
-        nc, nr = c + dc, r + dr
-        if not (c0 <= nc <= c1 and r0 <= nr <= r1):
+        ncol, nrow = col + dc, row + dr
+        if not (c0 <= ncol <= c1 and r0 <= nrow <= r1):
             p_ok[d] = False
             continue
-        if has_allow and not allow_mask[nr, nc]:
+        if has_allow and not allow_mask[nrow, ncol]:
             p_ok[d] = False
             continue
-        kept = bool(has_passable and passable[l, nr, nc])
-        cell_val = int(cost_grid[l, nr, nc])
+        kept = bool(has_passable and passable[lay, nrow, ncol])
+        cell_val = int(cost_grid[lay, nrow, ncol])
         if cell_val >= blocked_thr and not kept:
             p_ok[d] = False
             continue
-        sec = int(secondary[l, nr, nc]) if has_secondary else 0
+        sec = int(secondary[lay, nrow, ncol]) if has_secondary else 0
         if has_secondary and sec >= secondary_blocked and not kept:
             p_ok[d] = False
             continue
@@ -244,39 +244,39 @@ def _expand_neighbors_py(
             cc += sec
         p_ok[d] = True
         p_cost[d] = cc
-    for vi, nl in enumerate((l - 1, l + 1)):
-        if not (0 <= nl < n_layers):
+    for vi, nlay in enumerate((lay - 1, lay + 1)):
+        if not (0 <= nlay < n_layers):
             v_ok[vi] = False
             continue
-        if has_allow and not allow_mask[r, c]:
+        if has_allow and not allow_mask[row, col]:
             v_ok[vi] = False
             continue
-        kept = bool(has_passable and passable[nl, r, c])
-        if int(cost_grid[nl, r, c]) >= blocked_thr and not kept:
+        kept = bool(has_passable and passable[nlay, row, col])
+        if int(cost_grid[nlay, row, col]) >= blocked_thr and not kept:
             v_ok[vi] = False
             continue
-        if has_secondary and int(secondary[nl, r, c]) >= secondary_blocked and not kept:
+        if has_secondary and int(secondary[nlay, row, col]) >= secondary_blocked and not kept:
             v_ok[vi] = False
             continue
-        if tht_via_mask[r, c]:
+        if tht_via_mask[row, col]:
             v_ok[vi] = True
             v_cost[vi] = 0
             v_fallback[vi] = False
             continue
-        if via_block_mask[r, c] and not kept:
+        if via_block_mask[row, col] and not kept:
             v_ok[vi] = False
             continue
         if has_via_ok:
-            if not via_ok[r, c] and not kept:
+            if not via_ok[row, col] and not kept:
                 v_ok[vi] = False
                 continue
             v_ok[vi] = True
             v_fallback[vi] = False
-            v_cost[vi] = via_cost_cells + (int(secondary[nl, r, c]) if has_secondary else 0)
+            v_cost[vi] = via_cost_cells + (int(secondary[nlay, row, col]) if has_secondary else 0)
         else:
             v_ok[vi] = True
             v_fallback[vi] = True
-            v_cost[vi] = via_cost_cells + (int(secondary[nl, r, c]) if has_secondary else 0)
+            v_cost[vi] = via_cost_cells + (int(secondary[nlay, row, col]) if has_secondary else 0)
 
 
 # Raised when a routing search is cancelled via ``should_cancel``.

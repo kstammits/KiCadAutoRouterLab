@@ -568,44 +568,6 @@ def _compute_total_force(
                     tangential_force[rows, 0] += w * ft_x
                     tangential_force[rows, 1] += w * ft_y
 
-            def _apply_halo_push(li, lj, pi, pj, margin):
-                if margin <= 0:
-                    return
-                halo_reach = float(_halo_matrix_local[li, lj])
-                try:
-                    qi, qj = nearest_points(pi, pj)
-                    dx = float(qi.x - qj.x)
-                    dy = float(qi.y - qj.y)
-                except Exception:
-                    logger.debug("nearest_points failed li=%s lj=%s", li, lj)
-                    dx = dy = 0.0
-                _gap = math.hypot(dx, dy)
-                if _gap <= 1e-8:
-                    dx = fp_centroids_arr[li, 0] - fp_centroids_arr[lj, 0]
-                    dy = fp_centroids_arr[li, 1] - fp_centroids_arr[lj, 1]
-                    _gap = math.hypot(dx, dy)
-                if _gap > 1e-6:
-                    strength = _wall_mag(
-                        params.wall_k_N, halo_reach - margin,
-                        halo_reach, params.wall_exponent,
-                        params.wall_cap_depth_mm,
-                    )
-                    ux, uy = dx / _gap, dy / _gap
-                    fx, fy = strength * ux, strength * uy
-                    rows_i = fp_local_to_rows[li]
-                    _spread_force(
-                        rows_i, fp_centroids_arr[li, 0], fp_centroids_arr[li, 1],
-                        fp_radii_arr[li], ux, uy, fx, fy,
-                        poly_force, tangential_force,
-                    )
-                    if fp_movable_arr[lj]:
-                        rows_j = fp_local_to_rows[lj]
-                        _spread_force(
-                            rows_j, fp_centroids_arr[lj, 0], fp_centroids_arr[lj, 1],
-                            fp_radii_arr[lj], -ux, -uy, -fx, -fy,
-                            poly_force, tangential_force,
-                        )
-
             def _fp_tangential_vel(fp_local_idx, tx, ty):
                 """Get average tangential velocity for a footprint.
                 Returns (0, 0) if footprint has no pads (e.g., wall ghost)."""

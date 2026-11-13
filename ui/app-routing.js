@@ -76,7 +76,7 @@ const ROUTING_PARAM_DEFS = [
 const ROUTING_ADVANCED_PARAM_DEFS = [
   { key: "via_size_mm", label: "Via Size (mm)", min: 0.4, max: 1.5, step: 0.05, default: 0.8 },
   { key: "via_drill_mm", label: "Via Drill (mm)", min: 0.2, max: 0.8, step: 0.05, default: 0.4 },
-  { key: "max_expansions_per_net", label: "Max Expansions / net (0 = no cap)", min: 0, max: 20000000, step: 100000, default: 4000000 },
+  { key: "max_expansions_per_net", label: "Max Expansions / net (0 = no cap)", min: 0, max: 20000000, step: 100000, nstep: 10000, default: 4000000 },
   { key: "max_terminals_per_net", label: "Max terminals per net (0 = no cap; larger nets auto-split into chunks)", min: 0, max: 128, step: 1, default: 16 },
   { key: "piecemeal_chunk_terminals", label: "Piecemeal chunk size (0 = disable chunking; over-cap nets fail fast)", min: 0, max: 32, step: 1, default: 12 },
   { key: "refine_seeds", label: "Refine Candidates", min: 1, max: 8, step: 1, default: 3 },
@@ -96,7 +96,7 @@ function routingSliderHtml(def, params, modeOwned, mode = null) {
         <span title="${tip}">${def.label}${fourL ? ' <span class="mode4l-badge">4L</span>' : ""}${managed ? " (mode)" : ""}</span>
         <div class="row">
           <input type="range" data-key="${def.key}" min="${def.min}" max="${def.max}" step="${def.step}" value="${value}" ${managed ? "disabled" : ""}>
-          <input type="number" data-key="${def.key}" min="${def.min}" max="${def.max}" step="${def.step}" value="${value}" ${managed ? "disabled" : ""}>
+          <input type="number" data-key="${def.key}" min="${def.min}" max="${def.max}" step="${def.nstep ?? def.step}" value="${value}" ${managed ? "disabled" : ""}>
         </div>
       </div>
     `;
@@ -460,7 +460,7 @@ async function routeSelectedNets(paramsOverride) {
   const cancelBtn = el("route-cancel-btn");
   const progress = el("route-progress");
   if (!diag || !progress) {
-    console.warn("missing route diag/progress nodes");
+    dbgWarn("missing route diag/progress nodes");
     return;
   }
 
@@ -706,7 +706,7 @@ async function polishScopedNets() {
   const cancelBtn = el("route-cancel-btn");
   const progress = el("route-progress");
   if (!diag || !progress) {
-    console.warn("missing route diag/progress nodes");
+    dbgWarn("missing route diag/progress nodes");
     return;
   }
   const copper = n => (n.track_count || 0) + (n.arc_count || 0) + (n.via_count || 0);

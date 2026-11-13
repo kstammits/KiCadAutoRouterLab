@@ -24,9 +24,16 @@ window.addEventListener("error", (e) => {
 
 // Fail-safe DOM helpers: a missing/renamed id warns instead of throwing at
 // load and killing the whole script (script runs after the DOM, end of body).
+// Shared namespace to avoid top-level collisions (no bundler; scripts share
+// globals and load in index.html order). New shared state goes on KAR.
+window.KAR = window.KAR || {};
+function dbgWarn(...args) {
+  if (window.KAR_DEBUG) console.warn(...args);
+}
+window.KAR.dbgWarn = dbgWarn;
 function el(id) {
   const n = document.getElementById(id);
-  if (!n) console.warn(`missing #${id}`);
+  if (!n) dbgWarn(`missing #${id}`);
   return n;
 }
 function on(id, evt, fn, opts) {

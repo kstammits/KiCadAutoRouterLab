@@ -18,6 +18,7 @@ from shapely.geometry import LineString, Point, Polygon
 from shapely.ops import nearest_points, polygonize, unary_union
 
 from ..board_model import Footprint, Segment
+from ..board_model.query import rotate_offset
 from .rigid import _rigid_pose_vertices
 
 
@@ -692,7 +693,7 @@ def pad_copper_polygon(pad) -> Polygon:
     ca, sa = math.cos(ang), math.sin(ang)
 
     def rot(sx: float, sy: float) -> tuple:
-        return (cx + sx * ca - sy * sa, cy + sy * ca + sx * sa)
+        return rotate_offset(cx, cy, ca, sa, sx, sy)
 
     hw, hh = w / 2.0, h / 2.0
     rect = Polygon([rot(-hw, -hh), rot(hw, -hh), rot(hw, hh), rot(-hw, hh)])
@@ -902,7 +903,7 @@ def _footprint_courtyard_polygon(
             poly = Polygon(vertices)
             if poly.is_valid and poly.area > 0:
                 return poly
-        except Exception:
+        except (ValueError, TypeError, AttributeError, IndexError):
             pass
         return None
 
@@ -1039,7 +1040,7 @@ def _pad_body_polygon(
                 and simple.covers(need)
             ):
                 body = simple
-        except Exception:
+        except (ValueError, TypeError, AttributeError, IndexError):
             pass
     if not isinstance(body, Polygon) or body.is_empty:
         # Degenerate copper (coincident points): AABB of the union.
@@ -1057,7 +1058,7 @@ def _pad_body_polygon(
             posed = Polygon(ring)
             if posed.is_valid and posed.area > 0:
                 return posed
-        except Exception:
+        except (ValueError, TypeError, AttributeError, IndexError):
             pass
     return body
 
