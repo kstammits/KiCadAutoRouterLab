@@ -54,8 +54,8 @@ def _merge_region_lists(
 
 
 def _thin_frames(
-    frames: List[Dict[str, Tuple[float, float, float]]], max_frames: int
-) -> List[Dict[str, Tuple[float, float, float]]]:
+    frames: List[Dict[str, Tuple[float, ...]]], max_frames: int
+) -> List[Dict[str, Tuple[float, ...]]]:
     """Uniformly downsample frames to at most max_frames, always keeping last.
 
     Deterministic (round-half-away via int(i * (n-1) / (m-1))); no-ops when
@@ -145,7 +145,7 @@ def run_placement(
         all_region_force_frames: List[List[Dict[str, Dict[str, Tuple[float, float]]]]] = []
         all_stop = "converged"
         all_residual = 0.0
-        all_dbg = {"per_iteration": [], "depen": []}
+        all_dbg = {"per_iteration": [], "depen": [], "label_samples": []}
         any_region = False
         any_depen = False
 
@@ -208,6 +208,8 @@ def run_placement(
                     all_region_force_frames.append(region_force_frames)
                 all_dbg["per_iteration"].extend(region_dbg.get("per_iteration", []))
                 all_dbg["depen"].extend(region_dbg.get("depen", []))
+                all_dbg["label_samples"].extend(
+                    region_dbg.get("label_samples", []))
 
         merged_frames = _thin_frames(
             _merge_region_lists(all_region_frames), max_frames

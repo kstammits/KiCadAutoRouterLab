@@ -234,8 +234,9 @@ def test_clearance_ejects_labels_not_parents():
     import math
 
     model = _labeled_pair(label_w_mm=2.0)
-    # Long run: labels home to their parents (orbit cap) instead of
-    # lingering at the filed facing offsets.
+    # Long run: labels end near their parents (centroid home + slack
+    # float within the orbit disc), not out at filed offsets.
+    orbit_mm = PlacementParams().label_orbit_m * 1000.0
     b = run_placement(
         model, PlacementParams(max_iterations=300, label_clearance_m=0.001))
     assert b.label_deltas
@@ -245,7 +246,7 @@ def test_clearance_ejects_labels_not_parents():
         fp = next(f for f in moved.footprints if f.uuid == uuid)
         by = _tb(fp.label.local_x_mm, fp.label.local_y_mm,
                  fp.x_mm, fp.y_mm, fp.angle_deg, fp.layer)
-        assert math.hypot(by.x_mm - fp.x_mm, by.y_mm - fp.y_mm) <= 3.0
+        assert math.hypot(by.x_mm - fp.x_mm, by.y_mm - fp.y_mm) <= orbit_mm + 1e-3
     # Short horizon: pad course holds station either way.
     a = run_placement(
         model, PlacementParams(max_iterations=10, label_clearance_m=0.0))

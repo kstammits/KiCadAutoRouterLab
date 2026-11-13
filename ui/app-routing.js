@@ -48,7 +48,7 @@ const ROUTING_PARAM_DESCS = {
   max_expansions_per_net: "Total expansion budget across one net's pair-searches. 0 = no cap.",
   refine_seeds: "Refine candidates: shuffled re-routes tried per Refine run (plus keeping current copper).",
   refine_seed: "Refine base seed: shuffles derive from base..base+seeds-1 (reproducible; auto-advances per run).",
-  smooth_effort: "Smoother engagement: 0 emits raw search paths (fastest), 1 shortcuts without arcs, 2 is full arcs (default). Above 2 retries hotter (denser sampling, stronger keep, extra passes); 3 is the high-effort retry.",
+  smooth_effort: "Smoother engagement: 0 emits raw search paths (fastest), 1 shortcuts without arcs, 2 is full arcs (default). Above 2 retries hotter in auto-polish (denser sampling, stronger keep, extra passes); routing itself always takes one pass. The Polish button always runs at 3.",
 };
 // Removed sliders stay engine/API-valid (RoutingParams + validation
 // untouched; POST merges) — grid resolution, arc radii/sample, edge
@@ -64,10 +64,10 @@ const ROUTING_PARAM_DESCS = {
 const ROUTING_PARAM_DEFS = [
   { key: "track_width_mm", label: "Track Width (mm)", min: 0.1, max: 2.0, step: 0.05, default: 0.25 },
   { key: "power_width_mm", label: "Power Width (mm)", min: 0.2, max: 3.0, step: 0.05, default: 0.5 },
-  { key: "clearance_mm", label: "Clearance (mm)", min: 0.1, max: 1.0, step: 0.05, default: 0.2 },
+  { key: "clearance_mm", label: "Clearance (mm)", min: 0.1, max: 1.0, step: 0.05, default: 0.21 },
   { key: "fanout_margin_mm", label: "Push away from foreign pins (mm, steering only)", min: 0, max: 1.0, step: 0.05, default: 0 },
   { key: "via_cost_mm", label: "Via Cost (mm)", min: 1, max: 20, step: 0.5, default: 5 },
-  { key: "smooth_effort", label: "Smoothing Effort (0 raw … 3 retry)", min: 0, max: 3, step: 0.25, default: 2 },
+  { key: "smooth_effort", label: "Smoothing Effort (0 raw … 3 thorough polish)", min: 0, max: 3, step: 0.25, default: 2 },
   // 4-layer-only knob: hidden in two-layer mode (mode forces it there),
   // amber-badged elsewhere (see routingSliderHtml + .param-4l in style.css).
   { key: "pour_severance_weight", label: "Pour Severance Weight (0 disables)", min: 0, max: 200, step: 5, default: 30, fourLayerOnly: true },
@@ -334,14 +334,15 @@ async function pollRoutingJob(jobId, net, idx, total, diag, progress, estNote, t
     const frac = (p.pairs_total > 0) ? (p.pairs_done / p.pairs_total) : 0;
     progress.value = (idx + Math.min(1, frac)) / total;
     const pairTxt = p.pairs_total > 0 ? `pair ${Math.min(p.pairs_total, p.pairs_done + 1)}/${p.pairs_total}` : "starting";
+    const stageTxt = p.stage === "polish" ? `polish ${pairTxt}` : pairTxt;
     // Live line stays compact: the static estimate lives in #route-est;
     // full detail is one hover away. Budget meter answers "not fail-fast?"
     // at a glance (cap burn, not hang).
     const overEst = Number(estSec) > 0 && (performance.now() - t0) / 1000 > Number(estSec) * 1.5;
     const burning = cap > 0 && (p.expansions || 0) > 0.8 * cap;
     const flags = (overEst ? " ⚠ over est" : "") + (burning ? " ⚠ budget" : "");
-    diag.textContent = `net ${idx + 1}/${total} (${net}) · ${pairTxt} · ${fmtExpShort(p.expansions)}/${fmtExpShort(cap)} · ${elapsed()}${flags}`;
-    diag.title = `${pairTxt} · ${fmtExpansions(p.expansions)} of ${fmtExpansions(cap)} budget · elapsed ${elapsed()} — ${estNote}`;
+    diag.textContent = `net ${idx + 1}/${total} (${net}) · ${stageTxt} · ${fmtExpShort(p.expansions)}/${fmtExpShort(cap)} · ${elapsed()}${flags}`;
+    diag.title = `${stageTxt} · ${fmtExpansions(p.expansions)} of ${fmtExpansions(cap)} budget · elapsed ${elapsed()} — ${estNote}`;
     if (job.state === "done") return { result: job.result, userCancelled: false };
     if (job.state === "failed") {
       const err = new Error(job.error || "routing job failed");
@@ -439,6 +440,10 @@ function formatTotalsDiag({ totals, failures, doneCount, netCount, lastBoardVers
     (totals.stitchVias || totals.stitchTracks
       ? ` — GND stitch: ${totals.stitchVias || 0} vias, ${totals.stitchTracks || 0} bridges` +
         (totals.gndBefore ? ` (islands ${totals.gndBefore}→${totals.gndAfter})` : "")
+      : "") +
+    (totals.polished
+      ? ` — auto-polish: ${totals.polished} improved` +
+        (totals.polishSaved ? `, saved ${totals.polishSaved.toFixed(1)}mm` : "")
       : "");
   if (cancelled) return `cancelled after ${doneCount}/${netCount} nets — kept ${totals.routed} — ${kept}`;
   if (failures.length) {
@@ -449,7 +454,7 @@ function formatTotalsDiag({ totals, failures, doneCount, netCount, lastBoardVers
   return kept;
 }
 
-async function routeSelectedNets() {
+async function routeSelectedNets(paramsOverride) {
   if (selectedNets.size === 0) return;
   const diag = routeDiag;
   const cancelBtn = el("route-cancel-btn");
@@ -461,7 +466,9 @@ async function routeSelectedNets() {
 
   const nets = Array.from(selectedNets);
   await saveRoutingParams();
-  const params = readRoutingParams();
+  // Optional in-memory override (e.g. the polish fallback re-routes at
+  // effort 3) without touching the panel sliders.
+  const params = { ...readRoutingParams(), ...(paramsOverride || {}) };
   const est = estimateRoutingWork(nets);
   const expCap = Number(params.max_expansions_per_net) > 0
     ? Number(params.max_expansions_per_net) : ROUTE_EXP_CAP_FALLBACK;
@@ -534,6 +541,10 @@ async function routeSelectedNets() {
       totals.stitchVias = (totals.stitchVias || 0) + (r.stitch_vias_added || 0);
       totals.stitchTracks = (totals.stitchTracks || 0) + (r.stitch_tracks_added || 0);
       totals.gndStripped = (totals.gndStripped || 0) + (r.gnd_stripped || 0);
+      if (r.polish && !r.polish.skipped) {
+        totals.polished = (totals.polished || 0) + (r.polish.polished || 0);
+        totals.polishSaved = (totals.polishSaved || 0) + (r.polish.wire_saved_mm || 0);
+      }
       if (r.gnd_islands_before) {
         totals.gndBefore = r.gnd_islands_before;
         totals.gndAfter = r.gnd_islands_after;
@@ -604,15 +615,14 @@ async function routeSelectedNets() {
 async function ripSelectedNets() {
   if (selectedNets.size === 0) return;
   const diag = routeDiag;
-  const ripBtn = el("rip-selected-btn");
-  const routeBtn = el("route-selected-btn");
-  const routeAllBtn = el("route-all-btn");
-  const selectUnroutedBtn = el("select-unrouted-btn");
-  const shuffleBtn = el("shuffle-btn");
   const nets = Array.from(selectedNets);
-  for (const b of [ripBtn, routeBtn, routeAllBtn, selectUnroutedBtn, shuffleBtn]) {
-    if (b) { b.disabled = true; b.classList.add("loading"); }
-  }
+  // Shared busy guard (not manual disables): it re-enables route /
+  // polish / select-unrouted / shuffle on completion. A manual list here
+  // once left those stuck disabled because updateNetSelectionUI only
+  // touches the selection-dependent buttons.
+  setRouteBusy(true);
+  const ripBtn = el("rip-selected-btn");
+  if (ripBtn) ripBtn.classList.add("loading");
   await clearShuffleTail();
   try {
     diag.textContent = `ripping ${nets.length} net${nets.length > 1 ? "s" : ""}…`;
@@ -638,9 +648,8 @@ async function ripSelectedNets() {
   } catch (err) {
     diag.textContent = `rip-up failed: ${err.message}`;
   } finally {
-    for (const b of [ripBtn, routeBtn, routeAllBtn, selectUnroutedBtn, shuffleBtn]) {
-      if (b) b.classList.remove("loading");
-    }
+    if (ripBtn) ripBtn.classList.remove("loading");
+    setRouteBusy(false);
     updateNetSelectionUI();
   }
 }
@@ -656,18 +665,19 @@ function requestRouteCancel() {
 on("route-cancel-btn", "click", requestRouteCancel);
 on("shuffle-cancel-btn", "click", requestRouteCancel);
 
-// Route all unprotected nets
+// Route all unprotected nets (helper behind the scoped Route button:
+// empty selection routes everything unprotected, like Place Step/Run).
 async function routeAllNets() {
   const diag = routeDiag;
 
   setRouteBusy(true);
   diag.textContent = "Routing...";
-  
+
   try {
     const data = await apiJson("/api/nets");
     const unprotected = (data.nets || []).filter(n => !n.protected).map(n => n.name);
     if (unprotected.length === 0) return;
-    
+
     // Select all unprotected, keep the full table rendered.
     selectedNets = new Set(unprotected);
     renderNetsTable(data.nets || []);
@@ -676,6 +686,114 @@ async function routeAllNets() {
     diag.textContent = `routing failed: ${err.message}`;
   } finally {
     setRouteBusy(false);
+    updateNetSelectionUI();
+  }
+}
+
+// Single Route entry: selection routes itself, empty selection routes all
+// unprotected. Shared with the polish stale-stash fallback.
+async function routeScopedNets() {
+  if (selectedNets.size > 0) await routeSelectedNets();
+  else await routeAllNets();
+}
+
+// Polish at full effort (3), no re-search. Scope follows the selection;
+// empty selection polishes every net carrying copper. Effort is pinned:
+// the Smoothing Effort slider only governs route-time smoothing and the
+// automatic end-of-route polish, never this button.
+async function polishScopedNets() {
+  const diag = routeDiag;
+  const cancelBtn = el("route-cancel-btn");
+  const progress = el("route-progress");
+  if (!diag || !progress) {
+    console.warn("missing route diag/progress nodes");
+    return;
+  }
+  const copper = n => (n.track_count || 0) + (n.arc_count || 0) + (n.via_count || 0);
+  let nets = [...selectedNets];
+  if (!nets.length && lastNetsByName && lastNetsByName.size) {
+    nets = [...lastNetsByName.values()]
+      .filter(n => copper(n) > 0 && !n.protected).map(n => n.name);
+  }
+  if (!nets.length) {
+    diag.textContent = "nothing to polish — route first";
+    return;
+  }
+  setRouteBusy(true);
+  progress.hidden = false;
+  progress.value = 0;
+  if (cancelBtn) cancelBtn.hidden = false;
+  routeCancelRequested = false;
+  const t0 = performance.now();
+  const elapsed = () => `${Math.round((performance.now() - t0) / 1000)}s`;
+  await saveRoutingParams();
+  const params = { ...readRoutingParams(), smooth_effort: 3 };
+  try {
+    diag.textContent = `polishing ${nets.length} net${nets.length > 1 ? "s" : ""} at effort 3…`;
+    const res = await fetch("/api/routing/polish", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ net_names: nets, params }),
+    });
+    if (res.status === 409) {
+      // Stale stash (board edited since routing, no stash, no grid):
+      // fall back to a scoped re-route of the same nets at effort 3
+      // instead of erroring. Protected/missing-only selections surface
+      // the message with no silent searching.
+      const msg = await res.text();
+      const stale = /route first|changed since routing|no routing grid/i.test(msg);
+      if (!stale) throw new Error(msg);
+      if (/nothing polishable/i.test(msg)) {
+        diag.textContent = `polish: ${msg}`;
+        return;
+      }
+      diag.textContent = `stash stale (${msg}) — re-routing ${nets.length} net${nets.length > 1 ? "s" : ""} at effort 3 instead`;
+      selectedNets = new Set(nets);
+      syncNetRowSelection();
+      await routeSelectedNets({ smooth_effort: 3 });
+      return;
+    }
+    if (!res.ok) throw new Error(await res.text());
+    const { job_id } = await res.json();
+    for (;;) {
+      if (routeCancelRequested) {
+        await cancelRoutingJob(job_id);
+        break;
+      }
+      const job = await apiJson(jobUrl(job_id));
+      const p = job.progress || {};
+      const pairTxt = p.pairs_total > 0 ? `net ${Math.min(p.pairs_total, p.pairs_done + 1)}/${p.pairs_total}${p.net ? ` (${p.net})` : ""}` : "starting";
+      diag.textContent = `polish ${pairTxt} · ${elapsed()}`;
+      if (p.pairs_total > 0) progress.value = Math.min(0.99, p.pairs_done / p.pairs_total);
+      if (job.state === "done") {
+        routeCurrentJobId = null;
+        const r = job.result;
+        if (!r) throw new Error("empty polish result");
+        if (r.version) {
+          lastVersion = r.version;
+          await fetchAndInjectSVG(r.version);
+        }
+        await fetchNets();
+        renderPartialCopperOverlay();
+        try { await refreshRouteMetrics([]); } catch { /* metrics are best-effort */ }
+        const rep = r.report || {};
+        diag.textContent = `polished ${rep.polished || 0} kept ${rep.kept || 0} reverted ${rep.reverted || 0} skipped ${rep.skipped || 0}` +
+          (rep.wire_saved_mm ? `, saved ${Number(rep.wire_saved_mm).toFixed(1)}mm` : "") +
+          ` (${elapsed()})`;
+        diag.title = diag.textContent;
+        if (undoBtn && (r.changed || []).length) undoBtn.disabled = false;
+        break;
+      }
+      if (job.state === "failed") throw new Error(job.error || "polish job failed");
+      await new Promise(r => setTimeout(r, ROUTE_JOB_POLL_MS));
+    }
+  } catch (err) {
+    routeCurrentJobId = null;
+    diag.textContent = `polish failed: ${err.message}`;
+  } finally {
+    setRouteBusy(false);
+    if (cancelBtn) cancelBtn.hidden = true;
+    progress.hidden = true;
     updateNetSelectionUI();
   }
 }
@@ -715,7 +833,11 @@ function formatRefineSummary(r) {
     `v${r.version} — ${r.tracks_added} tracks` +
     (r.arcs_added ? `, ${r.arcs_added} arcs` : "") + `, ${r.vias_added} vias, ` +
     `${r.nets_routed} routed, ${r.nets_failed} failed ` +
-    `(${fmtExpansions(r.expansions)}) [${candTxt}]`;
+    `(${fmtExpansions(r.expansions)}) [${candTxt}]` +
+    (r.polish && !r.polish.skipped && r.polish.polished
+      ? ` — auto-polish: ${r.polish.polished} improved` +
+        (r.polish.wire_saved_mm ? `, saved ${Number(r.polish.wire_saved_mm).toFixed(1)}mm` : "")
+      : "");
 }
 
 async function refineSelectedNets() {
@@ -753,7 +875,8 @@ async function refineSelectedNets() {
       const job = await apiJson(jobUrl(jobId));
       const p = job.progress || {};
       const candTxt = p.candidates > 0 ? `candidate ${p.candidate}/${p.candidates} · ` : "";
-      const pairTxt = p.pairs_total > 0 ? `pair ${Math.min(p.pairs_total, p.pairs_done + 1)}/${p.pairs_total}` : "starting";
+    const pairTxt = p.pairs_total > 0 ? `pair ${Math.min(p.pairs_total, p.pairs_done + 1)}/${p.pairs_total}` : "starting";
+    const stageTxt = p.stage === "polish" ? `polish ${pairTxt}` : pairTxt;
       diag.textContent = `refine ${candTxt}${pairTxt} · ${elapsed()}`;
       if (p.candidates > 0) progress.value = Math.min(0.99, (p.candidate || 1) / p.candidates);
       if (job.state === "done") {
@@ -808,87 +931,11 @@ async function refineSelectedNets() {
   }
 }
 
-// Polish: re-smooth the selected nets' stored routes at the Smoothing
-// Effort slider (no A*, no re-routing). The server keeps improved copper
-// only (gate-clean and shorter); the stash refreshes so Polish iterates.
-async function polishSelectedNets() {
-  if (selectedNets.size === 0) return;
-  const diag = routeDiag;
-  const cancelBtn = el("route-cancel-btn");
-  const progress = el("route-progress");
-  if (!diag || !progress) return;
-
-  const nets = Array.from(selectedNets);
-  await saveRoutingParams();
-  const params = readRoutingParams();
-  const t0 = performance.now();
-  const elapsed = () => `${Math.round((performance.now() - t0) / 1000)}s`;
-
-  setRouteBusy(true);
-  progress.hidden = false;
-  progress.value = 0;
-  if (cancelBtn) cancelBtn.hidden = false;
-  routeCancelRequested = false;
-  await clearShuffleTail();
-
-  let jobId = null;
-  try {
-    const res = await fetch("/api/routing/polish", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ net_names: nets, params }),
-    });
-    if (!res.ok) throw new Error(await res.text());
-    const data = await res.json();
-    if (!data.job_id) throw new Error("server did not return a job id");
-    jobId = data.job_id;
-    routeCurrentJobId = jobId;
-    for (;;) {
-      if (routeCancelRequested) {
-        await cancelRoutingJob(jobId);
-        break;
-      }
-      const job = await apiJson(jobUrl(jobId));
-      const p = job.progress || {};
-      const pairTxt = p.pairs_total > 0 ? `net ${Math.min(p.pairs_total, p.pairs_done + 1)}/${p.pairs_total}${p.net ? ` (${p.net})` : ""}` : "starting";
-      diag.textContent = `polish ${pairTxt} · ${elapsed()}`;
-      if (p.pairs_total > 0) progress.value = Math.min(0.99, (p.pairs_done || 0) / p.pairs_total);
-      if (job.state === "done") {
-        routeCurrentJobId = null;
-        const r = job.result;
-        if (!r) throw new Error("empty job result");
-        if (r.version) {
-          lastVersion = r.version;
-          await fetchAndInjectSVG(r.version);
-        }
-        await fetchNets();
-        try { await refreshRouteMetrics([]); } catch { /* metrics are best-effort */ }
-        const rep = r.report || {};
-        const perEntries = Object.entries(rep.nets || {}).map(([n, s]) =>
-          `${n}:${s.status}${s.status === "polished" ? ` (-${(s.wire_before_mm - s.wire_after_mm).toFixed(2)}mm)` : ""}`);
-        const perShort = perEntries.slice(0, 5).join(" · ") +
-          (perEntries.length > 5 ? ` · … +${perEntries.length - 5} more` : "");
-        diag.textContent = `polish done: ${rep.polished || 0} improved, ${rep.kept || 0} kept, ` +
-          `${rep.reverted || 0} reverted, ${rep.skipped || 0} skipped` +
-          (rep.wire_saved_mm ? `, saved ${rep.wire_saved_mm}mm` : "") +
-          (perShort ? ` [${perShort}]` : "") + ` (${elapsed()})`;
-        diag.title = diag.textContent + (perEntries.length > 5 ? ` — all nets: ${perEntries.join(" · ")}` : "");
-        if (undoBtn) undoBtn.disabled = false;
-        break;
-      }
-      if (job.state === "failed") throw new Error(job.error || "polish job failed");
-      await new Promise(r => setTimeout(r, ROUTE_JOB_POLL_MS));
-    }
-  } catch (err) {
-    routeCurrentJobId = null;
-    diag.textContent = `polish failed: ${err.message}`;
-  } finally {
-    setRouteBusy(false);
-    if (cancelBtn) cancelBtn.hidden = true;
-    progress.hidden = true;
-    updateNetSelectionUI();
-  }
-}
+// Polish runs automatically as the final stage of every Route job
+// (re-smooth only, no A*; keeps improved copper only). The Polish button
+// drives POST /api/routing/polish at pinned effort 3 for a standalone
+// re-smooth without re-routing, falling back to a scoped re-route when
+// the stash went stale (board edited since routing).
 
 // Shuffle lives in the Route panel: rip and re-route random routable nets,
 // N times in a queue. Picks each net uniformly from unprotected 2+ pad
@@ -1114,9 +1161,8 @@ async function shuffleRandomNets() {
 }
 
 // Event listeners for routing panel
-on("route-selected-btn", "click", routeSelectedNets);
-on("route-all-btn", "click", routeAllNets);
+on("route-selected-btn", "click", routeScopedNets);
+on("polish-btn", "click", polishScopedNets);
 on("rip-selected-btn", "click", ripSelectedNets);
 on("refine-btn", "click", refineSelectedNets);
-on("polish-btn", "click", polishSelectedNets);
 on("shuffle-btn", "click", shuffleRandomNets);

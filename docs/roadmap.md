@@ -13,7 +13,7 @@ Open work only. Finished work lives in git history, not here.
 
 ## Routing (where copper goes)
 
-- **Finer smoothing**: fillets, broad sweeps, kink guard, `smooth_effort` slider, and Polish are in. Still open: search along curves directly, push copper aside.
+- **Finer smoothing**: fillets, broad sweeps, kink guard, `smooth_effort` slider, and Polish are in (Polish button: pinned effort 3, selection scope, scoped re-route fallback when the stash is stale). Still open: search along curves directly, push copper aside.
 - **Rip-and-relay ordering**: refine retries failed nets first; casualty-repair relay re-routes nets the winner broke. Still open: rank nets by difficulty up front.
 - **Push-and-shove**: scoped alternative landed (`routing/shove.py`: GND eviction + gap healing + Tier-1 signal shove + Tier-2 gap reconnect, all with adopt-or-rollback gates). Still open: a true mid-run violation cost model, and edge-hugging detours — the router edge keepout is a soft toll and the emit gate doesn't check edge clearance, but the cited C1TubeOut case no longer reproduces in current tube116 DRC (zero copper edge violations), so re-probe before treating it as live.
 - **Dense-board mazes**: manufactured gate trips fixed; tube rails route (+12V/−12V/GND in ~4 s). Leftover sealed clusters need a thread-preserving finder, not smaller chunks. Revisit only if it reappears.
@@ -23,7 +23,6 @@ Open work only. Finished work lives in git history, not here.
 - **Tidy-regime calibration**: gate Tidy defaults on a sweep (outliers down, no overlap/wire-length regression vs legalize), publish JSON under `docs/benchmarks/`.
 - **Layer assignment**: prefer F.Cu signals, B.Cu returns. Not started.
 - **Track-tidy, parked**: Polish covers re-smoothing; collinear merges, spike/stub stripping, via-pair tees stay parked.
-- **Emit-gate vs DRC-rule gap**: the raster guard ring (~0.07 mm) is finer than the 0.2 mm clearance rule, so fitted copper can graze pads DRC-clean through the gate but dirty by the rule (tube116: 9 grazes at 0.12–0.19 mm). Gate the emit check at rule clearance, or prove the margin safe.
 
 ## Pour copper and stitching
 

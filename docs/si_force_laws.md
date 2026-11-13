@@ -233,7 +233,7 @@ mean. `stall_window=0` disables.
 | `decap_link` | — | 4.0 | local decap-chip link weight (globals never boosted) |
 | `overlap_tolerance_mm2` | mm² | 0.1 | legality threshold |
 | `wall_tolerance_mm` | mm | 0.1 | board-wall legality threshold |
-| `label_clearance_m` | m | 0.005 | label clearance reach + orbit leash (0 = parked at filed anchor) |
+| `label_clearance_m` | m | 0.005 | label clearance reach + orbit radius (0 = parked at home centroid) |
 
 Regime map (no single ratio both clusters scattered starts and legalizes
 placed boards — use two stages):

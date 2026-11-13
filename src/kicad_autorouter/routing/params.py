@@ -27,7 +27,7 @@ class RoutingParams:
     via_cost_mm: float = 5.0          # Via cost in mm wire equivalent
     track_width_mm: float = 0.25      # Default signal track width
     power_width_mm: float = 0.5       # Power/ground track width
-    clearance_mm: float = 0.2         # Default clearance between tracks
+    clearance_mm: float = 0.21        # Default clearance between tracks (0.2 rule + 0.01 safety)
     via_size_mm: float = 0.8          # Via outer diameter
     via_drill_mm: float = 0.4         # Via drill diameter
     max_attempts_per_net: int = 3     # Retry attempts per net
@@ -90,9 +90,11 @@ class RoutingParams:
     smooth_effort: float = 2.0  # Smoother engagement: 0 skips smoothing
     # (raw A* Manhattan), 1 is shortcut-only without arcs, 2 is the full
     # default (arcs + keep radius). Fractional values interpolate the keep
-    # radius between anchors; (2, 3] adds a bounded deterministic
-    # re-attempt ladder (denser arc sampling, stronger keep, extra passes).
-    # 3 is the high-effort retry rung. Resolved by smooth.resolve_config.
+    # radius between anchors; (2, 3] configures a hotter single pass
+    # (denser arc sampling, stronger keep). Retries live in polish, not
+    # in routing: route time takes one pass, auto-polish runs the
+    # deterministic re-attempt ladder. 3 is the high-effort polish rung.
+    # Resolved by smooth.resolve_config.
     fanout_planes: bool = False  # Via-to-plane stubs for plane-owned nets (inner zones)
     # When True, a ground/power-effective net owning an inner-copper zone
     # (In*.Cu) is satisfied with short outer stubs + through-vias tapping

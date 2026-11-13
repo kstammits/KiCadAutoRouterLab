@@ -289,6 +289,7 @@ def handle_post(path, qs, body, handler):
                 "params_dict": params_dict,
                 "refine": bool(req.get("refine", False)),
                 "recovery": bool(req.get("recovery", False)),
+                "polish": bool(req.get("polish", True)),
                 "mode": mode_info["mode"],
                 "mode_warning": mode_info["warning"],
                 "cancel_requested": False,
@@ -338,9 +339,12 @@ def handle_post(path, qs, body, handler):
 def _handle_polish(body):
     """Start a background Polish job (re-smooth stored routes, no A*).
 
-    Body: ``{net_names, params}`` — effort comes from the shared
-    ``smooth_effort`` slider. Fast-fails when there is nothing polishable
-    (no stash, board changed, unknown nets all protected/missing).
+    Body: ``{net_names, params}`` — effort is always pinned to 3 (full
+    retry ladder); the shared ``smooth_effort`` slider only governs
+    route-time smoothing and the automatic end-of-route polish.
+    Fast-fails when there is nothing polishable (no stash, board
+    changed, unknown nets all protected/missing) — the client treats
+    the stale-stash 409s as a scoped re-route fallback.
     """
     req = _require_json(body)
     if req is None or not isinstance(req, dict):
@@ -358,8 +362,11 @@ def _handle_polish(body):
         route_params = RoutingParams.from_dict(params_dict)
     except (ValueError, TypeError) as exc:
         return 400, f"bad routing params: {exc}".encode(), "text/plain"
-    if not route_params.smooth_effort > 0:
-        return 400, b"smooth_effort must be > 0 to polish", "text/plain"
+    # Polish is always full effort: pin the retry ladder regardless of
+    # the slider the client sent (0 would be a no-op re-smooth). Stored
+    # into the job dict (not just the local) so the worker inherits it.
+    route_params.smooth_effort = 3.0
+    params_dict["smooth_effort"] = 3.0
     bundle = STATE.get_last_polishable()
     if not bundle.get("routes"):
         return 409, "no routed copper to polish — route first".encode(), "text/plain"

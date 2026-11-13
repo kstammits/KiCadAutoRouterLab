@@ -129,6 +129,50 @@ def test_gate_touch_margin_table(kind, expect_touch, expect_margin):
 
 
 @pytest.mark.unit
+def test_gate_touch_margin_flags_rule_dirty_graze():
+    # Track edge at y=0.675 (row 5 + half width 0.125); 1x1 pad centered
+    # at y=1.325 leaves a 0.15mm edge gap — gate-clean at clearance 0.0
+    # but rule-dirty at the 0.21 default. The tube116 grazes sit here.
+    grid = _BoardGrid()
+    model = _smd_model(0.65, 1.325, "X2")
+    is_touch, margin = gate_touch_margin(
+        [[(0, 5, 0), (12, 5, 0)]], [()], grid, model, "X1", 0.125)
+    assert not is_touch
+    assert margin == pytest.approx(0.15, abs=1e-6)
+    is_touch, margin = gate_touch_margin(
+        [[(0, 5, 0), (12, 5, 0)]], [()], grid, model, "X1", 0.125,
+        clearance_mm=0.21)
+    assert is_touch
+    assert margin == pytest.approx(0.15, abs=1e-6)
+
+
+@pytest.mark.unit
+def test_resolve_gate_trip_rule_dirty_graze_fails_loudly():
+    # Same 0.15mm graze through a tripped raster cell: at rule clearance
+    # it must fail loudly, not fall back to raw (raw shares the hole).
+    from kicad_autorouter.routing.route_raw import _resolve_gate_trip
+
+    grid = _BoardGrid()
+    blocked = _masks([(0, 5, c) for c in range(3, 9)])
+    model = _smd_model(0.65, 1.325, "X2")
+    raw = SimpleNamespace(branches=(((0, 7, 0), (12, 7, 0)),),
+                           arc_pieces=())
+    smoothed = SimpleNamespace(branches=(((0, 5, 0), (12, 5, 0)),),
+                               arc_pieces=((("seg", 0.0, 5.0, 12.0, 5.0, 0),),))
+    violations = fitted_pieces_violate(
+        branches=list(smoothed.branches),
+        arc_pieces=list(smoothed.arc_pieces),
+        blocked_mask=blocked, grid=grid)
+    assert violations
+    result, failure, fell_back = _resolve_gate_trip(
+        raw, smoothed, violations, blocked, grid, model, "X1", 0.125,
+        clearance_mm=0.21)
+    assert result is None
+    assert not fell_back
+    assert failure.startswith("emit gate:")
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("case", [
     # Graze on smoothed, clean raw: emit the raw path, no failure.
     dict(name="graze_fallback", copper_y=2.0, raw_row=7,

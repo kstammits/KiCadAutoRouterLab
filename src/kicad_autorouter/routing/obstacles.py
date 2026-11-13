@@ -1220,7 +1220,17 @@ class _ObstacleEntry:
 
     def __init__(self, grid, clearance_mm, track_half_mm, fingerprint, model):
         self.grid = grid
-        self.clearance_mm = clearance_mm
+        # Quantize like build_occupancy_grid (ceil to cells * res) so
+        # copper stamps match a fresh rebuild exactly. At coarse grids a
+        # fractional clearance (e.g. 0.21 at 0.2 res) otherwise stamps a
+        # smaller halo than fresh (0.4), breaking cache parity.
+        res = getattr(grid, "resolution_mm", 0.0) or 0.0
+        try:
+            cells = int(math.ceil(float(clearance_mm) / res)) if res > 0 else 1
+            quantized = max(1, cells) * res if res > 0 else float(clearance_mm)
+        except (TypeError, ValueError):
+            quantized = clearance_mm
+        self.clearance_mm = quantized
         self.track_half_mm = track_half_mm
         self.fingerprint = fingerprint
         self.static = build_occupancy_grid(

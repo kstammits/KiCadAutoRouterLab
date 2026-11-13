@@ -430,7 +430,10 @@ def apply_deltas(
         ):
             updated_footprints.append(fp)
             continue
-        dx, dy, da = deltas.get(fp.uuid, (0.0, 0.0, 0.0))
+        # Frames pack (dx, dy, da, ldx, ldy); accept both shapes here so
+        # replay math can feed a frame straight into apply_deltas.
+        _d = deltas.get(fp.uuid, (0.0, 0.0, 0.0))
+        dx, dy, da = float(_d[0]), float(_d[1]), float(_d[2])
         new_x = fp.x_mm + dx
         new_y = fp.y_mm + dy
         new_angle = fp.angle_deg + da
@@ -545,7 +548,8 @@ def commit_placement(
     affected_nets: Set[str] = set()
     for fp in model.footprints:
         if fp.uuid in deltas and not fp.locked:
-            dx, dy, da = deltas[fp.uuid]
+            _d = deltas[fp.uuid]
+            dx, dy, da = float(_d[0]), float(_d[1]), float(_d[2])
             if dx != 0.0 or dy != 0.0 or da != 0.0:
                 for pad in fp.pads:
                     if pad.net_name:

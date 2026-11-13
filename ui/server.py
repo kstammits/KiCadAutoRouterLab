@@ -280,10 +280,18 @@ def proposal_to_json(proposal, include_frames=True) -> dict:
     }
     frames = getattr(proposal, "frames", None) or []
     if include_frames and frames:
-        out["frames"] = [
-            {u: [r3(dx), r3(dy), r2(da)] for u, (dx, dy, da) in fr.items()}
-            for fr in frames
-        ]
+        # Frames pack (dx, dy, da, ldx, ldy); tolerate 3-tuples from
+        # footprint-only history.
+        def _fr_json(fr):
+            o = {}
+            for u, d in fr.items():
+                dx, dy, da = d[0], d[1], d[2]
+                e = [r3(dx), r3(dy), r2(da)]
+                if len(d) >= 5:
+                    e += [r3(d[3]), r3(d[4])]
+                o[u] = e
+            return o
+        out["frames"] = [_fr_json(fr) for fr in frames]
         out["frame_stride"] = getattr(proposal, "frame_stride", 1)
         out["frame_count"] = len(frames)
     force_frames = getattr(proposal, "force_frames", None) or []

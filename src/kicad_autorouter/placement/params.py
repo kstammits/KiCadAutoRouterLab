@@ -163,13 +163,21 @@ class PlacementParams:
     # how closely a label may sit to bodies — never the orbit disc (that
     # is label_orbit_m). 5 mm typical; larger values give more board space.
     label_clearance_m: float = 0.005
-    # Label orbit radius (meters, SI): the clamp disc around the parent
-    # part that orbiting labels live in. The orbit homes on the parent,
-    # never on the filed offset (filed positions are stale the moment a
-    # clustering run moves parts), so this — not clearance — bounds how
-    # far a label may sit from its own part. 2 mm keeps refdes readable
-    # next to dense parts; the find-spare-room search works inside it.
-    label_orbit_m: float = 0.002
+    # Label orbit radius (meters, SI): the clamp disc around the orbit
+    # home that orbiting labels live in. The disc is the escape backstop
+    # (radius 3.5 mm fits the filed layout's home_dist p50 of 3.44 mm);
+    # the float zone inside it is sized by label_slack_m below.
+    label_orbit_m: float = 0.0035
+    # Label slack radius (meters, SI): free-float zone around the orbit
+    # home where the tether pulls nothing — contact owns the placement
+    # and friction freeze is the settle state. Beyond it the same
+    # mass-proportional spring acts on the excess, so the force is
+    # continuous at the boundary. Cluster-trajectory telemetry shows a
+    # clean dose response (rises 44 -> 31 -> 25 -> 16 at 0/1/1.5/2 mm);
+    # 2 mm covers typical SMD half-widths while leaving a 1.5 mm leash
+    # zone inside the 3.5 mm orbit disc. 0.0 disables: full spring to
+    # home (pre-slack behavior).
+    label_slack_m: float = 0.002
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -232,6 +240,7 @@ def _validate(params: PlacementParams) -> None:
         "align_radius_m",
         "label_clearance_m",
         "label_orbit_m",
+        "label_slack_m",
     )
     for name in numeric:
         value = getattr(params, name)
@@ -265,6 +274,8 @@ def _validate(params: PlacementParams) -> None:
         raise ValueError("label_clearance_m must be in [0.0, 0.05] (meters)")
     if not (0.0 <= params.label_orbit_m <= 0.05):
         raise ValueError("label_orbit_m must be in [0.0, 0.05] (meters)")
+    if not (0.0 <= params.label_slack_m <= 0.05):
+        raise ValueError("label_slack_m must be in [0.0, 0.05] (meters)")
     if params.decap_link < 0:
         raise ValueError("decap_link must be >= 0")
     if not isinstance(params.include_power_nets, bool):

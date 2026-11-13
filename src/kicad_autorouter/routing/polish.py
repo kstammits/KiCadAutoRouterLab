@@ -3,8 +3,10 @@
 After rough routing (low ``smooth_effort``) or order search, Polish
 re-smooths already-routed nets one at a time at a higher effort: each
 net's copper is lifted from a fresh matrix holding every other net's
-final copper, re-smoothed through the effort ladder, and kept only when
-the result is gate-clean *and* shorter. Nothing is re-searched (no A*),
+final copper, re-smoothed through the effort ladder, and kept only when the result is
+gate-clean *and* shorter than the incoming copper. Between rungs the
+roomiest within 10% of the shortest wins, so a wider swoop beats a
+grazer when it costs almost nothing. Nothing is re-searched (no A*),
 via/layer topology never moves, and a net that cannot improve keeps its
 incoming copper — Polish never fails a routed net.
 """
@@ -44,7 +46,15 @@ from .smooth import (
     resolve_config as resolve_smooth_config,
 )
 from .stitch import _region_masks as _board_region_masks
-from .verify import fitted_pieces_violate, share_group_key
+from .verify import fitted_pieces_violate, gate_touch_margin, share_group_key
+
+
+# Tolerance band for rung selection: among gate-clean rungs within 10% of
+# the shortest, keep the roomiest (largest true copper margin) instead of
+# the shortest. A wider swoop wins only when it costs almost nothing;
+# adoption below still requires beating the incoming copper, so polish
+# never grows wire.
+POLISH_WIRE_TOLERANCE = 1.10
 
 
 def polish_routes(
@@ -280,6 +290,7 @@ def _polish_one(
 
     best: Optional[NetRouteResult] = None
     best_wire = math.inf
+    clean: List[Tuple[object, float, float]] = []  # (cand, wire, margin)
     for sub in effort_rungs(effort):
         cfg = resolve_smooth_config(sub, params)
         cand = _smooth_result(
@@ -300,7 +311,28 @@ def _polish_one(
             blocked, routing_grid, share=_verify_share,
         ):
             continue
+        if best is None:
+            best, best_wire = cand, float(getattr(cand, "wire_mm", math.inf))
         wire = float(getattr(cand, "wire_mm", math.inf))
         if wire < best_wire:
             best, best_wire = cand, wire
+        try:
+            _, margin = gate_touch_margin(
+                list(_branch_paths(cand)),
+                tuple(getattr(cand, "arc_pieces", ()) or ()),
+                routing_grid, model, net_name, track_half_mm,
+            )
+        except Exception:
+            margin = float("-inf")
+        clean.append((cand, wire, margin))
+    if not clean:
+        return None
+    # Roomiest within 10% of the shortest wins; ties (including all-clear
+    # boards where every margin is inf) fall back to the shortest.
+    shortest = min(wire for _, wire, _ in clean)
+    cap = shortest * POLISH_WIRE_TOLERANCE + 1e-9
+    best, best_wire, _ = min(
+        (c for c in clean if c[1] <= cap),
+        key=lambda c: (-c[2], c[1]),
+    )
     return best

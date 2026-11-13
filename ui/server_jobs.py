@@ -121,6 +121,20 @@ def _run_routing_job(job_id: str) -> None:
             j["refine_candidate"] = idx
             j["refine_total"] = total
 
+    def _on_polish_progress(net_name: str, done: int, total: int) -> None:
+        with _JOBS_LOCK:
+            j = _JOBS.get(job_id)
+            if j is None:
+                return
+            j["progress"] = {
+                "stage": "polish",
+                "net": net_name,
+                "pairs_done": done,
+                "pairs_total": total,
+                "expansions": 0,
+                "elapsed_s": round(time.perf_counter() - t0, 1),
+            }
+
     try:
         if job.get("recovery"):
             # Recovery jobs always run the full staged chain; the job key
@@ -236,6 +250,83 @@ def _run_routing_job(job_id: str) -> None:
                                   getattr(result, "width_map", None) or {})
     except (AttributeError, TypeError):
         pass
+    # Automatic polish: re-smooth just-routed nets in-thread (no A*).
+    # Keep-only-if-better, so a polish failure never fails the route.
+    # Opt out with smooth_effort=0 or per-job polish:false; skipped on the
+    # recovery path and when nothing routed.
+    if (not job.get("recovery") and job.get("polish", True)
+            and route_params.smooth_effort > 0
+            and getattr(result, "net_routes", None)
+            and routing_grid is not None):
+        try:
+            stored = dict(getattr(result, "net_routes", None) or {})
+            widths = dict(getattr(result, "width_map", None) or {})
+            todo = [n for n in net_names
+                    if n in stored and n not in protected_nets]
+            if todo:
+                new_results, report = polish_routes(
+                    stored, widths, STATE.model, routing_grid,
+                    route_params, todo,
+                    float(route_params.smooth_effort),
+                    extra_power_nets=extra_power,
+                    progress_cb=_on_polish_progress,
+                    should_cancel=_should_cancel,
+                )
+                changed = sorted(
+                    n for n, r in report.get("nets", {}).items()
+                    if r.get("status") == "polished")
+                payload["polish"] = report
+                payload["polish_changed"] = changed
+                if changed:
+                    tracks, vias, arcs = routes_to_tracks_vias(
+                        {n: new_results[n] for n in changed},
+                        routing_grid,
+                        net_class_widths=widths,
+                        default_width_mm=route_params.track_width_mm,
+                        power_width_mm=route_params.power_width_mm,
+                        via_size_mm=route_params.via_size_mm,
+                        via_drill_mm=route_params.via_drill_mm,
+                        tht_sites=_tht_sites_by_net(STATE.model,
+                                                   routing_grid),
+                        extra_power=extra_power,
+                    )
+                    STATE.push_undo()
+                    with STATE._lock:
+                        st_tree = STATE.pcb_tree
+                        st_tree = rip_up_nets(st_tree, set(changed),
+                                             protected_nets)
+                        st_tree = apply_routes_to_tree(
+                            st_tree, tracks, vias, arcs)
+                        try:
+                            STATE.pcb_tree = st_tree
+                            STATE.model = board_model(st_tree)
+                            STATE.routing_model = STATE.model
+                        except Exception:
+                            pass
+                        STATE.cost_grid = None
+                        cost_grid = None
+                        STATE.version += 1
+                        version = STATE.version
+                    payload["version"] = version
+                    if route_params.run_drc:
+                        try:
+                            drc = run_drc_on_tree(st_tree)
+                            payload["drc_clean"] = bool(drc.clean)
+                            payload["drc_violations"] = int(
+                                drc.total_issues)
+                        except Exception as exc:
+                            logger.warning(
+                                "auto-polish DRC failed: %s", exc)
+                    try:
+                        STATE.set_last_polishable(
+                            {n: new_results.get(n, stored[n])
+                             for n in stored},
+                            widths)
+                    except (AttributeError, TypeError):
+                        pass
+        except Exception as exc:  # noqa: BLE001 — route stands, polish skipped
+            logger.warning("auto-polish skipped: %s", exc)
+            payload["polish"] = {"skipped": True, "error": str(exc)}
     if job.get("mode_warning"):
         payload["mode_warning"] = job["mode_warning"]
     if job.get("refine"):
@@ -316,9 +407,8 @@ def _run_polish_job(job_id: str) -> None:
     except (ValueError, TypeError) as exc:
         _fail(f"bad params: {exc}")
         return
-    if not route_params.smooth_effort > 0:
-        _fail("smooth_effort must be > 0 to polish (0 skips smoothing)")
-        return
+    # Belt and braces with _handle_polish: polish ignores the slider.
+    route_params.smooth_effort = 3.0
     bundle = STATE.get_last_polishable()
     if not bundle.get("routes"):
         _fail("no routed copper to polish — route first")

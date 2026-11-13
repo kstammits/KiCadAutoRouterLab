@@ -88,7 +88,7 @@ class TestTrajectoryFrames:
         assert prop.frames, "expected motion over 5 iters"
         last = prop.frames[-1]
         for uuid, (dx, dy, da) in prop.deltas.items():
-            fdx, fdy, fda = last[uuid]
+            fdx, fdy, fda = last[uuid][:3]
             assert fdx == pytest.approx(dx, abs=10 ** -FRAME_XY_DECIMALS)
             assert fdy == pytest.approx(dy, abs=10 ** -FRAME_XY_DECIMALS)
             assert fda == pytest.approx(da, abs=10 ** -FRAME_ANGLE_DECIMALS)

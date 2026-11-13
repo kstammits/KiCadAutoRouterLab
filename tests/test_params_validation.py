@@ -54,6 +54,26 @@ def test_cross_layer_pin_halo_tunable():
 
 @pytest.mark.unit
 @pytest.mark.params
+def test_label_slack_tunable():
+    """2.0mm default (float zone), round-trips, negatives/non-finite/over-cap rejected."""
+    assert PlacementParams.from_dict({}).label_slack_m == pytest.approx(0.002)
+    p = PlacementParams.from_dict({"label_slack_m": 0.001})
+    assert PlacementParams.from_dict(p.to_dict()) == p
+    for bad in (-1e-9, float("nan"), float("inf"), "0.001", True, 0.06):
+        with pytest.raises(ValueError):
+            PlacementParams.from_dict({"label_slack_m": bad})
+
+
+@pytest.mark.unit
+@pytest.mark.params
+def test_default_clearance_carries_safety_margin():
+    """Default clearance aims 0.01 proud of the 0.2 rule (raster/fitter slop)."""
+    assert RoutingParams.from_dict({}).clearance_mm == pytest.approx(0.21)
+    assert RoutingParams().to_dict()["clearance_mm"] == pytest.approx(0.21)
+
+
+@pytest.mark.unit
+@pytest.mark.params
 def test_from_dict_rejects_bad_numerics():
     for key, bad in (
         ("grid_resolution_mm", 0),

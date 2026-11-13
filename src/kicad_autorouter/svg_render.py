@@ -598,12 +598,16 @@ def _footprints_svg(
             cls_parts.append("fp-decap")
         cls = " ".join(cls_parts)
 
+        # Ref text rides in its own inner group so the motion player can
+        # apply the per-frame label slide (ldx, ldy) without touching the
+        # part transform. Pointer events stay on the footprint group.
         fp_group = [
             f'<g class="{cls}" data-fp-uuid="{fp.uuid}">',
             _footprint_courtyard_svg(fp, is_locked, is_pinned, is_selected, is_movable, is_decap),
             _footprint_pads_svg(fp, colors, flip, fp.angle_deg, extra_power,
                                 color_mode=color_mode, layers=layers),
-            _footprint_ref_svg(fp),
+            f'<g class="label" data-label-for="{fp.uuid}" pointer-events="none">'
+            f'{_footprint_ref_svg(fp)}</g>',
             "</g>",
         ]
         out.append("\n".join(fp_group))

@@ -10,7 +10,7 @@ Pure-Python autorouter for KiCad: drop a `.kicad_pcb` into the web UI or run hea
 | What it does | How you reach it |
 |--------------|------------------|
 | **Per-pad force placement** — connected pads attract, all pads repel; parts rotate and slide around locked anchors | Place tab → Step / Run / Accept; Regime presets (Scatter start, Placed-board polish, Tidy align); ghosts as keepout walls / attractors |
-| **Grid A* routing** — clearance-aware, per-net widths, power-rail overrides, GND pours passable-at-toll with auto-stitching | Route tab → Route Selected / Route All / Refine Order / Polish; 2-layer / 4-layer mode switch |
+| **Grid A* routing** — clearance-aware, per-net widths, power-rail overrides, GND pours passable-at-toll with auto-stitching | Route tab → Route (selection, else all unprotected) / Polish (always effort 3) / Select Unrouted / Refine Order; 2-layer / 4-layer mode switch |
 | **Power integrity (report only)** — inlet-anchored DC-resistance screening, mated-pair bridges | Route tab → Power integrity + Mated pairs sections |
 | **DRC gate** — `kicad-cli pcb drc` runs on writeback; nothing DRC-dirty is stamped silently | Top bar → Run DRC, then Download |
 | **Review & share** — motion playback, force vectors, context save/load, copy-link presets | Motion bar, Show proposal / forces toggles, Save/Load ctx, Copy link |
@@ -30,7 +30,7 @@ python -m venv .venv
 
 1. **Load** — drag `tests/fixtures/tube111.kicad_pcb` onto the page.
 2. **Place** — select parts, **Step** (5 iters) or **Run** (to convergence), **Accept**. Alt+click pins a part.
-3. **Route** — Route tab → select nets → **Route Selected**.
+3. **Route** — Route tab → select nets → **Route** (empty selection routes all unprotected); **Polish** re-smooths at full effort without re-searching.
 4. **DRC** — tick **DRC**, **Run DRC**, then **Download** the board.
 
 Headless: `scripts/run_autoroute.py board.kicad_pcb -o out.kicad_pcb --step-iterations 5 --max-total-iterations 500`. Same core; the UI adds SVG view, motion playback, sliders.
@@ -46,7 +46,7 @@ Test boards: `tests/fixtures/tube111.kicad_pcb` (105 parts, 73 nets) and `tests/
 | **Track / Power Width** | 0.15–0.25 / 0.4–0.8 mm; per-net override, then netclass, then power flag |
 | **Via Cost / Clearance** | 3–10 mm per via; 0.15–0.25 mm spacing |
 | **Grid Resolution** | 0.1 mm default (0.15–0.2 for scouting; finer than 0.1 rarely pays) |
-| **Smoothing Effort** | 0 = raw search path … 2 = full arcs (default), 3 = high-effort retry; **Polish** re-smooths picked nets, keeps only shorter+clean |
+| **Smoothing Effort** | 0 = raw search path … 2 = full arcs (default), 3 = high-effort retry (route-time smoothing + auto-polish); the **Polish** button always runs at 3 on its scope (selection, else routed copper) and falls back to a scoped re-route when the board changed since routing |
 | **GND Stitching / Strip GND Blockers** | On (2-layer mode) — stitching repairs pour islands; strip evicts only GND copper, never signals |
 | **2-layer / 4-layer** | 2-layer collapses to genuine 2-layer on export; 4-layer taps inner planes with stub+vias (`fanout_vias_added`) |
 

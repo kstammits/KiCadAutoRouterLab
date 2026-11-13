@@ -487,17 +487,20 @@ def test_low_effort_emits_no_arcs(effort):
 
 
 @pytest.mark.minimal
-def test_effort_three_beats_or_matches_default():
-    # The ladder's first rung is the default config, so best-of-rungs
-    # can never lose to the single pass on the same deterministic search.
-    _, model = _xcross_model()
-    base, _, _ = route_raw(model, ["X1", "X2"], set(), params=_xparams())
-    hot, _, _ = route_raw(model, ["X1", "X2"], set(),
-                          params=_xparams(smooth_effort=3.0))
-    assert hot.nets_routed == 2
-    base_wire = sum(r.wire_mm for r in base.all_results.values())
-    hot_wire = sum(r.wire_mm for r in hot.all_results.values())
-    assert hot_wire <= base_wire + 1e-9
+def test_single_pass_routing_is_deterministic():
+    # Route time takes one smoothing pass at the requested effort (retries
+    # live in polish): the same params must reproduce the same copper.
+    for effort in (2.0, 3.0):
+        _, model = _xcross_model()
+        first, _, _ = route_raw(model, ["X1", "X2"], set(),
+                                params=_xparams(smooth_effort=effort))
+        _, model = _xcross_model()
+        second, _, _ = route_raw(model, ["X1", "X2"], set(),
+                                 params=_xparams(smooth_effort=effort))
+        assert first.nets_routed == second.nets_routed == 2
+        for net in ("X1", "X2"):
+            assert (first.all_results[net].wire_mm ==
+                    second.all_results[net].wire_mm)
 
 
 @pytest.mark.minimal
@@ -508,6 +511,60 @@ def test_polish_noop_at_zero_effort():
                                 rg, _xparams(), ["X1", "X2"], 0.0)
     assert report["skipped"] == 2
     assert new == raw.all_results
+
+
+@pytest.mark.unit
+def test_polish_prefers_roomiest_within_ten_percent():
+    # Rung pick is margin-scored inside a 10% wire band: a 5%-longer swoop
+    # with a 1.0mm gap beats a grazer at 0.21mm; a 20%-longer detour with
+    # an even bigger gap stays out of band and loses to the shortest.
+    from types import SimpleNamespace
+    from unittest import mock
+
+    from kicad_autorouter.routing import polish as polish_mod
+    from kicad_autorouter.routing.polish import _polish_one
+
+    def _cand(wire):
+        return SimpleNamespace(branches=[[(0, 0, 0), (10, 0, 0)]],
+                              arc_pieces=(), wire_mm=wire)
+
+    grazer, swoop, detour = _cand(100.0), _cand(105.0), _cand(120.0)
+    current = SimpleNamespace(success=True, path=[(0, 0)],
+                              branches=[[(0, 0, 0), (10, 0, 0)]],
+                              arc_pieces=(), wire_mm=110.0)
+    grid = mock.MagicMock()
+    base = mock.MagicMock()
+    base.copy.return_value = mock.MagicMock()
+    model = mock.MagicMock()
+    model.board_regions = ()
+
+    def _run(cands, margins):
+        with mock.patch.object(polish_mod, "effort_rungs",
+                               return_value=[2.0] * len(cands)), \
+             mock.patch.object(polish_mod, "_smooth_result",
+                               side_effect=list(cands)), \
+             mock.patch.object(polish_mod, "fitted_pieces_violate",
+                               return_value=[]), \
+             mock.patch.object(polish_mod, "gate_touch_margin",
+                               side_effect=[(False, m) for m in margins]), \
+             mock.patch.object(polish_mod, "build_fanout_cost",
+                               return_value=np.zeros((1, 4, 4),
+                                                     dtype=np.int16)), \
+             mock.patch.object(polish_mod, "own_net_hard_cells",
+                               return_value=None), \
+             mock.patch.object(polish_mod, "_board_region_masks",
+                               return_value=[]), \
+             mock.patch.object(polish_mod, "_apply_route_to_grid"), \
+             mock.patch.object(polish_mod, "_terminals_for_net",
+                               return_value=[]), \
+             mock.patch.object(polish_mod, "own_net_soft_mask",
+                               return_value=None):
+            return _polish_one("S", current, 0.25, model, model, grid,
+                               base, {}, {"S": 0.25}, _xparams(), 3.0,
+                               0.1, [], False, ())
+
+    assert _run([grazer, swoop], [0.21, 1.0]) is swoop
+    assert _run([grazer, detour], [0.21, 5.0]) is grazer
 
 
 @pytest.mark.minimal

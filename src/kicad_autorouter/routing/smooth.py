@@ -52,6 +52,10 @@ EFFORT_KEEP_FULL_MM = 1.0  # keep radius the ladder converges to at effort 3
 def effort_rungs(effort: float) -> List[float]:
     """Deterministic sub-effort ladder for one smooth call.
 
+    Route time takes a single pass at the requested effort; the retry
+    ladder below belongs to polish (re-smoothing against the finished
+    board, roomiest rung within 10% of the shortest wins).
+
     Effort <= 2 is a single rung (the effort itself). Above 2, rungs run
     from 2.0 (today's behavior as the safe baseline) up to the effort in
     half-effort steps — at most 3 rungs ([2.0, 2.5, 3.0]). Callers keep

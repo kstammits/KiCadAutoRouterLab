@@ -9,17 +9,18 @@ function setConnected(ok) {
   }
 }
 
-// Route/rip buttons share one busy state: all four disable, the two
+// Route/rip buttons share one busy state: all disable, the two
 // route buttons show the spinner. (ripSelectedNets manages ripBtn's own
 // spinner; route tails rely on updateNetSelectionUI for final enable).
-// Reference-counted: nested runs (route-all delegates to route-selected)
-// and double-clicks pair every acquire with a release, so an imbalance
-// from one path can't wedge the buttons on forever.
+// Reference-counted: nested runs (scoped route delegates to route-selected,
+// polish falls back to a scoped route) and double-clicks pair every acquire
+// with a release, so an imbalance from one path can't wedge the buttons on
+// forever.
 let routeBusyCount = 0;
 function setRouteBusy(on) {
   routeBusyCount = Math.max(0, routeBusyCount + (on ? 1 : -1));
   const busy = routeBusyCount > 0;
-  const btns = ["route-selected-btn", "route-all-btn", "select-unrouted-btn", "rip-selected-btn", "refine-btn", "shuffle-btn"]
+  const btns = ["route-selected-btn", "polish-btn", "select-unrouted-btn", "rip-selected-btn", "refine-btn", "shuffle-btn"]
     .map(id => el(id));
   for (const b of btns) if (b) b.disabled = busy;
   for (const b of btns.slice(0, 2)) if (b) b.classList.toggle("loading", busy);
@@ -1462,11 +1463,33 @@ function applyMotionFrame(i) {
     if (!g) continue;
     const base = motion.basePos[uuid];
     if (!base) continue;
-    const [dx, dy, da] = d;
-    if (!dx && !dy && !da) { g.removeAttribute("transform"); continue; }
-    // Board geometry rotates R(-da) while SVG rotate() is R(+a): negate.
-    // Rotate about the committed center, then translate: p' = R(p-c)+c+d.
-    g.setAttribute("transform", `translate(${dx} ${dy}) rotate(${-da} ${base[0]} ${base[1]})`);
+    // 5-tuples (dx, dy, da, ldx, ldy) carry the label slide around its
+    // parent-carried home; tolerate 3-tuples from footprint-only history.
+    const [dx, dy, da, ldx = 0, ldy = 0] = d;
+    if (!dx && !dy && !da) { g.removeAttribute("transform"); }
+    else {
+      // Board geometry rotates R(-da) while SVG rotate() is R(+a): negate.
+      // Rotate about the committed center, then translate: p' = R(p-c)+c+d.
+      g.setAttribute("transform", `translate(${dx} ${dy}) rotate(${-da} ${base[0]} ${base[1]})`);
+    }
+    // Independent label slide: the inner g.label moves the ref text by
+    // (ldx, ldy) and counter-rotates by +da so glyphs stay upright while
+    // the outer group swings the anchor around the part (labels never spin
+    // in the engine — angle is derived, not integrated).
+    const labelG = g.querySelector(":scope > g.label");
+    if (labelG) {
+      if (!ldx && !ldy && !da) { labelG.removeAttribute("transform"); }
+      else {
+        const textEl = labelG.querySelector("text");
+        const lx = parseFloat(textEl?.getAttribute("x") ?? "NaN");
+        const ly = parseFloat(textEl?.getAttribute("y") ?? "NaN");
+        const cx = Number.isFinite(lx) ? lx + ldx : base[0] + dx + ldx;
+        const cy = Number.isFinite(ly) ? ly + ldy : base[1] + dy + ldy;
+        const parts = [`translate(${ldx} ${ldy})`];
+        if (da) parts.push(`rotate(${da} ${cx} ${cy})`);
+        labelG.setAttribute("transform", parts.join(" "));
+      }
+    }
   }
   // Clear stale transforms for parts absent from this frame (sparse frames,
   // or a newer run whose frame set omits a previously-moved part). Runs on
@@ -1474,7 +1497,19 @@ function applyMotionFrame(i) {
   // otherwise leave later transforms behind.
   (viewport?.querySelectorAll("g.footprint[transform]") ?? []).forEach(g => {
     const uuid = g.getAttribute("data-fp-uuid");
-    if (uuid && !seen.has(uuid)) g.removeAttribute("transform");
+    if (uuid && !seen.has(uuid)) {
+      g.removeAttribute("transform");
+      g.querySelector(":scope > g.label")?.removeAttribute("transform");
+    }
+  });
+  // Labels whose part is still present but whose entry vanished (old
+  // 3-tuple frames mixed in): drop their inner slide.
+  (viewport?.querySelectorAll("g.footprint > g.label[transform]") ?? []).forEach(lg => {
+    const pg = lg.closest("g.footprint");
+    const uuid = pg?.getAttribute("data-fp-uuid");
+    const e = uuid ? frame[uuid] : undefined;
+    const hasSlide = Array.isArray(e) && (e[3] || e[4] || e[2]);
+    if (!e || !hasSlide) lg.removeAttribute("transform");
   });
   drawMotionTrails();
   drawForceVectors(svg, motion.idx);
@@ -1522,6 +1557,7 @@ function drawMotionTrails() {
 function clearMotionView() {
   if (!viewport) return;
   viewport.querySelectorAll("g.footprint[transform]").forEach(g => g.removeAttribute("transform"));
+  viewport.querySelectorAll("g.footprint > g.label[transform]").forEach(g => g.removeAttribute("transform"));
   viewport.querySelectorAll("g.footprint .motion-force-vectors").forEach(n => n.remove());
   viewport.querySelector("#motion-trails")?.remove();
 }

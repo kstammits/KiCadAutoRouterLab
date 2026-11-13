@@ -29,7 +29,6 @@ from kicad_autorouter.board_model.labels import (
     label_board_rect,
     label_halo_mm,
     label_ink_mass_kg,
-    label_tether_force_N,
     snap_label_angle,
 )
 from kicad_autorouter.placement import PlacementParams, run_label_settle, run_placement
@@ -73,12 +72,30 @@ def test_ink_mass_scales_and_floors():
 
 
 @pytest.mark.unit
-def test_tether_spring_pulls_to_target():
-    fx, fy = label_tether_force_N((3.0, 0.0), (0.0, 0.0), 1e-9, hz=2.0)
-    assert fx < 0.0 and fy == pytest.approx(0.0)
+def test_slack_tether_floats_inside_slack():
+    from kicad_autorouter.board_model.labels import (
+        label_slack_tether_force_N,
+    )
+    # Inside the slack radius: exactly zero (free float).
+    assert label_slack_tether_force_N(
+        (1.0, 0.0), (0.0, 0.0), 1e-9, hz=2.0, slack_m=0.002) == (0.0, 0.0)
+    # At the boundary: still zero (continuous).
+    assert label_slack_tether_force_N(
+        (2.0, 0.0), (0.0, 0.0), 1e-9, hz=2.0, slack_m=0.002) == (0.0, 0.0)
+    # Outside: mass-proportional spring on the excess only.
+    k = 1e-9 * (2.0 * math.pi * 2.0) ** 2  # N/m
+    fx, fy = label_slack_tether_force_N(
+        (4.0, 0.0), (0.0, 0.0), 1e-9, hz=2.0, slack_m=0.002)
+    assert fx == pytest.approx(-k * 2e-3)
+    assert fy == pytest.approx(0.0)
     # Stiffness derives from mass: doubling mass doubles the force.
-    fx2, _ = label_tether_force_N((3.0, 0.0), (0.0, 0.0), 2e-9, hz=2.0)
+    fx2, _ = label_slack_tether_force_N(
+        (4.0, 0.0), (0.0, 0.0), 2e-9, hz=2.0, slack_m=0.002)
     assert fx2 == pytest.approx(2.0 * fx)
+    # Zero slack degrades to a plain spring on the full offset.
+    fx0, _ = label_slack_tether_force_N(
+        (4.0, 0.0), (0.0, 0.0), 1e-9, hz=2.0, slack_m=0.0)
+    assert fx0 == pytest.approx(-k * 4e-3)
 
 
 @pytest.mark.unit
@@ -117,10 +134,17 @@ def test_orbit_ejects_inside_radius_cap():
         max_iterations=300, label_clearance_m=clearance_m,
         wall_halo_m=0.002))
     assert set(prop.label_deltas) == {"uuid-a", "uuid-b"}
-    for dx, dy in prop.label_deltas.values():
-        # Local-frame millimeters: the orbit cap derives from clearance.
-        assert math.hypot(dx, dy) <= clearance_m * 1000.0 + 1e-3
-        assert math.hypot(dx, dy) > 0.5  # ejected, not parked at anchor
+    # Rest spot within the orbit disc of the parent (centroid home):
+    # board distance, not filed-local delta.
+    orbit_mm = PlacementParams().label_orbit_m * 1000.0
+    moved = apply_deltas(model, prop.deltas, label_deltas=prop.label_deltas)
+    from kicad_autorouter.board_model import _to_board as _tb
+    for fp in moved.footprints:
+        if fp.label is None:
+            continue
+        b = _tb(fp.label.local_x_mm, fp.label.local_y_mm,
+                fp.x_mm, fp.y_mm, fp.angle_deg, fp.layer)
+        assert math.hypot(b.x_mm - fp.x_mm, b.y_mm - fp.y_mm) <= orbit_mm + 1e-3
 
 
 @pytest.mark.physics
@@ -146,6 +170,7 @@ def test_clear_labels_do_not_perturb_pads():
     pinned where it is meaningful), plus a converged single-part run
     that leaves the sidecar empty.
     """
+    orbit_mm = PlacementParams().label_orbit_m * 1000.0
     fa = replace(
         make_fp("A", "uuid-a", 0.0, 0.0, ("N1", "N2"), hw=1.5, hh=1.0),
         label=_lab("A", -8.0, 2.0))
@@ -153,20 +178,20 @@ def test_clear_labels_do_not_perturb_pads():
         make_fp("B", "uuid-b", 12.0, 0.0, ("N1", "N3"), hw=1.5, hh=1.0),
         label=_lab("B", 8.0, 2.0))
     model = replace(make_board([fa, fb]), nets={"N1": (), "N2": (), "N3": ()})
-    # Stale filed anchors (±8 mm) home to the parents now: assert the
-    # labels converge near their own parts instead of lingering filed.
+    # Filed ±8 mm offsets are stale: labels converge near their parents
+    # (centroid home + slack float), never linger at filed anchors.
     # (Pad-center Coulomb is long-range, so the short-horizon pad course
     # below is where exact stillness is pinned — not the labels.)
     kw = dict(label_clearance_m=0.002, wall_halo_m=0.002)
     short = run_placement(model, PlacementParams(**kw, max_iterations=300))
     moved = apply_deltas(model, short.deltas, label_deltas=short.label_deltas)
+    from kicad_autorouter.board_model import _to_board as _tb
     for fp in moved.footprints:
         if fp.label is None:
             continue
-        from kicad_autorouter.board_model import _to_board as _tb
         b = _tb(fp.label.local_x_mm, fp.label.local_y_mm,
                 fp.x_mm, fp.y_mm, fp.angle_deg, fp.layer)
-        assert math.hypot(b.x_mm - fp.x_mm, b.y_mm - fp.y_mm) <= 3.0
+        assert math.hypot(b.x_mm - fp.x_mm, b.y_mm - fp.y_mm) <= orbit_mm + 1e-3
     stripped = replace(
         model,
         footprints=tuple(replace(fp, label=None) for fp in model.footprints),
@@ -180,12 +205,16 @@ def test_clear_labels_do_not_perturb_pads():
     lone = replace(make_board([fa]), nets={"N1": (), "N2": ()})
     calm = run_placement(lone, PlacementParams(**kw, max_iterations=300))
     assert calm.deltas == {}
+    # Centroid home + slack float: the stale anchor is abandoned for
+    # the parent's neighborhood (dynamics rest at the deadband edge;
+    # the post-loop eject may then seat it off own copper, still
+    # inside the orbit disc).
     moved = apply_deltas(lone, calm.deltas, label_deltas=calm.label_deltas)
     fp = next(f for f in moved.footprints if f.uuid == "uuid-a")
     from kicad_autorouter.board_model import _to_board as _tb2
     b = _tb2(fp.label.local_x_mm, fp.label.local_y_mm,
              fp.x_mm, fp.y_mm, fp.angle_deg, fp.layer)
-    assert math.hypot(b.x_mm - fp.x_mm, b.y_mm - fp.y_mm) <= 3.0
+    assert math.hypot(b.x_mm - fp.x_mm, b.y_mm - fp.y_mm) <= orbit_mm + 1e-3
 
 
 def _region_board(fps, edge=20.0):
@@ -241,9 +270,9 @@ def _bare_label_poly(model, uuid):
 def test_stale_filed_offset_does_not_hold_label_out():
     """Labels orbit their parent part, not their filed offset.
 
-    A label filed 8mm from its parent (stale after clustering) must
-    converge near the parent and find spare room there — not linger at
-    the filed offset. Fails while home is the filed anchor.
+    A label filed 8mm from its parent (stale after clustering) is
+    pulled home to the live centroid and floats inside the slack
+    deadband — it never lingers at the filed anchor.
     """
     from kicad_autorouter.board_model import _to_board as _tb
     fa = replace(
@@ -256,8 +285,11 @@ def test_stale_filed_offset_does_not_hold_label_out():
     fp = next(f for f in moved.footprints if f.uuid == "uuid-a")
     b = _tb(fp.label.local_x_mm, fp.label.local_y_mm,
             fp.x_mm, fp.y_mm, fp.angle_deg, fp.layer)
-    # Symmetric 2-pad part: centroid == footprint origin.
-    assert math.hypot(b.x_mm - fp.x_mm, b.y_mm - fp.y_mm) <= 3.0
+    # Slack deadband edge for the dynamics; the post-loop eject may
+    # then seat it off own copper — still inside the orbit disc, never
+    # lingering at the stale filed anchor.
+    orbit_mm = PlacementParams().label_orbit_m * 1000.0
+    assert math.hypot(b.x_mm - fp.x_mm, b.y_mm - fp.y_mm) <= orbit_mm + 1e-3
 
 
 @pytest.mark.physics
@@ -301,6 +333,39 @@ def test_label_ejected_from_tht_pin_disc():
 
 
 @pytest.mark.physics
+def test_label_pushed_off_neighbor_smd_copper():
+    """Coulomb alone clears neighbor SMD sits at settle (no wall bodies).
+
+    B's label starts at its parent centroid overlapping A's SMD pad,
+    with A's courtyard deliberately clear of the label. Wall bodies
+    were removed as redundant (measured null); this pins the Coulomb
+    repulsion as the clearing force. Bodies frozen, so the endpoint
+    isolates label force.
+    """
+    from kicad_autorouter.placement.contact import pad_copper_polygon
+    from shapely.ops import unary_union as _union
+
+    fa = make_fp("A", "uuid-a", 0.0, 0.0, ("N1", "N2"), hw=0.6, hh=1.0)
+    fb = replace(
+        make_fp("B", "uuid-b", 4.0, 0.0, ("N3", "N4"), hw=1.5, hh=1.0),
+        label=_lab("B", 0.0),
+    )
+    model = replace(
+        _region_board([fa, fb]),
+        nets={"N1": (), "N2": (), "N3": (), "N4": ()},
+    )
+    prop = run_label_settle(model, PlacementParams(), 300)
+    assert "uuid-b" in prop.label_deltas
+    # Coulomb 1/d^2 diverges on overlap: genuine ejection, not a nudge.
+    assert prop.label_deltas["uuid-b"][0] > 0.3
+    moved = apply_deltas(model, prop.deltas, label_deltas=prop.label_deltas)
+    poly = _bare_label_poly(moved, "uuid-b")
+    copper = _union([pad_copper_polygon(p)
+                     for p in fa.pads])
+    assert poly.disjoint(copper)
+
+
+@pytest.mark.physics
 def test_label_feels_smd_pad_coulomb():
     """SMD pads repel labels at range (parts' Coulomb, one-way)."""
     fa = replace(
@@ -322,13 +387,15 @@ def test_label_feels_smd_pad_coulomb():
     dx, dy = prop.label_deltas["uuid-a"]
     # B's charged pads sit +x of the label: repulsion pushes it back.
     assert dx < -0.1
-    # …and the label homes near its own parent, not the filed offset.
+    # …and the label ends near its parent (centroid home + slack),
+    # not out at the stale filed offset.
     moved = apply_deltas(model, prop.deltas, label_deltas=prop.label_deltas)
     fp = next(f for f in moved.footprints if f.uuid == "uuid-a")
     from kicad_autorouter.board_model import _to_board as _tb
     b = _tb(fp.label.local_x_mm, fp.label.local_y_mm,
             fp.x_mm, fp.y_mm, fp.angle_deg, fp.layer)
-    assert math.hypot(b.x_mm - fp.x_mm, b.y_mm - fp.y_mm) <= 3.0
+    orbit_mm = PlacementParams().label_orbit_m * 1000.0
+    assert math.hypot(b.x_mm - fp.x_mm, b.y_mm - fp.y_mm) <= orbit_mm + 1e-3
 
 
 @pytest.mark.physics
@@ -367,3 +434,51 @@ def test_label_settle_clears_overlap_with_frozen_bodies():
     ra = _bare_label_poly(moved, "uuid-a")
     rb = _bare_label_poly(moved, "uuid-b")
     assert ra.disjoint(rb)
+
+
+@pytest.mark.unit
+class TestLabelSamples:
+    """Stride-sampled label trajectory: double-gated telemetry only.
+
+    No geometry in the loop — raw node + parent-carried anchor points
+    per orbiting label for offline overlap/rim analysis. Populated
+    only when debug AND record_frames are both on; either flag alone
+    (or neither) yields an empty list.
+    """
+
+    def test_samples_recorded_when_debug_and_frames(self):
+        model = _facing_pair()
+        prop = run_placement(
+            model,
+            PlacementParams(max_iterations=10, debug=True),
+            record_frames=True, frame_stride=2,
+        )
+        samples = prop.debug_trace.get("label_samples", [])
+        assert len(samples) >= 2
+        iters = [s["iteration"] for s in samples]
+        assert iters[0] == 0
+        assert iters == sorted(iters)
+        assert iters[-1] == prop.iterations
+        for s in samples:
+            assert set(s["labels"]) == {"uuid-a", "uuid-b"}
+            for vals in s["labels"].values():
+                assert len(vals) == 5
+                assert all(math.isfinite(v) for v in vals)
+                nx, ny, ax, ay, _pa = vals
+                # Orbit clamp is the backstop: node never leaves the disc.
+                orbit_mm = PlacementParams().label_orbit_m * 1000.0
+                assert math.hypot(nx - ax, ny - ay) <= orbit_mm + 1e-3
+
+    def test_samples_need_both_debug_and_frames(self):
+        frames_only = run_placement(
+            _facing_pair(),
+            PlacementParams(max_iterations=10),
+            record_frames=True, frame_stride=2,
+        )
+        assert frames_only.debug_trace.get("label_samples", []) == []
+        debug_only = run_placement(
+            _facing_pair(),
+            PlacementParams(max_iterations=10, debug=True),
+        )
+        assert debug_only.debug_trace.get("label_samples", []) == []
+

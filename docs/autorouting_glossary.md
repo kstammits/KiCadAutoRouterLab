@@ -107,7 +107,10 @@ Key facts that shape the algorithm choice:
 - **Smoothing / string-pulling**: shortcut grid-path nodes where line-of-sight is walkable.
   Our 4-directional A* staircases become fewer, longer any-angle tracks via bidirectional
   greedy passes + Steiner detour repair; ties break by admitted fillet radius, so the
-  rounder corner wins.
+  rounder corner wins. The UI **Polish** button re-smooths routed copper at pinned
+  effort 3 (no A*, keep-only-if-better), scoped to the nets selection (else all
+  routed copper); when the board changed since routing it falls back to a scoped
+  re-route at effort 3.
 
 ### Tangent-arc corner fillets (`arc_fillets`, default on)
 

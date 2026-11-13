@@ -102,7 +102,7 @@ def _player_pose(base, px, py, delta):
     ``base + R(-da).(p - base) + d`` (transforms compose left-to-right;
     board coords are used directly as SVG coords by the renderer).
     """
-    dx, dy, da = delta
+    dx, dy, da = delta[0], delta[1], delta[2]
     rad = math.radians(-da)
     cos_a, sin_a = math.cos(rad), math.sin(rad)
     qx, qy = px - base[0], py - base[1]
@@ -145,9 +145,9 @@ def test_rendered_svg_matches_player_pose():
     frame = prop.frames[-1]
     svg = render_board_svg(
         model,
-        proposal=PlacementProposal(deltas=dict(frame), iterations=0,
-                                   final_max_disp_mm=0.0, elapsed_s=0.0,
-                                   params={}),
+        proposal=PlacementProposal(
+            deltas={u: (d[0], d[1], d[2]) for u, d in frame.items()},
+            iterations=0, final_max_disp_mm=0.0, elapsed_s=0.0, params={}),
     )
     fp = next(f for f in model.footprints if f.uuid == UUID_M)
     base = (fp.x_mm, fp.y_mm)

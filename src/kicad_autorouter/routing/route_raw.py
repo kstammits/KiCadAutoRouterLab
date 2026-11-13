@@ -31,7 +31,7 @@ from .output import Arc as OutputArc, Track as OutputTrack, Via as OutputVia
 from .biarc import pieces_wire_cells
 from .verify import fitted_pieces_violate, gate_touch_margin, rescue_eligible, share_group_key
 from .smooth import own_net_soft_mask, smooth_branch_pieces, smooth_grid_path, smoothed_wire_mm
-from .smooth import effort_rungs, resolve_config as resolve_smooth_config
+from .smooth import resolve_config as resolve_smooth_config
 from .router import SECONDARY_BLOCKED, SingleNetRouter, diagnose_attempts
 from .router import RouteResult as NetRouteResult
 from .power import identify_power_nets
@@ -545,18 +545,20 @@ def _resume_progress(grouped_chunks, group_progress: Dict[int, List[NetRouteResu
 def _resolve_gate_trip(raw_res, smoothed_res, violations,
                        region_blocked_mask, routing_grid, model, net_name,
                        track_half_mm, clearance_mm=0.0, verify_share=None):
-    """Decide a gate trip: real copper touch vs fallback to the raw path.
+    """Decide a gate trip: rule-clear copper vs loud failure.
 
-    ``violations`` tripped on the smoothed/fitted copper. When the emitted
-    track never touches foreign copper (guard-ring graze or cell-corner
-    clip — the smoother manufactured the geometry out of a legal search
-    path), the trip is dust: if :func:`rescue_eligible` proves it
-    endpoint-local *and* clear of every hard-exclusion class by
-    ``clearance_mm``, the smoothed copper is stamped as-is; otherwise
+    ``violations`` tripped on the smoothed/fitted copper. ``is_touch`` now
+    means the emitted track violates ``clearance_mm`` (overlap or
+    rule-dirty graze the raster hard tier cannot see), so such trips fail
+    loudly instead of falling back to the raw path — raw shares the same
+    hole. When the track clears ``clearance_mm`` the trip is dust
+    (guard-ring graze or cell-corner clip): if :func:`rescue_eligible`
+    proves it endpoint-local *and* clear of every hard-exclusion class
+    by ``clearance_mm``, the smoothed copper is stamped as-is; otherwise
     fall back to the pre-smooth search path, which the gate is re-run
     against, and a clean raw path is returned for stamping instead of
-    failing the net. A real touch, or a raw path that also trips (with
-    no rescue), stays a loud ``("gate", reason)`` failure.
+    failing the net. A raw path that also trips (with no rescue) stays a
+    loud ``("gate", reason)`` failure.
 
     Returns ``(result|None, failure|None, fell_back: bool)``. Single
     fallback only — the raw re-gate is final, so this cannot loop. Future
@@ -566,7 +568,7 @@ def _resolve_gate_trip(raw_res, smoothed_res, violations,
     is_touch, margin = gate_touch_margin(
         list(_branch_paths(smoothed_res)),
         tuple(getattr(smoothed_res, "arc_pieces", ()) or ()),
-        routing_grid, model, net_name, track_half_mm,
+        routing_grid, model, net_name, track_half_mm, clearance_mm,
     )
     if math.isinf(margin):
         margin_txt = "no foreign copper nearby"
@@ -1189,14 +1191,13 @@ def _route_chunk(
         t_smooth = time.perf_counter()
         raw_res = res
         # Smoother engagement (RoutingParams.smooth_effort, default 2.0):
-        # 0 emits the raw search path, (0, 2] is a single configured pass
-        # (2.0 reproduces the legacy kwargs exactly), and (2, 3] runs a
-        # bounded deterministic ladder from 2.0 up to the effort, keeping
-        # the best gate-clean rung by wire length. Gate trips below still
-        # funnel into the same touch-vs-graze resolution. (Pad exit stubs
-        # live in the gate-trip path below: they re-run only when the
-        # adopted copper trips on endpoint-local dust, so clean nets are
-        # untouched.)
+        # 0 emits the raw search path; otherwise a single configured pass
+        # (2.0 reproduces the legacy kwargs exactly). Retries live in
+        # polish (against the finished board), not here. Gate trips below
+        # still funnel into the same touch-vs-graze resolution. (Pad exit
+        # stubs live in the gate-trip path below: they re-run only when
+        # the adopted copper trips on endpoint-local dust, so clean nets
+        # are untouched.)
         effort = float(getattr(params, "smooth_effort", 2.0))
         if effort <= 0.0:
             res = raw_res
@@ -1210,71 +1211,63 @@ def _route_chunk(
             timings["smooth_verify_s"] = timings.get("smooth_verify_s", 0.0) + (
                 time.perf_counter() - t0)
         else:
-            best = None
-            best_wire_mm = math.inf
+            # Single pass: smooth once at the requested effort, verify
+            # once. A clean pass is adopted; endpoint-local dust the emit
+            # gate would rescue is kept (same verdict the gate would
+            # reach); anything else falls through to the gate-trip path
+            # below (stub retry, then loud failure or raw fallback).
+            cfg = resolve_smooth_config(effort, params)
             res = raw_res
             violations: List[str] = []
-            for sub in effort_rungs(effort):
-                cfg = resolve_smooth_config(sub, params)
-                cand = _smooth_result(
-                    raw_res, cost_grid, routing_grid, corridor,
-                    pinned=pinned, soft_mask=soft_mask,
-                    clearance_radius=clearance_radius,
-                    blocked_mask=region_blocked_mask,
-                    fit_arcs=cfg["fit_arcs"],
-                    max_radius_mm=cfg["max_radius_mm"],
-                    min_leg_mm=cfg["min_leg_mm"],
-                    sample_mm=cfg["sample_mm"],
-                    keep_min_radius_mm=cfg["keep_min_radius_mm"],
-                    timings=timings,
-                )
-                t0 = time.perf_counter()
-                cand_violations = fitted_pieces_violate(
-                    list(_branch_paths(cand)),
-                    tuple(getattr(cand, "arc_pieces", ()) or ()),
-                    region_blocked_mask, routing_grid,
-                    timings=timings, share=verify_share,
-                )
-                timings["smooth_verify_s"] = timings.get("smooth_verify_s", 0.0) + (
-                    time.perf_counter() - t0)
-                if not cand_violations:
-                    wire_mm = float(getattr(cand, "wire_mm", math.inf))
-                    if best is None or wire_mm < best_wire_mm:
-                        best, best_wire_mm = cand, wire_mm
+            cand = _smooth_result(
+                raw_res, cost_grid, routing_grid, corridor,
+                pinned=pinned, soft_mask=soft_mask,
+                clearance_radius=clearance_radius,
+                blocked_mask=region_blocked_mask,
+                fit_arcs=cfg["fit_arcs"],
+                max_radius_mm=cfg["max_radius_mm"],
+                min_leg_mm=cfg["min_leg_mm"],
+                sample_mm=cfg["sample_mm"],
+                keep_min_radius_mm=cfg["keep_min_radius_mm"],
+                timings=timings,
+            )
+            t0 = time.perf_counter()
+            cand_violations = fitted_pieces_violate(
+                list(_branch_paths(cand)),
+                tuple(getattr(cand, "arc_pieces", ()) or ()),
+                region_blocked_mask, routing_grid,
+                timings=timings, share=verify_share,
+            )
+            timings["smooth_verify_s"] = timings.get("smooth_verify_s", 0.0) + (
+                time.perf_counter() - t0)
+            if not cand_violations:
+                res, violations = cand, []
+            else:
+                cells: list = []
+                try:
+                    fitted_pieces_violate(
+                        list(_branch_paths(cand)),
+                        tuple(getattr(cand, "arc_pieces", ()) or ()),
+                        region_blocked_mask, routing_grid,
+                        share=verify_share, hit_cells=cells,
+                        full_scan=True,
+                    )
+                    rescued = rescue_eligible(
+                        cells, list(_branch_paths(cand)),
+                        tuple(getattr(cand, "arc_pieces", ()) or ()),
+                        routing_grid, model, net_name,
+                        resolve_track_width(model, params, net_name) / 2.0,
+                        resolve_clearance(model, params, net_name),
+                    )
+                except Exception:
+                    rescued = False
+                if rescued:
+                    res, violations = cand, []
+                    timings["emit_gate_dust_rescued"] = (
+                        timings.get("emit_gate_dust_rescued", 0) + 1
+                    )
                 else:
-                    # Endpoint-local dust the emit gate would rescue ranks
-                    # alongside clean rungs (same verdict the gate would
-                    # reach), so the ladder never prefers a longer
-                    # dust-free detour over proven-clean copper.
-                    cells: list = []
-                    try:
-                        fitted_pieces_violate(
-                            list(_branch_paths(cand)),
-                            tuple(getattr(cand, "arc_pieces", ()) or ()),
-                            region_blocked_mask, routing_grid,
-                            share=verify_share, hit_cells=cells,
-                            full_scan=True,
-                        )
-                        rescued = rescue_eligible(
-                            cells, list(_branch_paths(cand)),
-                            tuple(getattr(cand, "arc_pieces", ()) or ()),
-                            routing_grid, model, net_name,
-                            resolve_track_width(model, params, net_name) / 2.0,
-                            params.clearance_mm,
-                        )
-                    except Exception:
-                        rescued = False
-                    if rescued:
-                        wire_mm = float(getattr(cand, "wire_mm", math.inf))
-                        if best is None or wire_mm < best_wire_mm:
-                            best, best_wire_mm = cand, wire_mm
-                        timings["emit_gate_dust_rescued"] = (
-                            timings.get("emit_gate_dust_rescued", 0) + 1
-                        )
-                        continue
                     res, violations = cand, cand_violations
-            if best is not None:
-                res, violations = best, []
         # Emit gate: the fitter's stitching loop emits straight connector
         # stubs without re-checking them; a stub that skips collapsed
         # vertices can cut straight across foreign copper the search and
@@ -1353,7 +1346,7 @@ def _route_chunk(
                 chosen, gate_failure, fell_back = _resolve_gate_trip(
                     raw_res, res, violations, region_blocked_mask,
                     routing_grid, model, net_name, width_mm / 2.0,
-                    params.clearance_mm, verify_share,
+                    resolve_clearance(model, params, net_name), verify_share,
                 )
                 if gate_failure is not None:
                     # Deterministic on an unchanged grid like budget exhaustion:

@@ -187,27 +187,38 @@ def label_ink_mass_kg(
     return max(density_kg_m2 * area_m2, floor_kg)
 
 
-def label_tether_force_N(
+def label_slack_tether_force_N(
     node_xy_mm: Tuple[float, float],
     target_xy_mm: Tuple[float, float],
     mass_kg: float,
     hz: float = LABEL_TETHER_HZ,
+    slack_m: float = 0.0,
 ) -> Tuple[float, float]:
-    """Spring tether force (newtons) pulling a label node toward its target.
+    """Slack-leash tether: free float inside ``slack_m``, spring beyond.
 
-    Stiffness derives from the label's own mass (k = m*(2*pi*hz)^2), so
-    the float period is mass-independent and light labels stay stable at
-    the 1 ms solver step. Pure function of board-millimeter inputs.
+    Within the slack radius the label feels nothing (contact owns the
+    placement, friction freeze is the settle state); outside, a
+    mass-proportional spring (k = m*(2*pi*hz)^2, mass-independent float
+    period) acts on the excess ``(d - slack)``, so the force is
+    continuous at the boundary. Pure function of board-millimeter inputs.
     """
     try:
         m = max(float(mass_kg), 1e-12)
         f = max(float(hz), 1e-6)
+        slack = max(float(slack_m), 0.0)
     except (TypeError, ValueError):
         return (0.0, 0.0)
+    try:
+        dx = target_xy_mm[0] - node_xy_mm[0]
+        dy = target_xy_mm[1] - node_xy_mm[1]
+        d = math.hypot(dx, dy)
+    except (TypeError, ValueError):
+        return (0.0, 0.0)
+    if not math.isfinite(d) or d <= slack * 1e3 or d <= 0.0:
+        return (0.0, 0.0)
     k = m * (2.0 * math.pi * f) ** 2  # N/m
-    dx_m = (target_xy_mm[0] - node_xy_mm[0]) * 1e-3
-    dy_m = (target_xy_mm[1] - node_xy_mm[1]) * 1e-3
-    return (k * dx_m, k * dy_m)
+    excess_m = d * 1e-3 - slack
+    return (k * excess_m * dx / d, k * excess_m * dy / d)
 
 
 def clamp_orbit_radius(

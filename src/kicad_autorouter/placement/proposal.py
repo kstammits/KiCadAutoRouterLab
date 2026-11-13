@@ -15,8 +15,11 @@ class PlacementProposal:
     Forces are (Fx, Fy) in arbitrary units for each movable footprint.
 
     Frames (opt-in via run_placement(record_frames=True)) hold per-sampled-
-    iteration (dx, dy, da) deltas vs the committed start positions for the
-    SVG motion player; already rounded + downsampled to max_frames.
+    iteration (dx, dy, da, ldx, ldy) deltas vs the committed start positions
+    for the SVG motion player; already rounded + downsampled to max_frames.
+    (dx, dy, da) is the part move; (ldx, ldy) is the label slide around its
+    parent-carried home point (board mm, zero when the part has no orbiting
+    label). Readers must tolerate 3-tuples (footprint-only history).
     frames[0] is always the committed starting pose (all-zero deltas =
     completed iteration 0); frames[k] is the pose after k*stride completed
     iterations, except the last frame which is always the final pose after
@@ -52,8 +55,9 @@ class PlacementProposal:
     label_deltas (orbit mode only) maps footprint UUID to the label's
     footprint-local offset (dx_mm, dy_mm) from its filed anchor. Empty in
     follow mode. ``apply_deltas`` and the ``io`` writeback consume it to
-    move ``fp_text (at)``; trajectory frames stay footprint-only (labels
-    ride the final pose in replay — documented v1 limitation).
+    move ``fp_text (at)``; trajectory frames carry the same slide per
+    frame as (ldx, ldy) so replay shows the true path and the last frame
+    agrees with the committed label pose.
     """
 
     deltas: Dict[str, Tuple[float, float, float]]
@@ -95,5 +99,9 @@ class PlacementProposal:
     degenerate_bodies: Tuple[str, ...] = ()
     # Debug instrumentation (only populated when params.debug is True).
     # Keys: "per_iteration" (list of per-iteration snapshots), "depen"
-    # (before/after overlap + steps applied for the depenetration pass).
+    # (before/after overlap + steps applied for the depenetration pass),
+    # "label_samples" (stride-sampled label node + parent-carried anchor +
+    # parent board angle per orbiting label — only when record_frames is
+    # also True; raw points for offline overlap/rim analysis, no geometry
+    # in-loop).
     debug_trace: dict = field(default_factory=dict)

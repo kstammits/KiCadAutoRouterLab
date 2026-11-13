@@ -44,7 +44,7 @@
 <p class="lede">A short, code-generated guide to the force-spring placement workflow.
 Every board below is rendered by the current engine; there are no screenshots.</p>
 <p class="muted">Placement only — routing, GND stitch/pour repair, power integrity,
-and DRC/export live in the app's Route tab and top bar. Generated 2026-11-11 22:09 UTC (11ed708).</p>
+and DRC/export live in the app's Route tab and top bar. Generated 2026-11-13 16:33 UTC (40aa0ab).</p>
 
 <h2>Start here</h2>
 <pre><code>./start_server.sh
@@ -69,14 +69,15 @@ or attractors that pull a named target.</p>
 
 <h2>Labels ride along</h2>
 <p>Each footprint's silkscreen reference label (<code>F.SilkS</code> /
-<code>F.Fab</code>) is a low-mass node on a spring tether to its parent,
-integrated alongside the pads — never welded text. When a parent rotates,
+<code>F.Fab</code>) is a low-mass node on a slack leash to its parent's
+live pad centroid — free float inside the slack radius, spring beyond —
+integrated alongside the pads, never welded text. When a parent rotates,
 its label counter-rotates to the nearest upright orientation (0/90/270,
 never upside-down). The label's clearance rect collides through the same
 wall law as courtyards, so crowded boards make room instead of overlapping
 text. One slider drives it all: <strong>Label clearance (mm)</strong> sets
-both the clearance reach and the orbit leash length (0 parks every label at
-its filed anchor). Parent footprints never feel label forces, so pad
+both the clearance reach and the orbit radius (0 parks every label at
+its home centroid). Parent footprints never feel label forces, so pad
 trajectories match label-unaware runs.</p>
 
 <h2>Generated examples</h2>
@@ -105,7 +106,7 @@ Each example asserts its own invariant; generation fails if the engine drifts.</
 <line x1="-5.000" y1="2.000" x2="-5.000" y2="-2.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
 <circle cx="-9.000" cy="0.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="SIG" data-ref="A" data-pad="1" data-uuid="uuid-a"><title>SIG</title></circle>
 <circle cx="-7.000" cy="0.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-A2" data-ref="A" data-pad="2" data-uuid="uuid-a"><title>N-A2</title></circle>
-<text x="-8.000" y="-0.500" fill="#9fb0c0" font-family="monospace" font-size="1">A</text>
+<g class="label" data-label-for="uuid-a" pointer-events="none"><text x="-8.000" y="-0.500" fill="#9fb0c0" font-family="monospace" font-size="1">A</text></g>
 </g>
 <g class="footprint fp-movable" data-fp-uuid="uuid-b">
 <line x1="11.000" y1="-2.000" x2="5.000" y2="-2.000" stroke="#5b6b7a" stroke-width="0.1" opacity="0.45"/>
@@ -114,7 +115,7 @@ Each example asserts its own invariant; generation fails if the engine drifts.</
 <line x1="11.000" y1="2.000" x2="11.000" y2="-2.000" stroke="#5b6b7a" stroke-width="0.1" opacity="0.45"/>
 <circle cx="7.000" cy="0.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="SIG" data-ref="B" data-pad="1" data-uuid="uuid-b"><title>SIG</title></circle>
 <circle cx="9.000" cy="0.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-B2" data-ref="B" data-pad="2" data-uuid="uuid-b"><title>N-B2</title></circle>
-<text x="8.000" y="-0.500" fill="#9fb0c0" font-family="monospace" font-size="1">B</text>
+<g class="label" data-label-for="uuid-b" pointer-events="none"><text x="8.000" y="-0.500" fill="#9fb0c0" font-family="monospace" font-size="1">B</text></g>
 </g>
 <g id="layer-vias">
 </g>
@@ -135,7 +136,7 @@ Each example asserts its own invariant; generation fails if the engine drifts.</
 <line x1="-5.000" y1="2.000" x2="-5.000" y2="-2.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
 <circle cx="-9.000" cy="0.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="SIG" data-ref="A" data-pad="1" data-uuid="uuid-a"><title>SIG</title></circle>
 <circle cx="-7.000" cy="0.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-A2" data-ref="A" data-pad="2" data-uuid="uuid-a"><title>N-A2</title></circle>
-<text x="-8.000" y="-0.500" fill="#9fb0c0" font-family="monospace" font-size="1">A</text>
+<g class="label" data-label-for="uuid-a" pointer-events="none"><text x="-8.000" y="-0.500" fill="#9fb0c0" font-family="monospace" font-size="1">A</text></g>
 </g>
 <g class="footprint fp-movable" data-fp-uuid="uuid-b">
 <line x1="3.541" y1="4.800" x2="-1.800" y2="2.067" stroke="#5b6b7a" stroke-width="0.1" opacity="0.45"/>
@@ -144,7 +145,7 @@ Each example asserts its own invariant; generation fails if the engine drifts.</
 <line x1="1.719" y1="8.361" x2="3.541" y2="4.800" stroke="#5b6b7a" stroke-width="0.1" opacity="0.45"/>
 <circle cx="-0.931" cy="4.759" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="SIG" data-ref="B" data-pad="1" data-uuid="uuid-b"><title>SIG</title></circle>
 <circle cx="0.850" cy="5.670" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-B2" data-ref="B" data-pad="2" data-uuid="uuid-b"><title>N-B2</title></circle>
-<text x="-0.041" y="4.714" fill="#9fb0c0" font-family="monospace" font-size="1">B</text>
+<g class="label" data-label-for="uuid-b" pointer-events="none"><text x="-0.041" y="4.714" fill="#9fb0c0" font-family="monospace" font-size="1">B</text></g>
 </g>
 <g id="layer-vias">
 </g>
@@ -189,7 +190,7 @@ Each example asserts its own invariant; generation fails if the engine drifts.</
 <line x1="3.000" y1="2.000" x2="3.000" y2="-2.000" stroke="#5b6b7a" stroke-width="0.1" opacity="0.45"/>
 <circle cx="-1.000" cy="0.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-A1" data-ref="A" data-pad="1" data-uuid="uuid-a"><title>N-A1</title></circle>
 <circle cx="1.000" cy="0.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-A2" data-ref="A" data-pad="2" data-uuid="uuid-a"><title>N-A2</title></circle>
-<text x="0.000" y="-0.500" fill="#9fb0c0" font-family="monospace" font-size="1">A</text>
+<g class="label" data-label-for="uuid-a" pointer-events="none"><text x="0.000" y="-0.500" fill="#9fb0c0" font-family="monospace" font-size="1">A</text></g>
 </g>
 <g class="footprint fp-movable" data-fp-uuid="uuid-b">
 <line x1="4.000" y1="-2.000" x2="-2.000" y2="-2.000" stroke="#5b6b7a" stroke-width="0.1" opacity="0.45"/>
@@ -198,7 +199,7 @@ Each example asserts its own invariant; generation fails if the engine drifts.</
 <line x1="4.000" y1="2.000" x2="4.000" y2="-2.000" stroke="#5b6b7a" stroke-width="0.1" opacity="0.45"/>
 <circle cx="0.000" cy="0.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-B1" data-ref="B" data-pad="1" data-uuid="uuid-b"><title>N-B1</title></circle>
 <circle cx="2.000" cy="0.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-B2" data-ref="B" data-pad="2" data-uuid="uuid-b"><title>N-B2</title></circle>
-<text x="1.000" y="-0.500" fill="#9fb0c0" font-family="monospace" font-size="1">B</text>
+<g class="label" data-label-for="uuid-b" pointer-events="none"><text x="1.000" y="-0.500" fill="#9fb0c0" font-family="monospace" font-size="1">B</text></g>
 </g>
 <g id="layer-vias">
 </g>
@@ -219,7 +220,7 @@ Each example asserts its own invariant; generation fails if the engine drifts.</
 <line x1="3.575" y1="-1.963" x2="3.576" y2="-5.963" stroke="#5b6b7a" stroke-width="0.1" opacity="0.45"/>
 <circle cx="-0.425" cy="-3.964" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-A1" data-ref="A" data-pad="1" data-uuid="uuid-a"><title>N-A1</title></circle>
 <circle cx="1.575" cy="-3.964" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-A2" data-ref="A" data-pad="2" data-uuid="uuid-a"><title>N-A2</title></circle>
-<text x="0.575" y="-4.464" fill="#9fb0c0" font-family="monospace" font-size="1">A</text>
+<g class="label" data-label-for="uuid-a" pointer-events="none"><text x="0.575" y="-4.464" fill="#9fb0c0" font-family="monospace" font-size="1">A</text></g>
 </g>
 <g class="footprint fp-movable" data-fp-uuid="uuid-b">
 <line x1="3.425" y1="1.965" x2="-2.575" y2="1.963" stroke="#5b6b7a" stroke-width="0.1" opacity="0.45"/>
@@ -228,7 +229,7 @@ Each example asserts its own invariant; generation fails if the engine drifts.</
 <line x1="3.424" y1="5.965" x2="3.425" y2="1.965" stroke="#5b6b7a" stroke-width="0.1" opacity="0.45"/>
 <circle cx="-0.575" cy="3.964" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-B1" data-ref="B" data-pad="1" data-uuid="uuid-b"><title>N-B1</title></circle>
 <circle cx="1.425" cy="3.964" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-B2" data-ref="B" data-pad="2" data-uuid="uuid-b"><title>N-B2</title></circle>
-<text x="0.425" y="3.464" fill="#9fb0c0" font-family="monospace" font-size="1">B</text>
+<g class="label" data-label-for="uuid-b" pointer-events="none"><text x="0.425" y="3.464" fill="#9fb0c0" font-family="monospace" font-size="1">B</text></g>
 </g>
 <g id="layer-vias">
 </g>
@@ -278,7 +279,7 @@ Each example asserts its own invariant; generation fails if the engine drifts.</
 <line x1="-4.000" y1="2.000" x2="-4.000" y2="-2.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
 <circle cx="-8.000" cy="0.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-L1" data-ref="L" data-pad="1" data-uuid="uuid-l"><title>N-L1</title></circle>
 <circle cx="-6.000" cy="0.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-L2" data-ref="L" data-pad="2" data-uuid="uuid-l"><title>N-L2</title></circle>
-<text x="-7.000" y="-0.500" fill="#9fb0c0" font-family="monospace" font-size="1">L</text>
+<g class="label" data-label-for="uuid-l" pointer-events="none"><text x="-7.000" y="-0.500" fill="#9fb0c0" font-family="monospace" font-size="1">L</text></g>
 </g>
 <g class="footprint fp-locked" data-fp-uuid="uuid-r">
 <line x1="10.000" y1="-2.000" x2="4.000" y2="-2.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
@@ -287,7 +288,7 @@ Each example asserts its own invariant; generation fails if the engine drifts.</
 <line x1="10.000" y1="2.000" x2="10.000" y2="-2.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
 <circle cx="6.000" cy="0.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-R1" data-ref="R" data-pad="1" data-uuid="uuid-r"><title>N-R1</title></circle>
 <circle cx="8.000" cy="0.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-R2" data-ref="R" data-pad="2" data-uuid="uuid-r"><title>N-R2</title></circle>
-<text x="7.000" y="-0.500" fill="#9fb0c0" font-family="monospace" font-size="1">R</text>
+<g class="label" data-label-for="uuid-r" pointer-events="none"><text x="7.000" y="-0.500" fill="#9fb0c0" font-family="monospace" font-size="1">R</text></g>
 </g>
 <g class="footprint fp-locked" data-fp-uuid="uuid-t">
 <line x1="3.000" y1="4.000" x2="-3.000" y2="4.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
@@ -296,7 +297,7 @@ Each example asserts its own invariant; generation fails if the engine drifts.</
 <line x1="3.000" y1="8.000" x2="3.000" y2="4.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
 <circle cx="-1.000" cy="6.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-T1" data-ref="T" data-pad="1" data-uuid="uuid-t"><title>N-T1</title></circle>
 <circle cx="1.000" cy="6.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-T2" data-ref="T" data-pad="2" data-uuid="uuid-t"><title>N-T2</title></circle>
-<text x="0.000" y="5.500" fill="#9fb0c0" font-family="monospace" font-size="1">T</text>
+<g class="label" data-label-for="uuid-t" pointer-events="none"><text x="0.000" y="5.500" fill="#9fb0c0" font-family="monospace" font-size="1">T</text></g>
 </g>
 <g class="footprint fp-locked" data-fp-uuid="uuid-b">
 <line x1="3.000" y1="-8.000" x2="-3.000" y2="-8.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
@@ -305,7 +306,7 @@ Each example asserts its own invariant; generation fails if the engine drifts.</
 <line x1="3.000" y1="-4.000" x2="3.000" y2="-8.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
 <circle cx="-1.000" cy="-6.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-B1" data-ref="B" data-pad="1" data-uuid="uuid-b"><title>N-B1</title></circle>
 <circle cx="1.000" cy="-6.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-B2" data-ref="B" data-pad="2" data-uuid="uuid-b"><title>N-B2</title></circle>
-<text x="0.000" y="-6.500" fill="#9fb0c0" font-family="monospace" font-size="1">B</text>
+<g class="label" data-label-for="uuid-b" pointer-events="none"><text x="0.000" y="-6.500" fill="#9fb0c0" font-family="monospace" font-size="1">B</text></g>
 </g>
 <g class="footprint fp-movable" data-fp-uuid="uuid-m">
 <line x1="3.000" y1="-2.000" x2="-3.000" y2="-2.000" stroke="#5b6b7a" stroke-width="0.1" opacity="0.45"/>
@@ -314,7 +315,7 @@ Each example asserts its own invariant; generation fails if the engine drifts.</
 <line x1="3.000" y1="2.000" x2="3.000" y2="-2.000" stroke="#5b6b7a" stroke-width="0.1" opacity="0.45"/>
 <circle cx="-1.000" cy="0.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-M1" data-ref="M" data-pad="1" data-uuid="uuid-m"><title>N-M1</title></circle>
 <circle cx="1.000" cy="0.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-M2" data-ref="M" data-pad="2" data-uuid="uuid-m"><title>N-M2</title></circle>
-<text x="0.000" y="-0.500" fill="#9fb0c0" font-family="monospace" font-size="1">M</text>
+<g class="label" data-label-for="uuid-m" pointer-events="none"><text x="0.000" y="-0.500" fill="#9fb0c0" font-family="monospace" font-size="1">M</text></g>
 </g>
 <g id="layer-vias">
 </g>
@@ -335,7 +336,7 @@ Each example asserts its own invariant; generation fails if the engine drifts.</
 <line x1="-4.000" y1="2.000" x2="-4.000" y2="-2.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
 <circle cx="-8.000" cy="0.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-L1" data-ref="L" data-pad="1" data-uuid="uuid-l"><title>N-L1</title></circle>
 <circle cx="-6.000" cy="0.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-L2" data-ref="L" data-pad="2" data-uuid="uuid-l"><title>N-L2</title></circle>
-<text x="-7.000" y="-0.500" fill="#9fb0c0" font-family="monospace" font-size="1">L</text>
+<g class="label" data-label-for="uuid-l" pointer-events="none"><text x="-7.000" y="-0.500" fill="#9fb0c0" font-family="monospace" font-size="1">L</text></g>
 </g>
 <g class="footprint fp-locked" data-fp-uuid="uuid-r">
 <line x1="10.000" y1="-2.000" x2="4.000" y2="-2.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
@@ -344,7 +345,7 @@ Each example asserts its own invariant; generation fails if the engine drifts.</
 <line x1="10.000" y1="2.000" x2="10.000" y2="-2.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
 <circle cx="6.000" cy="0.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-R1" data-ref="R" data-pad="1" data-uuid="uuid-r"><title>N-R1</title></circle>
 <circle cx="8.000" cy="0.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-R2" data-ref="R" data-pad="2" data-uuid="uuid-r"><title>N-R2</title></circle>
-<text x="7.000" y="-0.500" fill="#9fb0c0" font-family="monospace" font-size="1">R</text>
+<g class="label" data-label-for="uuid-r" pointer-events="none"><text x="7.000" y="-0.500" fill="#9fb0c0" font-family="monospace" font-size="1">R</text></g>
 </g>
 <g class="footprint fp-locked" data-fp-uuid="uuid-t">
 <line x1="3.000" y1="4.000" x2="-3.000" y2="4.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
@@ -353,7 +354,7 @@ Each example asserts its own invariant; generation fails if the engine drifts.</
 <line x1="3.000" y1="8.000" x2="3.000" y2="4.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
 <circle cx="-1.000" cy="6.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-T1" data-ref="T" data-pad="1" data-uuid="uuid-t"><title>N-T1</title></circle>
 <circle cx="1.000" cy="6.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-T2" data-ref="T" data-pad="2" data-uuid="uuid-t"><title>N-T2</title></circle>
-<text x="0.000" y="5.500" fill="#9fb0c0" font-family="monospace" font-size="1">T</text>
+<g class="label" data-label-for="uuid-t" pointer-events="none"><text x="0.000" y="5.500" fill="#9fb0c0" font-family="monospace" font-size="1">T</text></g>
 </g>
 <g class="footprint fp-locked" data-fp-uuid="uuid-b">
 <line x1="3.000" y1="-8.000" x2="-3.000" y2="-8.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
@@ -362,7 +363,7 @@ Each example asserts its own invariant; generation fails if the engine drifts.</
 <line x1="3.000" y1="-4.000" x2="3.000" y2="-8.000" stroke="#e06c75" stroke-width="0.1" stroke-dasharray="2 2" opacity="0.8"/>
 <circle cx="-1.000" cy="-6.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-B1" data-ref="B" data-pad="1" data-uuid="uuid-b"><title>N-B1</title></circle>
 <circle cx="1.000" cy="-6.000" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-B2" data-ref="B" data-pad="2" data-uuid="uuid-b"><title>N-B2</title></circle>
-<text x="0.000" y="-6.500" fill="#9fb0c0" font-family="monospace" font-size="1">B</text>
+<g class="label" data-label-for="uuid-b" pointer-events="none"><text x="0.000" y="-6.500" fill="#9fb0c0" font-family="monospace" font-size="1">B</text></g>
 </g>
 <g class="footprint fp-movable" data-fp-uuid="uuid-m">
 <line x1="2.987" y1="-2.020" x2="-3.013" y2="-1.980" stroke="#5b6b7a" stroke-width="0.1" opacity="0.45"/>
@@ -371,7 +372,7 @@ Each example asserts its own invariant; generation fails if the engine drifts.</
 <line x1="3.013" y1="1.980" x2="2.987" y2="-2.020" stroke="#5b6b7a" stroke-width="0.1" opacity="0.45"/>
 <circle cx="-1.000" cy="0.007" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-M1" data-ref="M" data-pad="1" data-uuid="uuid-m"><title>N-M1</title></circle>
 <circle cx="1.000" cy="-0.007" r="0.500" fill="#8a93a0" stroke="#0e1216" stroke-width="0.1" data-net="N-M2" data-ref="M" data-pad="2" data-uuid="uuid-m"><title>N-M2</title></circle>
-<text x="0.000" y="-0.500" fill="#9fb0c0" font-family="monospace" font-size="1">M</text>
+<g class="label" data-label-for="uuid-m" pointer-events="none"><text x="0.000" y="-0.500" fill="#9fb0c0" font-family="monospace" font-size="1">M</text></g>
 </g>
 <g id="layer-vias">
 </g>

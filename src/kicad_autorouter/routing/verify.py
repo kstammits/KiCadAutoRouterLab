@@ -511,7 +511,7 @@ def _emitted_segs(branches, arc_pieces):
 
 
 def gate_touch_margin(branches, arc_pieces, grid, model, net_name,
-                      track_half_mm: float):
+                      track_half_mm: float, clearance_mm: float = 0.0):
     """Classify an emit-gate trip as real copper touch vs raster graze.
 
     For each emitted segment (same set ``fitted_pieces_violate`` checks),
@@ -521,10 +521,12 @@ def gate_touch_margin(branches, arc_pieces, grid, model, net_name,
     routed net's own copper is excluded — terminals are expected touches.
 
     Returns ``(is_touch, min_margin_mm)``: ``is_touch`` is True when any
-    emitted track touches (or overlaps) foreign copper (margin <= 0);
-    otherwise the gate fired on raster dust (guard-ring graze or cell-
-    corner clip with copper > track edge away). ``min_margin_mm`` is inf
-    when there is no foreign copper on the routed layers.
+    emitted track violates ``clearance_mm`` (margin < clearance); a zero
+    margin is a copper overlap, a small positive margin is a rule-dirty
+    graze the raster hard tier cannot see. Otherwise the gate fired on
+    raster dust (guard-ring graze or cell-corner clip with copper at or
+    beyond rule clearance). ``min_margin_mm`` is inf when there is no
+    foreign copper on the routed layers.
 
     Built lazily per call (only gate-tripped chunks pay), so the hot path
     stays untouched.
@@ -596,8 +598,14 @@ def gate_touch_margin(branches, arc_pieces, grid, model, net_name,
                 continue
             if d < min_margin:
                 min_margin = d
+                try:
+                    rule = float(clearance_mm)
+                except (TypeError, ValueError):
+                    rule = 0.0
                 if min_margin <= 1e-9:
                     return True, 0.0
+                if min_margin < rule:
+                    return True, min_margin
     if min_margin == float("inf"):
         return False, float("inf")
     return False, min_margin

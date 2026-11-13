@@ -312,16 +312,38 @@ def zone_count(tree: SExpr) -> int:
     )
 
 
+def _commit_stage_labels(model, tree, lab):
+    """Commit final-slice label offsets once per stage (no ratchet).
+
+    Labels restart every slice from the stage input's homes: committing
+    every slice would carry drifted positions forward slice after slice,
+    ratcheting them outward. Parts commit per slice; labels commit once
+    at stage end, measured against the stage input they started from.
+    """
+    lab = {u: v for u, v in (lab or {}).items()
+           if tuple(v) != (0.0, 0.0)}
+    if not lab:
+        return model, tree
+    model = commit_placement(model, {}, set(), label_deltas=lab)
+    for uuid, (ldx, ldy) in lab.items():
+        tree = nudge_footprint_by_uuid(
+            tree, uuid, 0.0, 0.0, 0.0,
+            label_dx_mm=ldx, label_dy_mm=ldy)
+    return model, tree
+
+
 def run_stage(model, tree, params, total_iters, step_iters, protected, tag,
                pinned=()):
     """Iterative placement with app accept semantics per step.
 
-    Each step: run -> commit footprints + rip affected copper (model and
-    tree) -> the next step simulates on the stripped board. Pinned
+    Each step: run -> commit footprints + rip affected copper (the model
+    and tree) -> the next step simulates on the stripped board. Pinned
     footprints (by uuid) are excluded from ``movable_uuids`` so they act
-    as fixed anchors without file-backed locks. Label home is structural
-    (the parent centroid — see the orbit setup in region.py), so no
-    anchor rebasing is needed between slices.
+    as fixed anchors without file-backed locks. Label home is the live
+    parent centroid (translation only — see the orbit setup in
+    region.py); labels commit once at stage end
+    (``_commit_stage_labels``), never per slice, so the orbit restarts
+    from the stage input instead of ratcheting outward.
     """
     by_uuid = {fp.uuid: fp for fp in model.footprints if fp.uuid}
     movable = {u for u, f in by_uuid.items() if not f.locked} - set(pinned)
@@ -340,18 +362,17 @@ def run_stage(model, tree, params, total_iters, step_iters, protected, tag,
         }
         if not deltas:
             print(f"[{tag}] no movement; stop={proposal.stop_reason}")
+            model, tree = _commit_stage_labels(
+                model, tree, getattr(proposal, "label_deltas", {}))
             break
         moved = set(deltas)
         nets = affected_nets(model, moved)
         tb, ab, vb = copper_counts(model)
-        lab = dict(getattr(proposal, "label_deltas", {}) or {})
-        model = commit_placement(model, deltas, protected, label_deltas=lab or None)
+        model = commit_placement(model, deltas, protected,
+                                label_deltas=None)
         tree = rip_up_nets(tree, nets, protected)
         for uuid, (dx, dy, da) in deltas.items():
-            ldx, ldy = lab.get(uuid, (0.0, 0.0))
-            tree = nudge_footprint_by_uuid(
-                tree, uuid, dx, dy, da, label_dx_mm=ldx, label_dy_mm=ldy
-            )
+            tree = nudge_footprint_by_uuid(tree, uuid, dx, dy, da)
         ta, aa, va = copper_counts(model)
         ripped = {
             n: (
@@ -372,9 +393,13 @@ def run_stage(model, tree, params, total_iters, step_iters, protected, tag,
         )
         if proposal.stop_reason == "converged":
             print(f"[{tag}] converged")
+            model, tree = _commit_stage_labels(
+                model, tree, getattr(proposal, "label_deltas", {}))
             break
         if used >= total_iters:
             print(f"[{tag}] budget {used}/{total_iters}")
+            model, tree = _commit_stage_labels(
+                model, tree, getattr(proposal, "label_deltas", {}))
             break
     return model, tree, used
 

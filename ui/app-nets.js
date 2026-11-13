@@ -289,10 +289,25 @@ function syncNetRowSelection() {
 
 function updateNetSelectionUI() {
   const count = selectedNets.size;
+  // Route follows the selection: empty selection routes all unprotected
+  // (same scope rule as Place Step/Run), so it stays enabled whenever
+  // nets are known. Rip/Refine/Polish act on the selection itself.
+  const hasNets = lastNetsByName && lastNetsByName.size > 0;
   const routeBtn = el("route-selected-btn");
   if (routeBtn) {
-    routeBtn.disabled = count === 0;
-    routeBtn.textContent = count > 0 ? `Route ${count} Selected Net${count > 1 ? 's' : ''}` : "Route Selected Nets";
+    routeBtn.disabled = !hasNets;
+    routeBtn.textContent = count > 0 ? `Route ${count} Selected Net${count > 1 ? 's' : ''}` : "Route All Unprotected";
+  }
+  const scopeHint = el("route-scope-hint");
+  if (scopeHint) {
+    scopeHint.textContent = count > 0
+      ? `${count} selected → Route targets selection`
+      : "nothing selected → routes all unprotected";
+  }
+  const polishBtn = el("polish-btn");
+  if (polishBtn) {
+    polishBtn.disabled = !hasNets;
+    polishBtn.textContent = count > 0 ? `Polish ${count} Selected` : "Polish Routed";
   }
   const ripBtn = el("rip-selected-btn");
   if (ripBtn) {

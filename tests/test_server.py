@@ -390,6 +390,125 @@ def test_accept_report_counts_ripped_arcs():
 
 @pytest.mark.server
 @pytest.mark.minimal
+def test_routing_job_auto_polishes():
+    """Route jobs chain polish in-thread (keep-only-if-better, never fatal)."""
+    import json as _json
+    from unittest import mock
+
+    import server_jobs
+    from kicad_autorouter.routing.pipeline import RoutingResult
+
+    net_result = mock.Mock()
+    net_result.success = True
+    net_result.path = [(0, 0)]
+    routed = RoutingResult(tracks_added=1, vias_added=0, nets_routed=1,
+                           nets_failed=0, drc_clean=True, drc_violations=0,
+                           pcb_tree=None, failed_reasons={},
+                           net_routes={"S": net_result},
+                           width_map={"S": 0.25})
+    report = {"nets": {"S": {"status": "polished", "wire_before_mm": 5.0,
+                             "wire_after_mm": 4.0}},
+              "polished": 1, "kept": 0, "reverted": 0, "skipped": 0,
+              "wire_saved_mm": 1.0}
+    job_id = "autopolish-unit"
+    server_jobs._JOBS[job_id] = {
+        "job_id": job_id, "state": "queued", "net_names": ["S"],
+        "params_dict": {}, "refine": False, "recovery": False,
+        "mode": None, "mode_warning": None,
+        "cancel_requested": False, "created": 0.0, "started": None,
+        "finished": None, "progress": {}, "result": None, "error": None,
+    }
+    fake_state = mock.MagicMock()
+    fake_state.snapshot = (mock.Mock(), None, None, None, None, None)
+    fake_state.snapshot_pcb.return_value = (mock.Mock(), None)
+    fake_state.get_protected_nets.return_value = set()
+    fake_state.get_power_override_nets.return_value = ()
+    fake_state.version = 0
+    with mock.patch.object(server_jobs, "STATE", fake_state):
+        with mock.patch.object(server_jobs, "route_nets",
+                               return_value=(routed, None,
+                                             mock.Mock())) as svc:
+            with mock.patch.object(
+                    server_jobs, "polish_routes",
+                    return_value=({"S": net_result}, report)) as pol:
+                with mock.patch.object(server_jobs, "routes_to_tracks_vias",
+                                       return_value=([], [], [])):
+                    with mock.patch.object(
+                            server_jobs, "rip_up_nets",
+                            side_effect=lambda t, *a: t):
+                        with mock.patch.object(
+                                server_jobs, "apply_routes_to_tree",
+                                side_effect=lambda t, *a: t):
+                            assert server_jobs._ROUTING_JOB_LOCK.acquire(blocking=False)
+                            try:
+                                server_jobs._run_routing_job(job_id)
+                            finally:
+                                if server_jobs._ROUTING_JOB_LOCK.locked():
+                                    server_jobs._ROUTING_JOB_LOCK.release()
+    assert svc.call_count == 1
+    assert pol.call_count == 1
+    job = server_jobs._JOBS.pop(job_id)
+    assert job["state"] == "done"
+    assert job["result"]["polish"] == report
+    assert job["result"]["polish_changed"] == ["S"]
+    assert job["result"]["version"] == 2  # route bump + polish apply bump
+    fake_state.push_undo.assert_called_once()
+    _json.dumps(job)  # poll-safe
+
+
+@pytest.mark.server
+@pytest.mark.minimal
+@pytest.mark.parametrize("params_dict,job_extra", [
+    ({"smooth_effort": 0}, {}),  # slider opt-out: raw A* copper stands
+    ({}, {"polish": False}),  # per-job flag: skip the polish stage
+])
+def test_routing_job_skips_auto_polish(params_dict, job_extra):
+    """smooth_effort=0 or polish:false leaves route copper untouched."""
+    import json as _json
+    from unittest import mock
+
+    import server_jobs
+    from kicad_autorouter.routing.pipeline import RoutingResult
+
+    routed = RoutingResult(tracks_added=1, vias_added=0, nets_routed=1,
+                           nets_failed=0, drc_clean=True, drc_violations=0,
+                           pcb_tree=None, failed_reasons={},
+                           net_routes={"S": mock.Mock()},
+                           width_map={"S": 0.25})
+    job_id = "autopolish-skip-unit"
+    server_jobs._JOBS[job_id] = {
+        "job_id": job_id, "state": "queued", "net_names": ["S"],
+        "params_dict": params_dict, "refine": False, "recovery": False,
+        "mode": None, "mode_warning": None,
+        "cancel_requested": False, "created": 0.0, "started": None,
+        "finished": None, "progress": {}, "result": None, "error": None,
+        **job_extra,
+    }
+    fake_state = mock.MagicMock()
+    fake_state.snapshot = (mock.Mock(), None, None, None, None, None)
+    fake_state.snapshot_pcb.return_value = (mock.Mock(), None)
+    fake_state.get_protected_nets.return_value = set()
+    fake_state.get_power_override_nets.return_value = ()
+    fake_state.version = 0
+    with mock.patch.object(server_jobs, "STATE", fake_state):
+        with mock.patch.object(server_jobs, "route_nets",
+                               return_value=(routed, None, None)):
+            with mock.patch.object(server_jobs, "polish_routes") as pol:
+                assert server_jobs._ROUTING_JOB_LOCK.acquire(blocking=False)
+                try:
+                    server_jobs._run_routing_job(job_id)
+                finally:
+                    if server_jobs._ROUTING_JOB_LOCK.locked():
+                        server_jobs._ROUTING_JOB_LOCK.release()
+    assert pol.call_count == 0
+    job = server_jobs._JOBS.pop(job_id)
+    assert job["state"] == "done"
+    assert "polish" not in job["result"]
+    _json.dumps(job)  # poll-safe
+
+
+@pytest.mark.server
+@pytest.mark.minimal
 def test_recovery_job_uses_retry_service():
     """Recovery jobs route via route_with_retry (headless parity)."""
     import json as _json
@@ -519,7 +638,7 @@ def test_frames_json_preserves_delta_order():
     assert payload["frame_count"] == len(prop.frames) > 1
     assert payload["frame_stride"] == 1
     for fr_json, fr in zip(payload["frames"], prop.frames):
-        for uuid, (dx, dy, da) in fr.items():
+        for uuid, (dx, dy, da, _ldx, _ldy) in fr.items():
             assert fr_json[uuid][0] == pytest.approx(dx, abs=5e-4)
             assert fr_json[uuid][1] == pytest.approx(dy, abs=5e-4)
             assert fr_json[uuid][2] == pytest.approx(da, abs=5e-3)
