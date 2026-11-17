@@ -24,6 +24,8 @@ from kicad_autorouter.routing.output import (
     apply_routes_to_tree,
     routes_to_tracks_vias,
 )
+from kicad_autorouter.routing.grid import create_grid_from_model
+from kicad_autorouter.routing.obstacles import build_occupancy_grid
 from kicad_autorouter.routing.pipeline import (
     RoutingParams,
     _tht_sites_by_net,
@@ -31,6 +33,7 @@ from kicad_autorouter.routing.pipeline import (
     route_nets,
 )
 from kicad_autorouter.routing.retry import route_with_retry
+from kicad_autorouter.routing.route_raw import _resolve_grid_layers
 from kicad_autorouter.routing.polish import polish_routes
 
 from ui.debug_grids import _cost_grid_to_debug
@@ -92,6 +95,8 @@ def _run_routing_job(job_id: str) -> None:
             j = _JOBS.get(job_id)
             return bool(j and j.get("cancel_requested"))
 
+    use_recovery = [False]
+
     def _on_progress(net_name: str, done: int, total: int, expansions: int) -> None:
         with _JOBS_LOCK:
             j = _JOBS.get(job_id)
@@ -109,7 +114,7 @@ def _run_routing_job(job_id: str) -> None:
                 prog["stage"] = "refine"
                 prog["candidate"] = j.get("refine_candidate", 0)
                 prog["candidates"] = j.get("refine_total", 0)
-            elif j.get("recovery"):
+            elif j.get("recovery") or use_recovery[0]:
                 prog["stage"] = "recovery"
             j["progress"] = prog
 
@@ -149,11 +154,28 @@ def _run_routing_job(job_id: str) -> None:
         _ROUTING_JOB_LOCK.release()
         return
     try:
-        if job.get("recovery"):
-            # Same staged recovery as the headless pipeline (trial plus
-            # refine relay, repair, and shove stages). Recovery builds its
-            # own grids, so STATE's are dropped and rebuilt next run; the
-            # debug grid payload is skipped (no grids to show).
+        if job.get("refine"):
+            result, cost_grid, routing_grid = refine_routing(
+                model=model,
+                net_names=net_names,
+                protected_nets=protected_nets,
+                cost_grid=STATE.cost_grid,
+                routing_grid=STATE.routing_grid,
+                obstacle_cache=STATE.obstacle_cache,
+                params=route_params,
+                original_pcb_tree=tree,
+                extra_power_nets=extra_power,
+                progress_cb=_on_progress,
+                should_cancel=_should_cancel,
+                stage_cb=_on_stage,
+            )
+            info = None
+        elif job.get("recovery") or route_params.retry_stages:
+            # Normal Route runs the same staged recovery as the headless
+            # pipeline when trial-0 leaves failures (refine relay, repair,
+            # GND/signal shove — each adopt-or-rollback, so clean boards
+            # cost one pass). Explicit recovery jobs force the chain on.
+            use_recovery[0] = True
             result, info = route_with_retry(
                 model=model,
                 tree=tree,
@@ -175,12 +197,31 @@ def _run_routing_job(job_id: str) -> None:
                 sum(1 for r in info["shove_reports"].values() if r.routed),
                 sum(1 for r in info["signal_shove_reports"].values()
                     if r.routed))
+            # Recovery builds its own grids and discards them; rebuild a
+            # fresh grid over the final copper so auto-polish, debug, and
+            # the next run keep working. Best-effort: routing stands when
+            # the rebuild fails (polish is skipped without a grid).
             cost_grid, routing_grid = None, None
+            try:
+                if result.pcb_tree is not None:
+                    final_model = board_model(result.pcb_tree)
+                    routing_grid = create_grid_from_model(
+                        final_model,
+                        route_params.grid_resolution_mm,
+                        route_params.margin_mm,
+                        layers=_resolve_grid_layers(final_model,
+                                                    route_params),
+                    )
+                    cost_grid = build_occupancy_grid(
+                        final_model, routing_grid,
+                        default_clearance_mm=route_params.clearance_mm)
+            except Exception as exc:  # noqa: BLE001 — grids are advisory here
+                logger.warning("recovery grid rebuild skipped: %s", exc)
+                cost_grid, routing_grid = None, None
         else:
-            route_fn = refine_routing if job.get("refine") else route_nets
+            info = None
+            route_fn = route_nets
             kwargs = {}
-            if job.get("refine"):
-                kwargs["stage_cb"] = _on_stage
             result, cost_grid, routing_grid = route_fn(
                 model=model,
                 net_names=net_names,
@@ -252,9 +293,9 @@ def _run_routing_job(job_id: str) -> None:
         pass
     # Automatic polish: re-smooth just-routed nets in-thread (no A*).
     # Keep-only-if-better, so a polish failure never fails the route.
-    # Opt out with smooth_effort=0 or per-job polish:false; skipped on the
-    # recovery path and when nothing routed.
-    if (not job.get("recovery") and job.get("polish", True)
+    # Opt out with smooth_effort=0 or per-job polish:false; skipped when
+    # nothing routed or no grid survived (e.g. failed grid rebuild).
+    if (job.get("polish", True)
             and route_params.smooth_effort > 0
             and getattr(result, "net_routes", None)
             and routing_grid is not None):
@@ -329,6 +370,22 @@ def _run_routing_job(job_id: str) -> None:
             payload["polish"] = {"skipped": True, "error": str(exc)}
     if job.get("mode_warning"):
         payload["mode_warning"] = job["mode_warning"]
+    if info is not None:
+        trial = info.get("trial_result")
+        payload["recovery"] = {
+            "trial_routed": getattr(trial, "nets_routed", 0),
+            "trial_failed": getattr(trial, "nets_failed", 0),
+            "refine_adopted": bool(info.get("refine_adopted")),
+            "repair_fixed": sum(
+                1 for r in info.get("repair_reports", {}).values()
+                if r.routed),
+            "shove_fixed": sum(
+                1 for r in info.get("shove_reports", {}).values()
+                if r.routed),
+            "signal_shove_fixed": sum(
+                1 for r in info.get("signal_shove_reports", {}).values()
+                if r.routed),
+        }
     if job.get("refine"):
         payload["candidates"] = [
             {k: (list(v) if k == "order" else v) for k, v in c.items()}

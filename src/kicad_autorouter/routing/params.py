@@ -30,7 +30,7 @@ class RoutingParams:
     clearance_mm: float = 0.21        # Default clearance between tracks (0.2 rule + 0.01 safety)
     via_size_mm: float = 0.8          # Via outer diameter
     via_drill_mm: float = 0.4         # Via drill diameter
-    max_attempts_per_net: int = 3     # Retry attempts per net
+    max_attempts_per_net: int = 5     # Retry attempts per net (advance-gated: no-progress retries fail fast, so idle extra attempts cost nothing)
     run_drc: bool = False             # Run DRC after routing (slow)
     debug: bool = False               # Enable debug output (cost grid, search frontier)
     net_widths: Dict[str, float] = field(default_factory=dict)  # Explicit per-net trace widths (override)

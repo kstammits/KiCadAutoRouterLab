@@ -1,7 +1,7 @@
-# AGENTS.md — KiCad AutoRouter Lab
+# AGENTS.md — Karltron AutoRouter
 
 Magnetic-force placement + grid routing for KiCad `.kicad_pcb` boards, with a
-browser workflow UI. Works on real boards, DRC-validated.
+browser workflow UI. 
 
 ## Layout
 
@@ -45,8 +45,6 @@ browser workflow UI. Works on real boards, DRC-validated.
 
 - **SI units in the engine** (N, m, s); the UI converts at the boundary
   (`toDisplay`/`fromDisplay` in `app-params.js`).
-- **No `print` telemetry in library code**, no function-attribute state.
-  Debug output via return values or `logging`, never stdout.
 - **Comments describe current behavior and rationale**, not history —
   that belongs in git log or `docs/roadmap.md`.
 - `PlacementParams` / `RoutingParams` round-trip via `to_dict`/`from_dict`;
@@ -73,28 +71,8 @@ browser workflow UI. Works on real boards, DRC-validated.
   worsened >1 mm² overlaps fail. Magnet boards scatter inside the outline.
   Physics constants live in `si_force_laws.md` / code comments.
 
-## Low-powered / fast placement mode
-
-| Param | Default | Fast-mode | Effect |
-|-------|---------|-----------|--------|
-| `max_iterations` | 1000 | 50–200 | caps runtime |
-| `dt_s` | 1 ms | 2 ms | larger steps |
-| `convergence_eps_m` | 2 µm | 10–50 µm | looser settle |
-| `stall_window` | 100 | 20–50 | stops sooner |
-| `wall_k_N` | 0.1 | 0.02–0.05 | weaker pushes |
-
-Fast runs report `stalled`/`budget` more often — expected ("needs
-attention," not settled).
 
 ## Fixtures for fast testing
 
 - `minimal.*` (4 parts, no nets) — fastest, no `kicad-cli` needed.
 - `tube111.*` / `DCCF.sved.*` — heavy (~100 parts); avoid for quick loops.
-
-## Context sources (not vendored)
-
-`docs/kicad/` + `docs/wikipedia/` restore via `docs/README.md` recipes, or
-read upstream: KiCad 10.0 manuals at `https://docs.kicad.org/10.0/en/`;
-Wikipedia: `Autorouter`, `Maze_routing`, `Lee_algorithm`,
-`Force-directed_graph_drawing`, `Barnes%E2%80%93Hut_simulation`,
-`A*_search_algorithm`. Digested guidance: `docs/autorouting_glossary.md`.

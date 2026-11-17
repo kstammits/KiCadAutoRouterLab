@@ -334,7 +334,7 @@ async function pollRoutingJob(jobId, net, idx, total, diag, progress, estNote, t
     const frac = (p.pairs_total > 0) ? (p.pairs_done / p.pairs_total) : 0;
     progress.value = (idx + Math.min(1, frac)) / total;
     const pairTxt = p.pairs_total > 0 ? `pair ${Math.min(p.pairs_total, p.pairs_done + 1)}/${p.pairs_total}` : "starting";
-    const stageTxt = p.stage === "polish" ? `polish ${pairTxt}` : pairTxt;
+    const stageTxt = (p.stage && p.stage !== "astar") ? `${p.stage} ${pairTxt}` : pairTxt;
     // Live line stays compact: the static estimate lives in #route-est;
     // full detail is one hover away. Budget meter answers "not fail-fast?"
     // at a glance (cap burn, not hang).
@@ -433,10 +433,15 @@ function renderPartialCopperOverlay() {
 }
 
 function formatTotalsDiag({ totals, failures, doneCount, netCount, lastBoardVersion, elapsedTxt, cancelled, maxFailures = Infinity }) {
+  const rec = (totals.repairFixed || 0) + (totals.shoveFixed || 0) + (totals.sigShoveFixed || 0);
   const kept = `v${lastBoardVersion} — ${totals.tracks} tracks` +
     (totals.arcs ? `, ${totals.arcs} arcs` : "") + `, ${totals.vias} vias, ` +
     `${totals.routed} routed, ${totals.failed} failed (${elapsedTxt} · ${fmtExpansions(totals.expansions)}` +
     (totals.astarS ? `, ${totals.astarS.toFixed(0)}s A*` : "") + `)` +
+    (rec ? ` — recovery: ${rec} fixed` +
+      (totals.repairFixed ? ` (repair ${totals.repairFixed})` : "") +
+      (totals.shoveFixed ? ` (gnd-shove ${totals.shoveFixed})` : "") +
+      (totals.sigShoveFixed ? ` (sig-shove ${totals.sigShoveFixed})` : "") : "") +
     (totals.stitchVias || totals.stitchTracks
       ? ` — GND stitch: ${totals.stitchVias || 0} vias, ${totals.stitchTracks || 0} bridges` +
         (totals.gndBefore ? ` (islands ${totals.gndBefore}→${totals.gndAfter})` : "")
@@ -541,6 +546,11 @@ async function routeSelectedNets(paramsOverride) {
       totals.stitchVias = (totals.stitchVias || 0) + (r.stitch_vias_added || 0);
       totals.stitchTracks = (totals.stitchTracks || 0) + (r.stitch_tracks_added || 0);
       totals.gndStripped = (totals.gndStripped || 0) + (r.gnd_stripped || 0);
+      if (r.recovery) {
+        totals.repairFixed = (totals.repairFixed || 0) + (r.recovery.repair_fixed || 0);
+        totals.shoveFixed = (totals.shoveFixed || 0) + (r.recovery.shove_fixed || 0);
+        totals.sigShoveFixed = (totals.sigShoveFixed || 0) + (r.recovery.signal_shove_fixed || 0);
+      }
       if (r.polish && !r.polish.skipped) {
         totals.polished = (totals.polished || 0) + (r.polish.polished || 0);
         totals.polishSaved = (totals.polishSaved || 0) + (r.polish.wire_saved_mm || 0);

@@ -403,13 +403,19 @@ def test_routing_job_auto_polishes():
     net_result.path = [(0, 0)]
     routed = RoutingResult(tracks_added=1, vias_added=0, nets_routed=1,
                            nets_failed=0, drc_clean=True, drc_violations=0,
-                           pcb_tree=None, failed_reasons={},
+                           pcb_tree=mock.Mock(), failed_reasons={},
                            net_routes={"S": net_result},
                            width_map={"S": 0.25})
     report = {"nets": {"S": {"status": "polished", "wire_before_mm": 5.0,
                              "wire_after_mm": 4.0}},
               "polished": 1, "kept": 0, "reverted": 0, "skipped": 0,
               "wire_saved_mm": 1.0}
+    trial = RoutingResult(tracks_added=0, vias_added=0, nets_routed=1,
+                          nets_failed=0, drc_clean=True, drc_violations=0,
+                          pcb_tree=None, failed_reasons={})
+    info = {"trial_result": trial, "refine_result": None,
+            "refine_adopted": False, "repair_reports": {},
+            "shove_reports": {}, "signal_shove_reports": {}}
     job_id = "autopolish-unit"
     server_jobs._JOBS[job_id] = {
         "job_id": job_id, "state": "queued", "net_names": ["S"],
@@ -425,26 +431,37 @@ def test_routing_job_auto_polishes():
     fake_state.get_power_override_nets.return_value = ()
     fake_state.version = 0
     with mock.patch.object(server_jobs, "STATE", fake_state):
-        with mock.patch.object(server_jobs, "route_nets",
-                               return_value=(routed, None,
-                                             mock.Mock())) as svc:
-            with mock.patch.object(
-                    server_jobs, "polish_routes",
-                    return_value=({"S": net_result}, report)) as pol:
-                with mock.patch.object(server_jobs, "routes_to_tracks_vias",
-                                       return_value=([], [], [])):
+        with mock.patch.object(server_jobs, "route_with_retry",
+                               return_value=(routed, info)) as svc:
+            with mock.patch.object(server_jobs, "board_model",
+                                   return_value=mock.MagicMock()):
+                with mock.patch.object(server_jobs, "_resolve_grid_layers",
+                                       return_value=("F.Cu", "B.Cu")):
                     with mock.patch.object(
-                            server_jobs, "rip_up_nets",
-                            side_effect=lambda t, *a: t):
+                            server_jobs, "create_grid_from_model",
+                            return_value=mock.Mock()):
                         with mock.patch.object(
-                                server_jobs, "apply_routes_to_tree",
-                                side_effect=lambda t, *a: t):
-                            assert server_jobs._ROUTING_JOB_LOCK.acquire(blocking=False)
-                            try:
-                                server_jobs._run_routing_job(job_id)
-                            finally:
-                                if server_jobs._ROUTING_JOB_LOCK.locked():
-                                    server_jobs._ROUTING_JOB_LOCK.release()
+                                server_jobs, "build_occupancy_grid",
+                                return_value=mock.Mock()):
+                            with mock.patch.object(
+                                    server_jobs, "polish_routes",
+                                    return_value=({"S": net_result},
+                                                  report)) as pol:
+                                with mock.patch.object(
+                                        server_jobs, "routes_to_tracks_vias",
+                                        return_value=([], [], [])):
+                                    with mock.patch.object(
+                                            server_jobs, "rip_up_nets",
+                                            side_effect=lambda t, *a: t):
+                                        with mock.patch.object(
+                                                server_jobs, "apply_routes_to_tree",
+                                                side_effect=lambda t, *a: t):
+                                            assert server_jobs._ROUTING_JOB_LOCK.acquire(blocking=False)
+                                            try:
+                                                server_jobs._run_routing_job(job_id)
+                                            finally:
+                                                if server_jobs._ROUTING_JOB_LOCK.locked():
+                                                    server_jobs._ROUTING_JOB_LOCK.release()
     assert svc.call_count == 1
     assert pol.call_count == 1
     job = server_jobs._JOBS.pop(job_id)
@@ -475,6 +492,12 @@ def test_routing_job_skips_auto_polish(params_dict, job_extra):
                            pcb_tree=None, failed_reasons={},
                            net_routes={"S": mock.Mock()},
                            width_map={"S": 0.25})
+    trial = RoutingResult(tracks_added=0, vias_added=0, nets_routed=1,
+                          nets_failed=0, drc_clean=True, drc_violations=0,
+                          pcb_tree=None, failed_reasons={})
+    info = {"trial_result": trial, "refine_result": None,
+            "refine_adopted": False, "repair_reports": {},
+            "shove_reports": {}, "signal_shove_reports": {}}
     job_id = "autopolish-skip-unit"
     server_jobs._JOBS[job_id] = {
         "job_id": job_id, "state": "queued", "net_names": ["S"],
@@ -491,8 +514,8 @@ def test_routing_job_skips_auto_polish(params_dict, job_extra):
     fake_state.get_power_override_nets.return_value = ()
     fake_state.version = 0
     with mock.patch.object(server_jobs, "STATE", fake_state):
-        with mock.patch.object(server_jobs, "route_nets",
-                               return_value=(routed, None, None)):
+        with mock.patch.object(server_jobs, "route_with_retry",
+                               return_value=(routed, info)):
             with mock.patch.object(server_jobs, "polish_routes") as pol:
                 assert server_jobs._ROUTING_JOB_LOCK.acquire(blocking=False)
                 try:
@@ -558,6 +581,100 @@ def test_recovery_job_uses_retry_service():
     job = server_jobs._JOBS.pop(job_id)
     assert job["state"] == "done"
     _json.dumps(job)  # poll-safe: no report objects leak into the job dict
+
+
+@pytest.mark.server
+@pytest.mark.minimal
+def test_normal_route_folds_recovery_when_retry_stages_on():
+    """Normal Route jobs run the staged chain (trial+repair+shove) by default."""
+    import json as _json
+    from unittest import mock
+
+    import server_jobs
+    from kicad_autorouter.routing.pipeline import RoutingResult
+
+    trial = RoutingResult(tracks_added=0, vias_added=0, nets_routed=1,
+                          nets_failed=0, drc_clean=True, drc_violations=0,
+                          pcb_tree=None, failed_reasons={})
+    info = {"trial_result": trial, "refine_result": None,
+            "refine_adopted": True, "repair_reports": {},
+            "shove_reports": {}, "signal_shove_reports": {}}
+    job_id = "route-folds-recovery-unit"
+    server_jobs._JOBS[job_id] = {
+        "job_id": job_id, "state": "queued", "net_names": ["S"],
+        "params_dict": {}, "recovery": False,
+        "refine": False, "mode": None, "mode_warning": None,
+        "cancel_requested": False, "created": 0.0, "started": None,
+        "finished": None, "progress": {}, "result": None, "error": None,
+    }
+    fake_state = mock.Mock()
+    fake_state.snapshot = (mock.Mock(), None, None, None, None, None)
+    fake_state.snapshot_pcb.return_value = (mock.Mock(), None)
+    fake_state.get_protected_nets.return_value = set()
+    fake_state.get_power_override_nets.return_value = ()
+    fake_state.version = 0
+    with mock.patch.object(server_jobs, "STATE", fake_state):
+        with mock.patch.object(server_jobs, "route_with_retry",
+                               return_value=(trial, info)) as svc:
+            with mock.patch.object(server_jobs, "route_nets") as raw:
+                assert server_jobs._ROUTING_JOB_LOCK.acquire(blocking=False)
+                try:
+                    server_jobs._run_routing_job(job_id)
+                finally:
+                    if server_jobs._ROUTING_JOB_LOCK.locked():
+                        server_jobs._ROUTING_JOB_LOCK.release()
+    assert svc.call_count == 1
+    assert raw.call_count == 0
+    job = server_jobs._JOBS.pop(job_id)
+    assert job["state"] == "done"
+    rec = job["result"]["recovery"]
+    assert rec["trial_routed"] == 1 and rec["refine_adopted"] is True
+    _json.dumps(job)  # poll-safe
+
+
+@pytest.mark.server
+@pytest.mark.minimal
+def test_normal_route_stays_single_pass_when_retry_stages_off():
+    """retry_stages:false keeps the legacy single-pass Route (shove opt-out)."""
+    import json as _json
+    from unittest import mock
+
+    import server_jobs
+    from kicad_autorouter.routing.pipeline import RoutingResult
+
+    routed = RoutingResult(tracks_added=1, vias_added=0, nets_routed=1,
+                           nets_failed=0, drc_clean=True, drc_violations=0,
+                           pcb_tree=None, failed_reasons={})
+    job_id = "route-single-pass-unit"
+    server_jobs._JOBS[job_id] = {
+        "job_id": job_id, "state": "queued", "net_names": ["S"],
+        "params_dict": {"retry_stages": False}, "recovery": False,
+        "refine": False, "mode": None, "mode_warning": None,
+        "cancel_requested": False, "created": 0.0, "started": None,
+        "finished": None, "progress": {}, "result": None, "error": None,
+    }
+    fake_state = mock.Mock()
+    fake_state.snapshot = (mock.Mock(), None, None, None, None, None)
+    fake_state.snapshot_pcb.return_value = (mock.Mock(), None)
+    fake_state.get_protected_nets.return_value = set()
+    fake_state.get_power_override_nets.return_value = ()
+    fake_state.version = 0
+    with mock.patch.object(server_jobs, "STATE", fake_state):
+        with mock.patch.object(server_jobs, "route_with_retry") as svc:
+            with mock.patch.object(server_jobs, "route_nets",
+                                   return_value=(routed, None, None)) as raw:
+                assert server_jobs._ROUTING_JOB_LOCK.acquire(blocking=False)
+                try:
+                    server_jobs._run_routing_job(job_id)
+                finally:
+                    if server_jobs._ROUTING_JOB_LOCK.locked():
+                        server_jobs._ROUTING_JOB_LOCK.release()
+    assert raw.call_count == 1
+    assert svc.call_count == 0
+    job = server_jobs._JOBS.pop(job_id)
+    assert job["state"] == "done"
+    assert "recovery" not in job["result"]
+    _json.dumps(job)  # poll-safe
 
 
 # ---------------------------------------------------------------------------

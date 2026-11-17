@@ -1705,7 +1705,7 @@ def is_rippupable_victim(net_name: Optional[str]) -> bool:
 class RipUpManager:
     """Manages rip-up and retry for failed nets."""
 
-    def __init__(self, max_attempts: int = 3):
+    def __init__(self, max_attempts: int = 5):
         self.max_attempts = max_attempts
         self.attempts: Dict[str, int] = defaultdict(int)
         self.routed_paths: Dict[str, List[Tuple[int, int, int]]] = {}
