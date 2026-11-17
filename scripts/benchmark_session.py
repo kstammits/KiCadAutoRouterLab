@@ -83,13 +83,13 @@ POWER_NAMES = {"VIN", "+12V", "-12V", "VDD", "VCC", "VEE", "+5V", "-5V", "+3V3"}
 # Regime presets mirrored from ui/app-params.js REGIME_PRESETS (calibrated
 # starting points; dt/vmax/friction ride along via merge-POST there).
 CLUSTER = dict(attraction_k_N=0.05, wall_k_N=0.025, damping_Ns_m=0.08,
-               dt_s=2e-3, friction_N=1e-6, wall_halo_m=0.006, wall_exponent=1.0)
-LEGALIZE = dict(attraction_k_N=0.008, wall_k_N=0.1, damping_Ns_m=0.12,
-                dt_s=1e-3, friction_N=1e-6, wall_halo_m=0.004,
-                wall_exponent=2.0)
+               dt_s=2e-3, friction_N=1e-6, wall_halo_m=0.001, wall_exponent=1.0)
+LEGALIZE = dict(attraction_k_N=0.004, wall_k_N=0.1, damping_Ns_m=0.12,
+               dt_s=1e-3, friction_N=1e-6, wall_halo_m=0.0005,
+               wall_exponent=2.0)
 TIDY = dict(attraction_k_N=0.002, wall_k_N=0.1, damping_Ns_m=0.12,
-            dt_s=1e-3, friction_N=1e-5, wall_halo_m=0.004, wall_exponent=2.0,
-            align_angle_k_N=3e-3, align_pos_k_N_m=0.5)
+           dt_s=1e-3, friction_N=1e-5, wall_halo_m=0.0005, wall_exponent=2.0,
+           align_angle_k_N=3e-3, align_pos_k_N_m=0.5)
 
 
 def load_board(spec: str):

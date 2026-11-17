@@ -209,9 +209,9 @@ mean. `stall_window=0` disables.
 | Param | Unit | Default | Role |
 |---|---|---|---|
 | `repulsion_k_N_m2` | N·m² | 2e-9 | pair push (sub-contact only) |
-| `attraction_k_N` | N | 8e-3 | legalize-regime net pull |
+| `attraction_k_N` | N | 8e-3 | net pull (Legalize preset: 0.004) |
 | `wall_k_N` | N | 0.1 | contact/halo strength |
-| `wall_halo_m` | m | 0.006 | near-miss reach and depth scale (Legalize preset: 0.004) |
+| `wall_halo_m` | m | 0.006 | near-miss reach and depth scale (Legalize/Tidy presets: 0.0005; Cluster: 0.001) |
 | `cross_layer_pin_halo_m` | m | 0.0007 | THT-pin vs far-side body near-miss (0 = off) |
 | `wall_exponent` | — | 2.0 | wall-law exponent (`≥ 1`) |
 | `wall_cap_depth_mm` | mm | 0.0 | deep-penetration cap (0 = off) |
@@ -240,10 +240,11 @@ placed boards — use two stages):
 - Cluster (scattered starts, e.g. magnet synthetics): `attraction_k_N`
   ≈ 0.04–0.06 with `wall_k_N` ≈ 0.02–0.03, `damping` 0.08, `dt` 2 ms.
   Tightens groups to ~0.3–0.6 of start spread, zero overlap.
-- Legalize (placed boards: tube111, DCCF): `attraction_k_N` ≈ 0.005–0.01
-  with `wall_k_N` ≈ 0.08–0.1, `damping` 0.12–0.15, `wall_halo_m` 4 mm,
+- Legalize (placed boards: tube111, DCCF): `attraction_k_N` ≈ 0.004
+  with `wall_k_N` ≈ 0.08–0.1, `damping` 0.12–0.15, `wall_halo_m` 0.5 mm,
   `dt` 1 ms. The shorter halo keeps dense neighbor fields from overriding a
-  part's own wall; the engine default remains 6 mm, and Cluster uses it too.
+  part's own wall; the engine default remains 6 mm, and Cluster uses 1 mm
+  (halo/ka rounds 2026-11-16, see `docs/halo_followup_report.md`).
 
 Sanity anchor: an 0805 (2.5 mm² courtyard, ~8 mg) at `k_attr = 50 µN`
 accelerates at ~6 m/s² — brisk but sub-ballistic at 1 ms steps

@@ -52,7 +52,7 @@ const ALL_PARAM_DEFS = [...PARAM_DEFS, ...ADVANCED_PARAM_DEFS];
 const PARAM_DESC = {
   attraction_k_N: "Constant-magnitude attraction between net-connected pads (newtons). Legalize: 0.005-0.01; Cluster: 0.04-0.06. Log scale.",
   wall_k_N: "Elastic collision stiffness when courtyards overlap or enter the halo (newtons). One linear law F = k*(1-s/h) in signed distance s (gap +, penetration -): zero past the halo, k at contact, growing with depth. Deepest contact wins per pair. Legalize: 0.08; Cluster: 0.02-0.03. Log scale.",
-  wall_halo_m: "Near-miss reach past part outlines. Shown in mm; stored in meters. Legalize: 4mm; Cluster and engine default: 6mm.",
+  wall_halo_m: "Near-miss reach past part outlines. Shown in mm; stored in meters. Legalize/Tidy: 0.5mm; Cluster: 1mm; engine default: 6mm.",
   damping_Ns_m: "Viscous damping F = −c·v (N·s/m). The physics damper: higher settles faster with less overshoot. Legalize: 0.12; Cluster: 0.08. Log scale.",
   max_iterations: "Hard limit on simulation steps (dimensionless).",
   label_clearance_m: "Label clearance around the estimated text bbox. Shown in mm; stored in meters. The clearance rect collides via the wall law. Larger values give labels more board space.",
@@ -283,8 +283,10 @@ async function loadParams(defaultsOnly = false) {
 // Regime presets from docs/si_force_laws.md §3: no single ratio clusters
 // AND legalizes, so offer the calibrated starting points. dt_s, vmax,
 // friction ride along via the merge-POST even though they have no main-panel sliders.
-// Calibrated values: Cluster uses a 6mm halo; Legalize uses 4mm so dense
-// neighbor fields do not overpower a part's own wall. wall_exponent=2.0 and
+// Calibrated values (halo/ka rounds 2026-11-16, see
+// docs/halo_followup_report.md): Cluster 1mm halo; Legalize 0.5mm halo
+// with attraction 0.004 (best cross-stage compromise); Tidy shares the
+// 0.5mm halo (no distinct tidy optimum measured). wall_exponent=2.0 and
 // convergence_eps_m=2e-5 ride along via merge-POST. All three pin
 // cross_layer_pin_halo_m=0.7mm so a stale saved value cannot silently
 // diverge from calibration (far-side solder clearance is regime-independent).
@@ -298,11 +300,12 @@ async function loadParams(defaultsOnly = false) {
 // spring with frozen baseline/pitch anchors (median edge, median pitch,
 // deadband-gated, released past the radius). Short budget: angles
 // converge in ~60-100 iterations; longer runs just churn positions.
-// Starting points pending a calibration sweep (see roadmap).
+// Halo/ka set by the 2026-11-16 sweep rounds; wall_k, exponent, dt,
+// damping, friction still at their starting points (see roadmap).
 const REGIME_PRESETS = {
-  cluster: { attraction_k_N: 0.05, wall_k_N: 0.025, damping_Ns_m: 0.08, dt_s: 2e-3, vmax_m_s: 1.0, friction_N: 1e-6, wall_halo_m: 0.006, cross_layer_pin_halo_m: 0.0007, wall_exponent: 1.0, convergence_eps_m: 2e-5, align_angle_k_N: 0, align_pos_k_N_m: 0, align_deadband_deg: 10, align_radius_m: 0.020 },
-  legalize: { attraction_k_N: 0.008, wall_k_N: 0.1, damping_Ns_m: 0.12, dt_s: 1e-3, vmax_m_s: 1.0, friction_N: 1e-6, wall_halo_m: 0.004, cross_layer_pin_halo_m: 0.0007, wall_exponent: 2.0, convergence_eps_m: 2e-5, align_angle_k_N: 0, align_pos_k_N_m: 0, align_deadband_deg: 10, align_radius_m: 0.020 },
-  tidy: { attraction_k_N: 0.002, wall_k_N: 0.1, damping_Ns_m: 0.12, dt_s: 1e-3, vmax_m_s: 1.0, friction_N: 1e-5, wall_halo_m: 0.004, cross_layer_pin_halo_m: 0.0007, wall_exponent: 2.0, convergence_eps_m: 2e-5, align_angle_k_N: 3e-3, align_pos_k_N_m: 0.5, align_deadband_deg: 10, align_radius_m: 0.020, max_iterations: 150 },
+  cluster: { attraction_k_N: 0.05, wall_k_N: 0.025, damping_Ns_m: 0.08, dt_s: 2e-3, vmax_m_s: 1.0, friction_N: 1e-6, wall_halo_m: 0.001, cross_layer_pin_halo_m: 0.0007, wall_exponent: 1.0, convergence_eps_m: 2e-5, align_angle_k_N: 0, align_pos_k_N_m: 0, align_deadband_deg: 10, align_radius_m: 0.020 },
+  legalize: { attraction_k_N: 0.004, wall_k_N: 0.1, damping_Ns_m: 0.12, dt_s: 1e-3, vmax_m_s: 1.0, friction_N: 1e-6, wall_halo_m: 0.0005, cross_layer_pin_halo_m: 0.0007, wall_exponent: 2.0, convergence_eps_m: 2e-5, align_angle_k_N: 0, align_pos_k_N_m: 0, align_deadband_deg: 10, align_radius_m: 0.020 },
+  tidy: { attraction_k_N: 0.002, wall_k_N: 0.1, damping_Ns_m: 0.12, dt_s: 1e-3, vmax_m_s: 1.0, friction_N: 1e-5, wall_halo_m: 0.0005, cross_layer_pin_halo_m: 0.0007, wall_exponent: 2.0, convergence_eps_m: 2e-5, align_angle_k_N: 3e-3, align_pos_k_N_m: 0.5, align_deadband_deg: 10, align_radius_m: 0.020, max_iterations: 150 },
 };
 
 async function applyRegimePreset(name) {

@@ -73,7 +73,7 @@ CLUSTER = {
     "dt_s": 2e-3,
     "vmax_m_s": 1.0,
     "friction_N": 1e-6,
-    "wall_halo_m": 0.006,
+    "wall_halo_m": 0.001,
     "cross_layer_pin_halo_m": 0.0007,
     "wall_exponent": 1.0,
     "convergence_eps_m": 2e-5,
@@ -83,7 +83,7 @@ CLUSTER = {
     "align_radius_m": 0.020,
 }
 LEGALIZE = {
-    "attraction_k_N": 0.008,
+    "attraction_k_N": 0.004,
     "wall_k_N": 0.1,
     "damping_Ns_m": 0.12,
     "dt_s": 1e-3,
@@ -93,7 +93,7 @@ LEGALIZE = {
     # regardless of budget (C12 1.09 -> C13 0.78 @1000). Caps must still
     # hug their chips — the decap-gap metric in the triage gates this.
     "decap_link": 2.0,
-    "wall_halo_m": 0.004,
+    "wall_halo_m": 0.0005,
     "cross_layer_pin_halo_m": 0.0007,
     "wall_exponent": 2.0,
     "convergence_eps_m": 2e-5,
@@ -109,7 +109,7 @@ TIDY = {
     "dt_s": 1e-3,
     "vmax_m_s": 1.0,
     "friction_N": 1e-5,
-    "wall_halo_m": 0.004,
+    "wall_halo_m": 0.0005,
     "cross_layer_pin_halo_m": 0.0007,
     "wall_exponent": 2.0,
     "convergence_eps_m": 2e-5,
