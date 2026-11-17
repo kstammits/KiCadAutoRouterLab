@@ -33,7 +33,7 @@ python -m venv .venv
 3. **Route** — Route tab → select nets → **Route** (empty selection routes all unprotected); **Polish** re-smooths at full effort without re-searching.
 4. **DRC** — tick **DRC**, **Run DRC**, then **Download** the board.
 
-Headless: `scripts/run_autoroute.py board.kicad_pcb -o out.kicad_pcb --step-iterations 5 --max-total-iterations 500`. Same core; the UI adds SVG view, motion playback, sliders.
+Headless placement is available as a library call (`run_placement` in `src/kicad_autorouter/placement/`); the UI adds SVG view, motion playback, sliders.
 
 Test boards: `tests/fixtures/tube111.kicad_pcb` (105 parts, 73 nets) and `tests/fixtures/DCCF.sved.kicad_pcb` (audio, split rails).
 
@@ -62,7 +62,7 @@ Details live in the manual and glossary (links below), not here.
 
 ## Performance
 
-Indicative desktop wall-clock (±30%), measured locally — regenerate with `scripts/benchmark_*.py` (`docs/benchmarks/` is untracked; see its README).
+Indicative desktop wall-clock (±30%), measured locally.
 
 | Task | Typical time |
 |------|--------------|
@@ -83,11 +83,9 @@ Rules of thumb: placement costs ~N^1.2–1.5 per iteration — estimate per-iter
 | [`ui/manual.html`](ui/manual.html) | **User:** Placement manual with live before/after examples (placement only; routing lives in the app Route tab) |
 | [`docs/autorouting_glossary.md`](docs/autorouting_glossary.md) | **User:** Pipeline stages, terminology, algorithm guidance |
 | [`docs/si_force_laws.md`](docs/si_force_laws.md) | **Dev reference:** Placement force laws and parameter defaults |
-| [`docs/physics_primer.qmd`](docs/physics_primer.qmd) | **Dev reference:** Force-law primer with figures and math |
-| [`docs/roadmap.md`](docs/roadmap.md) | **Dev:** Open work |
 | [`docs/README.md`](docs/README.md) | **Dev:** Upstream references with fetch recipes |
 
-Regenerate the manual/figures with `.venv/bin/python scripts/gen_manual.py`, or everything (figures + manual + primer) with `./scripts/regen_docs.sh [--only-manual | --skip-quarto | --pdf]`.
+Regenerate the manual with `.venv/bin/python scripts/gen_manual.py` (`--check` asserts examples without writing).
 
 ---
 

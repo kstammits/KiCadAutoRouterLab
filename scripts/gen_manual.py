@@ -315,7 +315,9 @@ and DRC/export live in the app's Route tab and top bar. Generated {stamp}.</p>
 <p>Load a <code>.kicad_pcb</code> board, open the Placement panel, and choose a
 preset. <strong>Step</strong> advances the solver and previews the result;
 <strong>Accept</strong> writes the previewed pose into the working board.
-<strong>Run</strong> repeats the step/accept loop until it settles or hits a limit.</p>
+<strong>Run</strong> runs one pass to the iteration budget
+(<code>max_iterations</code>) and previews the result; accept (or run
+again) from there.</p>
 
 <h2>Reading a placement run</h2>
 <table>
@@ -332,16 +334,20 @@ or attractors that pull a named target.</p>
 
 <h2>Labels ride along</h2>
 <p>Each footprint's silkscreen reference label (<code>F.SilkS</code> /
-<code>F.Fab</code>) is a low-mass node on a slack leash to its parent's
-live pad centroid — free float inside the slack radius, spring beyond —
-integrated alongside the pads, never welded text. When a parent rotates,
-its label counter-rotates to the nearest upright orientation (0/90/270,
-never upside-down). The label's clearance rect collides through the same
-wall law as courtyards, so crowded boards make room instead of overlapping
-text. One slider drives it all: <strong>Label clearance (mm)</strong> sets
-both the clearance reach and the orbit radius (0 parks every label at
-its home centroid). Parent footprints never feel label forces, so pad
-trajectories match label-unaware runs.</p>
+<code>F.Fab</code>) is a low-mass node on a slack leash to its filed spot
+carried rigidly with the parent — free float inside the slack radius (<code>label_slack_m</code>,
+2 mm), 40 Hz spring beyond — integrated alongside the pads, never welded
+text. The node is hard-clamped to the orbit disc (<code>label_orbit_m</code>,
+3.5 mm) around that carried home, so labels follow their parts as they
+move. When a parent rotates, its label snaps to the nearest readable
+orientation (0/90/180/270 — 180 survives for mirrored bottom-side text).
+The label's clearance rect (text bbox plus a font-height halo) collides
+through the same wall law as courtyards, so crowded boards make room
+instead of overlapping text. <code>label_clearance_m = 0</code> parks every
+label at its filed spot (orbit off); any positive value enables orbit.
+Parent footprints never feel label forces, so pad trajectories match
+label-unaware runs. Normative formulas:
+<a href="/docs.html?doc=docs/si_force_laws.md">SI force laws</a>.</p>
 
 <h2>Generated examples</h2>
 <p class="muted">All three use the Legalize preset: <code>attraction_k_N=0.004</code>,
@@ -353,9 +359,8 @@ Each example asserts its own invariant; generation fails if the engine drifts.</
 
 <h2>Go deeper</h2>
 <ul>
-<li><a href="/docs.html?doc=docs/si_force_laws.md">SI force laws</a> — normative formulas and defaults.</li>
-<li><a href="/docs.html?doc=docs/physics_primer.qmd">Physics primer</a> — force-law intuition and parameter tradeoffs.</li>
-<li><a href="/docs.html?doc=docs/autorouting_glossary.md">Autorouting glossary</a> — pipeline stages and terminology.</li>
+ <li><a href="/docs.html?doc=docs/si_force_laws.md">SI force laws</a> — normative formulas and defaults.</li>
+ <li><a href="/docs.html?doc=docs/autorouting_glossary.md">Autorouting glossary</a> — pipeline stages and terminology.</li>
 </ul>
 </main>
 </body>

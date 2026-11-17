@@ -17,14 +17,9 @@ browser workflow UI.
 - `tests/fixtures/` — `tube111.*` (105 parts, 73 nets), `DCCF.sved.*`
   (audio, split rails), `minimal.*` (4 parts, no nets), `ghost_test.*`,
   `minimal_placed.*`. Don't add fixtures without a test that needs them.
-- `scripts/` — `benchmark_*.py` (results land untracked in
-  `docs/benchmarks/` — see its README), `run_autoroute.py` (headless),
-  `calibrate_si.py`, `sweep_*.py`, `plot_force_laws.py`,
-  `gen_manual.py` (`ui/manual.html`), `regen_docs.sh`, `clean.sh`.
-- `docs/` — glossary, `si_force_laws.md` + `physics_primer.qmd`, `roadmap.md`,
-  `figures/` (generated). Untracked locally: `benchmarks/*.json`
-  (regenerate via `scripts/benchmark_*.py`), `tests.md`,
-  `emit_gate_smoother_proposal.md`.
+- `scripts/` — `gen_manual.py` (`ui/manual.html`), `regen_docs.sh`
+  (manual rebuild wrapper), `check_js.sh`, `clean.sh`.
+- `docs/` — glossary, `si_force_laws.md`. Untracked locally: `tests.md`.
 
 ## Commands
 
@@ -35,8 +30,8 @@ browser workflow UI.
   Deps are pinned in `requirements-lock.txt` (`pip install -e ".[dev]"
   --constraint requirements-lock.txt`); re-freeze from a clean green venv
   when bumping.
-- Docs: `./scripts/regen_docs.sh` (figures + manual + primer);
-  `gen_manual.py` alone rebuilds just the manual.
+- Docs: `./scripts/regen_docs.sh [gen_manual args]` rebuilds the manual
+  (`--check` asserts examples without writing).
 - JS syntax: `./scripts/check_js.sh` (`node --check` all `ui/app-*.js`).
 - Markers: `unit params physics cli server regression minimal dccf slow`.
 - Cleanup: `scripts/clean.sh [--all]` (gitignored scratch only).
@@ -46,7 +41,7 @@ browser workflow UI.
 - **SI units in the engine** (N, m, s); the UI converts at the boundary
   (`toDisplay`/`fromDisplay` in `app-params.js`).
 - **Comments describe current behavior and rationale**, not history —
-  that belongs in git log or `docs/roadmap.md`.
+  that belongs in git log.
 - `PlacementParams` / `RoutingParams` round-trip via `to_dict`/`from_dict`;
   `from_dict` drops unknown keys, so the UI can POST partial params.
 - Placement is region-based and merged by `run_placement`. Ghosts are fixed

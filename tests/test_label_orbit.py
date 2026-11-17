@@ -37,6 +37,7 @@ from kicad_autorouter.sexpr import parse_file
 
 from .helpers import (
     facing_label_pair as _facing_pair,
+    assert_label_leashed as _leashed,
     make_board,
     make_fp,
     make_tht_pad,
@@ -134,17 +135,15 @@ def test_orbit_ejects_inside_radius_cap():
         max_iterations=300, label_clearance_m=clearance_m,
         wall_halo_m=0.002))
     assert set(prop.label_deltas) == {"uuid-a", "uuid-b"}
-    # Rest spot within the orbit disc of the parent (centroid home):
-    # board distance, not filed-local delta.
+    # Rest spot within the orbit leash of the rigidly carried filed
+    # home — not within a disc of the parent origin (offset-filed and
+    # rotated labels legitimately rest away from the centroid).
     orbit_mm = PlacementParams().label_orbit_m * 1000.0
     moved = apply_deltas(model, prop.deltas, label_deltas=prop.label_deltas)
-    from kicad_autorouter.board_model import _to_board as _tb
     for fp in moved.footprints:
         if fp.label is None:
             continue
-        b = _tb(fp.label.local_x_mm, fp.label.local_y_mm,
-                fp.x_mm, fp.y_mm, fp.angle_deg, fp.layer)
-        assert math.hypot(b.x_mm - fp.x_mm, b.y_mm - fp.y_mm) <= orbit_mm + 1e-3
+        _leashed(model, moved, fp.uuid, orbit_mm)
 
 
 @pytest.mark.physics
@@ -178,20 +177,20 @@ def test_clear_labels_do_not_perturb_pads():
         make_fp("B", "uuid-b", 12.0, 0.0, ("N1", "N3"), hw=1.5, hh=1.0),
         label=_lab("B", 8.0, 2.0))
     model = replace(make_board([fa, fb]), nets={"N1": (), "N2": (), "N3": ()})
-    # Filed ±8 mm offsets are stale: labels converge near their parents
-    # (centroid home + slack float), never linger at filed anchors.
+    # Filed ±8 mm offsets are home, not stale: labels ride them while
+    # their parents move under net pull, never migrating to the centroid.
     # (Pad-center Coulomb is long-range, so the short-horizon pad course
     # below is where exact stillness is pinned — not the labels.)
     kw = dict(label_clearance_m=0.002, wall_halo_m=0.002)
     short = run_placement(model, PlacementParams(**kw, max_iterations=300))
-    moved = apply_deltas(model, short.deltas, label_deltas=short.label_deltas)
-    from kicad_autorouter.board_model import _to_board as _tb
+    # Parents genuinely moved — otherwise follow-during-motion is vacuous.
+    assert short.deltas
+    moved = apply_deltas(model, short.deltas,
+                         label_deltas=short.label_deltas)
     for fp in moved.footprints:
         if fp.label is None:
             continue
-        b = _tb(fp.label.local_x_mm, fp.label.local_y_mm,
-                fp.x_mm, fp.y_mm, fp.angle_deg, fp.layer)
-        assert math.hypot(b.x_mm - fp.x_mm, b.y_mm - fp.y_mm) <= orbit_mm + 1e-3
+        _leashed(model, moved, fp.uuid, orbit_mm)
     stripped = replace(
         model,
         footprints=tuple(replace(fp, label=None) for fp in model.footprints),
@@ -205,16 +204,10 @@ def test_clear_labels_do_not_perturb_pads():
     lone = replace(make_board([fa]), nets={"N1": (), "N2": ()})
     calm = run_placement(lone, PlacementParams(**kw, max_iterations=300))
     assert calm.deltas == {}
-    # Centroid home + slack float: the stale anchor is abandoned for
-    # the parent's neighborhood (dynamics rest at the deadband edge;
-    # the post-loop eject may then seat it off own copper, still
-    # inside the orbit disc).
+    # Home is the filed spot: the label never abandons it for the
+    # parent's neighborhood — still inside its own leash by construction.
     moved = apply_deltas(lone, calm.deltas, label_deltas=calm.label_deltas)
-    fp = next(f for f in moved.footprints if f.uuid == "uuid-a")
-    from kicad_autorouter.board_model import _to_board as _tb2
-    b = _tb2(fp.label.local_x_mm, fp.label.local_y_mm,
-             fp.x_mm, fp.y_mm, fp.angle_deg, fp.layer)
-    assert math.hypot(b.x_mm - fp.x_mm, b.y_mm - fp.y_mm) <= orbit_mm + 1e-3
+    _leashed(lone, moved, "uuid-a", orbit_mm)
 
 
 def _region_board(fps, edge=20.0):
@@ -267,12 +260,12 @@ def _bare_label_poly(model, uuid):
 
 
 @pytest.mark.physics
-def test_stale_filed_offset_does_not_hold_label_out():
-    """Labels orbit their parent part, not their filed offset.
+def test_filed_offset_rides_with_parent():
+    """Labels are part-local: a clear label keeps its filed offset.
 
-    A label filed 8mm from its parent (stale after clustering) is
-    pulled home to the live centroid and floats inside the slack
-    deadband — it never lingers at the filed anchor.
+    A label filed 8 mm from its parent is already home — with nothing
+    to collide, it never migrates to the centroid, and stillness means
+    an empty sidecar (follow behavior, zero payload for quiet labels).
     """
     from kicad_autorouter.board_model import _to_board as _tb
     fa = replace(
@@ -281,15 +274,13 @@ def test_stale_filed_offset_does_not_hold_label_out():
     )
     model = replace(_region_board([fa]), nets={"N1": (), "N2": ()})
     prop = run_placement(model, PlacementParams(max_iterations=300))
+    assert prop.label_deltas == {}
     moved = apply_deltas(model, prop.deltas, label_deltas=prop.label_deltas)
     fp = next(f for f in moved.footprints if f.uuid == "uuid-a")
     b = _tb(fp.label.local_x_mm, fp.label.local_y_mm,
             fp.x_mm, fp.y_mm, fp.angle_deg, fp.layer)
-    # Slack deadband edge for the dynamics; the post-loop eject may
-    # then seat it off own copper — still inside the orbit disc, never
-    # lingering at the stale filed anchor.
-    orbit_mm = PlacementParams().label_orbit_m * 1000.0
-    assert math.hypot(b.x_mm - fp.x_mm, b.y_mm - fp.y_mm) <= orbit_mm + 1e-3
+    # Unmoved on its filed spot.
+    assert (b.x_mm, b.y_mm) == pytest.approx((8.0, 0.0))
 
 
 @pytest.mark.physics
@@ -387,15 +378,11 @@ def test_label_feels_smd_pad_coulomb():
     dx, dy = prop.label_deltas["uuid-a"]
     # B's charged pads sit +x of the label: repulsion pushes it back.
     assert dx < -0.1
-    # …and the label ends near its parent (centroid home + slack),
-    # not out at the stale filed offset.
+    # …and the label ends inside the leash of its carried filed home —
+    # Coulomb deflects it, it never migrates to the centroid.
     moved = apply_deltas(model, prop.deltas, label_deltas=prop.label_deltas)
-    fp = next(f for f in moved.footprints if f.uuid == "uuid-a")
-    from kicad_autorouter.board_model import _to_board as _tb
-    b = _tb(fp.label.local_x_mm, fp.label.local_y_mm,
-            fp.x_mm, fp.y_mm, fp.angle_deg, fp.layer)
-    orbit_mm = PlacementParams().label_orbit_m * 1000.0
-    assert math.hypot(b.x_mm - fp.x_mm, b.y_mm - fp.y_mm) <= orbit_mm + 1e-3
+    _leashed(model, moved, "uuid-a",
+             PlacementParams().label_orbit_m * 1000.0)
 
 
 @pytest.mark.physics

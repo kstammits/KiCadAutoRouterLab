@@ -10,10 +10,19 @@ a post-hoc gate.
   ambiguous (swapping the pair adds 180), so N/E/S/W collapses to {0, 90}
   and every snap is at most a 45-degree rotation — pin-1-safe, nothing
   ever flips to the opposite side.
+- The snapped quantity is the PACKAGE rotation (filed footprint angle
+  tracked through live rigid rotation), not any pad-pair axis: for
+  dual-row packs the longest pair is a package diagonal, and servoing the
+  diagonal would twist a straight pack askew. The pair still applies the
+  torque (max lever); the mode readout and the torque target are
+  package-frame, which coincides with the pair axis (mod 180) for
+  symmetric 2-pad parts.
 - Only outliers rotate (deadband); parts already on a mode feel nothing.
-- A diagonal thread far from any mode is left alone: engagement needs
+- A diagonal thread far from every mode is left alone: engagement needs
   mode agreement from the neighborhood (see the gate below), so a lone
-  part never straightens against its thread and pays in wirelength.
+  part never straightens against its thread and pays in wirelength. A
+  part with no in-radius neighbors at all has no thread to protect and
+  snaps freely to its own nearest mode.
 - Position hold is a weak leash to the last recompute pose, not a target —
   spacing stays fully force-driven.
 - Locked and ghost bodies are context (alignment references) but never
@@ -135,11 +144,16 @@ def _part_poses(
     ref_axes: Dict[int, Tuple[int, int, float]],
     committed_angles: Dict[int, float],
 ) -> Tuple[Dict[int, Tuple[float, float]], Dict[int, float]]:
-    """Centroids + current axis angles for every non-ghost footprint.
+    """Centroids + current package angles for every non-ghost footprint.
 
     Shared by the angle snap and the row hold so both read the same pose.
-    Angles prefer the live pad-pair axis and fall back to the committed
-    footprint angle where no axis exists (single-pad parts).
+    Package angle = filed footprint angle tracked through live rigid
+    rotation of the reference pair (exact for rigid bodies). This
+    coincides with the pair axis (mod 180) for symmetric 2-pad parts but
+    stays package-true for multi-row packs, whose longest pair is a
+    diagonal. Falls back to the live pair axis where no committed angle
+    exists, and to the committed angle where no axis exists (single-pad
+    parts).
     """
     centroids: Dict[int, Tuple[float, float]] = {}
     cur_angles: Dict[int, float] = {}
@@ -152,7 +166,15 @@ def _part_poses(
         if li in ref_axes:
             ang = _axis_angle_deg(positions, ref_axes[li][0], ref_axes[li][1])
             if ang is not None:
-                cur_angles[li] = ang
+                if li in committed_angles:
+                    # Board-frame package angle: the filed angle plus the
+                    # live board rotation. Board rotation reads NEGATED in
+                    # pair-math (pair ≡ K − package from the y-down
+                    # handedness), so subtract the pair-measured rotation.
+                    rot = _wrap180(ang - ref_axes[li][2])
+                    cur_angles[li] = _wrap180(committed_angles[li] - rot)
+                else:
+                    cur_angles[li] = ang
         elif li in committed_angles:
             cur_angles[li] = committed_angles[li]
     return centroids, cur_angles
@@ -238,7 +260,14 @@ def compute_align_targets(
                 err = _wrap90(prev_angle - cur_angles[li])
                 if abs(err) > deadband_deg * 0.5 + 1e-9:
                     angle_target = prev_angle
-            elif neighbor_angles:
+            else:
+                # No-neighborhood is the vacuous no-thread case: with no
+                # in-radius angles the spread loop yields 0.0 (coherent)
+                # and agreement is vacuous (0 >= frac*0), so a part with
+                # nobody nearby snaps freely to its own nearest mode.
+                # A lone part FACING a settled thread still holds off via
+                # the agreement count below — only the absence of any
+                # thread frees the snap.
                 mode = _nearest_mode(cur_angles[li])
                 err = _wrap90(mode - cur_angles[li])
                 if abs(err) > deadband_deg + 1e-9:
@@ -276,6 +305,8 @@ def apply_align_forces(
     *,
     angle_k_N: float,
     pos_k_N_m: float,
+    deadband_deg: float = 0.0,
+    committed_angles: Optional[Dict[int, float]] = None,
 ) -> np.ndarray:
     """Alignment pad-force couples plus weak position leash.
 
@@ -286,7 +317,11 @@ def apply_align_forces(
     axis angle drifts with the sign of F = k*sign(err), i.e. toward the
     target. Engagement lives entirely in target presence (with hysteresis
     at recompute time); here an engaged part simply servos by sign, so no
-    release-edge straddle can stall it. Position hold is a net spring
+    release-edge straddle can stall it. The release half of the hysteresis
+    is enforced every step: once the live error is inside half the
+    deadband the couple cuts out, so a fast part cannot overshoot the mode
+    between recomputes and start mode-hopping (``deadband_deg=0`` keeps the
+    legacy always-on-until-zero behavior). Position hold is a net spring
     toward the recompute anchor, spread evenly over the footprint's pads.
     Row-engaged parts carry a row baseline/pitch target in place of the
     leash anchor (merged by the caller), so the same spring does the
@@ -304,11 +339,29 @@ def apply_align_forces(
         if rows is None or len(rows) == 0:
             continue
         if angle_k_N > 0.0 and target_angle is not None and li in ref_axes:
-            ia, ib, _ref = ref_axes[li]
+            ia, ib = ref_axes[li][0], ref_axes[li][1]
             cur = _axis_angle_deg(positions, ia, ib)
             if cur is not None:
-                err = _wrap90(float(target_angle) - cur)
-                if abs(err) > 1e-9:
+                if committed_angles is not None and li in committed_angles:
+                    # Package-true target expressed in pair space: the pair
+                    # axis reads the package rotation through a fixed
+                    # per-part offset K (pair ≡ K − package, from the
+                    # board's y-down handedness), so servoing the pair to
+                    # (K − target) lands the package on target. K drops out
+                    # via the committed pose: K = ref_pair + committed.
+                    # For symmetric 2-pad parts K ≡ −target (mod 180) and
+                    # this reduces to the legacy pair-axis error exactly.
+                    # Without a committed readout (unit callers) fall back
+                    # to the legacy pair-axis error directly.
+                    pair_target = (ref_axes[li][2] + committed_angles[li]
+                                   - float(target_angle))
+                    err = _wrap90(pair_target - cur)
+                else:
+                    # No committed readout (unit callers): legacy pair-axis
+                    # error, identical for 2-pad parts.
+                    err = _wrap90(float(target_angle) - cur)
+                release = 0.5 * deadband_deg if deadband_deg > 0.0 else 0.0
+                if abs(err) > max(release, 1e-9):
                     f_mag = float(angle_k_N) * (1.0 if err > 0.0 else -1.0)
                     dx = float(positions[ib, 0] - positions[ia, 0])
                     dy = float(positions[ib, 1] - positions[ia, 1])

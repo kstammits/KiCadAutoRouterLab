@@ -33,7 +33,10 @@ from kicad_autorouter.io import (
 from kicad_autorouter.placement import PlacementParams, run_placement
 from kicad_autorouter.sexpr import parse_file, to_sexpr
 
-from .helpers import facing_label_pair as _labeled_pair
+from .helpers import (
+    assert_label_leashed as _leashed,
+    facing_label_pair as _labeled_pair,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 MINIMAL_PCB = FIXTURES / "minimal.kicad_pcb"
@@ -234,19 +237,16 @@ def test_clearance_ejects_labels_not_parents():
     import math
 
     model = _labeled_pair(label_w_mm=2.0)
-    # Long run: labels end near their parents (centroid home + slack
-    # float within the orbit disc), not out at filed offsets.
+    # Long run: labels eject off each other yet stay inside the leash
+    # of their rigidly carried filed homes — offset-filed labels rest
+    # away from the parent origin, never at the centroid.
     orbit_mm = PlacementParams().label_orbit_m * 1000.0
     b = run_placement(
         model, PlacementParams(max_iterations=300, label_clearance_m=0.001))
     assert b.label_deltas
     moved = apply_deltas(model, b.deltas, label_deltas=b.label_deltas)
-    from kicad_autorouter.board_model import _to_board as _tb
     for uuid in ("uuid-a", "uuid-b"):
-        fp = next(f for f in moved.footprints if f.uuid == uuid)
-        by = _tb(fp.label.local_x_mm, fp.label.local_y_mm,
-                 fp.x_mm, fp.y_mm, fp.angle_deg, fp.layer)
-        assert math.hypot(by.x_mm - fp.x_mm, by.y_mm - fp.y_mm) <= orbit_mm + 1e-3
+        _leashed(model, moved, uuid, orbit_mm)
     # Short horizon: pad course holds station either way.
     a = run_placement(
         model, PlacementParams(max_iterations=10, label_clearance_m=0.0))

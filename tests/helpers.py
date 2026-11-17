@@ -323,6 +323,48 @@ def overlap_area(model, deltas: dict, uuids: Tuple[str, str] = ("uuid-a", "uuid-
     return polys[0].intersection(polys[1]).area
 
 
+def assert_label_leashed(before: BoardModel, after: BoardModel,
+                         uuid: str, orbit_mm: float,
+                         tol_mm: float = 0.02) -> float:
+    """Final label sits within the orbit leash of its rigidly carried home.
+
+    The general follow-pin: home is the filed spot translated with the
+    parent centroid and rotated with the parent angle (NOT the parent
+    origin — a rotated or offset-filed label legitimately rests away
+    from the centroid). Returns the measured leash distance (mm).
+    """
+    import math
+
+    from kicad_autorouter.board_model import _to_board as _tb
+    from kicad_autorouter.board_model import _to_local as _tl
+
+    fp0 = next(f for f in before.footprints if f.uuid == uuid)
+    fp1 = next(f for f in after.footprints if f.uuid == uuid)
+    assert fp0.label is not None and fp1.label is not None
+    c0 = _pad_centroid_mm(fp0)
+    c1 = _pad_centroid_mm(fp1)
+    filed0 = _tb(fp0.label.local_x_mm, fp0.label.local_y_mm,
+                 fp0.x_mm, fp0.y_mm, fp0.angle_deg, fp0.layer)
+    home_local = _tl(filed0.x_mm, filed0.y_mm,
+                     c0[0], c0[1], fp0.angle_deg, fp0.layer)
+    home = _tb(home_local.x_mm, home_local.y_mm,
+               c1[0], c1[1], fp1.angle_deg, fp1.layer)
+    lab = _tb(fp1.label.local_x_mm, fp1.label.local_y_mm,
+              fp1.x_mm, fp1.y_mm, fp1.angle_deg, fp1.layer)
+    d = math.hypot(lab.x_mm - home.x_mm, lab.y_mm - home.y_mm)
+    assert d <= orbit_mm + tol_mm, (
+        f"{uuid}: label {d:.3f} mm from carried home (cap {orbit_mm})")
+    return d
+
+
+def _pad_centroid_mm(fp: Footprint) -> Tuple[float, float]:
+    """Mean pad board position (mm) — the rigid-motion translation point."""
+    xs = [p.position.x_mm for p in fp.pads]
+    ys = [p.position.y_mm for p in fp.pads]
+    assert xs, f"{fp.uuid}: no pads for centroid"
+    return (sum(xs) / len(xs), sum(ys) / len(ys))
+
+
 def facing_label_pair(label_w_mm: float = 6.0, gap_mm: float = 4.0):
     """Two netted parts side by side with big facing labels.
 

@@ -155,8 +155,8 @@ def label_board_rect(
 ) -> Optional[List[Tuple[float, float]]]:
     """Posed label clearance rect corners (board frame), or None if degenerate.
 
-    ``halo_mm`` inflates the text bbox on all sides; the caller passes
-    ``label_clearance_m`` (single source of truth).
+    ``halo_mm`` inflates the text bbox on all sides; the dynamics caller
+    passes the font-relative ``label_halo_mm`` (single source of truth).
     """
     w, h = label_text_size_mm(text, size_mm)
     if not (w > 0 and h > 0):

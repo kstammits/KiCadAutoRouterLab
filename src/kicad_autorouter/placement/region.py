@@ -88,35 +88,46 @@ def _posed_label_anchor(
     positions: np.ndarray,
     pad_rows: np.ndarray,
     orig_pos: Optional[np.ndarray],
-    anchor_home: Tuple[float, float],
+    home_clocal: Tuple[float, float],
+    filed_board_xy: Tuple[float, float],
     fp_angle_deg: float,
 ) -> Tuple[Tuple[float, float], float]:
-    """Live orbit home: the parent's current pad centroid + board angle.
+    """Live orbit home: the filed label spot carried rigidly with the parent.
 
-    The anchor follows the part as moved — translation only, never
-    re-posed by rotation: the label must find free space around the
-    part, not swing with it. Returns (centroid board xy, parent board
-    angle now); the angle still comes from the rigid fit (readable
-    label orientation), while the anchor is the plain live mean.
-    Degenerate pad mappings fall back to the filed home and angle.
+    The label is defined as a part-local location, so home follows the
+    parent exactly — translation via the live pad centroid, rotation via
+    the Kabsch-fitted angle. ``home_clocal`` is the filed spot expressed
+    in the parent-centroid frame (built once from the committed pose), so
+    re-posing it at the live centroid + angle is the exact rigid carry:
+    an undisplaced run keeps every label on its filed spot (writeback
+    emits no delta). Returns (board xy home, parent board angle now); the
+    angle still comes from the rigid fit (readable label orientation).
+    Degenerate pad mappings fall back to the filed board spot.
     """
     angle = float(fp_angle_deg)
     try:
         if orig_pos is not None and len(pad_rows):
             motion = _rigid_motion_params(orig_pos, positions[pad_rows])
             if motion is not None:
-                angle = float(fp_angle_deg) + math.degrees(motion[6])
+                # MINUS: motion[6] is standard-CCW (board Y-up) while
+                # footprint angle_deg uses the negated _to_board
+                # convention (local Y-down) — the live footprint angle
+                # is filed minus the standard rotation.
+                angle = float(fp_angle_deg) - math.degrees(motion[6])
     except (ValueError, TypeError, AttributeError, IndexError):
         pass
     try:
-        if len(pad_rows):
-            centroid = np.asarray(positions[pad_rows]).mean(axis=0)
-            cx, cy = float(centroid[0]), float(centroid[1])
+        if orig_pos is not None and len(pad_rows):
+            c_now = np.asarray(positions[pad_rows]).mean(axis=0)
+            cx, cy = float(c_now[0]), float(c_now[1])
             if math.isfinite(cx) and math.isfinite(cy):
-                return (cx, cy), angle
+                home = _to_board(home_clocal[0], home_clocal[1],
+                                 cx, cy, angle, "")
+                if math.isfinite(home.x_mm) and math.isfinite(home.y_mm):
+                    return (float(home.x_mm), float(home.y_mm)), angle
     except (TypeError, ValueError, IndexError):
         pass
-    return anchor_home, angle
+    return filed_board_xy, angle
 
 
 def _label_body_maps(fctx) -> Tuple[Dict[str, object], Dict[str, Tuple[float, float, float]]]:
@@ -148,6 +159,7 @@ def _orbit_label_forces(
     lab_size: List[Tuple[float, float]],
     lab_local_angle: List[float],
     lab_anchor_home: List[Tuple[float, float]],
+    lab_home_local: List[Tuple[float, float]],
     lab_mass_list: List[float],
     fp_uuids: List[str],
     fp_local_to_rows: List[np.ndarray],
@@ -159,7 +171,7 @@ def _orbit_label_forces(
 ) -> np.ndarray:
     """Net orbit force (newtons) per label node: slack tether + contact.
 
-    Slack-leash tether around the live parent centroid (free float
+    Slack-leash tether around the live filed-anchor home (free float
     inside the deadband, spring beyond); contact reuses the parts
     logic: each label rect is a tiny courtyard (text bbox inflated by
     the font-fraction halo) colliding through the same wall law with
@@ -218,7 +230,8 @@ def _orbit_label_forces(
         entry = cy_cache.get(lab_uuid[i], {}) or {}
         orig = entry.get("orig_pos")
         anchor, parent_now = _posed_label_anchor(
-            positions, np.asarray(rows), orig, lab_anchor_home[i], fp.angle_deg
+            positions, np.asarray(rows), orig,
+            lab_home_local[i], lab_anchor_home[i], fp.angle_deg,
         )
         board_angle = snap_label_angle(
             label_board_angle(lab_local_angle[i], parent_now),
@@ -227,7 +240,8 @@ def _orbit_label_forces(
         if params.label_clearance_m <= 0.0:
             continue
         # Tiny-courtyard halo: font height times the fixed fraction (not
-        # label_clearance_m, which now only sizes the orbit clamp disc).
+        # label_clearance_m, which is only the orbit live switch; the
+        # clamp disc comes from label_orbit_m).
         halo_i = label_halo_mm(lab_size[i])
         lab_halos[i] = halo_i
         rect = label_board_rect(
@@ -299,10 +313,11 @@ def _orbit_label_forces(
         entry = cy_cache.get(uuid, {}) or {}
         orig = entry.get("orig_pos")
         anchor, _ = _posed_label_anchor(
-            positions, np.asarray(rows), orig, lab_anchor_home[i], fp.angle_deg
+            positions, np.asarray(rows), orig,
+            lab_home_local[i], lab_anchor_home[i], fp.angle_deg,
         )
         node = positions[lab_rows_arr[i]]
-        # Slack-leash tether target: the live parent centroid (anchor).
+        # Slack-leash tether target: the live filed-spot home (anchor).
         target = anchor
         # Contact through the parts wall law: the pre-pass rect is the
         # label's tiny courtyard. Other labels join the body set so labels
@@ -407,17 +422,15 @@ def _posed_label_anchors(
     positions: np.ndarray,
     lab_parent_li: List[int],
     lab_anchor_home: List[Tuple[float, float]],
+    lab_home_local: List[Tuple[float, float]],
     fp_uuids: List[str],
     fp_local_to_rows: List[np.ndarray],
     fp_by_uuid: Dict[str, Footprint],
     fctx,
 ) -> np.ndarray:
-    """Live centroid per orbiting label from the parent's current pads.
+    """Live orbit homes: each filed spot carried rigidly with its parent.
 
-    The exact-carry basis: the anchor is the live pad centroid, so
-    labels ride translating parents with zero lag and the tether
-    governs only the orbit offset. Rotation never re-poses the home.
-    Degenerate mappings fall back to the filed home (carry 0).
+    Degenerate mappings fall back to the filed board spot (carry 0).
     """
     out = np.zeros((len(lab_parent_li), 2), dtype=np.float64)
     cy_cache = getattr(fctx, "cy_cache", {}) or {}
@@ -431,7 +444,7 @@ def _posed_label_anchors(
         entry = cy_cache.get(uuid, {}) or {}
         anchor, _ = _posed_label_anchor(
             positions, np.asarray(rows), entry.get("orig_pos"),
-            lab_anchor_home[k], fp.angle_deg,
+            lab_home_local[k], lab_anchor_home[k], fp.angle_deg,
         )
         out[k] = anchor
     return out
@@ -442,6 +455,7 @@ def _clamp_labels_to_radius(
     lab_rows_arr: np.ndarray,
     lab_parent_li: List[int],
     lab_anchor_home: List[Tuple[float, float]],
+    lab_home_local: List[Tuple[float, float]],
     fp_uuids: List[str],
     fp_local_to_rows: List[np.ndarray],
     fp_by_uuid: Dict[str, Footprint],
@@ -465,7 +479,7 @@ def _clamp_labels_to_radius(
     # to the filed home there; those nodes initialize exactly at it, so
     # clamping around it is a no-op and the skip below is equivalent.
     anchors = _posed_label_anchors(
-        positions, lab_parent_li, lab_anchor_home, fp_uuids,
+        positions, lab_parent_li, lab_anchor_home, lab_home_local, fp_uuids,
         fp_local_to_rows, fp_by_uuid, fctx,
     )
     for k, row in enumerate(lab_rows_arr):
@@ -480,6 +494,35 @@ def _clamp_labels_to_radius(
         )
         positions[int(row), 0] = cx
         positions[int(row), 1] = cy
+# KE-jump predicate shared by the global and per-footprint adaptive-dt
+# guards: above the numerical noise floor AND relatively large (1.25x)
+# AND absolutely large (caller-scaled floor — see below). Jumps below
+# the floor are legitimate force work or contact noise in stiff
+# configurations, not instability — only larger jumps justify halving
+# the timestep. Elementwise: pass arrays for a per-part verdict vector.
+def _ke_jump_exceeds(ke_now, ke_prev, floor):
+    return (
+        (ke_now > 1e-12)
+        & (ke_now > 1.25 * ke_prev + 1e-15)
+        & (ke_now - ke_prev > floor)
+    )
+
+
+# Adaptive-dt update with chronic-hopper backoff. An isolated transient
+# halves once and regrows almost immediately (heat decays below the
+# resume threshold within a couple of quiet steps); a part that trips
+# the guard every few dozen iterations holds heat above it, so the
+# timestep ratchets down to the floor instead of regrowing back to full
+# stride between slams. Returns (dt, heat).
+def _guard_dt_update(dt, dt_min_s, dt_max_s, heat, triggered):
+    heat *= 0.99
+    if triggered:
+        return max(dt_min_s, dt * 0.5), heat + 1.0
+    if heat < 1.0:
+        return min(dt_max_s, dt * 1.1), heat
+    return dt, heat
+
+
 def _run_region_simulation(
     region_idx: int,
     region: BoardRegion,
@@ -854,7 +897,7 @@ def _run_region_simulation(
             dtype=np.float64,
         ) if _fp.pads else np.array([], dtype=np.float64)
         # Label rect in filed board coordinates (bare text bbox; the orbit
-        # forces inflate it by label_clearance_m at contact time).
+        # pass inflates it by the font-relative halo at contact time).
         _label = None
         if _fp.label is not None:
             from ..board_model import label_board_pose
@@ -1027,6 +1070,13 @@ def _run_region_simulation(
     _vel = np.zeros((len(region_pads), 2), dtype=np.float64)
     _dt = float(params.dt_s)
     _prev_ke: Optional[float] = None
+    _prev_part_ke: Optional[np.ndarray] = None
+    # Guard heat (leaky trigger counter): isolated transients recover the
+    # timestep almost immediately, but a chronic hopper that trips the
+    # guard every few dozen iterations must NOT regrow back to full stride
+    # between slams — that equilibrium of violence never settles. Heat
+    # decays ~1%/iter (~100-iter memory); regrow runs only while cool.
+    _guard_heat = 0.0
 
     # ---- Orbit-mode label nodes (always on): each label is one extra
     # integrated node in the tail rows of positions/_vel (indices >= n_pads)
@@ -1034,11 +1084,12 @@ def _run_region_simulation(
     # them (called on [:n_pads] slices); label tether + contact forces are
     # computed separately in the loop below. Only movable, in-region,
     # labeled real footprints orbit — locked parents keep welded labels.
-    # Home is the parent's live pad centroid (translation only — the
-    # part's rotation never re-poses it), and the slack tether leaves
-    # the label free inside the deadband so contact, not the leash,
-    # decides the rest spot. The disc, eject, and find-spare-room
-    # search all center on the live home.
+    # Home is the filed label spot, carried rigidly with the parent
+    # (translation via the live centroid, rotation via the Kabsch fit —
+    # the same anchor the tether, clamp, eject, and writeback share);
+    # the slack tether leaves the label free inside the
+    # deadband so contact, not the leash, decides the rest spot. The
+    # disc, eject, and find-spare-room search all center on the live home.
     # Clearance 0 welds labels at filed spots: no rows, so the whole
     # label path below (forces, eject, commit) is a no-op.
 
@@ -1078,21 +1129,20 @@ def _run_region_simulation(
         _li = fp_uuid_to_local_idx.get(_fp.uuid)
         if _li is None:
             continue
-        # Orbit home: the parent's pad centroid in rigid-invariant
-        # parent-local coords. Translation-following only — the part's
-        # rotation never swings the home (the label must find free space
-        # around the part, not re-pose with it). The slack tether leaves
-        # the label free inside the deadband; contact owns the placement.
+        # Orbit home: the filed label spot, expressed in the parent's
+        # centroid frame (rigid-invariant: rotation about the centroid
+        # leaves these coordinates fixed, so live re-posing is exact).
+        # Nodes start exactly on their filed spots; the tether pulls
+        # home and contact owns the placement.
         try:
             _lrows = fp_local_to_rows[_li] if _li < len(fp_local_to_rows) else []
             _centroid = np.asarray(positions[_lrows]).mean(axis=0)
             _cx, _cy = float(_centroid[0]), float(_centroid[1])
             if not (math.isfinite(_cx) and math.isfinite(_cy)):
                 raise ValueError("non-finite parent centroid")
-            _home_local = _to_local(
-                _cx, _cy,
-                float(_fp.x_mm), float(_fp.y_mm),
-                float(_fp.angle_deg), _fp.layer)
+            _home_clocal = _to_local(
+                float(_pose[0]), float(_pose[1]),
+                _cx, _cy, float(_fp.angle_deg), _fp.layer)
         except (TypeError, ValueError, IndexError):
             continue
         lab_rows.append(n_pads + len(lab_rows))
@@ -1102,9 +1152,9 @@ def _run_region_simulation(
         lab_size.append(_fp.label.size_mm)
         lab_local_angle.append(_fp.label.local_angle_deg)
         lab_home_local.append(
-            (float(_home_local.x_mm), float(_home_local.y_mm))
+            (float(_home_clocal.x_mm), float(_home_clocal.y_mm))
         )
-        lab_anchor_home.append((_cx, _cy))
+        lab_anchor_home.append((float(_pose[0]), float(_pose[1])))
         lab_mass_list.append(
             label_ink_mass_kg(
                 _fp.label.text, _fp.label.size_mm,
@@ -1207,7 +1257,8 @@ def _run_region_simulation(
                     _anchor, _ = _posed_label_anchor(
                         pos, np.asarray(_pi),
                         (cy_cache.get(_fp.uuid, {}) or {}).get("orig_pos"),
-                        lab_anchor_home[_lk], _fp.angle_deg,
+                        lab_home_local[_lk], lab_anchor_home[_lk],
+                        _fp.angle_deg,
                     )
                     _node = pos[_lrow]
                     _ldx = float(_node[0]) - float(_anchor[0])
@@ -1237,6 +1288,7 @@ def _run_region_simulation(
             pad_velocities=_vel[:n_pads],
             align_targets=_align_targets,
             align_ref_axes=_align_ref_axes,
+            align_committed_angles=_committed_angles,
         )
         force_frame: Dict[str, Dict[str, Tuple[float, float]]] = {}
         for _fp, _pi in _frame_fps:
@@ -1279,7 +1331,7 @@ def _run_region_simulation(
                 _entry = _cy.get(_uuid, {}) or {}
                 _anchor, _parent_now = _posed_label_anchor(
                     pos, np.asarray(_rows), _entry.get("orig_pos"),
-                    lab_anchor_home[_k], _fp.angle_deg,
+                    lab_home_local[_k], lab_anchor_home[_k], _fp.angle_deg,
                 )
                 _node = positions[lab_rows[_k]]
                 _sample[_uuid] = [
@@ -1326,6 +1378,27 @@ def _run_region_simulation(
     _ke_abs_increase_threshold = (
         0.3 * 0.5 * float(np.max(pad_mass_kg)) * float(params.vmax_m_s) ** 2
     )
+    # Per-footprint pad map for the local energy guard below (built once;
+    # region structure is fixed for the run). Ghost and immovable rows
+    # map to -1 and never trip: only live bodies can hop walls.
+    _ke_row_part = np.full(n_pads, -1, dtype=int)
+    for _li, _rows in enumerate(fp_local_to_rows):
+        if len(_rows) == 0 or not fp_movable_list[_li] or _li in _ghost_local:
+            continue
+        _ke_row_part[np.asarray(_rows, dtype=int)] = _li
+    _ke_valid = _ke_row_part >= 0
+    _ke_part_mass = np.bincount(
+        _ke_row_part[_ke_valid],
+        weights=pad_mass_kg[:n_pads][_ke_valid],
+        minlength=len(fp_local_to_rows),
+    )
+    # Parts with no live pads can never trip (infinite floor); the live
+    # floor is damping-aware (recomputed per step below): the implicit
+    # viscous decay crushes kick velocities ~10-50x on milligram parts,
+    # so an undamped vmax-scaled floor would sit orders of magnitude
+    # above any measured slam.
+    _ke_part_mapped = np.bincount(
+        _ke_row_part[_ke_valid], minlength=len(fp_local_to_rows)) > 0
     stop_reason = "budget"
     residual_max_force_N = 0.0
     iteration = 0  # defined when max_iterations=0 (static probe: loop never runs)
@@ -1362,11 +1435,13 @@ def _run_region_simulation(
             pad_velocities=_vel[:n_pads],
             align_targets=_align_targets,
             align_ref_axes=_align_ref_axes,
+            align_committed_angles=_committed_angles,
         )
 
         # --- debug: per-iteration snapshot of positions + raw forces ---
         if _dbg_iters is not None:
-            _snap = {"iteration": iteration, "footprints": {}}
+            _snap = {"iteration": iteration, "dt_s": float(_dt),
+                     "footprints": {}}
             for fi, uuid in enumerate(fp_uuids):
                 if not fp_movable_list[fi]:
                     continue
@@ -1474,8 +1549,8 @@ def _run_region_simulation(
         if lab_rows:
             _clamp_labels_to_radius(
                 positions, lab_rows_arr, lab_parent_li,
-                lab_anchor_home, fp_uuids, fp_local_to_rows, fp_by_uuid,
-                fctx, params,
+                lab_anchor_home, lab_home_local, fp_uuids, fp_local_to_rows,
+                fp_by_uuid, fctx, params,
             )
 
         # Rigid projection + rigid-step clamp (pads only; label rows are
@@ -1492,7 +1567,7 @@ def _run_region_simulation(
         # offset — labels can never lag behind a moving parent.
         if lab_rows:
             _anchor_now = _posed_label_anchors(
-                positions, lab_parent_li, lab_anchor_home,
+                positions, lab_parent_li, lab_anchor_home, lab_home_local,
                 fp_uuids, fp_local_to_rows, fp_by_uuid, fctx,
             )
             positions[lab_rows_arr] += _anchor_now - lab_anchor_prev
@@ -1504,7 +1579,8 @@ def _run_region_simulation(
             _lab_force = _orbit_label_forces(
                 positions, n_pads, lab_rows_arr,
                 lab_parent_li, lab_uuid, lab_text, lab_size,
-                lab_local_angle, lab_anchor_home, lab_mass_list,
+                lab_local_angle, lab_anchor_home, lab_home_local,
+                lab_mass_list,
                 fp_uuids, fp_local_to_rows, fp_by_uuid,
                 fctx, params, iteration,
                 lab_ref_mass_kg=_ref_mass,
@@ -1531,8 +1607,8 @@ def _run_region_simulation(
             positions = np.nan_to_num(positions, nan=0.0, posinf=0.0, neginf=0.0)
             _clamp_labels_to_radius(
                 positions, lab_rows_arr, lab_parent_li,
-                lab_anchor_home, fp_uuids, fp_local_to_rows, fp_by_uuid,
-                fctx, params,
+                lab_anchor_home, lab_home_local, fp_uuids, fp_local_to_rows,
+                fp_by_uuid, fctx, params,
             )
         # Re-derive velocity from the actual projected displacement so the
         # projection can't inject phantom energy into the guard below.
@@ -1557,18 +1633,42 @@ def _run_region_simulation(
         _ke = 0.5 * float(np.sum(
             pad_mass_kg[all_movable, None]
             * _vel[all_movable] * _vel[all_movable]))
-        # Only trigger the energy guard on significant jumps: above the
-        # numerical noise floor AND relatively large (1.25x) AND absolutely
-        # large (see _ke_abs_increase_threshold above).
-        if (_prev_ke is not None
-                and _ke > 1e-12
-                and _ke > 1.25 * _prev_ke + 1e-15
-                and _ke - _prev_ke > _ke_abs_increase_threshold):
-            _dt = max(float(params.dt_min_s), _dt * 0.5)
+        # Per-footprint jumps trip the guard too: the global sum dilutes
+        # one light part's wall-slam below the m_max-scaled floor, so a
+        # lone hopper can ping-pong wall-to-wall at full stride forever
+        # without tripping it. Each live part is gated against its own
+        # mass-scaled floor with the same relative jump rule; labels keep
+        # the global treatment. The floor is damping-aware (viscous decay
+        # crushes kick velocities on milligram parts, so an undamped
+        # vmax-scaled floor would sit far above any measured slam).
+        _part_ke = np.bincount(
+            _ke_row_part[_ke_valid],
+            weights=(0.5 * pad_mass_kg[:n_pads][_ke_valid]
+                     * (_vel[:n_pads][_ke_valid, 0] ** 2
+                        + _vel[:n_pads][_ke_valid, 1] ** 2)),
+            minlength=len(fp_local_to_rows),
+        )
+        with np.errstate(divide="ignore", invalid="ignore"):
+            _ke_atten = 1.0 / (
+                1.0 + params.damping_Ns_m * _dt
+                / np.maximum(_ke_part_mass, 1e-30))
+        _ke_floor_now = np.where(
+            _ke_part_mapped,
+            0.3 * 0.5 * _ke_part_mass
+            * (params.vmax_m_s * _ke_atten) ** 2,
+            np.inf,
+        )
+        _global_jump = _prev_ke is not None and bool(_ke_jump_exceeds(
+            _ke, _prev_ke, _ke_abs_increase_threshold))
+        _local_jump = _prev_part_ke is not None and bool(np.any(
+            _ke_jump_exceeds(_part_ke, _prev_part_ke, _ke_floor_now)))
+        _dt, _guard_heat = _guard_dt_update(
+            _dt, float(params.dt_min_s), float(params.dt_max_s),
+            _guard_heat, bool(_global_jump or _local_jump))
+        if _global_jump or _local_jump:
             _vel *= 0.5
-        else:
-            _dt = min(float(params.dt_max_s), _dt * 1.1)
         _prev_ke = _ke
+        _prev_part_ke = _part_ke
 
         if record_frames and _frame_fps and ((iteration + 1) % _frame_stride == 0):
             _frame = _capture_frame(positions)
@@ -1711,6 +1811,17 @@ def _run_region_simulation(
             )
         residual_max_force_N = _res
 
+    # End-of-loop label homes, computed once: the same rigid carry
+    # (centroid + Kabsch-fitted rotation) the loop clamp used, so the
+    # depenetrate seeding/push and the writeback clamp all share one
+    # center. Parents don't move past this point. Lives outside the
+    # depen gate below: the writeback clamp needs it whenever labels
+    # exist, even with walls off or clearance welded.
+    _lab_anchor_end = _posed_label_anchors(
+        positions, lab_parent_li, lab_anchor_home, lab_home_local,
+        fp_uuids, fp_local_to_rows, fp_by_uuid, fctx,
+    ) if lab_uuid else np.zeros((0, 2), dtype=np.float64)
+
     # Label de-penetration: the same geometric eject the parts pass gives
     # wedged courtyards, applied to the labels' tiny-courtyard bodies
     # (text bbox plus the shared halo — the exact bodies the wall law
@@ -1802,10 +1913,10 @@ def _run_region_simulation(
                 _lfp = fp_by_uuid.get(_uuid)
                 if _pose is None or _lfp is None:
                     continue
-                _fx0, _fy0 = lab_home_local[_k]
-                _anchor_b = _to_board(
-                    _fx0, _fy0, _pose[0], _pose[1], _pose[2], _lfp.layer)
-                _anchor = (float(_anchor_b.x_mm), float(_anchor_b.y_mm))
+                # Rigid-carried home (translation + fitted rotation) —
+                # same anchor the loop clamp and tether used.
+                _anchor = (float(_lab_anchor_end[_k][0]),
+                           float(_lab_anchor_end[_k][1]))
                 _ang = _sla(_lba(lab_local_angle[_k], _pose[2]))
                 if params.label_clearance_m > 0.0:
                     try:
@@ -1858,11 +1969,9 @@ def _run_region_simulation(
     # Orbit-mode label offsets: final node board position expressed in the
     # parent's FINAL local frame, minus the filed home local (the stage
     # input's frame of reference). Empty when no label moved (follow
-    # behavior, zero sidecar payload). Nodes are
-    # re-seated exactly at the Kabsch-fitted parent pose first: the loop
-    # clamp used the incremental rigid motion, whose angle estimate can
-    # differ by microns from the final fit — without this the sidecar
-    # could exceed the radius cap by that sliver.
+    # behavior, zero sidecar payload). The clamp anchor is the shared
+    # end-of-loop rigid home, so the final sample pair is consistent to
+    # fp precision — the clamp is a backstop, not a second opinion.
     from ..board_model.labels import clamp_orbit_radius as _clamp_r
 
     radius_mm = _label_orbit_radius_mm(params)
@@ -1871,17 +1980,13 @@ def _run_region_simulation(
         fp = fp_by_uuid.get(uuid)
         if pose is None or fp is None:
             continue
-        fx0, fy0 = lab_home_local[k]
-        try:
-            anchor_b = _to_board(
-                fx0, fy0, pose[0], pose[1], pose[2], fp.layer
-            )
-        except (TypeError, ValueError, IndexError):
+        if k >= len(_lab_anchor_end):
             continue
+        anchor_b = (float(_lab_anchor_end[k][0]),
+                    float(_lab_anchor_end[k][1]))
         node = positions[lab_rows[k]]
         cx, cy = _clamp_r(
-            (float(node[0]), float(node[1])),
-            (anchor_b.x_mm, anchor_b.y_mm), radius_mm,
+            (float(node[0]), float(node[1])), anchor_b, radius_mm,
         )
         positions[lab_rows[k], 0] = cx
         positions[lab_rows[k], 1] = cy
@@ -1890,8 +1995,8 @@ def _run_region_simulation(
         except (TypeError, ValueError, IndexError):
             continue
         # Sidecar delta is measured against the FILED local (the file's
-        # frame of reference), not the orbit home: lab_home_local carries
-        # the parent centroid, while the file holds the original offset.
+        # frame of reference). Home is the rigidly carried filed spot, so
+        # an undisturbed label reads zero here and emits no sidecar.
         try:
             ffx, ffy = float(fp.label.local_x_mm), float(fp.label.local_y_mm)
         except (TypeError, ValueError, AttributeError):

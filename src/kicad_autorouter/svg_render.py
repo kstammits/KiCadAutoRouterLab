@@ -526,6 +526,19 @@ def _footprint_ref_svg(fp) -> str:
                 size = float(label.size_mm[1])
             except (TypeError, ValueError, IndexError):
                 pass
+            try:
+                thick = float(label.thickness_mm)
+            except (TypeError, ValueError, AttributeError):
+                thick = 0.15
+            # KiCad plots the text em at 4/3 the font height (its own
+            # SVG export writes font-size 1.3333 for a 1.0 font, 2.8
+            # for 2.1, …), centers the advance on the anchor, and draws
+            # from the baseline at the anchor — all measured from
+            # kicad-cli SVG export. SVG monospace at the raw height
+            # renders ~30% short, which is why the preview looked
+            # smaller than the gerber. The same-color stroke at the
+            # filed thickness recovers the plotted ink weight.
+            fs = size * 4.0 / 3.0
             # Mirrored text (bottom-side ``justify mirror``) reads upright:
             # gerber-verified, a mirrored 180 plots pixel-identical to an
             # unmirrored 0 (and 90 stays 90), so fold the flip bit for
@@ -535,7 +548,10 @@ def _footprint_ref_svg(fp) -> str:
             rot = f' transform="rotate({_fmt(ea)} {_fmt(cx)} {_fmt(cy)})"' if ea else ""
             return (
                 f'<text x="{_fmt(cx)}" y="{_fmt(cy)}" '
-                f'fill="{REF_TEXT}" font-family="monospace" font-size="{_fmt(size)}"{rot}>'
+                f'fill="{REF_TEXT}" stroke="{REF_TEXT}" '
+                f'stroke-width="{_fmt(thick)}" paint-order="stroke" '
+                f'font-family="monospace" font-size="{_fmt(fs)}" '
+                f'text-anchor="middle"{rot}>'
                 f"{html.escape(label.text)}</text>"
             )
     label_text = fp.ref or (fp.uuid[:8] if fp.uuid else "")

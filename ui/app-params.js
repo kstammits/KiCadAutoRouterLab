@@ -55,7 +55,7 @@ const PARAM_DESC = {
   wall_halo_m: "Near-miss reach past part outlines. Shown in mm; stored in meters. Legalize/Tidy: 0.5mm; Cluster: 1mm; engine default: 6mm.",
   damping_Ns_m: "Viscous damping F = −c·v (N·s/m). The physics damper: higher settles faster with less overshoot. Legalize: 0.12; Cluster: 0.08. Log scale.",
   max_iterations: "Hard limit on simulation steps (dimensionless).",
-  label_clearance_m: "Label clearance around the estimated text bbox. Shown in mm; stored in meters. The clearance rect collides via the wall law. Larger values give labels more board space.",
+  label_clearance_m: "Label orbit on/off. Shown in mm; stored in meters. 0 parks every label at its filed spot; any positive value enables orbit (the label's clearance rect collides via the wall law). The magnitude sizes nothing — orbit reach is Label orbit, float is engine-internal slack.",
   label_orbit_m: "Label orbit radius around the parent part. Shown in mm; stored in meters. Orbit always on: each label is a low-mass node on a spring tether that homes on its parent and finds spare room inside this disc.",
   power_attraction_scale: "Power-rail attraction trim (fanout-scaled k/(fanout-1) per edge). 1 = full participation; 0 restores the old exclude-power behavior.",
   decap_link: "Weight of the supplemental symmetric pull between a small cap and its nearest chip (<=15mm, U* only); global rail pull is never boosted. 0 removes decap GND edges and disables local links.",
@@ -283,8 +283,8 @@ async function loadParams(defaultsOnly = false) {
 // Regime presets from docs/si_force_laws.md §3: no single ratio clusters
 // AND legalizes, so offer the calibrated starting points. dt_s, vmax,
 // friction ride along via the merge-POST even though they have no main-panel sliders.
-// Calibrated values (halo/ka rounds 2026-11-16, see
-// docs/halo_followup_report.md): Cluster 1mm halo; Legalize 0.5mm halo
+// Calibrated values (halo/ka sweep rounds 2026-11-16; history in git
+// log): Cluster 1mm halo; Legalize 0.5mm halo with attraction 0.004
 // with attraction 0.004 (best cross-stage compromise); Tidy shares the
 // 0.5mm halo (no distinct tidy optimum measured). wall_exponent=2.0 and
 // convergence_eps_m=2e-5 ride along via merge-POST. All three pin
@@ -292,20 +292,24 @@ async function loadParams(defaultsOnly = false) {
 // diverge from calibration (far-side solder clearance is regime-independent).
 // Cluster/Legalize pin both align stiffnesses at 0 (off); Tidy is a calm
 // short polish pass: low attraction (no restructuring), firm walls,
-// higher friction so only strong forces move parts, plus weak orientation
-// snap with a weak hold. Angle k sits just above the viscous stall
-// floor (~2.4 mN at legalize damping); the mode-agreement gate (half the
-// neighbors must already sit near the mode) keeps lone parts from
-// straightening against their thread mid-churn. Row hold reuses the leash
-// spring with frozen baseline/pitch anchors (median edge, median pitch,
-// deadband-gated, released past the radius). Short budget: angles
-// converge in ~60-100 iterations; longer runs just churn positions.
+// 100x base friction (1e-4: freeze bar 2 mN — micro-chatter and limit
+// cycles freeze out while the align couple's rim-equivalent ~6 mN still
+// clears it), tangential assist OFF (polish must not surf squeezed
+// parts across the board — unjamming is Legalize's job, which keeps the
+// 0.15 default), plus weak orientation snap with a weak hold. Angle k
+// sits just above the viscous stall floor (~2.4 mN at legalize damping);
+// the mode-agreement gate (half the neighbors must already sit near the
+// mode) keeps lone parts from straightening against their thread
+// mid-churn. Row hold reuses the leash spring with frozen baseline/pitch
+// anchors (median edge, median pitch, deadband-gated, released past the
+// radius). Short budget: angles converge in ~60-100 iterations; longer
+// runs just churn positions.
 // Halo/ka set by the 2026-11-16 sweep rounds; wall_k, exponent, dt,
-// damping, friction still at their starting points (see roadmap).
+// damping, friction still at their starting points.
 const REGIME_PRESETS = {
   cluster: { attraction_k_N: 0.05, wall_k_N: 0.025, damping_Ns_m: 0.08, dt_s: 2e-3, vmax_m_s: 1.0, friction_N: 1e-6, wall_halo_m: 0.001, cross_layer_pin_halo_m: 0.0007, wall_exponent: 1.0, convergence_eps_m: 2e-5, align_angle_k_N: 0, align_pos_k_N_m: 0, align_deadband_deg: 10, align_radius_m: 0.020 },
   legalize: { attraction_k_N: 0.004, wall_k_N: 0.1, damping_Ns_m: 0.12, dt_s: 1e-3, vmax_m_s: 1.0, friction_N: 1e-6, wall_halo_m: 0.0005, cross_layer_pin_halo_m: 0.0007, wall_exponent: 2.0, convergence_eps_m: 2e-5, align_angle_k_N: 0, align_pos_k_N_m: 0, align_deadband_deg: 10, align_radius_m: 0.020 },
-  tidy: { attraction_k_N: 0.002, wall_k_N: 0.1, damping_Ns_m: 0.12, dt_s: 1e-3, vmax_m_s: 1.0, friction_N: 1e-5, wall_halo_m: 0.0005, cross_layer_pin_halo_m: 0.0007, wall_exponent: 2.0, convergence_eps_m: 2e-5, align_angle_k_N: 3e-3, align_pos_k_N_m: 0.5, align_deadband_deg: 10, align_radius_m: 0.020, max_iterations: 150 },
+  tidy: { attraction_k_N: 0.002, wall_k_N: 0.1, damping_Ns_m: 0.12, dt_s: 1e-3, vmax_m_s: 1.0, friction_N: 1e-4, wall_halo_m: 0.0005, cross_layer_pin_halo_m: 0.0007, wall_exponent: 2.0, convergence_eps_m: 2e-5, align_angle_k_N: 3e-3, align_pos_k_N_m: 0.5, align_deadband_deg: 10, align_radius_m: 0.020, contact_tangent_gamma: 0, max_iterations: 150 },
 };
 
 async function applyRegimePreset(name) {

@@ -119,25 +119,16 @@ DOCS_ALLOWLIST: Dict[str, Path] = {
     "docs/README.md": REPO_ROOT / "docs" / "README.md",
     "docs/autorouting_glossary.md": REPO_ROOT / "docs" / "autorouting_glossary.md",
     "docs/si_force_laws.md": REPO_ROOT / "docs" / "si_force_laws.md",
-    "docs/physics_primer.qmd": REPO_ROOT / "docs" / "physics_primer.qmd",
-    "docs/roadmap.md": REPO_ROOT / "docs" / "roadmap.md",
 }
 DOCS_MAX_BYTES = 200 * 1024
 
-# Pre-rendered Quarto HTML (regenerated on demand via scripts/regen_*.sh,
-# gitignored under docs/_output/). Served verbatim so figures + math render;
-# never rendered on HTTP request.
+# Pre-rendered HTML twins (regenerated on demand, gitignored under
+# docs/_output/). Served verbatim so figures + math render; never
+# rendered on HTTP request. Empty: the manual is generated, not rendered.
 # Maps URL basename -> (output file, source file for staleness, or None).
-DOCS_RENDERED: Dict[str, tuple[Path, Path | None]] = {
-    "physics_primer.html": (
-        REPO_ROOT / "docs" / "_output" / "html" / "physics_primer.html",
-        REPO_ROOT / "docs" / "physics_primer.qmd",
-    ),
-}
+DOCS_RENDERED: Dict[str, tuple[Path, Path | None]] = {}
 # Reverse map: allowlist source name -> rendered URL basename.
-DOCS_SOURCE_TO_RENDERED: Dict[str, str] = {
-    "docs/physics_primer.qmd": "physics_primer.html",
-}
+DOCS_SOURCE_TO_RENDERED: Dict[str, str] = {}
 
 # App version from pyproject.toml
 with open(REPO_ROOT / "pyproject.toml", "rb") as f:

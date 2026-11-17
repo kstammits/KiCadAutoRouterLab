@@ -417,6 +417,85 @@ def test_net_friction_settles_sustained_chatter():
 
 @pytest.mark.physics
 @pytest.mark.unit
+def test_wall_slam_trips_local_energy_guard():
+    """A light part buried in a stiff locked wall must not eject at full
+    stride (R20-style wall hopping: a lone slam is invisible in the
+    board-wide KE average, so the global guard never fires). A heavy
+    locked ballast blinds the global guard on purpose (raises its
+    mass-scaled floor while contributing no KE); the per-footprint guard
+    still sees the slammer's own KE jump, halves the timestep, and the
+    eject stays controlled. Asserted via the debug dt trace, not the
+    stop reason.
+    """
+    def _slam():
+        wall = make_fp("W", "uuid-w", 0.0, 0.0, ("NW1", "NW2"),
+                       footprint_id="test:R", hw=4.0, hh=4.0,
+                       pad_layers=("F.Cu",), pad_shape="rect", locked=True)
+        ballast = make_fp("B", "uuid-b", 50.0, 50.0, ("NB1", "NB2"),
+                          footprint_id="test:R", hw=25.0, hh=25.0,
+                          pad_layers=("F.Cu",), pad_shape="rect", locked=True)
+        # slammer overlaps the wall's +x edge by 1.5mm
+        slam = make_fp("S", "uuid-s", 3.3, 0.0, ("NS1", "NS2"),
+                       footprint_id="test:R", hw=0.8, hh=0.5,
+                       pad_layers=("F.Cu",), pad_shape="rect")
+        return make_board([wall, ballast, slam], edge=100.0)
+    prop = run_placement(
+        _slam(),
+        PlacementParams(max_iterations=60, attraction_k_N=0.0,
+                        repulsion_k_N_m2=0.0, wall_k_N=0.1, wall_halo_m=0.0005,
+                        wall_exponent=2.0, ghost_k_N=0.0,
+                        contact_tangent_gamma=0.0, friction_N=0.0,
+                        damping_Ns_m=0.01, dt_s=2e-3,
+                        align_angle_k_N=0.0, align_pos_k_N_m=0.0,
+                        debug=True),
+        {"uuid-s"})
+    dts = [s["dt_s"] for s in prop.debug_trace["per_iteration"]]
+    assert min(dts) < 2e-3, (
+        f"local guard never fired (dt stayed {min(dts):.2e})")
+    assert prop.deltas["uuid-s"][0] > 0.0, "eject must clear east, away from the wall"
+
+
+@pytest.mark.physics
+@pytest.mark.unit
+@pytest.mark.parametrize("ke_now,ke_prev,floor,fires", [
+    (1e-6, 1e-7, 1e-9, True),    # big relative + absolute jump
+    (1.2e-6, 1e-6, 1e-9, False),  # 1.2x: below the relative gate
+    (1e-13, 1e-14, 1e-15, False),  # below the noise floor
+    (2e-6, 1e-6, 5e-6, False),    # relatively big but absolutely small
+    (1e-6, 2e-6, 1e-9, False),    # falling energy never trips
+])
+def test_ke_jump_predicate_gates(ke_now, ke_prev, floor, fires):
+    """The shared guard predicate fires only on significant jumps."""
+    from kicad_autorouter.placement.region import _ke_jump_exceeds
+    assert bool(_ke_jump_exceeds(ke_now, ke_prev, floor)) is fires
+
+
+@pytest.mark.physics
+@pytest.mark.unit
+def test_guard_backoff_pins_chronic_hopper():
+    """Isolated transients recover the timestep almost immediately, but a
+    part that trips the guard every step must not regrow back to full
+    stride between slams — the heat backoff pins dt down until the
+    hopping actually stops.
+    """
+    from kicad_autorouter.placement.region import _guard_dt_update
+    dt, heat = 2e-3, 0.0
+    dt, heat = _guard_dt_update(dt, 5e-5, 2e-3, heat, True)
+    assert dt == 1e-3 and heat == 1.0  # single trigger halves once
+    dt, heat = _guard_dt_update(dt, 5e-5, 2e-3, heat, False)
+    assert dt > 1e-3  # one quiet step resumes regrowth
+    dt, heat = 2e-3, 0.0
+    for _ in range(8):
+        dt, heat = _guard_dt_update(dt, 5e-5, 2e-3, heat, True)
+    assert dt == 5e-5, f"chronic hopping must pin dt at the floor, got {dt}"
+    assert heat > 1.0
+    for _ in range(250):
+        dt, heat = _guard_dt_update(dt, 5e-5, 2e-3, heat, False)
+    assert dt > 5e-5, "regrowth must resume once the hopping stops"
+
+
+@pytest.mark.physics
+@pytest.mark.unit
 def test_uuidless_footprint_is_counted_not_silent():
     """Parts without a uuid are exempt from physics — surfaced, not silent.
 

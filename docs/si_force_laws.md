@@ -66,22 +66,38 @@ F_ghost = k_ghost · û(target→anchor)              k_ghost in N
 ```
 Split equally over target pads; no reaction on the ghost (infinite mass).
 
-### Label orbit (spring tether + clearance contact)
-Each labeled footprint owns one extra integrated node (derived ink mass,
-floored at `mass_floor_kg`) posed at its filed `fp_text` anchor:
+### Label orbit (spring tether + slack leash + clearance contact)
+Each footprint's silkscreen reference label owns one extra integrated node
+(derived ink mass at `LABEL_INK_DENSITY_KG_M2`, floored at `mass_floor_kg`)
+posed at its filed `fp_text` anchor:
 ```
-F_tether = m · (2π·2 Hz)² · (anchor − node)     anchor posed by parent motion
+F_tether = m · (2π·40 Hz)² · excess · û(home→node)   outside the slack disc
 ```
-plus the `_wall_mag` contact of the label's clearance rect (text bbox
-inflated by `label_clearance_m` on all sides) against nearby bodies, and
-the shared viscous decay / friction scaled by `m_label / m_ref` so labels
-share the parts' decay timescale. The node is hard-clamped to
-`max(label_clearance_m, 1 mm)` around its anchor, and the parent carries
-its anchor exactly each step (zero lag by construction), so the tether
-governs only the orbit offset. Pads never feel labels: the pad-indexed
-kernel excludes label rows and the parent body stays the bare courtyard.
-Label orientation snaps to upright (0/90/270, never upside-down) on
-rotation; the final board-local offset is written back to `fp_text (at)`.
+- **Orbit home** is live, not filed: the filed spot carried rigidly with
+  the parent — translation via the live pad centroid, rotation via the
+  Kabsch-fitted standard-CCW angle (minus into the negated footprint
+  convention). The parent carries
+  its anchor displacement exactly each step (zero lag by construction),
+  so the tether governs only the orbit offset.
+- **Slack leash** (`label_slack_m`, default 2 mm): inside the slack radius
+  the label feels nothing — contact owns the placement and the friction
+  freeze is the settle state. Beyond it the 40 Hz mass-proportional spring
+  acts on the excess, so the force is continuous at the boundary.
+- **Orbit clamp** (`label_orbit_m`, default 3.5 mm, floored at 1 mm): the
+  node is hard-clamped to this disc around its home — the escape backstop.
+- **Clearance contact**: the label's clearance rect (text bbox inflated by
+  the font-relative halo `LABEL_HALO_FONT_FRACTION`, not by a param) pushes
+  through the same `_wall_mag` law as courtyards against nearby bodies,
+  and shares the viscous decay / friction scaled by `m_label / m_ref` so
+  labels share the parts' decay timescale.
+- **Live switch** (`label_clearance_m`, default 5 mm): a boolean gate, not
+  a reach — `0` welds every label at its filed spot (no orbit rows built),
+  any positive value enables orbit. The magnitude sizes nothing.
+- Pads never feel labels: the pad-indexed kernel excludes label rows and
+  the parent body stays the bare courtyard. Label orientation snaps to the
+  nearest readable angle (0/90/180/270; 180 survives for mirrored
+  bottom-side text, exact ties break upright); the final board-local offset
+  is written back to `fp_text (at)`.
 
 ### Tangential assist (sliding assist)
 Applied at courtyard contact pairs only (same-layer body/pin overlap), never
@@ -106,6 +122,33 @@ F_t = γ · |F_n| · sign(v_rel_t)   applied along MTV-perp
 Sign latch behavior: `sign(v_rel_t)` updates only when `|v_rel_t| > 1e-9`
 m/s; below that the last sign is held, defaulting to +1 on first contact.
 This is internal solver memory (`ctx.last_tangent`), not a user param.
+
+### Manhattan snap (Tidy-regime orientation + row hold)
+```
+F_align = ±k_angle · t̂(pair)      on the reference pair only (pure torque)
+F_hold  = −k_pos · (c − anchor)   spread over the footprint's pads
+```
+- The snapped quantity is the PACKAGE rotation (filed angle tracked
+  through live rigid rotation), not the longest pad pair: for dual-row
+  packs the longest pair is a diagonal, and servoing it would twist a
+  straight pack askew. The pair still applies the torque (max lever).
+- Targets are the nearest compass mode ({0, 90}, at most a 45° snap) for
+  movable multi-pad outliers (`err > deadband`), frozen at first
+  engagement and released below half the deadband. Parts with no
+  in-radius neighbors have no thread to protect and snap freely; coherent
+  neighborhoods need directional agreement (a quarter of the in-radius
+  neighbors within twice the deadband), incoherent ones snap freely.
+  Single-pad parts never rotate (no axis to couple) but vote with their
+  filed angle. Locked and ghost bodies vote but never receive.
+- Release is enforced every dynamics step (the couple cuts out inside the
+  release band), so a fast part cannot overshoot the mode between the
+  25-iteration target recomputes and start mode-hopping; the recompute
+  still owns engagement, target freezing, and anchor refresh.
+- Position hold is a weak leash to the last recompute anchor (off at
+  `k_pos = 0`); row-engaged parts carry frozen baseline/pitch targets
+  instead of the leash anchor. The wall law vets every rotation the same
+  iteration it happens, so torque-balanced pockets rest off-mode — the
+  wall still wins every shove.
 
 ### Final depenetration pass (legalize eject)
 Applied **once** after dynamics settle, before the final force readback:
@@ -172,10 +215,20 @@ Rigid-step clamp (tunneling guard): after projection, each body's centroid
 shift is clamped to `vmax·dt` and its rotation change to 5°/step, re-posed
 rigidly from the pre-step pose. Velocity re-derivation runs after the clamp.
 
-Adaptive-dt guard: track system kinetic energy; halve `dt` on a significant
-rise, regrow ×1.1 when it falls, floored at `dt_min_s`, capped at
-`dt_max_s`. The absolute floor for a "significant" rise is a fraction of
-`0.5·m_max·vmax²`, so contact noise does not ratchet the timestep down.
+Adaptive-dt guard: track kinetic energy per footprint plus the board-wide
+total; halve `dt` (and bleed velocity) on any significant jump, regrow
+×1.1 when quiet, floored at `dt_min_s`, capped at `dt_max_s`. The
+per-part floor scales with the part's own mass (the global floor scales
+with `m_max`, so one light part's wall-slam is invisible in the total —
+without the local guard it could ping-pong wall-to-wall at full stride
+forever). Both floors are damping-aware: the implicit viscous decay
+crushes kick velocities on milligram parts, so an undamped
+`vmax`-scaled floor would sit far above any measured slam. A leaky
+trigger counter (heat) suppresses regrowth while trips recur: isolated
+transients recover almost immediately, a chronic hopper pins `dt` down
+until it actually stops. The absolute floor for a "significant" rise is
+a fraction of `0.5·m·vmax²`, so contact noise does not ratchet the
+timestep down.
 
 Contact direction rule: push along the SAT minimum-translation (MTV) axis —
 out the nearest edge — never centroid-to-centroid, which is wrong for
@@ -233,7 +286,14 @@ mean. `stall_window=0` disables.
 | `decap_link` | — | 4.0 | local decap-chip link weight (globals never boosted) |
 | `overlap_tolerance_mm2` | mm² | 0.1 | legality threshold |
 | `wall_tolerance_mm` | mm | 0.1 | board-wall legality threshold |
-| `label_clearance_m` | m | 0.005 | label clearance reach + orbit radius (0 = parked at home centroid) |
+| `label_clearance_m` | m | 0.005 | label orbit live switch (0 = welded at filed spots) |
+| `label_orbit_m` | m | 0.0035 | label orbit clamp-disc radius (1 mm floor) |
+| `label_slack_m` | m | 0.002 | label free-float radius (spring on excess only) |
+| `align_angle_k_N` | N | 0.0 | Manhattan-snap couple (0 = off; Tidy: 3e-3) |
+| `align_pos_k_N_m` | N/m | 0.0 | position-hold leash (0 = off; Tidy: 0.5) |
+| `align_deadband_deg` | deg | 10.0 | consensus error ignored by the snap |
+| `align_radius_m` | m | 0.020 | neighbor-search radius (k-nearest 6) |
+| `include_power_nets` | — | true | kill-switch for power-rail participation |
 
 Regime map (no single ratio both clusters scattered starts and legalizes
 placed boards — use two stages):
@@ -244,7 +304,14 @@ placed boards — use two stages):
   with `wall_k_N` ≈ 0.08–0.1, `damping` 0.12–0.15, `wall_halo_m` 0.5 mm,
   `dt` 1 ms. The shorter halo keeps dense neighbor fields from overriding a
   part's own wall; the engine default remains 6 mm, and Cluster uses 1 mm
-  (halo/ka rounds 2026-11-16, see `docs/halo_followup_report.md`).
+  (halo/ka sweep rounds of 2026-11-16; history in git log).
+- Tidy (placed boards + Manhattan snap): Legalize values plus
+  `align_angle_k_N` 3e-3, `align_pos_k_N_m` 0.5, `friction_N` 1e-4 (freeze
+  bar 2 mN: micro-chatter and limit cycles freeze out while the align
+  couple's rim-equivalent ~6 mN still clears it),
+  `contact_tangent_gamma` 0 (no surf: polish must settle, unjamming is
+  Legalize's job), `max_iterations` 150 — weak enough that the wall still
+  wins every shove.
 
 Sanity anchor: an 0805 (2.5 mm² courtyard, ~8 mg) at `k_attr = 50 µN`
 accelerates at ~6 m/s² — brisk but sub-ballistic at 1 ms steps

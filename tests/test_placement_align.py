@@ -91,6 +91,34 @@ def _placed_fp(ref, uuid, x, angle_deg=0.0, nets=("N1", "N2"), **kw):
     return fp
 
 
+def _dual_row(ref, uuid, x, angle_deg=0.0, dx=1.5, dy=1.0):
+    """Dual-row pack: two rows of two pads; longest pair is a diagonal.
+
+    Package rotation is ``angle_deg``; the pad-pair diagonal sits ~34 deg
+    off the package axis, so pair-axis readout and package readout
+    disagree — the regression case for diagonal servoing.
+    """
+    fp = make_test_fp(ref, uuid, x, nets=("N1", "N2", "N3", "N4"),
+                      hw=dx + 0.8, hh=dy + 0.8)
+    base = [(-dx, -dy), (dx, -dy), (-dx, dy), (dx, dy)]
+    pads = tuple(
+        replace(p, position=Point(x + bx, by))
+        for p, (bx, by) in zip(fp.pads, base)
+    )
+    fp = replace(fp, pads=pads)
+    if abs(angle_deg) > 1e-12:
+        rad = math.radians(angle_deg)
+        c, s = math.cos(rad), math.sin(rad)
+        pads = []
+        for p in fp.pads:
+            lx = p.position.x_mm - x
+            ly = p.position.y_mm - 0.0
+            pads.append(replace(
+                p, position=Point(x + lx * c + ly * s, -lx * s + ly * c)))
+        fp = replace(fp, angle_deg=angle_deg, pads=tuple(pads))
+    return fp
+
+
 def _row(step=10.0, middle_angle=30.0):
     a = _placed_fp("R1", "uuid-a", 0.0)
     b = _placed_fp("R2", "uuid-b", step, middle_angle, nets=("N3", "N4"))
@@ -116,7 +144,11 @@ class TestAlignConsensus:
         model = _model(fps)
         prop = run_placement(model, _align_only(), uuids)
         assert "uuid-c" in prop.deltas
-        assert prop.deltas["uuid-c"][2] == pytest.approx(-30.0, abs=3.0)
+        # Servo cuts out at the release half-band; the outlier finishes
+        # inside the deadband instead of parking on the mode exactly.
+        da = prop.deltas["uuid-c"][2]
+        assert da < -20.0
+        assert min(abs(((30.0 + da - m + 90.0) % 180.0) - 90.0) for m in (0.0, 90.0)) <= 6.0
         # Consensus members stay put (within deadband, no torque).
         assert prop.deltas.get("uuid-a", (0, 0, 0))[2] == pytest.approx(0.0, abs=1.0)
         assert prop.deltas.get("uuid-e", (0, 0, 0))[2] == pytest.approx(0.0, abs=1.0)
@@ -135,7 +167,9 @@ class TestAlignConsensus:
         model = _model(fps)
         prop = run_placement(model, _align_only(), uuids)
         assert "uuid-b" in prop.deltas
-        assert prop.deltas["uuid-b"][2] == pytest.approx(-15.0, abs=3.0)
+        da = prop.deltas["uuid-b"][2]
+        assert da < -7.0
+        assert min(abs(((105.0 + da - m + 90.0) % 180.0) - 90.0) for m in (0.0, 90.0)) <= 6.0
 
     def test_near_mode_holds_without_flip(self):
         # Part at 170 deg is within deadband of mode 0: it holds instead
@@ -145,6 +179,76 @@ class TestAlignConsensus:
         model = _model(fps)
         prop = run_placement(model, _align_only(), uuids)
         assert prop.deltas.get("uuid-c", (0, 0, 0))[2] == pytest.approx(0.0, abs=1.0)
+
+    def test_lone_part_snaps_freely(self):
+        # No in-radius neighbors means no thread to protect: the part
+        # snaps to its own nearest mode instead of holding off.
+        fp = _placed_fp("R1", "uuid-a", 0.0, 30.0)
+        prop = run_placement(_model([fp]), _align_only(), {"uuid-a"})
+        assert "uuid-a" in prop.deltas
+        da = prop.deltas["uuid-a"][2]
+        assert da < -20.0
+        assert min(abs(((30.0 + da - m + 90.0) % 180.0) - 90.0) for m in (0.0, 90.0)) <= 6.0
+
+    def test_straight_dual_row_left_alone(self):
+        # Dual-row pack, package on mode 0, flanked by agreeing neighbors:
+        # the longest pair is a package diagonal (~34 deg off), but the
+        # snap reads package rotation, so a straight pack feels no torque.
+        # (Pair-axis readout would twist it askew chasing its own
+        # diagonal despite neighbor agreement.)
+        fps = [
+            _placed_fp("R1", "uuid-a", -10.0),
+            _dual_row("U1", "uuid-b", 0.0, 0.0),
+            _placed_fp("R3", "uuid-c", 10.0),
+        ]
+        prop = run_placement(
+            _model(fps), _align_only(), {fp.uuid for fp in fps})
+        assert prop.deltas.get("uuid-b", (0.0, 0.0, 0.0))[2] == pytest.approx(0.0, abs=1.0)
+
+    def test_rotated_dual_row_snaps_package(self):
+        # Same pack rotated 30 deg by package: the snap drives the package
+        # (not the diagonal) back to mode 0.
+        fp = _dual_row("U1", "uuid-a", 0.0, 30.0)
+        prop = run_placement(_model([fp]), _align_only(), {"uuid-a"})
+        assert "uuid-a" in prop.deltas
+        da = prop.deltas["uuid-a"][2]
+        assert da < -20.0
+        off_mode = min(abs(((30.0 + da - m + 90.0) % 180.0) - 90.0) for m in (0.0, 90.0))
+        assert off_mode <= 6.0
+
+    def test_release_cuts_torque_every_step(self):
+        # Unit-level: inside the release half-band the couple is zero even
+        # with a live target, so a fast part cannot overshoot the mode
+        # between recomputes. Outside the band the couple still applies.
+        import numpy as np
+
+        from kicad_autorouter.placement.align import apply_align_forces
+        rows = [np.array([0, 1])]
+        movable = np.array([True])
+        ref_axes = {0: (0, 1, 0.0)}
+        targets = {0: (0.0, 0.0, 0.0)}
+        committed = {0: 0.0}
+
+        def _rot(deg):
+            r = math.radians(deg)
+            c, s = math.cos(r), math.sin(r)
+            return np.array([[-c, -s], [c, s]])
+
+        f_in = apply_align_forces(
+            _rot(3.0), rows, movable, ref_axes, targets,
+            angle_k_N=5e-3, pos_k_N_m=0.0,
+            deadband_deg=10.0, committed_angles=committed)
+        assert f_in == pytest.approx(np.zeros((2, 2)), abs=1e-12)
+        f_out = apply_align_forces(
+            _rot(8.0), rows, movable, ref_axes, targets,
+            angle_k_N=5e-3, pos_k_N_m=0.0,
+            deadband_deg=10.0, committed_angles=committed)
+        assert abs(f_out).max() > 0.0
+        # Legacy default (no deadband): torque until exactly zero error.
+        f_legacy = apply_align_forces(
+            _rot(3.0), rows, movable, ref_axes, targets,
+            angle_k_N=5e-3, pos_k_N_m=0.0)
+        assert abs(f_legacy).max() > 0.0
 
     def test_off_is_noop(self):
         model = _model(list(_row(middle_angle=30.0)))

@@ -298,16 +298,15 @@ def test_docs_list_contains_physics_set():
         docs = {d["name"]: d for d in json.loads(body)["docs"]}
         for name in (
             "README.md",
+            "docs/README.md",
+            "docs/autorouting_glossary.md",
             "docs/si_force_laws.md",
-            "docs/physics_primer.qmd",
-            "docs/roadmap.md",
         ):
             assert name in docs, f"missing {name}"
-        # Rendered mapping present for the QMD primers.
-        assert docs["docs/physics_primer.qmd"]["rendered_url"] in (
-            "/docs-rendered/physics_primer.html",
-            None,  # not yet rendered on a fresh checkout
-        )
+        # Deleted docs stay unlisted (primer/roadmap were dumped with the
+        # intermediate tooling; history lives in git log).
+        for name in ("docs/physics_primer.qmd", "docs/roadmap.md"):
+            assert name not in docs, f"stale {name}"
         # Plain markdown has no rendered twin.
         assert docs["docs/si_force_laws.md"]["rendered_url"] is None
     finally:

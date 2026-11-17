@@ -157,6 +157,7 @@ def _compute_total_force(
     pad_velocities: Optional[np.ndarray] = None,
     align_targets: Optional[Dict[int, Tuple[Optional[float], float, float]]] = None,
     align_ref_axes: Optional[Dict[int, Tuple[int, int, float]]] = None,
+    align_committed_angles: Optional[Dict[int, float]] = None,
 ) -> Tuple[np.ndarray, Optional[Dict[str, np.ndarray]]]:
     """Compute total force on each pad at given positions.
 
@@ -251,6 +252,8 @@ def _compute_total_force(
             align_ref_axes, align_targets,
             angle_k_N=params.align_angle_k_N,
             pos_k_N_m=params.align_pos_k_N_m,
+            deadband_deg=params.align_deadband_deg,
+            committed_angles=align_committed_angles,
         )
     else:
         align_force = np.zeros((n_pads, 2), dtype=np.float64)
