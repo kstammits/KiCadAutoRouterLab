@@ -11,18 +11,15 @@ import math
 from typing import Collection, Dict, List, Optional, Set, Tuple
 
 import numpy as np
-from dataclasses import replace
 from shapely.geometry import Polygon
 
-from ..board_model import BoardRegion, Footprint, Pad, Point, _to_board, _to_local, is_ground_net, is_power_net_effective
+from ..board_model import BoardRegion, Footprint, Pad, _to_board, _to_local, is_ground_net, is_power_net_effective
 from ..mass import courtyard_bbox_area_m2, footprint_mass_kg
 from .contact import (
     _courtyard_outline_polygon,
     _footprint_courtyard_polygon,
     courtyard_is_degenerate,
     label_contact_force,
-    pad_copper_polygon,
-    pad_present_on_layer,
 )
 from .align import (
     ALIGN_RECOMPUTE_ITERS,
@@ -32,13 +29,10 @@ from .align import (
     courtyard_half_extents,
 )
 from .depenetrate import (
-    _body_poly_map,
     _depenetrate_labels,
     _depenetrate_positions,
     _find_spot,
-    _label_rect_poly,
     _nearby_silk_obstacles,
-    _pose_parent_silk,
 )
 from .force import ForceContext, _compute_total_force
 from .model import (
@@ -52,6 +46,7 @@ from .params import (
     STALL_MEAN_EPS_MULT,
     PlacementParams,
 )
+from .posed import PosedGeometry, build_finish_geometry
 from .rigid import (
     _clamp_rigid_step,
     _compute_footprint_pose_from_pads,
@@ -84,6 +79,7 @@ from ..board_model.labels import (
     clamp_orbit_radius,
     label_board_angle,
     label_ellipse_inside,
+    label_rect_poly,
     snap_label_angle,
 )
 # Orbit radius floor (mm): the positional clamp disc never collapses
@@ -210,7 +206,6 @@ def _orbit_label_forces(
     """
     from ..board_model.labels import (
         label_board_angle,
-        label_board_rect,
         label_halo_mm,
         label_slack_tether_force_N,
         snap_label_angle,
@@ -261,18 +256,11 @@ def _orbit_label_forces(
         # clamp disc comes from label_orbit_m).
         halo_i = label_halo_mm(lab_size[i])
         lab_halos[i] = halo_i
-        rect = label_board_rect(
+        poly = label_rect_poly(
             lab_text[i], float(node[0]), float(node[1]),
             board_angle, lab_size[i], halo_mm=halo_i,
         )
-        if rect is None:
-            continue
-        try:
-            from shapely.geometry import Polygon as _Poly
-            poly = _Poly(rect)
-        except Exception:
-            continue
-        if poly is None or poly.is_empty:
+        if poly is None:
             continue
         lab_polys[i] = poly
         try:
@@ -1919,35 +1907,13 @@ def _run_region_simulation(
                 _edge_poly = None
         except Exception:
             _edge_poly = None
-        _cu_layers = tuple(getattr(model, "copper_layers", ()) or ())
-        # Same visibility the orbit walls feel: any pad with copper on
-        # either side (THT spans sides, so it is covered once), all bodies
-        # regardless of layer — the depenetrate finishes what the shared
-        # wall law equilibrated on, with no label-only obstacle set.
-        _copper_all: List = []
-        for _i in range(n_pads):
-            try:
-                _li = region_pad_to_fp_idx[_i]
-                if _li < 0:
-                    continue
-                _fp = model.footprints[_li]
-                if not _fp.uuid:
-                    continue
-                _pose = new_poses.get(_fp.uuid)
-                _da = (_pose[2] - _fp.angle_deg) if _pose is not None else 0.0
-                _pad = region_pads[_i]
-                _posed = replace(
-                    _pad,
-                    position=Point(float(positions[_i, 0]), float(positions[_i, 1])),
-                    angle_deg=_pad.angle_deg + _da,
-                )
-                if (pad_present_on_layer(_posed, _fp.layer, "F.Cu", _cu_layers)
-                        or pad_present_on_layer(_posed, _fp.layer, "B.Cu", _cu_layers)):
-                    _poly = pad_copper_polygon(_posed)
-                    if _poly is not None and not _poly.is_empty:
-                        _copper_all.append(_poly)
-            except Exception:
-                continue
+        # One shared build: bodies, copper, and posed silk serve the parts
+        # eject, the label eject + search sweeps, and the hygiene seed
+        # below (frozen phase — nothing moves past this point).
+        _posed: PosedGeometry = build_finish_geometry(
+            model, positions, fp_uuids, fp_local_to_rows, fp_by_uuid,
+            region_pad_to_fp_idx, region_pads, new_poses,
+        )
         _lab_spec_rows: List[int] = []
         _lab_specs: List = []
         _lab_spec_radii: List[Tuple[float, float]] = []
@@ -1957,25 +1923,9 @@ def _run_region_simulation(
         # depenetrator as a starting candidate. The clamp/search frame
         # itself never moves — it stays on the parent centroid, so the
         # ellipse cannot drift off the part when home is deeply buried
-        # (that used to strand straddlers in a shifted frame). Obstacles
-        # are posed at final positions (bodies + copper already built
-        # above; silk posed per parent). Best effort: any failure leaves
-        # no seed and the spiral starts from home.
-        try:
-            _hy_bodies = _body_poly_map(
-                positions, fp_uuids, fp_local_to_rows, fp_by_uuid)
-            _hy_uuid_to_li = {u: i for i, u in enumerate(fp_uuids)}
-            _hy_silk: Dict[str, list] = {}
-            for _u in fp_uuids:
-                _fp = fp_by_uuid.get(_u)
-                if _fp is None or not _fp.silk:
-                    _hy_silk[_u] = []
-                    continue
-                _li = _hy_uuid_to_li.get(_u)
-                _rows = fp_local_to_rows[_li] if _li is not None else None
-                _hy_silk[_u], _ = _pose_parent_silk(_fp, positions, _rows)
-        except Exception:
-            _hy_bodies, _hy_silk = {}, {}
+        # (that used to strand straddlers in a shifted frame). Best
+        # effort: any failure leaves no seed and the spiral starts
+        # from home.
         for _k, _uuid in enumerate(lab_uuid):
             try:
                 _pose = new_poses.get(_uuid)
@@ -2004,21 +1954,22 @@ def _run_region_simulation(
                     try:
                         # Bare text: hygiene seeds the finish, and the
                         # finish scores true ink overlap (halo is loop-only).
-                        _rect0 = _label_rect_poly(
-                            lab_text[_k], _anchor, _ang, lab_size[_k],
+                        _rect0 = label_rect_poly(
+                            lab_text[_k], float(_anchor[0]),
+                            float(_anchor[1]), _ang, lab_size[_k],
                             0.0)
                         _obs: List = [
-                            _o for _bu, _o in _hy_bodies.items()
+                            _o for _bu, _o in _posed.bodies.items()
                             if _bu != _uuid
                         ]
-                        _obs.extend(_copper_all)
+                        _obs.extend(_posed.copper)
                         try:
                             _minx, _miny, _maxx, _maxy = _rect0.bounds
                             _hd = 0.5 * math.hypot(_maxx - _minx, _maxy - _miny)
                         except Exception:
                             _hd = 2.0
                         _obs.extend(_nearby_silk_obstacles(
-                            _anchor, _hy_win + _hd + 0.5, _hy_silk))
+                            _anchor, _hy_win + _hd + 0.5, _posed.silk))
                         _first, _best, _best_area, _cur = _find_spot(
                             _rect0, _obs, _anchor, _hy_win,
                             cover_poly=_edge_poly,
@@ -2045,8 +1996,7 @@ def _run_region_simulation(
             try:
                 if _depenetrate_labels(
                     positions, _lab_spec_rows, _lab_specs,
-                    fp_uuids, fp_local_to_rows, fp_by_uuid,
-                    _copper_all,
+                    _posed,
                     _edge_poly, _lab_spec_radii,
                 ):
                     _vel[:] = 0.0

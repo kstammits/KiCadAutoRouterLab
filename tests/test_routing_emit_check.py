@@ -150,7 +150,7 @@ def test_gate_touch_margin_flags_rule_dirty_graze():
 def test_resolve_gate_trip_rule_dirty_graze_fails_loudly():
     # Same 0.15mm graze through a tripped raster cell: at rule clearance
     # it must fail loudly, not fall back to raw (raw shares the hole).
-    from kicad_autorouter.routing.route_raw import _resolve_gate_trip
+    from kicad_autorouter.routing.stage_smooth import _resolve_gate_trip
 
     grid = _BoardGrid()
     blocked = _masks([(0, 5, c) for c in range(3, 9)])
@@ -185,7 +185,7 @@ def test_resolve_gate_trip_rule_dirty_graze_fails_loudly():
          expect_fallback=False, expect_loud=False),
 ])
 def test_resolve_gate_trip_table(case):
-    from kicad_autorouter.routing.route_raw import _resolve_gate_trip
+    from kicad_autorouter.routing.stage_smooth import _resolve_gate_trip
 
     grid = _BoardGrid()
     blocked = _masks([(0, 5, c) for c in range(3, 9)])
@@ -219,7 +219,7 @@ def test_resolve_gate_trip_rescues_endpoint_dust():
     # routed net's own pad halo (own 1x1 pad at (0.35, 0.0) touches the
     # row-5 trip cells) and the full-class margin clears 0.2mm — pure
     # endpoint raster dust, so the smoothed chord is stamped as-is.
-    from kicad_autorouter.routing.route_raw import _resolve_gate_trip
+    from kicad_autorouter.routing.stage_smooth import _resolve_gate_trip
 
     grid = _BoardGrid()
     blocked = _masks([(0, 5, c) for c in range(3, 9)])
@@ -258,7 +258,7 @@ def test_resolve_gate_trip_mid_route_dust_still_falls_back():
     # Same trip cells, but no own pad nearby (foreign pad only, far away):
     # mid-route dust keeps the old fallback behavior so flows that assume
     # raw geometry (shove gap bookkeeping) are untouched.
-    from kicad_autorouter.routing.route_raw import _resolve_gate_trip
+    from kicad_autorouter.routing.stage_smooth import _resolve_gate_trip
 
     grid = _BoardGrid()
     blocked = _masks([(0, 5, c) for c in range(3, 9)])

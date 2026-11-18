@@ -25,11 +25,8 @@ from kicad_autorouter.board_model import (
 )
 from kicad_autorouter.board_model.labels import (
     clamp_orbit_radius,
-    label_board_angle,
-    label_board_rect,
     label_halo_mm,
     label_ink_mass_kg,
-    snap_label_angle,
 )
 from kicad_autorouter.placement import PlacementParams, run_label_settle, run_placement
 from kicad_autorouter.placement.contact import label_contact_force
@@ -39,6 +36,7 @@ from .helpers import (
     assert_label_near_parent as _near_parent,
     facing_label_pair as _facing_pair,
     label_cap_radii_mm as _cap,
+    label_poly_of,
     make_board,
     make_fp,
     make_tht_pad,
@@ -330,20 +328,6 @@ def test_label_halo_is_font_fraction():
     assert label_halo_mm((0.0, 0.0)) == 0.0
 
 
-def _bare_label_poly(model, uuid):
-    """Final bare-text rect polygon of a footprint's label after deltas."""
-    from kicad_autorouter.board_model import _to_board
-    fp = next(f for f in model.footprints if f.uuid == uuid)
-    assert fp.label is not None
-    b = _to_board(fp.label.local_x_mm, fp.label.local_y_mm,
-                  fp.x_mm, fp.y_mm, fp.angle_deg, fp.layer)
-    angle = snap_label_angle(label_board_angle(
-        fp.label.local_angle_deg, fp.angle_deg))
-    return Polygon(label_board_rect(
-        fp.label.text, b.x_mm, b.y_mm, angle, fp.label.size_mm,
-        halo_mm=0.0))
-
-
 @pytest.mark.physics
 def test_far_label_comes_home_to_parent():
     """Labels are fetched to their parents, not parked at filed offsets.
@@ -382,7 +366,7 @@ def test_label_pushed_inside_board_edge():
     assert prop.stop_reason in ("converged", "stalled")
     assert "uuid-a" in prop.label_deltas
     moved = apply_deltas(model, prop.deltas, label_deltas=prop.label_deltas)
-    poly = _bare_label_poly(moved, "uuid-a")
+    poly = label_poly_of(moved, "uuid-a")
     region = Polygon([(p.x_mm, p.y_mm) for p in model.board_regions[0].polygon])
     assert region.covers(poly)
 
@@ -404,7 +388,7 @@ def test_label_ejected_from_tht_pin_disc():
     # Parent feels nothing (uncharged single pad, no neighbor): static.
     assert prop.deltas == {}
     moved = apply_deltas(model, prop.deltas, label_deltas=prop.label_deltas)
-    poly = _bare_label_poly(moved, "uuid-a")
+    poly = label_poly_of(moved, "uuid-a")
     disc = ShapelyPoint(4.0, 0.0).buffer(0.5 * math.hypot(2.0, 2.0) + 0.5)
     assert poly.disjoint(disc)
 
@@ -436,7 +420,7 @@ def test_label_pushed_off_neighbor_smd_copper():
     # Coulomb 1/d^2 diverges on overlap: genuine ejection, not a nudge.
     assert prop.label_deltas["uuid-b"][0] > 0.3
     moved = apply_deltas(model, prop.deltas, label_deltas=prop.label_deltas)
-    poly = _bare_label_poly(moved, "uuid-b")
+    poly = label_poly_of(moved, "uuid-b")
     copper = _union([pad_copper_polygon(p)
                      for p in fa.pads])
     assert poly.disjoint(copper)
@@ -504,8 +488,8 @@ def test_label_settle_clears_overlap_with_frozen_bodies():
     assert set(prop.label_deltas) == {"uuid-a", "uuid-b"}
     assert prop.stop_reason == "converged"
     moved = apply_deltas(model, prop.deltas, label_deltas=prop.label_deltas)
-    ra = _bare_label_poly(moved, "uuid-a")
-    rb = _bare_label_poly(moved, "uuid-b")
+    ra = label_poly_of(moved, "uuid-a")
+    rb = label_poly_of(moved, "uuid-b")
     assert ra.disjoint(rb)
 
 

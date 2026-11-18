@@ -25,13 +25,12 @@ import numpy as np
 from ..board_model import Footprint
 from ..board_model.labels import (
     clamp_orbit_radius,
-    label_board_rect,
+    label_rect_poly,
 )
 from .contact import (
     _contact_weights,
-    _footprint_courtyard_polygon,
-    _pose_ring,
 )
+from .posed import _body_poly_map
 from .force import _overlap_depth_mm
 from .rigid import _clamp_rigid_step, _project_rigid_poses
 
@@ -320,60 +319,18 @@ def _descend_to_clean(rect_poly, start_xy, obstacles, bboxes, anchor_xy,
     return cur, cur_area
 
 
-def _pose_parent_silk(fp, positions, rows):
-    """Posed silk strokes + centroid for one footprint.
-
-    Returns ``([(x1, y1, x2, y2, width_mm), ...], (hx, hy))`` in board
-    frame. Ghosts (and pad-less footprints) use filed geometry; the rest
-    rigid-fit from the pad cloud exactly like courtyard posing. Never
-    raises: malformed input yields empty strokes and the filed centroid.
-    """
-    try:
-        home = (float(fp.x_mm), float(fp.y_mm))
-    except (TypeError, ValueError, AttributeError):
-        return [], (0.0, 0.0)
-    segs = getattr(fp, "silk", ()) or ()
-    if not segs:
-        return [], home
-    try:
-        if getattr(fp, "ghost", False) or rows is None or len(rows) == 0:
-            return [
-                (s.start.x_mm, s.start.y_mm, s.end.x_mm, s.end.y_mm,
-                 float(s.width_mm))
-                for s in segs
-            ], home
-        pad_rows = [int(r) for r in rows]
-        ends = []
-        for s in segs:
-            ends.append((s.start.x_mm, s.start.y_mm))
-            ends.append((s.end.x_mm, s.end.y_mm))
-        fitted = _pose_ring(ends, fp, positions, pad_rows)
-        posed = [
-            (fitted[i][0], fitted[i][1], fitted[i + 1][0], fitted[i + 1][1])
-            for i in range(0, len(fitted) - 1, 2)
-        ]
-        widths = [float(s.width_mm) for s in segs]
-        home = _pose_ring([(home[0], home[1])], fp, positions, pad_rows)[0]
-        out = []
-        for i, (x1, y1, x2, y2) in enumerate(posed):
-            try:
-                out.append((x1, y1, x2, y2, widths[i]))
-            except (IndexError, TypeError, ValueError):
-                continue
-        return out, (float(home[0]), float(home[1]))
-    except Exception:
-        return [], home
-
-
 def _nearby_silk_obstacles(center_xy, reach_mm, all_posed_silk,
-                           clearance_mm=_DEPEN_SILK_CLEARANCE_MM):
+                           clearance_mm=_DEPEN_SILK_CLEARANCE_MM,
+                           cache=None):
     """Buffered silk polys of any parent near ``center_xy``.
 
-    ``all_posed_silk`` maps parent uuid to posed stroke tuples (as built
-    by :func:`_pose_parent_silk`); only strokes whose bbox (expanded by
+    ``all_posed_silk`` maps parent uuid to posed stroke tuples from the
+    shared finish geometry; only strokes whose bbox (expanded by
     ink half-width, clearance, and ``reach_mm``) meets the query disc are
     buffered, so a giant decorative outline costs one bbox reject per
-    far stroke instead of a polygon buffer. Never raises.
+    far stroke instead of a polygon buffer. When ``cache`` (a dict) is
+    given, buffered polys are memoized by stroke key and reused across
+    queries; without it each query buffers directly. Never raises.
     """
     from shapely.geometry import LineString as _LineString
 
@@ -394,12 +351,21 @@ def _nearby_silk_obstacles(center_xy, reach_mm, all_posed_silk,
                     or max(y1, y2) + ink < cy - reach
                     or min(y1, y2) - ink > cy + reach):
                 continue
+            if cache is not None:
+                key = (x1, y1, x2, y2, ink)
+                poly = cache.get(key)
+                if poly is not None:
+                    obs.append(poly)
+                    continue
             try:
-                poly = _LineString([(x1, y1), (x2, y2)]).buffer(ink, cap_style="round")
+                poly = _LineString([(x1, y1), (x2, y2)]).buffer(
+                    ink, cap_style="round")
             except Exception:
                 continue
             if poly is None or poly.is_empty:
                 continue
+            if cache is not None:
+                cache[key] = poly
             obs.append(poly)
     return obs
 
@@ -544,77 +510,11 @@ def _depenetrate_positions(
     return moved_any
 
 
-def _label_rect_poly(text, node_xy, board_angle_deg, size_mm, halo_mm):
-    """Halo-inflated label collision rect at a node, or None if degenerate."""
-    try:
-        rect = label_board_rect(
-            text, float(node_xy[0]), float(node_xy[1]),
-            float(board_angle_deg), size_mm, halo_mm=halo_mm,
-        )
-    except (TypeError, ValueError):
-        return None
-    if not rect:
-        return None
-    try:
-        from shapely.geometry import Polygon as _Polygon
-        poly = _Polygon(rect)
-    except Exception:
-        return None
-    if poly is None or poly.is_empty:
-        return None
-    return poly
-
-
-def _body_poly_map(
-    positions: np.ndarray,
-    fp_uuids: List[str],
-    fp_local_to_rows: List[np.ndarray],
-    fp_by_uuid: Dict[str, Footprint],
-) -> Dict[str, object]:
-    """Posed courtyard polygon per footprint uuid (ghosts filed, rest posed).
-
-    Shared body set for both depenetrate passes: ghosts use their filed
-    courtyards (static anchors), real footprints rebuild from current pad
-    positions. Attractor ghosts (pull-only) are not bodies — only wall
-    ghosts join the obstacle set. Skips degenerates, never raises.
-    """
-    polys: Dict[str, object] = {}
-    for li, uuid in enumerate(fp_uuids):
-        fp = fp_by_uuid.get(uuid)
-        if fp is None:
-            continue
-        if getattr(fp, "ghost", False) and getattr(fp, "ghost_attractions", ()):
-            continue
-        try:
-            rows = fp_local_to_rows[li]
-        except (IndexError, TypeError):
-            continue
-        if fp.ghost or len(rows) == 0:
-            if not fp.courtyard:
-                continue
-            poly = _footprint_courtyard_polygon(fp)
-        else:
-            try:
-                poly = _footprint_courtyard_polygon(
-                    fp, pad_positions=positions, pad_indices=[int(r) for r in rows]
-                )
-            except Exception:
-                logger.debug("courtyard polygon failed for %s", uuid)
-                continue
-        if poly is None or poly.is_empty:
-            continue
-        polys[uuid] = poly
-    return polys
-
-
 def _depenetrate_labels(
     positions: np.ndarray,
     lab_rows: List[int],
     lab_specs: List[Tuple[str, str, Tuple[float, float], float, Tuple[float, float], str]],
-    fp_uuids: List[str],
-    fp_local_to_rows: List[np.ndarray],
-    fp_by_uuid: Dict[str, Footprint],
-    copper_polys: List[object],
+    posed,
     edge_poly: Optional[object],
     radius_mm: object,
     max_rounds: int = _DEPEN_LABEL_MAX_ROUNDS,
@@ -631,14 +531,15 @@ def _depenetrate_labels(
     mean parent-local clamp ellipses (body half-extents + text extent,
     so sticks grow room only along their length). The finish scores bare
     text rects — the font halo is the loop's soft settlement force, not
-    finish dirt — against static bodies, copper, and the region edge;
+    finish dirt — against the shared posed geometry (static bodies,
+    copper, and the region edge from one frozen-phase build);
     the label always takes the full correction (one-way invariant);
     label-vs-label splits evenly like movable parts.
     A label's own parent body is excluded (sitting inside its own
     courtyard is DRC-legal), but the parent's own silk strokes still eject
     (ink touching the text trips silk clearance, so only the courtyard —
-    never the artwork — is sit-able ground). All copper repels via
-    ``copper_polys``, including the parent's own: a label buried in its
+    never the artwork — is sit-able ground). All copper repels,
+    including the parent's own: a label buried in its
     own pads is not visible after assembly, so the eject pushes it out
     and the search below relocates it to nearest-clean instead of
     parking it. Every move is clipped to the per-label ellipse
@@ -702,31 +603,15 @@ def _depenetrate_labels(
         except (TypeError, ValueError):
             pass
         return radius
-    body_items = list(
-        _body_poly_map(positions, fp_uuids, fp_local_to_rows, fp_by_uuid).items()
-    )
+    body_items = list(posed.bodies.items())
     silk_items: Dict[str, list] = {}
-    all_posed_silk: Dict[str, list] = {}
-    _uuid_to_li = {uuid: li for li, uuid in enumerate(fp_uuids)}
-    for uuid in fp_uuids:
-        fp = fp_by_uuid.get(uuid)
-        if fp is None or not fp.silk:
-            all_posed_silk[uuid] = []
-            continue
-        try:
-            li = _uuid_to_li.get(uuid)
-            rows = fp_local_to_rows[li] if li is not None else None
-            strokes, _home = _pose_parent_silk(fp, positions, rows)
-            all_posed_silk[uuid] = strokes
-        except Exception:
-            all_posed_silk[uuid] = []
     for k in order:
         parent = lab_specs[k][5]
         if parent in silk_items:
             continue
         silk_items[parent] = []
         try:
-            for x1, y1, x2, y2, width in all_posed_silk.get(parent, ()):
+            for x1, y1, x2, y2, width in posed.silk.get(parent, ()):
                 dx, dy = x2 - x1, y2 - y1
                 seg_len = math.hypot(dx, dy)
                 if seg_len <= 1e-12:
@@ -754,8 +639,9 @@ def _depenetrate_labels(
         rects = {}
         for k in order:
             uuid, text, size, angle, _anchor, _parent = lab_specs[k][:6]
-            rects[uuid] = _label_rect_poly(
-                text, positions[lab_rows[k]], angle, size, 0.0)
+            node = positions[lab_rows[k]]
+            rects[uuid] = label_rect_poly(
+                text, float(node[0]), float(node[1]), angle, size, 0.0)
         return rects
 
     def _bounds_of(poly):
@@ -766,45 +652,10 @@ def _depenetrate_labels(
 
     # Static per call: body/copper geometry never moves during the label
     # pass (labels are one-way), so measure bounds once instead of per
-    # label per sweep. Silk strokes buffer on first touch and reuse the
-    # cached poly for every later label/sweep in this call.
+    # label per sweep. Silk strokes buffer on first touch into the shared
+    # memo and reuse the cached poly for every later label/sweep in this call.
     _body_bboxes = [(bu, obs, _bounds_of(obs)) for bu, obs in body_items]
-    _copper_bboxes = [(_bounds_of(obs), obs) for obs in copper_polys]
-    _silk_cache: Dict[tuple, object] = {}
-
-    def _nearby_silk_cached(center_xy, reach_mm):
-        from shapely.geometry import LineString as _LineString
-
-        try:
-            cx, cy = float(center_xy[0]), float(center_xy[1])
-            reach = max(float(reach_mm), 0.0)
-        except (TypeError, ValueError, IndexError):
-            return []
-        obs = []
-        for strokes in all_posed_silk.values():
-            for x1, y1, x2, y2, width in strokes:
-                try:
-                    ink = float(width) / 2.0 + float(_DEPEN_SILK_CLEARANCE_MM)
-                except (TypeError, ValueError):
-                    continue
-                if (max(x1, x2) + ink < cx - reach
-                        or min(x1, x2) - ink > cx + reach
-                        or max(y1, y2) + ink < cy - reach
-                        or min(y1, y2) - ink > cy + reach):
-                    continue
-                key = (x1, y1, x2, y2, ink)
-                poly = _silk_cache.get(key)
-                if poly is None:
-                    try:
-                        poly = _LineString([(x1, y1), (x2, y2)]).buffer(
-                            ink, cap_style="round")
-                    except Exception:
-                        continue
-                    if poly is None or poly.is_empty:
-                        continue
-                    _silk_cache[key] = poly
-                obs.append(poly)
-        return obs
+    _copper_bboxes = [(_bounds_of(obs), obs) for obs in posed.copper]
 
     def _eject_from(poly, obs, share=1.0, ux=None, uy=None):
         """Relaxed eject of poly from blocker obs (or None).
@@ -903,7 +754,7 @@ def _depenetrate_labels(
                 push = _eject_from(poly, obs, 1.0)
                 if push is not None:
                     mx, my = mx + push[0], my + push[1]
-            for obs in copper_polys:
+            for obs in posed.copper:
                 push = _eject_from(poly, obs, 1.0)
                 if push is not None:
                     mx, my = mx + push[0], my + push[1]
@@ -1007,7 +858,8 @@ def _depenetrate_labels(
                 oboxes.append(_bb)
             try:
                 reach = _rk(k) + half_diag + 0.5
-                for _silk_poly in _nearby_silk_cached(anchor, reach):
+                for _silk_poly in _nearby_silk_obstacles(
+                        anchor, reach, posed.silk, cache=posed.silk_memo):
                     obstacles.append(_silk_poly)
                     oboxes.append(_bounds_of(_silk_poly))
             except (ValueError, TypeError, AttributeError, IndexError):
@@ -1106,8 +958,8 @@ def _depenetrate_labels(
             if abs(nx - float(node[0])) > 1e-9 or abs(ny - float(node[1])) > 1e-9:
                 positions[lab_rows[k], 0] = nx
                 positions[lab_rows[k], 1] = ny
-                rects[uuid] = _label_rect_poly(
-                    lab_specs[k][1], (nx, ny), lab_specs[k][3],
+                rects[uuid] = label_rect_poly(
+                    lab_specs[k][1], nx, ny, lab_specs[k][3],
                     lab_specs[k][2], 0.0)
                 swept = True
         if swept:

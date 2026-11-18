@@ -167,6 +167,40 @@ def label_board_rect(
     return label_rect_corners(cx_mm, cy_mm, w + 2 * hw, h + 2 * hw, board_angle_deg)
 
 
+def label_rect_poly(
+    text: str,
+    cx_mm: float,
+    cy_mm: float,
+    board_angle_deg: float,
+    size_mm: Tuple[float, float],
+    halo_mm: float = 0.0,
+):
+    """Posed label rect as a shapely Polygon, or None if degenerate.
+
+    Single construction site for collision rects: the placement finish
+    (bare text), the loop contact pre-pass (halo-inflated), and tests
+    share this instead of each wrapping ``label_board_rect``.
+    """
+    from shapely.geometry import Polygon as _Polygon
+
+    try:
+        rect = label_board_rect(
+            text, float(cx_mm), float(cy_mm),
+            float(board_angle_deg), size_mm, halo_mm=halo_mm,
+        )
+    except (TypeError, ValueError):
+        return None
+    if not rect:
+        return None
+    try:
+        poly = _Polygon(rect)
+    except Exception:
+        return None
+    if poly is None or poly.is_empty:
+        return None
+    return poly
+
+
 def label_disc_radii_mm(
     text: str,
     size_mm: Tuple[float, float],

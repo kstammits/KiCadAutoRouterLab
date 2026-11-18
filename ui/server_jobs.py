@@ -28,12 +28,11 @@ from kicad_autorouter.routing.grid import create_grid_from_model
 from kicad_autorouter.routing.obstacles import build_occupancy_grid
 from kicad_autorouter.routing.pipeline import (
     RoutingParams,
-    _tht_sites_by_net,
     refine_routing,
     route_nets,
 )
+from kicad_autorouter.routing.stage_grid import _tht_sites_by_net, _resolve_grid_layers
 from kicad_autorouter.routing.retry import route_with_retry
-from kicad_autorouter.routing.route_raw import _resolve_grid_layers
 from kicad_autorouter.routing.polish import polish_routes
 
 from ui.debug_grids import _cost_grid_to_debug

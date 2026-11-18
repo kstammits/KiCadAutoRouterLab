@@ -148,7 +148,7 @@ def test_own_tht_drill_punched_free_foreign_blocked_kept():
     from kicad_autorouter.routing.obstacles import (
         FREE, HIGH_COST, build_occupancy_grid, tht_drill_cells,
     )
-    from kicad_autorouter.routing.route_raw import _punched_search_grid
+    from kicad_autorouter.routing.stage_grid import _punched_search_grid
     _, model = _tfree_model()
     grid = create_grid_from_model(model, resolution_mm=RES, margin_mm=2.0)
     cost = build_occupancy_grid(model, grid)

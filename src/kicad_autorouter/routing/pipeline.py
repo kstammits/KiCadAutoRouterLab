@@ -67,17 +67,19 @@ class RoutingResult:
     net_stats: Dict[str, dict] = field(default_factory=dict)  # net -> per-net cost attribution {ok, expansions, wall_s, timings} (route_raw; benchmarks)
 
 
-from .route_raw import (
-    RawRoutes,
-    route_raw,
+from .route_raw import RawRoutes, route_raw
+from .stage_grid import (
     _resolve_grid_layers,
     _disallowed_terminal_layers,
-    _terminals_for_net,
-    terminals_for_net,
-    _group_terminals_by_region,
     _width_cells,
     _inner_plane_layers_for_net,
     _plan_plane_stubs,
+    _tht_sites_by_net,
+)
+from .stage_chunks import (
+    _terminals_for_net,
+    terminals_for_net,
+    _group_terminals_by_region,
     _branch_paths,
     _apply_route_to_grid,
     _chunk_terminals,
@@ -85,15 +87,15 @@ from .route_raw import (
     _branch_cells,
     _check_chunk_coverage,
     _resume_progress,
-    _route_chunk,
-    _route_escapes_board,
-    _mark_line_blocked,
-    _smooth_result,
-    _stamp_fitted_pieces,
-    _tht_sites_by_net,
-    _build_tht_via_mask,
     _rip_up_nets_from_model,
     _strip_gnd_blockers_from_model,
+    _mark_line_blocked,
+    _stamp_fitted_pieces,
+)
+from .stage_smooth import _smooth_result, _route_escapes_board
+from .stage_flight import _route_chunk
+from .obstacles import (
+    _build_tht_via_mask,
     track_corridor_radius_cells,
     via_halo_radius_cells,
 )

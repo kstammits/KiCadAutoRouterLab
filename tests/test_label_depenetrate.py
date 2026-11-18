@@ -7,8 +7,8 @@ own-parent silk strokes eject (ink touching text trips silk clearance
 even though sitting inside the own courtyard stays legal), and clean
 labels are untouched. Body obstacles go through the same
 ``_body_poly_map`` the parts pass uses (ghost courtyards here — no pad
-rows needed); label bodies are the halo-inflated rects the wall law
-separates, same relax, no DRC margins.
+rows needed); label bodies are bare-text rects (the halo is the loop's
+soft settlement force, never finish dirt), same relax, no DRC margins.
 """
 
 import math
@@ -18,6 +18,7 @@ import pytest
 from shapely.geometry import LineString, Polygon
 
 from kicad_autorouter.board_model import Footprint, Point, SilkSegment
+from kicad_autorouter.board_model.labels import label_rect_poly
 from kicad_autorouter.placement.depenetrate import _depenetrate_labels
 
 
@@ -42,13 +43,23 @@ def _specs(nodes, angle=0.0):
     ]
 
 
-def _bodies(*ghosts):
-    uuids = [g.uuid for g in ghosts]
-    return (
-        uuids,
-        [np.array([], dtype=int) for _ in uuids],
-        {g.uuid: g for g in ghosts},
-    )
+def _posed(*ghosts, copper=()):
+    """Shared frozen geometry: box bodies from ghost courtyards + posed silk."""
+    from kicad_autorouter.placement.posed import PosedGeometry
+    g = PosedGeometry()
+    for gh in ghosts:
+        xs = [p.x_mm for seg in (gh.courtyard or ()) for p in seg]
+        ys = [p.y_mm for seg in (gh.courtyard or ()) for p in seg]
+        if xs and ys:
+            g.bodies[gh.uuid] = Polygon([
+                (min(xs), min(ys)), (max(xs), min(ys)),
+                (max(xs), max(ys)), (min(xs), max(ys))])
+        for st in (getattr(gh, "silk", ()) or ()):
+            g.silk.setdefault(gh.uuid, []).append(
+                (st.start.x_mm, st.start.y_mm, st.end.x_mm, st.end.y_mm,
+                 float(st.width_mm)))
+    g.copper = list(copper)
+    return g
 
 
 @pytest.mark.unit
@@ -56,28 +67,25 @@ def test_overlapping_labels_split_evenly():
     pos = np.array([[0.0, 0.0], [0.3, 0.0]], dtype=np.float64)
     nodes = [(0.0, 0.0), (0.3, 0.0)]
     assert _depenetrate_labels(
-        pos, [0, 1], _specs(nodes), [], [], {}, [], None, 5.0)
+        pos, [0, 1], _specs(nodes), _posed(), None, 5.0)
     assert pos[0, 0] < 0.0 < pos[1, 0]
     assert math.isclose(pos[0, 0] + pos[1, 0], 0.3, abs_tol=1e-6)
-    from kicad_autorouter.board_model.labels import label_board_rect
-    pa = Polygon(label_board_rect(
-        "R10", pos[0, 0], pos[0, 1], 0.0, (1.0, 1.0), halo_mm=0.0))
-    pb = Polygon(label_board_rect(
-        "R10", pos[1, 0], pos[1, 1], 0.0, (1.0, 1.0), halo_mm=0.0))
+    pa = label_rect_poly(
+        "R10", pos[0, 0], pos[0, 1], 0.0, (1.0, 1.0), halo_mm=0.0)
+    pb = label_rect_poly(
+        "R10", pos[1, 0], pos[1, 1], 0.0, (1.0, 1.0), halo_mm=0.0)
     assert pa.disjoint(pb) or pa.intersection(pb).area <= 1e-6
 
 
 @pytest.mark.unit
 def test_label_takes_full_correction_against_body():
     ghost = _ghost("other", -1.0, -1.0, 1.0, 1.0)
-    uuids, rows, by_uuid = _bodies(ghost)
     pos = np.array([[0.0, 0.0]], dtype=np.float64)
     assert _depenetrate_labels(
         pos, [0], _specs([(0.0, 0.0)]),
-        uuids, rows, by_uuid, [], None, 5.0)
-    from kicad_autorouter.board_model.labels import label_board_rect
-    rect = Polygon(label_board_rect(
-        "R10", pos[0, 0], pos[0, 1], 0.0, (1.0, 1.0), halo_mm=0.0))
+        _posed(ghost), None, 5.0)
+    rect = label_rect_poly(
+        "R10", pos[0, 0], pos[0, 1], 0.0, (1.0, 1.0), halo_mm=0.0)
     body = Polygon([(-1, -1), (1, -1), (1, 1), (-1, 1)])
     assert rect.disjoint(body) or rect.intersection(body).area <= 1e-6
 
@@ -87,22 +95,20 @@ def test_own_parent_body_is_sitable():
     # Silk over its own courtyard is DRC-legal, so the parent body never
     # ejects its own label (its copper still would — covered separately).
     ghost = _ghost("parent-0", -1.0, -1.0, 1.0, 1.0)
-    uuids, rows, by_uuid = _bodies(ghost)
     pos = np.array([[0.0, 0.0]], dtype=np.float64)
     specs = [("u0", "R10", (1.0, 1.0), 0.0, (0.0, 0.0), "parent-0")]
     assert not _depenetrate_labels(
-        pos, [0], specs, uuids, rows, by_uuid, [], None, 5.0)
+        pos, [0], specs, _posed(ghost), None, 5.0)
     assert pos[0, 0] == 0.0 and pos[0, 1] == 0.0
 
 
 @pytest.mark.unit
 def test_clean_label_untouched():
     ghost = _ghost("other", 10.0, 10.0, 12.0, 12.0)
-    uuids, rows, by_uuid = _bodies(ghost)
     pos = np.array([[0.0, 0.0]], dtype=np.float64)
     assert not _depenetrate_labels(
         pos, [0], _specs([(0.0, 0.0)]),
-        uuids, rows, by_uuid, [], None, 5.0)
+        _posed(ghost), None, 5.0)
     assert pos[0, 0] == 0.0 and pos[0, 1] == 0.0
 
 
@@ -110,14 +116,6 @@ def _silk_ghost(uuid, segments):
     base = _ghost(uuid, 10.0, 10.0, 12.0, 12.0)
     from dataclasses import replace
     return replace(base, silk=tuple(segments))
-
-
-def _inked_rect(text, x, y, angle=0.0):
-    # Bare text rect: the finish scores true ink overlap (the halo is the
-    # loop's soft settlement force, never finish dirt).
-    from kicad_autorouter.board_model.labels import label_board_rect
-    return Polygon(label_board_rect(
-        text, x, y, angle, (1.0, 1.0), halo_mm=0.0))
 
 
 @pytest.mark.unit
@@ -128,13 +126,12 @@ def test_own_parent_silk_ejects_label():
     parent = _silk_ghost("parent-0", [
         SilkSegment(Point(-3.0, 0.0), Point(3.0, 0.0), 0.12),
     ])
-    uuids, rows, by_uuid = _bodies(parent)
     pos = np.array([[0.0, 0.0]], dtype=np.float64)
     specs = [("u0", "R10", (1.0, 1.0), 0.0, (0.0, 0.0), "parent-0")]
     assert _depenetrate_labels(
-        pos, [0], specs, uuids, rows, by_uuid, [], None, 5.0)
+        pos, [0], specs, _posed(parent), None, 5.0)
     assert math.hypot(pos[0, 0], pos[0, 1]) <= 5.0
-    rect = _inked_rect("R10", pos[0, 0], pos[0, 1])
+    rect = label_rect_poly("R10", pos[0, 0], pos[0, 1], 0.0, (1.0, 1.0))
     ink = LineString([(-3.0, 0.0), (3.0, 0.0)]).buffer(0.06 + 0.2)
     assert rect.disjoint(ink) or rect.intersection(ink).area <= 1e-6
 
@@ -152,13 +149,10 @@ def test_sweep_scores_label_rect_not_nearby_silk():
         _ghost("silk-parent", 10.0, 10.0, 12.0, 12.0),
         silk=(SilkSegment(Point(3.5, 0.0), Point(5.5, 0.0), 0.12),),
     )
-    uuids = [parent.uuid, blocker.uuid, silked.uuid]
-    rows = [np.array([], dtype=int) for _ in uuids]
-    by_uuid = {g.uuid: g for g in (parent, blocker, silked)}
     pos = np.array([[0.0, 0.0]], dtype=np.float64)
     specs = [("u0", "R10", (1.0, 1.0), 0.0, (0.0, 0.0), "parent-0")]
     assert not _depenetrate_labels(
-        pos, [0], specs, uuids, rows, by_uuid, [], None, 5.0)
+        pos, [0], specs, _posed(parent, blocker, silked), None, 5.0)
     assert pos[0, 0] == 0.0 and pos[0, 1] == 0.0
 
 
@@ -168,13 +162,12 @@ def test_own_pad_copper_ejects_label():
     # must move off, not sit on copper. The eject pushes it out and the
     # search relocates it to nearest-clean.
     parent = _ghost("parent-0", 10.0, 10.0, 12.0, 12.0)
-    uuids, rows, by_uuid = _bodies(parent)
     pos = np.array([[0.0, 0.0]], dtype=np.float64)
     specs = [("u0", "R10", (1.0, 1.0), 0.0, (0.0, 0.0), "parent-0")]
     copper = [Polygon([(0.5, -0.5), (1.5, -0.5), (1.5, 0.5), (0.5, 0.5)])]
     assert _depenetrate_labels(
-        pos, [0], specs, uuids, rows, by_uuid, copper, None, 5.0)
-    rect = _inked_rect("R10", pos[0, 0], pos[0, 1])
+        pos, [0], specs, _posed(parent, copper=copper), None, 5.0)
+    rect = label_rect_poly("R10", pos[0, 0], pos[0, 1], 0.0, (1.0, 1.0))
     assert rect.disjoint(copper[0]) \
         or rect.intersection(copper[0]).area <= 1e-6
 
@@ -249,13 +242,12 @@ def test_trapped_in_closed_loop_searches_clean_spot():
     # loop is sized so bare text touches the enclosing strokes (halo is
     # loop-only, never finish dirt).
     parent = _silk_ghost("parent-0", _square_loop(0.7))
-    uuids, rows, by_uuid = _bodies(parent)
     pos = np.array([[0.0, 0.0]], dtype=np.float64)
     specs = [("u0", "D1", (1.0, 1.0), 0.0, (2.0, 0.0), "parent-0")]
     assert _depenetrate_labels(
-        pos, [0], specs, uuids, rows, by_uuid, [], None, 6.0)
+        pos, [0], specs, _posed(parent), None, 6.0)
     assert math.hypot(pos[0, 0] - 2.0, pos[0, 1]) <= 6.0
-    rect = _inked_rect("D1", pos[0, 0], pos[0, 1])
+    rect = label_rect_poly("D1", pos[0, 0], pos[0, 1], 0.0, (1.0, 1.0))
     for s in parent.silk:
         ink = LineString([
             (s.start.x_mm, s.start.y_mm), (s.end.x_mm, s.end.y_mm),
@@ -272,12 +264,11 @@ def test_search_reaches_neighbor_silk():
     other = _silk_ghost("other", [
         SilkSegment(Point(-3.0, 0.0), Point(3.0, 0.0), 0.12),
     ])
-    uuids, rows, by_uuid = _bodies(parent, other)
     pos = np.array([[0.0, 0.0]], dtype=np.float64)
     specs = [("u0", "R10", (1.0, 1.0), 0.0, (0.0, 0.0), "parent-0")]
     assert _depenetrate_labels(
-        pos, [0], specs, uuids, rows, by_uuid, [], None, 5.0)
-    rect = _inked_rect("R10", pos[0, 0], pos[0, 1])
+        pos, [0], specs, _posed(parent, other), None, 5.0)
+    rect = label_rect_poly("R10", pos[0, 0], pos[0, 1], 0.0, (1.0, 1.0))
     for s in other.silk:
         ink = LineString([
             (s.start.x_mm, s.start.y_mm), (s.end.x_mm, s.end.y_mm),

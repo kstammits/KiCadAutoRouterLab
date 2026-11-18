@@ -395,6 +395,25 @@ def _pad_centroid_mm(fp: Footprint) -> Tuple[float, float]:
     return (sum(xs) / len(xs), sum(ys) / len(ys))
 
 
+def label_poly_of(model: BoardModel, uuid: str):
+    """Final bare-text rect polygon of a footprint's label after deltas."""
+    from kicad_autorouter.board_model import _to_board as _tb
+    from kicad_autorouter.board_model.labels import (
+        label_board_angle,
+        label_rect_poly,
+        snap_label_angle,
+    )
+    fp = next(f for f in model.footprints if f.uuid == uuid)
+    assert fp.label is not None
+    b = _tb(fp.label.local_x_mm, fp.label.local_y_mm,
+            fp.x_mm, fp.y_mm, fp.angle_deg, fp.layer)
+    angle = snap_label_angle(label_board_angle(
+        fp.label.local_angle_deg, fp.angle_deg))
+    return label_rect_poly(
+        fp.label.text, b.x_mm, b.y_mm, angle, fp.label.size_mm,
+        halo_mm=0.0)
+
+
 def facing_label_pair(label_w_mm: float = 6.0, gap_mm: float = 4.0):
     """Two netted parts side by side with big facing labels.
 

@@ -29,15 +29,15 @@ from .obstacles import (
     via_halo_radius_cells,
 )
 from .params import RoutingParams, resolve_clearance
-from .route_raw import (
+from .stage_chunks import (
     _apply_route_to_grid,
     _branch_cells,
     _branch_paths,
     _rip_up_nets_from_model,
-    _smooth_result,
     _terminals_for_net,
-    _width_cells,
 )
+from .stage_grid import _width_cells
+from .stage_smooth import _smooth_result
 from .router import SECONDARY_BLOCKED, RoutingCancelled
 from .router import RouteResult as NetRouteResult
 from .smooth import (
