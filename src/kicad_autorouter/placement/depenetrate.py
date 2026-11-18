@@ -26,7 +26,6 @@ from ..board_model import Footprint
 from ..board_model.labels import (
     clamp_orbit_radius,
     label_board_rect,
-    label_halo_mm,
 )
 from .contact import (
     _contact_weights,
@@ -46,15 +45,24 @@ _DEPEN_MAX_ROT_RAD = math.radians(2.0)
 # round. Relax stays shared, so big penetrations still need ~25 rounds
 # to converge geometrically; the cap only bounds obstacle fights.
 _DEPEN_LABEL_MAX_ROUNDS = 30
+# Eject travel cap: the eject is local separation, not relocation. Without
+# a counter-force (the spring lives in the loop) repeated Jacobi rounds
+# can walk a label across its whole ellipse (measured: 17 mm on a crowded
+# jack) while the search that follows is home-framed and would have kept
+# it near. Longer moves belong to the search, which picks nearest-clean.
+_DEPEN_EJECT_TRAVEL_CAP_MM = 2.0
 # Own-silk clearance for the label ejectors: ink edge to text-bbox gap in
-# mm. Matches KiCad's default silk-to-silk clearance order; the text side
-# already carries its halo in the label rect, so this buffers only the
-# silk side (half stroke width + this margin).
+# mm. Matches KiCad's default silk-to-silk clearance order; the finish
+# scores bare text (the halo is the loop's soft force, not finish dirt),
+# so this buffers the full text-to-ink gap on the silk side
+# (half stroke width + this margin).
 _DEPEN_SILK_CLEARANCE_MM = 0.2
-# Candidate ring counts for the clean-spot search: the anchor plus two
-# rings of eight (half/full radius) spiral outward, nearest-first so the
-# first clean hit is also the closest to home.
-_CLEAN_SPOT_RING_N = 8
+# Candidate spiral for the clean-spot search: the anchor plus four rings
+# of sixteen, nearest-first; the downhill walk below finishes what the
+# spiral starts.
+_CLEAN_SPOT_RING_N = 16
+_DESCEND_STEP_MM = 0.25
+_DESCEND_MAX_MOVES = 24
 
 
 def _overlap_area_mm2(cand, obs_list, bboxes):
@@ -81,15 +89,17 @@ def _overlap_area_mm2(cand, obs_list, bboxes):
 
 
 def _score_spots(rect_poly, obstacles, center_xy, radius_mm, cover_poly=None,
-                 bboxes=None):
+                 bboxes=None, inside=None):
     """Yield ``(centroid, dirty_area)`` for the current pos then the spiral.
 
     Shared candidate engine: current position first (clean labels test
-    clean immediately), then center plus two rings inside ``radius_mm``.
+    clean immediately), then center plus four rings inside ``radius_mm``.
     ``dirty_area`` is the raw total overlap (dust included); winners are
     picked by the callers. Deterministic order. ``bboxes`` may carry
     precomputed ``obs.bounds`` aligned with ``obstacles`` to skip the
-    per-scan rebuild.
+    per-scan rebuild. ``inside`` is an optional ``(x, y) -> bool``
+    candidate filter (the label clamp ellipse); rejected candidates are
+    never yielded.
     """
     try:
         if rect_poly is None or rect_poly.is_empty:
@@ -133,7 +143,7 @@ def _score_spots(rect_poly, obstacles, center_xy, radius_mm, cover_poly=None,
 
     seen = set()
     points = [(cx0, cy0), (cenx, ceny)]
-    for frac in (0.5, 1.0):
+    for frac in (0.25, 0.5, 0.75, 1.0):
         for i in range(_CLEAN_SPOT_RING_N):
             a = 2.0 * math.pi * i / _CLEAN_SPOT_RING_N
             points.append((cenx + radius * frac * math.cos(a),
@@ -143,13 +153,19 @@ def _score_spots(rect_poly, obstacles, center_xy, radius_mm, cover_poly=None,
         if key in seen:
             continue
         seen.add(key)
+        if inside is not None:
+            try:
+                if not inside(tx, ty):
+                    continue
+            except Exception:
+                continue
         spot, area = _at(tx, ty)
         if spot is not None:
             yield spot, area
 
 
 def _find_spot(rect_poly, obstacles, center_xy, radius_mm, cover_poly=None,
-               bboxes=None):
+               bboxes=None, inside=None):
     """Single scan over the shared candidate spiral.
 
     Returns ``(first_clean, best, best_area, cur_area)`` where
@@ -161,7 +177,7 @@ def _find_spot(rect_poly, obstacles, center_xy, radius_mm, cover_poly=None,
     first_clean, best, best_area, cur_area = None, None, math.inf, None
     for spot, area in _score_spots(
         rect_poly, obstacles, center_xy, radius_mm, cover_poly,
-        bboxes=bboxes,
+        bboxes=bboxes, inside=inside,
     ):
         if cur_area is None:
             cur_area = area
@@ -175,11 +191,11 @@ def _find_spot(rect_poly, obstacles, center_xy, radius_mm, cover_poly=None,
 
 
 def _clean_spot(rect_poly, obstacles, center_xy, radius_mm, cover_poly=None,
-                bboxes=None):
+               bboxes=None, inside=None):
     """First fully-clean centroid for ``rect_poly``, spiraling out from center.
 
     Body-agnostic (no label/part concepts): the current position is tested
-    first (clean labels never move), then the center plus two rings inside
+    first (clean labels never move), then the center plus four rings inside
     ``radius_mm`` — nearest-to-center wins, which re-homes drifted labels
     instead of wandering. Each candidate translates the rect so its
     centroid lands on it, and wins when disjoint-or-dust from every
@@ -189,13 +205,13 @@ def _clean_spot(rect_poly, obstacles, center_xy, radius_mm, cover_poly=None,
     """
     first_clean, _best, _best_area, _cur = _find_spot(
         rect_poly, obstacles, center_xy, radius_mm, cover_poly,
-        bboxes=bboxes,
+        bboxes=bboxes, inside=inside,
     )
     return first_clean
 
 
 def _best_spot(rect_poly, obstacles, center_xy, radius_mm, cover_poly=None,
-               bboxes=None):
+               bboxes=None, inside=None):
     """Least-dirty ``(centroid, area)`` over the shared candidate spiral.
 
     Tested fallback companion to :func:`_clean_spot` (see
@@ -206,9 +222,102 @@ def _best_spot(rect_poly, obstacles, center_xy, radius_mm, cover_poly=None,
     """
     _first, best, best_area, _cur = _find_spot(
         rect_poly, obstacles, center_xy, radius_mm, cover_poly,
-        bboxes=bboxes,
+        bboxes=bboxes, inside=inside,
     )
     return best, best_area
+
+
+def _descend_to_clean(rect_poly, start_xy, obstacles, bboxes, anchor_xy,
+                      bound_mm, angle_deg=0.0, cover_poly=None,
+                      clean_area_mm2=_DEPEN_CLEAN_AREA_MM2):
+    """Downhill walk from ``start_xy`` toward a fully-clean centroid.
+
+    Fixed ring radii can straddle a narrow clean slot, so from a spiral
+    candidate this steps to the least-dirty of 8 compass neighbors
+    (fixed E-first order, ``_DESCEND_STEP_MM`` stride). Flat
+    neighborhoods cross too (a label straddling its own pads looks
+    equally dirty until the box edge clears copper): equal-dirt moves
+    over unvisited cells only. Stops at the first clean spot, on no
+    improving or plateau move, or after ``_DESCEND_MAX_MOVES`` moves.
+    Every candidate is translated-rect like the spiral, clipped to the
+    label ellipse (``bound_mm`` + ``angle_deg``) and ``cover_poly``.
+    Returns ``(spot, area)`` — the clean spot when one is reached, else
+    the least-dirty visited (the start itself when stuck), or
+    ``(None, inf)`` when nothing is testable. Callers fold the result
+    into their least-dirty fallback. Deterministic: fixed neighbor
+    order, first minimum wins ties.
+    """
+    from shapely.affinity import translate as _translate
+
+    from ..board_model.labels import label_ellipse_inside as _ellin
+
+    try:
+        cx0, cy0 = rect_poly.centroid.x, rect_poly.centroid.y
+        sx, sy = float(start_xy[0]), float(start_xy[1])
+    except (TypeError, ValueError, IndexError, AttributeError):
+        return None
+    try:
+        obs_list = list(obstacles)
+        bbs = list(bboxes) if bboxes is not None else [None] * len(obs_list)
+    except TypeError:
+        return None
+    inside = _ellin(anchor_xy, bound_mm, angle_deg)
+
+    def _area_at(tx, ty):
+        try:
+            cand = _translate(rect_poly, xoff=(tx - cx0), yoff=(ty - cy0))
+        except Exception:
+            return None
+        if not inside(tx, ty):
+            return None
+        if cover_poly is not None:
+            try:
+                if not cover_poly.covers(cand):
+                    return None
+            except Exception:
+                return None
+        try:
+            return _overlap_area_mm2(cand, obs_list, bbs)
+        except Exception:
+            return None
+
+    cur = (sx, sy)
+    cur_area = _area_at(sx, sy)
+    if cur_area is None:
+        return None, math.inf
+    if cur_area <= clean_area_mm2:
+        return cur, cur_area
+    step = _DESCEND_STEP_MM
+    order = ((1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (-1.0, 1.0),
+             (-1.0, 0.0), (-1.0, -1.0), (0.0, -1.0), (1.0, -1.0))
+    norm = math.sqrt(2.0)
+    # Plateaus cross too (own-pad straddles look equally dirty in every
+    # direction until the box edge clears copper): moves are
+    # non-increasing over unvisited cells, strict improvement first.
+    seen = {(round(sx, 6), round(sy, 6))}
+    for _ in range(_DESCEND_MAX_MOVES):
+        best, best_area = None, cur_area
+        for dx, dy in order:
+            n = norm if dx != 0.0 and dy != 0.0 else 1.0
+            tx, ty = cur[0] + step * dx / n, cur[1] + step * dy / n
+            key = (round(tx, 6), round(ty, 6))
+            if key in seen:
+                continue
+            a = _area_at(tx, ty)
+            if a is None:
+                continue
+            if a < best_area - 1e-12:
+                best, best_area = (tx, ty), a
+            elif (best is None and a <= cur_area + 1e-12
+                    and best_area >= cur_area - 1e-12):
+                best, best_area = (tx, ty), a
+        if best is None:
+            return cur, cur_area
+        seen.add((round(best[0], 6), round(best[1], 6)))
+        cur, cur_area = best, best_area
+        if cur_area <= clean_area_mm2:
+            return cur, cur_area
+    return cur, cur_area
 
 
 def _pose_parent_silk(fp, positions, rows):
@@ -507,30 +616,70 @@ def _depenetrate_labels(
     fp_by_uuid: Dict[str, Footprint],
     copper_polys: List[object],
     edge_poly: Optional[object],
-    radius_mm: float,
+    radius_mm: object,
     max_rounds: int = _DEPEN_LABEL_MAX_ROUNDS,
 ) -> bool:
     """Eject settled labels out of true body/copper/edge penetration.
 
     ``lab_specs`` parallels ``lab_rows`` as (uuid, text, size_mm,
-    board_angle_deg, anchor_xy_mm, parent_uuid). Bodies, copper, and the
-    region edge are static — the label always takes the full correction
-    (one-way invariant); label-vs-label splits evenly like movable parts.
+    board_angle_deg, anchor_xy_mm, parent_uuid[, parent_angle_deg[,
+    search_seed_xy]]). The anchor is always the parent centroid (the
+    clamp/search frame never moves); the seed is a starting candidate
+    only.
+    ``radius_mm`` is one disc radius for all labels or a per-label list
+    parallel to ``lab_rows`` — scalars mean discs, ``(ex, ey)`` tuples
+    mean parent-local clamp ellipses (body half-extents + text extent,
+    so sticks grow room only along their length). The finish scores bare
+    text rects — the font halo is the loop's soft settlement force, not
+    finish dirt — against static bodies, copper, and the region edge;
+    the label always takes the full correction (one-way invariant);
+    label-vs-label splits evenly like movable parts.
     A label's own parent body is excluded (sitting inside its own
     courtyard is DRC-legal), but the parent's own silk strokes still eject
     (ink touching the text trips silk clearance, so only the courtyard —
-    never the artwork — is sit-able ground). Its copper still repels via
-    ``copper_polys``. Every move is clipped to the orbit disc around the
-    filed anchor. Iterated Jacobi eject rounds first (single nodes cannot
+    never the artwork — is sit-able ground). All copper repels via
+    ``copper_polys``, including the parent's own: a label buried in its
+    own pads is not visible after assembly, so the eject pushes it out
+    and the search below relocates it to nearest-clean instead of
+    parking it. Every move is clipped to the per-label ellipse
+    around the parent centroid. Iterated Jacobi eject rounds first (single nodes cannot
     spin, so the ping-pong that caps the parts pass at one round does not
     apply); then a clean-spot search relocates whatever is still dirty —
     spiral candidates from the anchor against the full obstacle set
-    (own + nearby-neighbor silk included), nearest-first. Candidate
-    testing cannot cancel the way opposing pushes can, so ring traps and
-    straddles resolve here. Returns True when any label moved.
+    (own + nearby-neighbor silk included), nearest-first, ellipse-bound.
+    Candidate testing cannot cancel the way opposing pushes can, so ring
+    traps and straddles resolve here. Returns True when any label moved.
     """
     from shapely.geometry import LineString as _LineString
     from shapely.ops import nearest_points as _nearest_points
+
+    from ..board_model.labels import label_ellipse_inside as _ellin
+
+    def _bound(k: int):
+        if radii is not None and 0 <= k < len(radii):
+            return radii[k]
+        return radius
+
+    def _pang(k: int) -> float:
+        try:
+            return float(lab_specs[k][6])
+        except (TypeError, ValueError, IndexError):
+            return 0.0
+
+    def _seed_pt(k: int):
+        """Hygiene seed: nearest-to-home clean spot, or None.
+
+        A starting candidate only — the clamp/search frame stays on the
+        parent centroid, so a deeply-buried home cannot drag the ellipse
+        off the part. Malformed or missing seeds read as None.
+        """
+        try:
+            spec = lab_specs[k]
+            if len(spec) <= 7 or spec[7] is None:
+                return None
+            return (float(spec[7][0]), float(spec[7][1]))
+        except (TypeError, ValueError, IndexError):
+            return None
 
     order = sorted(range(len(lab_rows)), key=lambda k: lab_specs[k][0])
     if not order:
@@ -539,6 +688,20 @@ def _depenetrate_labels(
         radius = max(float(radius_mm), 0.0)
     except (TypeError, ValueError):
         radius = 0.0
+    radii = list(radius_mm) if isinstance(radius_mm, (list, tuple)) else None
+
+    def _rk(k: int) -> float:
+        b = _bound(k)
+        try:
+            return max(float(b), 0.0)
+        except (TypeError, ValueError):
+            pass
+        try:
+            ex, ey = b
+            return max(float(ex), float(ey), 0.0)
+        except (TypeError, ValueError):
+            pass
+        return radius
     body_items = list(
         _body_poly_map(positions, fp_uuids, fp_local_to_rows, fp_by_uuid).items()
     )
@@ -586,12 +749,13 @@ def _depenetrate_labels(
             silk_items[parent] = []
 
     def _rects():
+        # Bare text rects: the halo is the loop's soft settlement force,
+        # not finish dirt — the finish scores true ink overlap only.
         rects = {}
         for k in order:
-            uuid, text, size, angle, _anchor, _parent = lab_specs[k]
-            halo = label_halo_mm(size)
+            uuid, text, size, angle, _anchor, _parent = lab_specs[k][:6]
             rects[uuid] = _label_rect_poly(
-                text, positions[lab_rows[k]], angle, size, halo)
+                text, positions[lab_rows[k]], angle, size, 0.0)
         return rects
 
     def _bounds_of(poly):
@@ -681,14 +845,6 @@ def _depenetrate_labels(
         step = depth * _DEPEN_RELAX * share
         return (dx / dist * step, dy / dist * step)
 
-    def _push_from(poly, obs, share):
-        """Relaxed MTV eject of poly from blocker obs (or None)."""
-        return _eject_from(poly, obs, share)
-
-    def _silk_push(poly, obs, ux, uy):
-        """Relaxed eject of poly from a silk-stroke blocker along unit (ux, uy)."""
-        return _eject_from(poly, obs, 1.0, ux, uy)
-
     def _edge_push(poly):
         """Containment push for a rect outside the region polygon."""
         if edge_poly is None or edge_poly.is_empty:
@@ -722,6 +878,15 @@ def _depenetrate_labels(
             return None
 
     moved_any = False
+    try:
+        _eject_start = {
+            lab_specs[k][0]: (
+                float(positions[lab_rows[k]][0]),
+                float(positions[lab_rows[k]][1]))
+            for k in order
+        }
+    except Exception:
+        _eject_start = {}
     for _ in range(max(1, int(max_rounds))):
         rects = _rects()
         moves: Dict[str, Tuple[float, float]] = {}
@@ -735,11 +900,11 @@ def _depenetrate_labels(
             for bu, obs in body_items:
                 if bu == parent:
                     continue
-                push = _push_from(poly, obs, 1.0)
+                push = _eject_from(poly, obs, 1.0)
                 if push is not None:
                     mx, my = mx + push[0], my + push[1]
             for obs in copper_polys:
-                push = _push_from(poly, obs, 1.0)
+                push = _eject_from(poly, obs, 1.0)
                 if push is not None:
                     mx, my = mx + push[0], my + push[1]
             # Own-silk eject: side-tested stroke normals. Opposing sides of
@@ -748,14 +913,14 @@ def _depenetrate_labels(
             # cancel), so the eject stays dumb and cheap.
             for obs, nx, ny, sx, sy in silk_items.get(parent, ()):
                 if nx is None or ny is None:
-                    push = _push_from(poly, obs, 1.0)
+                    push = _eject_from(poly, obs, 1.0)
                 else:
                     try:
                         cx, cy = poly.centroid.x, poly.centroid.y
                     except Exception:
                         continue
                     side = 1.0 if (cx - sx) * nx + (cy - sy) * ny >= 0.0 else -1.0
-                    push = _silk_push(poly, obs, side * nx, side * ny)
+                    push = _eject_from(poly, obs, 1.0, side * nx, side * ny)
                 if push is not None:
                     mx, my = mx + push[0], my + push[1]
             push = _edge_push(poly)
@@ -769,7 +934,7 @@ def _depenetrate_labels(
                 pa, pb = rects.get(ua), rects.get(ub)
                 if pa is None or pb is None or pa.is_empty or pb.is_empty:
                     continue
-                push = _push_from(pa, pb, 0.5)
+                push = _eject_from(pa, pb, 0.5)
                 if push is None:
                     continue
                 moves[ua] = (moves[ua][0] + push[0], moves[ua][1] + push[1])
@@ -784,10 +949,19 @@ def _depenetrate_labels(
             try:
                 nx, ny = clamp_orbit_radius(
                     (float(node[0]) + mx, float(node[1]) + my),
-                    lab_specs[k][4], radius,
+                    lab_specs[k][4], _bound(k), _pang(k),
                 )
             except Exception:
                 continue
+            try:
+                _sx, _sy = _eject_start.get(uuid, (nx, ny))
+                _tx, _ty = nx - _sx, ny - _sy
+                _td = math.hypot(_tx, _ty)
+                if _td > _DEPEN_EJECT_TRAVEL_CAP_MM > 0.0:
+                    _f = _DEPEN_EJECT_TRAVEL_CAP_MM / _td
+                    nx, ny = _sx + _tx * _f, _sy + _ty * _f
+            except Exception:
+                pass
             if abs(nx - float(node[0])) > 1e-9 or abs(ny - float(node[1])) > 1e-9:
                 positions[lab_rows[k], 0] = nx
                 positions[lab_rows[k], 1] = ny
@@ -801,11 +975,15 @@ def _depenetrate_labels(
     # so opposing pushes (ring traps, straddles, neighbor ink) can stall
     # dirty. Candidate testing cannot cancel: for each still-dirty label,
     # spiral outward from the anchor and take the first fully-clean spot
-    # (nearest-first, so D2-style drift re-homes instead of wandering).
-    # The obstacle set here is the full one — own + nearby-neighbor silk
-    # included — unlike the eject above. Two sweeps max: the second
+    # (nearest-first, so labels settle instead of wandering).
+    # The obstacle set here matches the eject above — own body excluded,
+    # all copper (including the parent's own) and nearby-neighbor silk
+    # included — so the two phases cannot disagree about what counts as
+    # dirt. Both score bare text (halo is loop-only); the spiral evaluates
+    # the label's own rect at each candidate; the silk loop must not rebind
+    # that rect variable. Two sweeps max: the second
     # catches touches the first sweep's moves introduced. Labels with no
-    # clean spot in-disc stay put and are logged (leash-limited, not an
+    # clean spot in-ellipse stay put and are logged (bound-limited, not an
     # ejector stall).
     for _ in range(2):
         rects = _rects()
@@ -824,14 +1002,14 @@ def _depenetrate_labels(
                 continue
             obstacles = [obs for bu, obs, _bb in _body_bboxes if bu != parent]
             oboxes = [bb for bu, obs, bb in _body_bboxes if bu != parent]
-            for bb, obs in _copper_bboxes:
-                obstacles.append(obs)
-                oboxes.append(bb)
+            for _bb, _obs in _copper_bboxes:
+                obstacles.append(_obs)
+                oboxes.append(_bb)
             try:
-                reach = radius + half_diag + 0.5
-                for poly in _nearby_silk_cached(anchor, reach):
-                    obstacles.append(poly)
-                    oboxes.append(_bounds_of(poly))
+                reach = _rk(k) + half_diag + 0.5
+                for _silk_poly in _nearby_silk_cached(anchor, reach):
+                    obstacles.append(_silk_poly)
+                    oboxes.append(_bounds_of(_silk_poly))
             except (ValueError, TypeError, AttributeError, IndexError):
                 pass
             for ou, op in rects.items():
@@ -839,15 +1017,70 @@ def _depenetrate_labels(
                     obstacles.append(op)
                     oboxes.append(_bounds_of(op))
             try:
-                first_clean, best, best_area, cur_area = _find_spot(
-                    poly, obstacles, anchor, radius, cover_poly=edge_poly,
-                    bboxes=oboxes)
+                _inside = _ellin(anchor, _bound(k), _pang(k))
+                _cands = [
+                    (s, a) for s, a in _score_spots(
+                        poly, obstacles, anchor, _rk(k),
+                        cover_poly=edge_poly, bboxes=oboxes,
+                        inside=_inside)
+                ]
+                first_clean, best, best_area, cur_area = (
+                    None, None, math.inf, None)
+                for _s, _a in _cands:
+                    if cur_area is None:
+                        cur_area = _a
+                    if _a < best_area - 1e-12:
+                        best, best_area = _s, _a
+                    if first_clean is None and _a <= _DEPEN_CLEAN_AREA_MM2:
+                        first_clean = _s
+                if cur_area is None:
+                    cur_area = math.inf
                 spot = first_clean
+                if spot is None:
+                    # Multi-start descent: the single best can sit in a
+                    # strict local minimum (home straddling its own
+                    # pads, every step worse), so one walk from it goes
+                    # nowhere. Walk from several least-dirty spiral
+                    # points instead — a walk starting adjacent to the
+                    # slot descends into it. Distinct starts only
+                    # (1 mm apart), cheapest first, current pos included.
+                    _starts = []
+                    _seed = _seed_pt(k)
+                    if _seed is not None:
+                        _starts.append(_seed)
+                    for _s, _a in sorted(
+                            _cands, key=lambda t: t[1]):
+                        if all(math.hypot(_s[0] - _p[0], _s[1] - _p[1])
+                               >= 1.0 for _p in _starts):
+                            _starts.append(_s)
+                        if len(_starts) >= 4:
+                            break
+                    # Nearest clean wins, not first found: a far pristine
+                    # start must not beat a near clean one (labels sit
+                    # next to their parts). Least-dirty still folds into
+                    # the fallback below when nothing is clean.
+                    _clean_spots = []
+                    for _st in _starts:
+                        try:
+                            _ds, _da = _descend_to_clean(
+                                poly, _st, obstacles, oboxes, anchor,
+                                _bound(k), _pang(k), cover_poly=edge_poly)
+                        except Exception:
+                            continue
+                        if _da < best_area - 1e-12:
+                            best, best_area = _ds, _da
+                        if _da <= _DEPEN_CLEAN_AREA_MM2:
+                            _clean_spots.append(_ds)
+                    if _clean_spots:
+                        spot = min(
+                            _clean_spots,
+                            key=lambda _s: math.hypot(
+                                _s[0] - anchor[0], _s[1] - anchor[1]))
                 if spot is None:
                     if best is None or not (
                             best_area < cur_area - 1e-9):
                         logger.debug(
-                            "label %s leash-limited (%.4f mm2)", uuid, cur_area)
+                            "label %s bound-limited (%.4f mm2)", uuid, cur_area)
                         continue
                     logger.debug(
                         "label %s improves %.4f -> %.4f mm2",
@@ -865,7 +1098,8 @@ def _depenetrate_labels(
             node = positions[lab_rows[k]]
             try:
                 nx, ny = clamp_orbit_radius(
-                    (float(node[0]) + dx, float(node[1]) + dy), anchor, radius,
+                    (float(node[0]) + dx, float(node[1]) + dy), anchor,
+                    _bound(k), _pang(k),
                 )
             except Exception:
                 continue
@@ -874,7 +1108,7 @@ def _depenetrate_labels(
                 positions[lab_rows[k], 1] = ny
                 rects[uuid] = _label_rect_poly(
                     lab_specs[k][1], (nx, ny), lab_specs[k][3],
-                    lab_specs[k][2], label_halo_mm(lab_specs[k][2]))
+                    lab_specs[k][2], 0.0)
                 swept = True
         if swept:
             moved_any = True

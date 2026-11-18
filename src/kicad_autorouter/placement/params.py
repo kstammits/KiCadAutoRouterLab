@@ -168,16 +168,14 @@ class PlacementParams:
     # (radius 3.5 mm fits the filed layout's home_dist p50 of 3.44 mm);
     # the float zone inside it is sized by label_slack_m below.
     label_orbit_m: float = 0.0035
-    # Label slack radius (meters, SI): free-float zone around the orbit
-    # home where the tether pulls nothing — contact owns the placement
+    # Label slack radius (meters, SI): free-float zone around the parent
+    # centroid where the spring pulls nothing — contact owns the placement
     # and friction freeze is the settle state. Beyond it the same
     # mass-proportional spring acts on the excess, so the force is
-    # continuous at the boundary. Cluster-trajectory telemetry shows a
-    # clean dose response (rises 44 -> 31 -> 25 -> 16 at 0/1/1.5/2 mm);
-    # 2 mm covers typical SMD half-widths while leaving a 1.5 mm leash
-    # zone inside the 3.5 mm orbit disc. 0.0 disables: full spring to
-    # home (pre-slack behavior).
-    label_slack_m: float = 0.002
+    # continuous at the boundary. Small (0.5 mm) so labels parked far away
+    # in empty space still feel the pull home; the spring fetches, contact
+    # decides the rest spot. 0.0 disables: full spring to the centroid.
+    label_slack_m: float = 0.0005
 
     def to_dict(self) -> dict:
         return asdict(self)

@@ -25,9 +25,11 @@ LABEL_TETHER_HZ = 40.0
 # physically honest and floaty by construction (see tether stiffness).
 LABEL_INK_DENSITY_KG_M2 = 0.1
 
-# Label halo as a fraction of font height: the orbit contact rect inflates
-# the text bbox by font_height * this on all sides, so tiny refs get tiny
-# halos (stay placeable on dense boards) and big refs get room. The label
+# Label halo as a fraction of font height: the loop's orbit contact rect
+# inflates the text bbox by font_height * this on all sides, so tiny refs
+# get tiny halos (stay placeable on dense boards) and big refs get room.
+# A soft settlement force only — the finish (eject/search) scores bare
+# text, never the halo. The label
 # is a light bbox that springs out of the way of real part bodies — one
 # fixed fraction, not a param; the DRC recount calibrates the value.
 LABEL_HALO_FONT_FRACTION = 1.0
@@ -165,6 +167,101 @@ def label_board_rect(
     return label_rect_corners(cx_mm, cy_mm, w + 2 * hw, h + 2 * hw, board_angle_deg)
 
 
+def label_disc_radii_mm(
+    text: str,
+    size_mm: Tuple[float, float],
+    hx_mm: float,
+    hy_mm: float,
+    orbit_mm: float,
+    margin_mm: float = 0.5,
+) -> Tuple[float, float]:
+    """Per-label clamp-ellipse semi-axes: the ellipse must reach clear space.
+
+    The parent body is a stick, not a disc: a circular floor sized by the
+    body's longest reach (a jack's 21mm pin row) parks labels far past the
+    flanks, where a flank-side label would sit 2mm out. So the floor is
+    per-axis — body half-extent (``hx_mm``, ``hy_mm`` from the parent
+    centroid in the footprint-local frame) plus the label's own
+    half-extent plus margin, each floored at the orbit reach. Small parts
+    keep the plain orbit disc; long parts grow room only along their long
+    axis, and the clamp hugs the flanks instead of trapping labels
+    inside. Single source for the engine clamp and the test pins.
+    """
+    w, h = label_text_size_mm(text, size_mm)
+    halo = label_halo_mm(size_mm)
+    text_r = 0.5 * math.hypot(w + 2.0 * halo, h + 2.0 * halo)
+    try:
+        t = text_r + float(margin_mm)
+        o = float(orbit_mm)
+        return (
+            max(o, float(hx_mm) + t),
+            max(o, float(hy_mm) + t),
+        )
+    except (TypeError, ValueError):
+        try:
+            o = max(float(orbit_mm), 0.0)
+        except (TypeError, ValueError):
+            o = 0.0
+        return (o, o)
+
+
+def _split_radii(radius_mm) -> Tuple[float, float]:
+    """Normalize a clamp bound to ``(ex, ey)``: scalar means a disc."""
+    try:
+        ex = float(radius_mm)
+        return (max(ex, 0.0), max(ex, 0.0))
+    except (TypeError, ValueError):
+        pass
+    try:
+        ex, ey = radius_mm
+        return (max(float(ex), 0.0), max(float(ey), 0.0))
+    except (TypeError, ValueError):
+        return (0.0, 0.0)
+
+
+def point_in_label_ellipse(
+    x_mm: float,
+    y_mm: float,
+    anchor_xy_mm: Tuple[float, float],
+    radii_mm,
+    angle_deg: float = 0.0,
+) -> bool:
+    """True when a board point sits inside the label clamp ellipse.
+
+    The ellipse is centered on the parent-carried ``anchor`` with semi-axes
+    ``radii_mm`` along the parent's local axes (which sit at
+    ``angle_deg`` in board frame, footprint convention). Scalar radii mean
+    the old disc. Never raises: malformed input reads as outside.
+    """
+    try:
+        ex, ey = _split_radii(radii_mm)
+        ax, ay = float(anchor_xy_mm[0]), float(anchor_xy_mm[1])
+        dx, dy = float(x_mm) - ax, float(y_mm) - ay
+        rad = math.radians(-float(angle_deg))
+        c, s = math.cos(rad), math.sin(rad)
+        # Same rotation as _to_local (footprint convention): with
+        # c=cos(a), s=-sin(a) this reads lx=dx*cosA-dy*sinA,
+        # ly=dx*sinA+dy*cosA.
+        lx = dx * c + dy * s
+        ly = -dx * s + dy * c
+    except (TypeError, ValueError, IndexError):
+        return False
+    if ex <= 0.0 or ey <= 0.0:
+        return dx == 0.0 and dy == 0.0
+    return (lx / ex) ** 2 + (ly / ey) ** 2 <= 1.0 + 1e-9
+
+
+def label_ellipse_inside(
+    anchor_xy_mm: Tuple[float, float],
+    radii_mm,
+    angle_deg: float = 0.0,
+):
+    """Candidate predicate for the clean-spot search: inside the ellipse."""
+    def _inside(x_mm: float, y_mm: float) -> bool:
+        return point_in_label_ellipse(x_mm, y_mm, anchor_xy_mm, radii_mm, angle_deg)
+    return _inside
+
+
 def label_ink_mass_kg(
     text: str,
     size_mm: Tuple[float, float],
@@ -224,22 +321,39 @@ def label_slack_tether_force_N(
 def clamp_orbit_radius(
     node_xy_mm: Tuple[float, float],
     anchor_xy_mm: Tuple[float, float],
-    radius_mm: float,
+    radius_mm,
+    angle_deg: float = 0.0,
 ) -> Tuple[float, float]:
-    """Hard-clamp a label node to ``radius_mm`` around its anchor (positional).
+    """Hard-clamp a label node to its bound around its anchor (positional).
 
-    The orbit backstop: the label can never leave the disc, so runs stay
-    bounded even when contact shoves hard. Inside the disc this is the
-    identity.
+    The orbit backstop: the label can never leave, so runs stay bounded
+    even when contact shoves hard. Inside the bound this is the identity.
+    ``radius_mm`` is a disc radius (legacy) or an ``(ex, ey)`` ellipse in
+    the parent-local frame at ``angle_deg`` (footprint convention): long
+    parents grow room only along their long axis, so the clamp hugs the
+    flanks instead of parking labels past the ends. Malformed bounds are
+    returned untouched.
     """
+    ex, ey = _split_radii(radius_mm)
     try:
-        r = max(float(radius_mm), 0.0)
-    except (TypeError, ValueError):
+        ax = float(anchor_xy_mm[0])
+        ay = float(anchor_xy_mm[1])
+        dx = float(node_xy_mm[0]) - ax
+        dy = float(node_xy_mm[1]) - ay
+        rad = math.radians(-float(angle_deg))
+    except (TypeError, ValueError, IndexError):
         return node_xy_mm
-    dx = node_xy_mm[0] - anchor_xy_mm[0]
-    dy = node_xy_mm[1] - anchor_xy_mm[1]
-    d = math.hypot(dx, dy)
-    if d <= r or d <= 0.0:
+    c, s = math.cos(rad), math.sin(rad)
+    # Board offset -> parent-local (same rotation as _to_local), scale the
+    # normalized radius back to the rim, rotate home with the transpose.
+    lx = dx * c + dy * s
+    ly = -dx * s + dy * c
+    if ex <= 0.0 or ey <= 0.0:
         return node_xy_mm
-    s = r / d
-    return (anchor_xy_mm[0] + dx * s, anchor_xy_mm[1] + dy * s)
+    q = (lx / ex) ** 2 + (ly / ey) ** 2
+    if q <= 1.0 or q <= 0.0:
+        return node_xy_mm
+    f = 1.0 / math.sqrt(q)
+    lx *= f
+    ly *= f
+    return (ax + lx * c - ly * s, ay + lx * s + ly * c)

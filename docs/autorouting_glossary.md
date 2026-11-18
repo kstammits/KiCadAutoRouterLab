@@ -9,19 +9,14 @@ Local copies are not vendored; `docs/README.md` has fetch recipes.
 
 - **S-expression**: the file format of both `.kicad_pcb` and `.kicad_sch`. Nested
   parenthesized lists, e.g. `(kicad_pcb (version 20241229) ...)`. Not JSON — any parser
-  must be an S-expression reader. Version tags in KiCad 10: `20241229` (pcb),
-  `20250114` (sch). See [KiCad files and folders](https://docs.kicad.org/10.0/en/kicad/kicad.html).
-- **Load failure**: a file KiCad cannot parse exits non-zero (code 3) with
-  `Failed to load ...` on stderr — distinct from rule violations. Handled in
-  `src/kicad_autorouter/validate.py`.
+  must be an S-expression reader. See [KiCad files and folders](https://docs.kicad.org/10.0/en/kicad/kicad.html).
 
 ## Stage: parse — extract board objects
 
 - **Footprint** (`footprint`): a placed component; carries position, rotation, and the
   native lock flag (`fp.IsLocked()` / `fp.SetLocked(True)`). Locked footprints are fixed
   anchors; only unlocked ones may move. In `.kicad_pcb` files the lock is serialized as a
-  top-level `(locked ...)` token inside each footprint node — verified against the KiCad
-  source mirror (`pcb_io_kicad_sexpr*.cpp`: writer ~line 1474, parser line 6142).
+  top-level `(locked ...)` token inside each footprint node.
 - **Pad**: a connectable copper shape on a footprint (or standalone), assigned to a net.
   Pads are the terminals the router must connect.
 - **Net**: an electrical connection, named or numbered; all pads of one net must be
@@ -40,8 +35,7 @@ Local copies are not vendored; `docs/README.md` has fetch recipes.
 
 - Build a graph with one node per pad and edges between pads of the same net (networkx).
   This is the input to routing: each net becomes a set of terminals that must be joined.
-- **Terminal / pin**: synonym for pad in router literature; "pins on cells" are the
-  pre-existing polygons a router is given, along with obstacles and optional preroutes.
+- **Terminal / pin**: synonym for pad in router literature.
 
 ## Stage: place — SI dynamics simulation
 
@@ -71,10 +65,10 @@ worked examples: [`../ui/manual.html`](../ui/manual.html)
 ### Physics in brief
 
 - **Integrator**: semi-implicit Euler per movable pad (kick, viscous decay, speed-ceiling clamp, drift), adaptive-dt guard on KE jumps, Kabsch rigid projection so bodies stay exact, phantom-energy re-derivation, stop at `convergence_eps_m`. Details: `si_force_laws.md` §2.
-- **Forces**: Coulomb-like repulsion (sub-mm equilibrium; the wall owns contact), constant-magnitude net attraction (default 8e-3 polish, ~0.05 cluster), one courtyard wall law `F = k·(1−s/halo)^exp` shared by part–part contact and the board edge, ghost pull, decap-chip links, Tidy Manhattan snap, power fanout scaling, GND exclusion (decap-incident only), tangential sliding assist. Details: `si_force_laws.md` §1.
+- **Forces**: Coulomb-like repulsion (sub-mm equilibrium; the wall owns contact), constant-magnitude net attraction, one courtyard wall law shared by part–part contact and the board edge, ghost pull, decap-chip links, Tidy Manhattan snap, power fanout scaling, GND exclusion (decap-incident only), tangential sliding assist. Details: `si_force_laws.md` §1.
 - **Contact**: courtyard per footprint (`F/B.CrtYd`, else Fab/SilkS, else pad-bbox); THT pin circles on both layers; SAT MTV direction; per-pair aggregation (deepest contact wins, no pin stacking); bounding-circle + uniform-grid broadphase.
 - **Motion**: only unlocked in-region `movable_uuids` integrate; locked parts are anchors; UI moves are `(dx_mm, dy_mm, dangle_deg)` deltas by UUID; ghosts are fixed pseudo-parts (wall or attractor). Mass comes from `data/footprint_mass.json` (never zero); identity keys on footprint UUID.
-- **Calibration**: magnet board (`tests/test_magnet.py`), seeds 42/7/123, tightening ratio <1 means clustering; Cluster vs Legalize vs Tidy regimes in `si_force_laws.md` §3. Test markers: `physics`, `dccf`, `server`, `regression`, `unit`, `params`, `minimal`, `cli`.
+- **Calibration**: magnet-board tightening ratio (<1 means clustering); Cluster vs Legalize vs Tidy regimes in `si_force_laws.md` §3. Test markers: `physics`, `dccf`, `server`, `regression`, `unit`, `params`, `minimal`, `cli`.
 ## Stage: route — the autorouter core
 
 The routing task (from [Wikipedia: Autorouter](https://en.wikipedia.org/wiki/Autorouter)): create
@@ -93,12 +87,9 @@ Key facts that shape the algorithm choice:
 - **Maze router**: represents routing space as a grid sized to the wiring pitch; blocked
   cells = components, existing tracks (pours are passable at a toll, not blocked). Find a chain of free cells from A to B
   ([Wikipedia: Maze routing](https://en.wikipedia.org/wiki/Maze_routing)).
-- **Lee algorithm**: BFS wave expansion over that grid — mark start `0`, repeatedly mark
-  unlabeled neighbors with the next index until the target is reached or no points remain,
-  then backtrace through decreasing marks. Always optimal if a path exists, but slow and
-  memory-hungry ([Wikipedia: Lee algorithm](https://en.wikipedia.org/wiki/Lee_algorithm)). A* search
-  ([Wikipedia: A* search](https://en.wikipedia.org/wiki/A*_search_algorithm)) is
-  commonly used in maze/Lee routers to cut the cost.
+- **Lee algorithm**: BFS wave expansion over that grid, then backtrace through
+  decreasing marks. Optimal if a path exists, but slow and memory-hungry; A* search
+  is commonly used in maze/Lee routers to cut the cost.
 - **Global routing**: first pick an approximate course per net on a coarse grid (optionally
   assigning layers), then do detailed routing cell by cell — limits the size of the hard part.
 - **Rip-up and reroute**: route nets in sequence; if some fail, remove selected routings,
@@ -106,29 +97,21 @@ Key facts that shape the algorithm choice:
 - **Push-and-shove** ("shove-aside"): move already-routed nets out of the way to make room.
 - **Smoothing / string-pulling**: shortcut grid-path nodes where line-of-sight is walkable.
   Our 4-directional A* staircases become fewer, longer any-angle tracks via bidirectional
-  greedy passes + Steiner detour repair; ties break by admitted fillet radius, so the
-  rounder corner wins. The UI **Polish** button re-smooths routed copper at pinned
-  effort 3 (no A*, keep-only-if-better), scoped to the nets selection (else all
-  routed copper); when the board changed since routing it falls back to a scoped
-  re-route at effort 3.
+  greedy passes + Steiner detour repair. The UI **Polish** button re-smooths
+  routed copper at fixed effort.
 
 ### Tangent-arc corner fillets (`arc_fillets`, default on)
 
 KiCad tracks are `(segment)`/`(via)`, but `(arc start mid end)` is also legal
 copper. When `RoutingParams.arc_fillets` is on, each smoothed run is filleted
-in place: broad sweeps collapse jagged windows into one circumcircle sweep,
-remaining sharp joints get one tangent arc each (tangent length capped at half
-each leg and `arc_max_radius_mm`; legs below `arc_min_leg_mm` stay sharp).
-Arcs pass a clearance gate sampled at `arc_sample_mm` (fail → sharp joint),
-replace chord emission branch by branch, and count/rip with their net.
-Degenerate arcs (start == end) are zero copper everywhere.
+in place: broad sweeps collapse into one circumcircle sweep, remaining sharp
+joints get one tangent arc each (failing the clearance gate stays sharp).
 Implementation: `routing/biarc.py:fit_branch_arcs_with_sweeps`.
 
 ### Copper pours in routing
 
 - **Passable-at-toll**: zones (pours) are not blocked; they carry a soft cost
-  (`POUR=35` + `CostMap.pour_penalty=10`) so the router can cross them but prefers
-  to go around. This avoids the hard-block problem where pads inside pours became
+  so the router can cross them but prefers to go around. This avoids the hard-block problem where pads inside pours became
   unroutable.
 - **Severance steering**: `severance_cost()` adds a secondary toll for tracks that
   narrow a pour corridor below `min_thickness`; it is clipped (steers, never blocks)
@@ -136,29 +119,25 @@ Implementation: `routing/biarc.py:fit_branch_arcs_with_sweeps`.
 - **GND-only rip-up**: pre-existing GND vias/tracks can be stripped before routing
   (`Strip GND Blockers`); the stitcher (`plan_stitches()`) rebuilds continuity
   afterwards with overlap vias + bridge tracks. **Signal/power copper is never
-  evicted** — no more tracks ripping each other out.
+  evicted.**
 - **Island diagnostics**: `gnd_islands()` computes connected pour regions per layer;
   UI shows red dashed bboxes for dead islands (no pad/via connection), matching
   KiCad's isolated-fill DRC.
 - **Region-aware stitching**: stitcher respects board panel boundaries (never joins
   separate panels in the same file).
-- **Stitch siting**: candidate vias clear foreign copper analytically (tracks
-  included) and every drilled hole — including mounting boreholes and same-net
-  barrels — by the hole clearance; part-less pour slivers below
-  `stitch_min_island_mm2` are ignored instead of stitched.
+- **Stitch siting**: candidate vias clear foreign copper (tracks
+  included) and every drilled hole by the hole clearance; sub-threshold
+  pour slivers are ignored instead of stitched.
 
 ### Zone refill round-trip
 
 - **kicad-cli refill**: after routing, the pipeline can invoke
   `kicad-cli pcb drc --refill-zones --save-board <board>` to regenerate all zone
-  fills using KiCad's native algorithm (corner rounding, thermal reliefs, min-thickness
-  pruning, nearby-poly connection). This ensures the output board has correct pour
+  fills using KiCad's native algorithm. This ensures the output board has correct pour
   geometry and passes KiCad's own DRC for isolated fills.
 - **Refill zones parameter**: `RoutingParams.refill_zones` (default `False`) enables the
   refill step in `route_nets()`. The UI exposes a "Refill zones" checkbox in the
   routing options.
-- **Workflow**: route → apply tracks/vias → refill zones → final DRC. The refill step
-  runs on the written board file, so it sees the exact copper the router placed.
 
 ### Secondary grid / fanout cost improvements
 
@@ -167,12 +146,8 @@ Implementation: `routing/biarc.py:fit_branch_arcs_with_sweeps`.
   Previously they were skipped, allowing tracks to route through them.
 - **Unconnected-net handling**: nets named `unconnected-*` (KiCad's placeholder for
   explicitly unconnected pins) are also treated as no-net for steering purposes.
-- **Foreign SMD halos**: foreign SMD pads stamp oriented capsules in three
-  tiers — hard exclusion on copper only, steep toll over the clearance +
-  track-half margin, soft toll beyond. A* can squeeze a tight thread at high
-  cost but never touch foreign copper.
-- **Conservative track half**: pad marking uses 1/8 mm so tracks stay clear
-  of pad edges even at coarse grids.
+- **Foreign SMD halos**: foreign SMD pads stamp oriented capsule halos —
+  steep short-range toll, never touching foreign copper.
 
 ## Stage: drc — design rule check
 
@@ -185,13 +160,12 @@ Implementation: `routing/biarc.py:fit_branch_arcs_with_sweeps`.
 - Example violation: `track_dangling | Track has unconnected end`.
 - **Ignored violation classes**: the UI overlay and `DRCResult.filter_violations()` hide
   non-routing noise by default (silkscreen, footprint metadata, `track_not_centered_on_via`;
-  see `DEFAULT_IGNORED_TYPES` in `src/kicad_autorouter/drc.py`). UI counts are post-filter;
-  the raw `kicad-cli` JSON in `tmp/` keeps everything.
+  see `DEFAULT_IGNORED_TYPES` in `src/kicad_autorouter/drc.py`).
 
 ## Stage: writeback — emit updated `.kicad_pcb`
 
-- Write new tracks (and moved footprints) back as S-expressions. In the current pass this
-  is pure Python in `.venv`: per-footprint deltas are applied by UUID via
+- Write new tracks (and moved footprints) back as S-expressions:
+  per-footprint deltas are applied by UUID via
   `io.nudge_footprint_by_uuid` and serialized with `sexpr.to_sexpr`.
 - Always re-run DRC after writeback — it is the acceptance check for a pass.
 
@@ -203,20 +177,13 @@ Implementation: `routing/biarc.py:fit_branch_arcs_with_sweeps`.
   **attractor** (pulls specific refs via
   `(property "ghost_attract_N" "TARGET,ka")` springs). Serialized as a
   regular `(footprint ...)` plus `(property "ghost" "yes")`, courtyard on
-  `F.CrtYd` (or `F.Fab`, which the parser falls back to); created with
-  `ghost.make_ghost_wall / make_ghost_attractor` + `io.add_ghost_to_tree`,
-  managed from the UI Ghosts panel (move / rotate ±15°, resize W/H
-  steppers, delete; rotation pivots about the anchor).
-- **Manual nudge**: hand-shift the placement selection by 1 mm (arrow keys
-  / nudge pad, Shift for 10 mm) and rotate it ±15° (Shift for 90°) via
+  `F.CrtYd` (or `F.Fab`, which the parser falls back to); managed from
+  the UI Ghosts panel.
+- **Manual nudge**: hand-shift/rotate the placement selection via
   `POST /api/placement/nudge` — same dual-write, rip-up (protected kept),
   and Undo semantics as Accept.
 - **Complexity budget (vectorized)**: naive all-pairs repulsion is O(n²)
-  per iteration, O(n³) total. Computing it as numpy broadcasting over the
-  dense (n,n) distance matrix costs ≈1–2 ms per iteration; net-edge
-  attraction stays sparse O(E), vectorized with edge index arrays, and
-  locked footprints are a boolean mask (zero force). Dense n² is plenty at
-  "a few hundred" nodes; Barnes–Hut
+  per iteration — plenty at a few hundred nodes; Barnes–Hut
   ([Wikipedia: Barnes–Hut simulation](https://en.wikipedia.org/wiki/Barnes%E2%80%93Hut_simulation))
   becomes necessary past ~3–5k nodes.
 

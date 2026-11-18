@@ -1,7 +1,7 @@
 # AGENTS.md — Karltron AutoRouter
 
 Magnetic-force placement + grid routing for KiCad `.kicad_pcb` boards, with a
-browser workflow UI. 
+browser workflow UI.
 
 ## Layout
 
@@ -15,21 +15,21 @@ browser workflow UI.
   globals, no modules; load order in `index.html`) + `style.css`;
   `docs.html` — docs viewer.
 - `tests/fixtures/` — `tube111.*` (105 parts, 73 nets), `DCCF.sved.*`
-  (audio, split rails), `minimal.*` (4 parts, no nets), `ghost_test.*`,
-  `minimal_placed.*`. Don't add fixtures without a test that needs them.
+  (audio, split rails), `minimal.*` (4 parts, no nets; needs no
+  `kicad-cli`), `ghost_test.*`, `minimal_placed.*`. Don't add fixtures
+  without a test that needs them.
 - `scripts/` — `gen_manual.py` (`ui/manual.html`), `regen_docs.sh`
   (manual rebuild wrapper), `check_js.sh`, `clean.sh`.
-- `docs/` — glossary, `si_force_laws.md`. Untracked locally: `tests.md`.
+- `docs/` — glossary, `si_force_laws.md`.
 
 ## Commands
 
 - Server: `./start_server.sh [port]` (default 8000).
 - Tests: `.venv/bin/python -m pytest tests/ -q` (always `.venv` — system
   `python` lacks deps and fails at collection). Fast loop:
-  `-m "minimal or unit or (dccf and not slow)"` (`slow` = >3s).
-  Deps are pinned in `requirements-lock.txt` (`pip install -e ".[dev]"
-  --constraint requirements-lock.txt`); re-freeze from a clean green venv
-  when bumping.
+  `-m "minimal or unit or (dccf and not slow)"`.
+  Deps are pinned in `requirements-lock.txt`; re-freeze from a clean
+  green venv when bumping.
 - Docs: `./scripts/regen_docs.sh [gen_manual args]` rebuilds the manual
   (`--check` asserts examples without writing).
 - JS syntax: `./scripts/check_js.sh` (`node --check` all `ui/app-*.js`).
@@ -65,9 +65,3 @@ browser workflow UI.
 - DCCF overlap audit baselines pre-existing squeezes; new or materially
   worsened >1 mm² overlaps fail. Magnet boards scatter inside the outline.
   Physics constants live in `si_force_laws.md` / code comments.
-
-
-## Fixtures for fast testing
-
-- `minimal.*` (4 parts, no nets) — fastest, no `kicad-cli` needed.
-- `tube111.*` / `DCCF.sved.*` — heavy (~100 parts); avoid for quick loops.

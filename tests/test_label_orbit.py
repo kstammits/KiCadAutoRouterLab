@@ -36,8 +36,9 @@ from kicad_autorouter.placement.contact import label_contact_force
 from kicad_autorouter.sexpr import parse_file
 
 from .helpers import (
+    assert_label_near_parent as _near_parent,
     facing_label_pair as _facing_pair,
-    assert_label_leashed as _leashed,
+    label_cap_radii_mm as _cap,
     make_board,
     make_fp,
     make_tht_pad,
@@ -108,6 +109,87 @@ def test_clamp_radius_is_backstop():
 
 
 @pytest.mark.unit
+def test_clamp_ellipse_hugs_stick_flanks():
+    from kicad_autorouter.board_model.labels import (
+        label_disc_radii_mm,
+        label_halo_mm,
+        label_text_size_mm,
+        point_in_label_ellipse,
+    )
+    # J7-shaped stick: 3.6 wide, ~21 long. The old circular floor sized
+    # by the longest reach (~10.8 + text) parked labels ~13mm out; the
+    # ellipse floors each axis separately.
+    ex, ey = label_disc_radii_mm("J7", (1.0, 1.0), 1.8, 10.7, 3.5)
+    w, h = label_text_size_mm("J7", (1.0, 1.0))
+    halo = label_halo_mm((1.0, 1.0))
+    text_r = 0.5 * math.hypot(w + 2.0 * halo, h + 2.0 * halo)
+    assert ex == pytest.approx(1.8 + text_r + 0.5)
+    assert ey == pytest.approx(10.7 + text_r + 0.5)
+    assert ey > 2.0 * ex
+    # Inside stays put, outside lands on the rim along its own ray.
+    assert clamp_orbit_radius(
+        (1.0, 1.0), (0.0, 0.0), (ex, ey)) == (1.0, 1.0)
+    cx, cy = clamp_orbit_radius((13.5, 0.0), (0.0, 0.0), (ex, ey))
+    assert (cx, cy) == pytest.approx((ex, 0.0))
+    cx, cy = clamp_orbit_radius((0.0, 20.0), (0.0, 0.0), (ex, ey))
+    assert (cx, cy) == pytest.approx((0.0, ey))
+    # Rotated parent: the ellipse turns with the part — board +x is the
+    # parent's local +y at 90 degrees, so (20, 0) lands on the long rim.
+    cx, cy = clamp_orbit_radius((20.0, 0.0), (0.0, 0.0), (ex, ey), 90.0)
+    assert point_in_label_ellipse(cx, cy, (0.0, 0.0), (ex, ey), 90.0)
+    assert math.hypot(cx, cy) == pytest.approx(ey)
+    # Scalar still means a disc, angle ignored.
+    assert clamp_orbit_radius(
+        (10.0, 0.0), (0.0, 0.0), 5.0, 37.0) == pytest.approx((5.0, 0.0))
+    # Malformed bounds never raise and never move the node.
+    assert clamp_orbit_radius((9.0, 9.0), (0.0, 0.0), ("x", "y")) == (9.0, 9.0)
+
+
+@pytest.mark.physics
+def test_settle_repeats_until_labels_stop_moving():
+    # One loop rarely finishes: the end-of-loop de-penetration relocates
+    # wedged labels, disturbing the equilibrium just found. Passes repeat
+    # from the new state until a pass moves nothing (writeback-quiet) —
+    # which must equal running single passes back-to-back by hand, since
+    # frozen bodies share one frame and offsets add.
+    model = _facing_pair()
+    params = PlacementParams(max_iterations=300)
+    auto = run_label_settle(model, params, 300, max_passes=3)
+    once = run_label_settle(model, params, 300, max_passes=1)
+    assert auto.iterations >= once.iterations
+    if auto.iterations > once.iterations:
+        moved_once = apply_deltas(model, once.deltas, label_deltas=once.label_deltas)
+        twice = run_label_settle(moved_once, params, 300, max_passes=1)
+        for uuid, (lx, ly) in auto.label_deltas.items():
+            ox, oy = once.label_deltas.get(uuid, (0.0, 0.0))
+            tx, ty = twice.label_deltas.get(uuid, (0.0, 0.0))
+            assert (lx, ly) == pytest.approx((ox + tx, oy + ty))
+    # A settled board settles clean: one pass moves nothing further.
+    moved_auto = apply_deltas(model, auto.deltas, label_deltas=auto.label_deltas)
+    again = run_label_settle(moved_auto, params, 300, max_passes=3)
+    assert again.iterations == once.iterations or not again.label_deltas
+
+
+@pytest.mark.physics
+def test_stick_label_rests_on_flank_not_past_end():
+    from .helpers import make_board, make_fp
+    # Stick body (courtyard 2 x 16) with the label filed far out on the
+    # flank side: the spring fetches it home and the ellipse clamp stops
+    # it beside the part — never flung past the stick's ends the way the
+    # old longest-reach disc allowed.
+    fp = replace(
+        make_fp("J7", "uuid-stick", 0.0, 0.0, ("N1", "N2"),
+                hw=1.0, hh=8.0, pad_dx=1.0),
+        label=_lab("J7", 15.0),
+    )
+    model = replace(make_board([fp]), nets={"N1": (), "N2": ()})
+    prop = run_label_settle(model, PlacementParams(max_iterations=300), 300)
+    moved = apply_deltas(model, prop.deltas, label_deltas=prop.label_deltas)
+    d = _near_parent(moved, "uuid-stick", PlacementParams().label_orbit_m * 1000.0)
+    assert d < 7.0
+
+
+@pytest.mark.unit
 def test_label_contact_pushes_out_of_overlap():
     body = {"b": Polygon([(-1, -1), (1, -1), (1, 1), (-1, 1)])}
     buried = Polygon([(-0.5, -0.5), (0.5, -0.5), (0.5, 0.5), (-0.5, 0.5)])
@@ -135,15 +217,15 @@ def test_orbit_ejects_inside_radius_cap():
         max_iterations=300, label_clearance_m=clearance_m,
         wall_halo_m=0.002))
     assert set(prop.label_deltas) == {"uuid-a", "uuid-b"}
-    # Rest spot within the orbit leash of the rigidly carried filed
-    # home — not within a disc of the parent origin (offset-filed and
-    # rotated labels legitimately rest away from the centroid).
+    # Rest spot next to the parent: the spring pulls every label to its
+    # own part's center and the copper shoves hold it out, so it settles
+    # against the parent's edge — never at a far filed offset.
     orbit_mm = PlacementParams().label_orbit_m * 1000.0
     moved = apply_deltas(model, prop.deltas, label_deltas=prop.label_deltas)
     for fp in moved.footprints:
         if fp.label is None:
             continue
-        _leashed(model, moved, fp.uuid, orbit_mm)
+        _near_parent(moved, fp.uuid, orbit_mm)
 
 
 @pytest.mark.physics
@@ -177,8 +259,8 @@ def test_clear_labels_do_not_perturb_pads():
         make_fp("B", "uuid-b", 12.0, 0.0, ("N1", "N3"), hw=1.5, hh=1.0),
         label=_lab("B", 8.0, 2.0))
     model = replace(make_board([fa, fb]), nets={"N1": (), "N2": (), "N3": ()})
-    # Filed ±8 mm offsets are home, not stale: labels ride them while
-    # their parents move under net pull, never migrating to the centroid.
+    # Filed ±8 mm out, the spring fetches both labels home while their
+    # parents move under net pull — nothing lingers at the filed offset.
     # (Pad-center Coulomb is long-range, so the short-horizon pad course
     # below is where exact stillness is pinned — not the labels.)
     kw = dict(label_clearance_m=0.002, wall_halo_m=0.002)
@@ -187,10 +269,11 @@ def test_clear_labels_do_not_perturb_pads():
     assert short.deltas
     moved = apply_deltas(model, short.deltas,
                          label_deltas=short.label_deltas)
+    assert set(short.label_deltas) == {"uuid-a", "uuid-b"}
     for fp in moved.footprints:
         if fp.label is None:
             continue
-        _leashed(model, moved, fp.uuid, orbit_mm)
+        _near_parent(moved, fp.uuid, orbit_mm)
     stripped = replace(
         model,
         footprints=tuple(replace(fp, label=None) for fp in model.footprints),
@@ -204,10 +287,12 @@ def test_clear_labels_do_not_perturb_pads():
     lone = replace(make_board([fa]), nets={"N1": (), "N2": ()})
     calm = run_placement(lone, PlacementParams(**kw, max_iterations=300))
     assert calm.deltas == {}
-    # Home is the filed spot: the label never abandons it for the
-    # parent's neighborhood — still inside its own leash by construction.
+    # The lone label is fetched to its parent: it moves (nonempty sidecar)
+    # and ends next to the part instead of out at the filed offset.
+    assert set(calm.label_deltas) == {"uuid-a"}
     moved = apply_deltas(lone, calm.deltas, label_deltas=calm.label_deltas)
-    _leashed(lone, moved, "uuid-a", orbit_mm)
+    d = _near_parent(moved, "uuid-a", orbit_mm)
+    assert d < 8.0 - 1.0
 
 
 def _region_board(fps, edge=20.0):
@@ -260,12 +345,13 @@ def _bare_label_poly(model, uuid):
 
 
 @pytest.mark.physics
-def test_filed_offset_rides_with_parent():
-    """Labels are part-local: a clear label keeps its filed offset.
+def test_far_label_comes_home_to_parent():
+    """Labels are fetched to their parents, not parked at filed offsets.
 
-    A label filed 8 mm from its parent is already home — with nothing
-    to collide, it never migrates to the centroid, and stillness means
-    an empty sidecar (follow behavior, zero payload for quiet labels).
+    A label filed 8 mm from its parent in empty space feels the spring
+    over its full length (small dead zone) and ends next to the part —
+    the filed spot only seeds the start. This is the user-visible pin
+    for far labels coming in during Legalize.
     """
     from kicad_autorouter.board_model import _to_board as _tb
     fa = replace(
@@ -274,13 +360,13 @@ def test_filed_offset_rides_with_parent():
     )
     model = replace(_region_board([fa]), nets={"N1": (), "N2": ()})
     prop = run_placement(model, PlacementParams(max_iterations=300))
-    assert prop.label_deltas == {}
+    assert set(prop.label_deltas) == {"uuid-a"}
     moved = apply_deltas(model, prop.deltas, label_deltas=prop.label_deltas)
     fp = next(f for f in moved.footprints if f.uuid == "uuid-a")
     b = _tb(fp.label.local_x_mm, fp.label.local_y_mm,
             fp.x_mm, fp.y_mm, fp.angle_deg, fp.layer)
-    # Unmoved on its filed spot.
-    assert (b.x_mm, b.y_mm) == pytest.approx((8.0, 0.0))
+    # Came in from 8 mm out to next to the part.
+    assert math.hypot(b.x_mm - fp.x_mm, b.y_mm - fp.y_mm) < 8.0 - 1.0
 
 
 @pytest.mark.physics
@@ -378,11 +464,11 @@ def test_label_feels_smd_pad_coulomb():
     dx, dy = prop.label_deltas["uuid-a"]
     # B's charged pads sit +x of the label: repulsion pushes it back.
     assert dx < -0.1
-    # …and the label ends inside the leash of its carried filed home —
-    # Coulomb deflects it, it never migrates to the centroid.
+    # …and the label still ends next to its own parent — the shove
+    # deflects it, the spring keeps it from wandering off.
     moved = apply_deltas(model, prop.deltas, label_deltas=prop.label_deltas)
-    _leashed(model, moved, "uuid-a",
-             PlacementParams().label_orbit_m * 1000.0)
+    _near_parent(moved, "uuid-a",
+                 PlacementParams().label_orbit_m * 1000.0)
 
 
 @pytest.mark.physics
@@ -446,15 +532,21 @@ class TestLabelSamples:
         assert iters[0] == 0
         assert iters == sorted(iters)
         assert iters[-1] == prop.iterations
+        orbit_mm = PlacementParams().label_orbit_m * 1000.0
+        caps = {fp.uuid: _cap(fp, orbit_mm) for fp in model.footprints
+                if fp.label is not None}
         for s in samples:
             assert set(s["labels"]) == {"uuid-a", "uuid-b"}
-            for vals in s["labels"].values():
+            for uuid, vals in s["labels"].items():
                 assert len(vals) == 5
                 assert all(math.isfinite(v) for v in vals)
-                nx, ny, ax, ay, _pa = vals
-                # Orbit clamp is the backstop: node never leaves the disc.
-                orbit_mm = PlacementParams().label_orbit_m * 1000.0
-                assert math.hypot(nx - ax, ny - ay) <= orbit_mm + 1e-3
+                nx, ny, ax, ay, pa = vals
+                # The clamp is the backstop: node never leaves its own
+                # ellipse (per-parent sized, so sticks hug the flanks).
+                from kicad_autorouter.board_model.labels import (
+                    point_in_label_ellipse as _in_ell,
+                )
+                assert _in_ell(nx, ny, (ax, ay), caps[uuid], pa)
 
     def test_samples_need_both_debug_and_frames(self):
         frames_only = run_placement(

@@ -44,7 +44,7 @@
 <p class="lede">A short, code-generated guide to the force-spring placement workflow.
 Every board below is rendered by the current engine; there are no screenshots.</p>
 <p class="muted">Placement only — routing, GND stitch/pour repair, power integrity,
-and DRC/export live in the app's Route tab and top bar. Generated 2026-11-17 22:36 UTC (40d9078).</p>
+and DRC/export live in the app's Route tab and top bar. Generated 2026-11-18 01:41 UTC (edf5234).</p>
 
 <h2>Start here</h2>
 <pre><code>./start_server.sh
@@ -71,16 +71,18 @@ or attractors that pull a named target.</p>
 
 <h2>Labels ride along</h2>
 <p>Each footprint's silkscreen reference label (<code>F.SilkS</code> /
-<code>F.Fab</code>) is a low-mass node on a slack leash to its filed spot
-carried rigidly with the parent — free float inside the slack radius (<code>label_slack_m</code>,
-2 mm), 40 Hz spring beyond — integrated alongside the pads, never welded
-text. The node is hard-clamped to the orbit disc (<code>label_orbit_m</code>,
-3.5 mm) around that carried home, so labels follow their parts as they
-move. When a parent rotates, its label snaps to the nearest readable
+<code>F.Fab</code>) is a low-mass node sprung to its parent part's center —
+free float inside a small dead zone (<code>label_slack_m</code>,
+0.5 mm), 40 Hz spring beyond — integrated alongside the pads, never welded
+text. The spring fetches labels in next to their parts; the label's
+clearance rect (text bbox plus a font-height halo) collides through the
+same wall law as courtyards and always wins, so ink ends clear of copper
+and visible after assembly. The node is hard-clamped to its own disc
+(<code>label_orbit_m</code>, 3.5 mm reach, grown past big parts so the disc
+always includes clear space beside them). When a parent rotates, its label
+snaps to the nearest readable
 orientation (0/90/180/270 — 180 survives for mirrored bottom-side text).
-The label's clearance rect (text bbox plus a font-height halo) collides
-through the same wall law as courtyards, so crowded boards make room
-instead of overlapping text. <code>label_clearance_m = 0</code> parks every
+<code>label_clearance_m = 0</code> parks every
 label at its filed spot (orbit off); any positive value enables orbit.
 Parent footprints never feel label forces, so pad trajectories match
 label-unaware runs. Normative formulas:

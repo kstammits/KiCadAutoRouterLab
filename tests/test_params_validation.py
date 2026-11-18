@@ -55,8 +55,9 @@ def test_cross_layer_pin_halo_tunable():
 @pytest.mark.unit
 @pytest.mark.params
 def test_label_slack_tunable():
-    """2.0mm default (float zone), round-trips, negatives/non-finite/over-cap rejected."""
-    assert PlacementParams.from_dict({}).label_slack_m == pytest.approx(0.002)
+    """0.5mm default (small float zone so far labels still feel the pull
+    home), round-trips, negatives/non-finite/over-cap rejected."""
+    assert PlacementParams.from_dict({}).label_slack_m == pytest.approx(0.0005)
     p = PlacementParams.from_dict({"label_slack_m": 0.001})
     assert PlacementParams.from_dict(p.to_dict()) == p
     for bad in (-1e-9, float("nan"), float("inf"), "0.001", True, 0.06):

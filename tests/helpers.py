@@ -323,37 +323,67 @@ def overlap_area(model, deltas: dict, uuids: Tuple[str, str] = ("uuid-a", "uuid-
     return polys[0].intersection(polys[1]).area
 
 
-def assert_label_leashed(before: BoardModel, after: BoardModel,
-                         uuid: str, orbit_mm: float,
-                         tol_mm: float = 0.02) -> float:
-    """Final label sits within the orbit leash of its rigidly carried home.
+def label_cap_radii_mm(fp, orbit_mm: float) -> Tuple[float, float]:
+    """Per-label clamp-ellipse semi-axes (mm) for the orbit acceptance pins.
 
-    The general follow-pin: home is the filed spot translated with the
-    parent centroid and rotated with the parent angle (NOT the parent
-    origin — a rotated or offset-filed label legitimately rests away
-    from the centroid). Returns the measured leash distance (mm).
+    Same formula the engine clamps with: parent body half-extents
+    (footprint-local, home-relative) + text extent + margin, each floored
+    at the orbit reach — so sticks grow room only along their length.
+    """
+    import math
+
+    from kicad_autorouter.board_model import _to_local
+    from kicad_autorouter.board_model.labels import label_disc_radii_mm
+
+    assert fp.label is not None
+    assert fp.pads, f"{fp.uuid}: no pads for centroid"
+    n = len(fp.pads)
+    cc = _to_local(
+        sum(p.position.x_mm for p in fp.pads) / n,
+        sum(p.position.y_mm for p in fp.pads) / n,
+        fp.x_mm, fp.y_mm, fp.angle_deg, fp.layer,
+    )
+    hx = hy = 0.0
+    for seg in fp.courtyard or ():
+        for p in seg:
+            lp = _to_local(
+                p.x_mm, p.y_mm, fp.x_mm, fp.y_mm, fp.angle_deg, fp.layer)
+            hx = max(hx, abs(lp.x_mm - cc.x_mm))
+            hy = max(hy, abs(lp.y_mm - cc.y_mm))
+    return label_disc_radii_mm(
+        fp.label.text, fp.label.size_mm, hx, hy, orbit_mm)
+
+
+def assert_label_near_parent(after: BoardModel, uuid: str,
+                             orbit_mm: float,
+                             tol_mm: float = 0.1) -> float:
+    """Final label sits next to its parent, inside its own sized ellipse.
+
+    The general follow-pin: the spring pulls every label toward its
+    parent's pad center and the copper shoves hold it out, so it rests
+    against the parent's edge — never at a far filed offset. The ellipse
+    is the orbit reach floored at body half-extents + text extent (same
+    formula the engine clamps with), so sticks hug the flanks while long
+    parts legitimately rest farther out along their length.
+    Returns the measured center distance (mm).
     """
     import math
 
     from kicad_autorouter.board_model import _to_board as _tb
-    from kicad_autorouter.board_model import _to_local as _tl
+    from kicad_autorouter.board_model.labels import point_in_label_ellipse
 
-    fp0 = next(f for f in before.footprints if f.uuid == uuid)
     fp1 = next(f for f in after.footprints if f.uuid == uuid)
-    assert fp0.label is not None and fp1.label is not None
-    c0 = _pad_centroid_mm(fp0)
+    assert fp1.label is not None
     c1 = _pad_centroid_mm(fp1)
-    filed0 = _tb(fp0.label.local_x_mm, fp0.label.local_y_mm,
-                 fp0.x_mm, fp0.y_mm, fp0.angle_deg, fp0.layer)
-    home_local = _tl(filed0.x_mm, filed0.y_mm,
-                     c0[0], c0[1], fp0.angle_deg, fp0.layer)
-    home = _tb(home_local.x_mm, home_local.y_mm,
-               c1[0], c1[1], fp1.angle_deg, fp1.layer)
     lab = _tb(fp1.label.local_x_mm, fp1.label.local_y_mm,
               fp1.x_mm, fp1.y_mm, fp1.angle_deg, fp1.layer)
-    d = math.hypot(lab.x_mm - home.x_mm, lab.y_mm - home.y_mm)
-    assert d <= orbit_mm + tol_mm, (
-        f"{uuid}: label {d:.3f} mm from carried home (cap {orbit_mm})")
+    cap = label_cap_radii_mm(fp1, orbit_mm)
+    d = math.hypot(lab.x_mm - c1[0], lab.y_mm - c1[1])
+    assert point_in_label_ellipse(
+        lab.x_mm, lab.y_mm, c1, cap, fp1.angle_deg
+    ) or d <= max(cap) + tol_mm, (
+        f"{uuid}: label {d:.3f} mm from parent center "
+        f"(ellipse {cap[0]:.3f}x{cap[1]:.3f})")
     return d
 
 

@@ -34,7 +34,7 @@ from kicad_autorouter.placement import PlacementParams, run_placement
 from kicad_autorouter.sexpr import parse_file, to_sexpr
 
 from .helpers import (
-    assert_label_leashed as _leashed,
+    assert_label_near_parent as _near_parent,
     facing_label_pair as _labeled_pair,
 )
 
@@ -229,24 +229,22 @@ def test_clearance_zero_matches_no_label_parity():
 @pytest.mark.physics
 def test_clearance_ejects_labels_not_parents():
     """Clearance>0 ejects the facing labels (label_deltas grow) within
-    the derived cap, while the short-horizon pad course is
-    label-independent — labels find homes nearby via their own nodes
-    instead of shoving footprints around. (Long chaotic runs diverge
+    the derived cap, while the short-horizon     pad course is
+    label-independent — labels rest against their own parts via their own
+    nodes instead of shoving footprints around. (Long chaotic runs diverge
     pad-for-pad through the shared KE guard, so pad parity is pinned
     on a short deterministic horizon.)"""
-    import math
-
     model = _labeled_pair(label_w_mm=2.0)
-    # Long run: labels eject off each other yet stay inside the leash
-    # of their rigidly carried filed homes — offset-filed labels rest
-    # away from the parent origin, never at the centroid.
+    # Long run: labels are fetched to their parents yet ejected off each
+    # other — each rests against its own part instead of out at the filed
+    # offset, and still inside its own sized disc.
     orbit_mm = PlacementParams().label_orbit_m * 1000.0
     b = run_placement(
         model, PlacementParams(max_iterations=300, label_clearance_m=0.001))
     assert b.label_deltas
     moved = apply_deltas(model, b.deltas, label_deltas=b.label_deltas)
     for uuid in ("uuid-a", "uuid-b"):
-        _leashed(model, moved, uuid, orbit_mm)
+        _near_parent(moved, uuid, orbit_mm)
     # Short horizon: pad course holds station either way.
     a = run_placement(
         model, PlacementParams(max_iterations=10, label_clearance_m=0.0))

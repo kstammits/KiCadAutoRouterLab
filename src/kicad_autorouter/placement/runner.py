@@ -17,9 +17,10 @@ from __future__ import annotations
 import math
 import time
 from collections.abc import Collection
+from dataclasses import replace
 from typing import Dict, List, Optional, Set, Tuple, TypeVar
 
-from ..board_model import BoardModel, BoardRegion
+from ..board_model import BoardModel, BoardRegion, apply_deltas
 from .contact import _board_bbox, courtyard_is_degenerate
 from .legality import LegalityReport, check_legality
 from .model import _collect_pad_nodes
@@ -28,6 +29,26 @@ from .proposal import PlacementProposal
 from .region import _run_region_simulation  # noqa: F401  re-exported for back-compat
 
 V = TypeVar("V")
+
+
+def _accum_delta(store, uuid, delta, with_angle):
+    """Add one delta into a totals store; return its planar magnitude.
+
+    Malformed dx/dy entries are skipped (0.0); a malformed angle raises,
+    exactly as the inline loops did before.
+    """
+    try:
+        dx, dy = float(delta[0]), float(delta[1])
+    except (TypeError, ValueError, IndexError):
+        return 0.0
+    if with_angle:
+        da = float(delta[2]) if len(delta) > 2 else 0.0
+        px, py, pa = store.get(uuid, (0.0, 0.0, 0.0))
+        store[uuid] = (px + dx, py + dy, pa + da)
+    else:
+        px, py = store.get(uuid, (0.0, 0.0))
+        store[uuid] = (px + dx, py + dy)
+    return math.hypot(dx, dy)
 
 
 def _merge_region_lists(
@@ -333,18 +354,47 @@ def run_label_settle(
     model: BoardModel,
     params: PlacementParams,
     max_iterations: int = 200,
+    max_passes: int = 3,
 ) -> PlacementProposal:
     """Frozen-body label relaxation: settle labels, move no footprints.
 
     Runs the normal region simulations with bodies frozen, so each label
     orbits (tether + tiny-courtyard wall law + pin discs + board edge +
     pad Coulomb, all one-way) to a local de-overlap equilibrium against
-    static obstacles. Returns the usual proposal with empty pad deltas;
-    ``stop_reason`` reports label quiet (``converged``/``stalled``).
+    static obstacles. One loop rarely finishes the job — the end-of-loop
+    de-penetration relocates labels the loop wedged, which disturbs the
+    equilibrium the loop found — so passes repeat from the new state
+    until a pass moves no label (writeback-quiet, 1 nm) or ``max_passes``
+    is reached. Deltas accumulate across passes (bodies are frozen, so
+    every pass shares one frame and offsets add); ``iterations`` totals
+    the passes and ``stop_reason`` is the last pass's. Returns the usual
+    proposal with empty pad deltas.
     """
-    from dataclasses import replace
-
-    return run_placement(
-        model, replace(params, max_iterations=max_iterations),
-        freeze_bodies=True,
+    cur = model
+    total_deltas: Dict[str, Tuple[float, ...]] = {}
+    total_label: Dict[str, Tuple[float, float]] = {}
+    total_iters = 0
+    last: Optional[PlacementProposal] = None
+    for _ in range(max(1, max_passes)):
+        prop = run_placement(
+            cur, replace(params, max_iterations=max_iterations),
+            freeze_bodies=True,
+        )
+        last = prop
+        total_iters += prop.iterations
+        moved_mm = 0.0
+        for uuid, d in (prop.deltas or {}).items():
+            moved_mm = max(moved_mm, _accum_delta(total_deltas, uuid, d, True))
+        for uuid, ld in (prop.label_deltas or {}).items():
+            moved_mm = max(moved_mm, _accum_delta(total_label, uuid, ld, False))
+        cur = apply_deltas(
+            cur, prop.deltas, label_deltas=prop.label_deltas or None)
+        if moved_mm <= 1e-9:
+            break
+    assert last is not None
+    return replace(
+        last,
+        deltas=total_deltas,
+        label_deltas=total_label,
+        iterations=total_iters,
     )
