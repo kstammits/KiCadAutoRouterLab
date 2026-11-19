@@ -149,23 +149,13 @@ class TestNoNetPadHalos:
 class TestPadMarking:
     """Tests for _mark_pad."""
 
-    def test_mark_pad_tht_both_layers(self, grid, minimal_model):
+    def test_mark_pad_tht_both_layers(self, grid):
         """Through-hole pad marks both layers as HIGH_COST."""
-        # Find a THT pad
-        tht_fp = None
-        for fp in minimal_model.footprints:
-            for pad in fp.pads:
-                if pad.is_through_hole:
-                    tht_fp = fp
-                    break
-            if tht_fp:
-                break
-
-        if not tht_fp:
-            pytest.skip("No THT pads in minimal fixture")
+        tht_fp = make_test_fp("R1", "uuid-r1", 100.0, 100.0, ("N1",),
+                              tht=True)
+        tht_pad = next(p for p in tht_fp.pads if p.is_through_hole)
 
         cost_grid = np.full((2, grid.height_cells, grid.width_cells), FREE, dtype=np.int16)
-        tht_pad = next(p for p in tht_fp.pads if p.is_through_hole)
 
         _mark_pad(cost_grid, grid, tht_fp, tht_pad, {}, 2)
 
@@ -174,21 +164,10 @@ class TestPadMarking:
         assert cost_grid[0, row, col] >= HIGH_COST
         assert cost_grid[1, row, col] >= HIGH_COST
 
-    def test_mark_pad_smd_single_layer(self, grid, minimal_model):
+    def test_mark_pad_smd_single_layer(self, grid):
         """SMD pad marks only its layer."""
-        smd_fp = None
-        smd_pad = None
-        for fp in minimal_model.footprints:
-            for pad in fp.pads:
-                if not pad.is_through_hole:
-                    smd_fp = fp
-                    smd_pad = pad
-                    break
-            if smd_fp:
-                break
-
-        if not smd_fp:
-            pytest.skip("No SMD pads in minimal fixture")
+        smd_fp = make_test_fp("R1", "uuid-r1", 100.0, 100.0, ("N1",))
+        smd_pad = next(p for p in smd_fp.pads if not p.is_through_hole)
 
         cost_grid = np.full((2, grid.height_cells, grid.width_cells), FREE, dtype=np.int16)
         _mark_pad(cost_grid, grid, smd_fp, smd_pad, {}, 2)
