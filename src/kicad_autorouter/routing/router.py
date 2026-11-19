@@ -21,7 +21,7 @@ from .grid import RoutingGrid
 from .obstacles import POUR
 from .router_windows import Window, _box_mm, for_pair, grow, full_board
 from .router_neighbors import _expand_neighbors_nb, _expand_neighbors_py
-from .router_via import _disc_structure, build_via_ok_mask, build_via_ok_cached
+from .router_via import _disc_structure, build_via_ok_mask, build_via_ok_cached, ViaOkTracker
 from .router_ripup import RipUpManager, is_rippupable_victim
 from .router_diag import diagnose_attempts, kruskal_connect, manhattan, ordered_pairs
 
@@ -171,6 +171,9 @@ class SingleNetRouter:
         # (obstacles._ObstacleEntry). Set by the pipeline when a cache is
         # in use; None keeps the one-shot build_via_ok_mask path.
         self.via_ok_entry = None
+        # Run-level incremental via-ok tracker (router_via.ViaOkTracker).
+        # Set by the pipeline for batch runs; None keeps the legacy path.
+        self.via_ok_tracker = None
 
     def _budget_spent(self, expansions_total: int) -> bool:
         """True when the net-level expansion budget is exhausted."""
@@ -260,7 +263,17 @@ class SingleNetRouter:
 
         via_ok = None
         if self.via_clearance_cells > 0:
-            if self.via_ok_entry is not None:
+            if self.via_ok_tracker is not None:
+                via_ok = self.via_ok_tracker.build(
+                    self.cost_grid,
+                    self.via_block_mask,
+                    self.tht_via_mask,
+                    secondary,
+                    self.via_clearance_cells,
+                    self.cost_map.blocked_threshold,
+                    SECONDARY_BLOCKED,
+                )
+            elif self.via_ok_entry is not None:
                 via_ok = build_via_ok_cached(
                     self.via_ok_entry,
                     self.cost_grid,

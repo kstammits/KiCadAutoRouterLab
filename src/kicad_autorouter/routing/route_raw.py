@@ -18,6 +18,7 @@ from .params import MAX_GRID_CELLS_TOTAL, RoutingParams, _validate_routing_param
 from .output import routes_to_tracks_vias, apply_routes_to_tree
 from .output import Arc as OutputArc, Track as OutputTrack, Via as OutputVia
 from .router import RouteResult as NetRouteResult
+from .router_via import ViaOkTracker
 from .power import identify_power_nets
 from .pour import pour_corridors, pour_net_names
 from .stitch import plan_stitches
@@ -105,6 +106,11 @@ def route_raw(
     timings: Dict[str, float] = {}
     expansions_total = 0
     cancelled = False
+    # Run-level incremental via-ok mask: consecutive nets' dilation
+    # inputs differ by <1% of cells, so one full-board dilation per
+    # run plus cheap crop updates replaces one full dilation per net.
+    # Bit-identical output; never crosses runs (footprints fixed here).
+    via_ok_tracker = ViaOkTracker()
 
     def _report(net_name: str, done: int, total: int, expansions: int) -> None:
         if progress_cb is None:
@@ -448,6 +454,7 @@ def route_raw(
             via_block_mask, obstacle_cache, params, net_name,
             extra_power_nets, corridors, corridor_min_thick, pour_nets,
             static_fp=batch_static_fp,
+            via_ok_tracker=via_ok_tracker,
         )
         width_mm = setup.width_mm
         width_map[net_name] = width_mm

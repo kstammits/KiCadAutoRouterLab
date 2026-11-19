@@ -2,7 +2,7 @@
 from __future__ import annotations
 import math
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable, Collection, Dict, List, Optional, Set, Tuple
 import numpy as np
 from ..board_model import BoardModel
@@ -144,6 +144,7 @@ def _setup_flight(
     corridor_min_thick: float = 0.0,
     pour_nets: Collection[str] = (),
     static_fp: Optional[int] = None,
+    via_ok_tracker=None,  # run-level ViaOkTracker (None = legacy one-shot mask)
 ) -> _FlightSetup:
     """Build the per-net search context (code-motion from _route_one_net).
 
@@ -184,6 +185,8 @@ def _setup_flight(
     )
     if obstacle_cache is not None:
         router.via_ok_entry = obstacle_cache.active_entry()
+    if via_ok_tracker is not None:
+        router.via_ok_tracker = via_ok_tracker
     if corridors is not None and net_name not in pour_nets:
         # Pour-severance toll: tracks may still cross narrow pour
         # channels, but prefer paths that keep pours whole.
@@ -521,14 +524,20 @@ def _route_chunk(
     def _search_diag(kind: str):
         """Failure record for a dead search; replays with tracing when blind.
 
-        Only ``"open"`` (no path found / left board) replays: budget
-        failures would burn another full budget, and gate trips are a
-        fitting problem, not a search problem.
+        Only ``"open"`` (no path found / left board) replays, and only
+        when ``params.debug`` is set: the replay re-runs the whole failed
+        window ladder on a tracing router purely to populate ``attempts``
+        for retry hints (nothing it computes is stamped), roughly
+        doubling a failed net's wall time. Production runs keep the
+        pins/seed/diagnosis record with the replay-skipped hint instead.
+        Budget failures would burn another full budget, and gate trips
+        are a fitting problem, not a search problem, so neither replays.
         """
         return _chunk_failure_diag(
             router, term_set, region_secondary, seed_cells, trunk_root,
             res, routing_grid, net_name, region_idx, chunk_idx, n_chunks,
-            should_cancel, replay=(kind == "open"),
+            should_cancel,
+            replay=(kind == "open" and bool(params.debug)),
         )
     if params.debug and res.debug_attempts:
         key = f"debug_attempts_{net_name}"
