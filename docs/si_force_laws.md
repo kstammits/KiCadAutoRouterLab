@@ -22,6 +22,13 @@ Isolated-pair equilibrium with attraction sits at
 `d = √(k_rep / k_attr)`. With the defaults this is sub-millimeter: the
 courtyard wall owns contact response, not repulsion.
 
+Pairs beyond the tail cutoff carry zero force:
+`cut(k) = 20mm · √(k_rep / 2e-9)`, the distance where a single pair
+contributes 5e-6 N — two orders below the 2e-4 N settle gate
+(probe-verified worst dropped net force ≈1.6e-4 N per pad at default
+strength, zero pads above the gate). The cutoff scales with strength so
+the dropped level stays negligible across `repulsion_k_N_m2` sweeps.
+
 ### Net attraction (constant-magnitude springs)
 ```
 F_attr = k_attr · w_edge · û(src→dst)   k_attr in N, w_edge dimensionless

@@ -273,6 +273,63 @@ def _pad_repulsion(
     return np.sum(force_vec, axis=1)
 
 
+# Grid cell size (mm) mirrored from the broadphase below: the vectorized
+# candidacy replicates the grid's stamped-rectangle + Chebyshev-1 ring
+# semantics exactly (including int() truncation), so the candidate set is
+# bit-identical while the dict/set/Python-loop overhead disappears.
+_GRID_CELL_MM = 15.0
+
+
+def _candidate_matrices_vectorized(
+    centroids: np.ndarray,
+    radii: np.ndarray,
+    layers: np.ndarray,
+    halo_mm: float,
+    pin_halo_mm: float,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Broadphase without the grid/dict/set: stamped cell rectangles per
+    part (same int()-truncation formula) with Chebyshev-1 adjacency, which
+    is exactly the intra-cell + 8-neighbor ring pairing. Same-layer pairs
+    then pass the identical circle test; cross-layer pairs get the pin
+    halo, replicating the per-pair loop verbatim.
+
+    Returns sorted (ci, cj) index arrays (i < j, deterministic order across
+    processes — unlike set iteration) plus the _close/_halo matrices.
+    """
+    n = int(centroids.shape[0])
+    close = np.zeros((n, n), dtype=bool)
+    hal = np.zeros((n, n), dtype=np.float64)
+    if n < 2:
+        return (np.zeros(0, dtype=np.int64), np.zeros(0, dtype=np.int64),
+                close, hal)
+    rr = radii + halo_mm
+    gx0 = np.trunc((centroids[:, 0] - rr) / _GRID_CELL_MM).astype(np.int64)
+    gx1 = np.trunc((centroids[:, 0] + rr) / _GRID_CELL_MM).astype(np.int64)
+    gy0 = np.trunc((centroids[:, 1] - rr) / _GRID_CELL_MM).astype(np.int64)
+    gy1 = np.trunc((centroids[:, 1] + rr) / _GRID_CELL_MM).astype(np.int64)
+    adj = (gx0[:, None] - 1 <= gx1[None, :]) & \
+        (gx0[None, :] - 1 <= gx1[:, None]) & \
+        (gy0[:, None] - 1 <= gy1[None, :]) & \
+        (gy0[None, :] - 1 <= gy1[:, None])
+    iu = np.triu_indices(n, k=1)
+    keep = adj[iu]
+    ci = np.ascontiguousarray(iu[0][keep])
+    cj = np.ascontiguousarray(iu[1][keep])
+    same = np.asarray(layers)[:, None] == np.asarray(layers)[None, :]
+    np.fill_diagonal(same, False)  # i == j pairs are never candidates
+    diff = centroids[:, None, :] - centroids[None, :, :]
+    dist_sq = np.sum(diff * diff, axis=2)
+    reach = radii[:, None] + radii[None, :] + halo_mm
+    same_close = same & (dist_sq < reach * reach + 1e-8)
+    close |= same_close
+    hal[same_close] = halo_mm
+    cand = np.zeros((n, n), dtype=bool)
+    cand[iu[0][keep], iu[1][keep]] = True
+    cand |= cand.T
+    hal[cand & ~same] = pin_halo_mm
+    return ci, cj, close, hal
+
+
 def _compute_total_force(
     pos: np.ndarray,
     n_pads: int,
@@ -605,60 +662,16 @@ def _compute_total_force(
             # kernel exactly (same refresh cadence, same poses).
             ctx.pins_data = pins_data
 
-            # Uniform grid spatial index for broadphase
-            cell_size = 15.0  # mm
-            grid: Dict[Tuple[int, int], List[int]] = {}
-            for fp_idx in range(n_fp):
-                cx, cy = body_centroids_arr[fp_idx]
-                r = body_radii_arr[fp_idx] + (params.wall_halo_m * 1000.0)
-                min_gx = int((cx - r) / cell_size)
-                max_gx = int((cx + r) / cell_size)
-                min_gy = int((cy - r) / cell_size)
-                max_gy = int((cy + r) / cell_size)
-                for gx in range(min_gx, max_gx + 1):
-                    for gy in range(min_gy, max_gy + 1):
-                        grid.setdefault((gx, gy), []).append(fp_idx)
-
-            candidate_pairs = set()
-            for cell, indices in grid.items():
-                for ii, i in enumerate(indices):
-                    for j in indices[ii + 1:]:
-                        candidate_pairs.add((i, j) if i < j else (j, i))
-                for dx in (-1, 0, 1):
-                    for dy in (-1, 0, 1):
-                        if dx == 0 and dy == 0:
-                            continue
-                        adj_cell = (cell[0] + dx, cell[1] + dy)
-                        adj_indices = grid.get(adj_cell, [])
-                        for i in indices:
-                            for j in adj_indices:
-                                if i < j:
-                                    candidate_pairs.add((i, j))
-                                elif j < i:
-                                    candidate_pairs.add((j, i))
-
-            _close = np.zeros((n_fp, n_fp), dtype=bool)
-            _halo_matrix_local = np.zeros((n_fp, n_fp), dtype=np.float64)
-            for i, j in candidate_pairs:
-                if body_layers_arr[i] == body_layers_arr[j]:
-                    ri = body_radii_arr[i]
-                    rj = body_radii_arr[j]
-                    halo = params.wall_halo_m * 1000.0
-                    dx = body_centroids_arr[i, 0] - body_centroids_arr[j, 0]
-                    dy = body_centroids_arr[i, 1] - body_centroids_arr[j, 1]
-                    dist_sq = dx * dx + dy * dy
-                    reach_sq = (ri + rj + halo) ** 2
-                    if dist_sq < reach_sq + 1e-8:
-                        _close[i, j] = _close[j, i] = True
-                        _halo_matrix_local[i, j] = _halo_matrix_local[j, i] = halo
-                else:
-                    # Cross-layer: bodies never collide, but THT pins
-                    # protruding onto the far side do (pin-vs-body below).
-                    # Seed the pair halo with the pin halo so those pushes
-                    # use solder-fillet clearance, not the courtyard halo.
-                    # _close stays False: no body-body response. 0 disables.
-                    pin_halo = params.cross_layer_pin_halo_m * 1000.0
-                    _halo_matrix_local[i, j] = _halo_matrix_local[j, i] = pin_halo
+            # Broadphase: vectorized stamped-rectangle + Chebyshev-1 ring,
+            # exactly the grid's candidate set (proven by
+            # KICAD_CANDIDATE_CHECK runs) without the dict/set/Python-loop
+            # overhead. Sorted order is deterministic across processes.
+            _cand_i, _cand_j, _close, _halo_matrix_local = \
+                _candidate_matrices_vectorized(
+                    body_centroids_arr, body_radii_arr, body_layers_arr,
+                    params.wall_halo_m * 1000.0,
+                    params.cross_layer_pin_halo_m * 1000.0)
+            candidate_pairs = list(zip(_cand_i.tolist(), _cand_j.tolist()))
 
             fp_centroids_arr = body_centroids_arr
             fp_radii_arr = body_radii_arr
