@@ -1000,6 +1000,16 @@ on("pin-btn", "click", () => {
   selectedUuids.forEach(uuid => togglePin(uuid));
 });
 
+// Unpin selected (or all pinned when nothing is selected) — shared by
+// the selection toolbar and the sidebar button.
+function unpinSelectedOrAll() {
+  const toUnpin = selectedUuids.size > 0
+    ? Array.from(selectedUuids).filter(u => pinnedUuids.has(u))
+    : Array.from(pinnedUuids);
+  toUnpin.forEach(uuid => togglePin(uuid));
+}
+on("unpin-btn", "click", unpinSelectedOrAll);
+
 // Sidebar filter event listeners
 ["fp-search", "filter-ref", "filter-net", "filter-layer", "filter-state", "filter-hide-locked", "filter-hide-fixed"].forEach(id => {
   on(id, "input", renderFootprintTable);
@@ -1038,13 +1048,7 @@ on("sidebar-pin-sel", "click", () => {
   selectedUuids.forEach(uuid => togglePin(uuid));
 });
 
-on("sidebar-unpin-sel", "click", () => {
-  // Unpin all currently pinned that are also selected (or all pinned if none selected)
-  const toUnpin = selectedUuids.size > 0 
-    ? Array.from(selectedUuids).filter(u => pinnedUuids.has(u))
-    : Array.from(pinnedUuids);
-  toUnpin.forEach(uuid => togglePin(uuid));
-});
+on("sidebar-unpin-sel", "click", unpinSelectedOrAll);
 
 // Select all checkbox in table header (bulk replace, in-place repaint).
 on("fp-select-all", "change", e => {
@@ -1122,6 +1126,10 @@ function updateGhostSelUI() {
     return;
   }
   panel.hidden = false;
+  // The ghost form lives in a collapsed <details>: open it so the
+  // selected ghost's controls are visible.
+  const ghostPanel = el("ghost-panel");
+  if (ghostPanel && ghostPanel.tagName === "DETAILS") ghostPanel.open = true;
   const attrs = (fp.ghost_attractions || []).map(([t, ka]) => `${t},${ka}`).join("; ");
   refEl.textContent = `${fp.ref}${attrs ? ` → ${attrs}` : ""}`;
   refEl.title = fp.uuid;
@@ -1168,10 +1176,16 @@ async function createGhost() {
   const [cx, cy] = ghostViewCenter();
   const xRaw = el("ghost-x")?.value;
   const yRaw = el("ghost-y")?.value;
+  // Empty X/Y means view center: write the used values back into the
+  // inputs so the placement is visible instead of magic.
+  const xUsed = xRaw === "" ? Math.round(cx * 2) / 2 : Number(xRaw);
+  const yUsed = yRaw === "" ? Math.round(cy * 2) / 2 : Number(yRaw);
+  if (xRaw === "" && el("ghost-x")) el("ghost-x").value = xUsed;
+  if (yRaw === "" && el("ghost-y")) el("ghost-y").value = yUsed;
   const body = {
     kind, ref,
-    x_mm: xRaw === "" ? Math.round(cx * 2) / 2 : Number(xRaw),
-    y_mm: yRaw === "" ? Math.round(cy * 2) / 2 : Number(yRaw),
+    x_mm: xUsed,
+    y_mm: yUsed,
     courtyard_layer: "F.CrtYd",
   };
   if (kind === "wall") {
@@ -1346,19 +1360,14 @@ function motionEls() {
     slider: el("motion-slider"),
     readout: el("motion-readout"),
     playBtn: el("motion-play-btn"),
-    first: el("motion-first-btn"),
-    prev: el("motion-prev-btn"),
-    next: el("motion-next-btn"),
-    reset: el("motion-reset-btn"),
   };
 }
 
 function motionSetEnabled(on) {
-  const { slider, playBtn, first, prev, next } = motionEls();
+  const { slider, playBtn } = motionEls();
   const canPlay = on && motion.frames.length > 1;
   if (slider) slider.disabled = !on;
   if (playBtn) playBtn.disabled = !canPlay;
-  for (const b of [first, prev, next]) if (b) b.disabled = !on;
 }
 
 function motionReadout() {
@@ -1366,13 +1375,13 @@ function motionReadout() {
   const n = motion.frames.length;
   if (!readout || !slider) return;
   if (!n) { readout.textContent = "no frames"; return; }
-  // frames[0] is the starting pose (iter 0); frames[k] follows k*stride
-  // completed iterations; the last frame is always the final pose.
+  // frames[0] is the starting pose (iter 0); the last frame is always the
+  // final proposal pose, so scrubbing right is the way back to the end.
   const approxIter = (motion.idx >= n - 1)
     ? motion.iterations
     : Math.min(motion.iterations, motion.idx * motion.stride);
-  const ds = motion.stride > 1 ? ` · stride ${motion.stride} (thinned)` : "";
-  readout.textContent = `frame ${motion.idx + 1}/${n} · ~iter ${approxIter}/${motion.iterations}${ds}`;
+  const ds = motion.stride > 1 ? ` · thinned ×${motion.stride}` : "";
+  readout.textContent = `≈iter ${approxIter}/${motion.iterations}${ds}`;
   slider.value = String(motion.idx);
 }
 
@@ -1670,14 +1679,6 @@ async function loadMotionFrames(silent) {
 }
 
 on("motion-play-btn", "click", toggleMotionPlay);
-on("motion-prev-btn", "click", () => stepMotion(-1));
-on("motion-next-btn", "click", () => stepMotion(1));
-on("motion-first-btn", "click", () => { pauseMotion(); applyMotionFrame(0); });
-on("motion-reset-btn", "click", () => {
-  pauseMotion();
-  clearMotionView();
-  if (motion.frames.length) applyMotionFrame(motion.frames.length - 1);
-});
 on("motion-slider", "input", (e) => {
   pauseMotion();
   // Debounce rapid scrub events via rAF: only the latest slider value paints
@@ -1768,7 +1769,6 @@ async function runPlacement(movableUuids, iterations) {
     await loadMotionFrames(true);
     if (diagEl) diagEl.textContent = formatPlacementDiag(r);
     if (acceptBtn) acceptBtn.disabled = !(r.moved > 0);
-    if (stepSelectedBtn) stepSelectedBtn.textContent = "Step Again";
     renderFootprintTable(); // Re-render to show illegal state
   } catch (err) {
     const msg = err?.name === "AbortError"
@@ -1816,7 +1816,6 @@ acceptBtn?.addEventListener("click", async () => {
       + (skipped ? `; kept protected ${skipped}` : "")
       + `. Re-route via Route panel if needed.`;
     if (acceptBtn) acceptBtn.disabled = true;
-    if (stepSelectedBtn) stepSelectedBtn.textContent = "Step";
     if (undoBtn) undoBtn.disabled = false;
     resetMotionState(); // positions committed — cached deltas are stale
   } catch (err) {
@@ -1830,7 +1829,6 @@ on("clear-btn", "click", async () => {
   lastLegality = {};
   if (diagEl) diagEl.textContent = "proposal cleared";
   if (acceptBtn) acceptBtn.disabled = true;
-  if (stepSelectedBtn) stepSelectedBtn.textContent = "Step";
   resetMotionState();
   renderFootprintTable();
 });
@@ -1842,7 +1840,6 @@ undoBtn?.addEventListener("click", async () => {
     lastLegality = {};
     if (diagEl) diagEl.textContent = `undone — board reverted to v${r.version}`;
     if (acceptBtn) acceptBtn.disabled = true;
-    if (stepSelectedBtn) stepSelectedBtn.textContent = "Step";
     resetMotionState();
     renderFootprintTable();
     try {
@@ -1936,8 +1933,6 @@ on("reset-btn", "click", async () => {
     lastLegality = {};
     if (diagEl) diagEl.textContent = `board reset to original (v${r.version})`;
     if (acceptBtn) acceptBtn.disabled = true;
-    const runBtn = el("run-selected-btn");
-    if (runBtn) runBtn.textContent = "Step placement";
     if (undoBtn) undoBtn.disabled = true;
     renderFootprintTable();
     try {

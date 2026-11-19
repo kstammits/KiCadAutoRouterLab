@@ -19,7 +19,7 @@ const PARAM_DEFS = [
   { key: "align_angle_k_N", label: "Align angle k (N)", min: 1e-6, max: 1e-2, step: 1e-6, log: true },
   { key: "align_pos_k_N_m", label: "Align hold k (N/m)", min: 1e-3, max: 10, step: 1e-3, log: true },
   { key: "max_iterations", label: "Max iterations", min: 1, max: 20000, step: 10, nstep: 1 },
-  { key: "label_clearance_m", label: "Label clearance (mm)", min: 0, max: 0.02, step: 0.001,
+  { key: "label_clearance_m", label: "Label orbit on/off (mm)", min: 0, max: 0.02, step: 0.001,
     display: { unit: "mm", scale: 1000, step: 0.5 } },
   { key: "label_orbit_m", label: "Label orbit (mm)", min: 0, max: 0.02, step: 0.001,
     display: { unit: "mm", scale: 1000, step: 0.5 } },

@@ -181,6 +181,14 @@ function renderRoutingParams(params, modeOwned = [], modePreset = {}, mode = nul
   `;
 
   grid.innerHTML = visibleMainDefs.map(def => routingSliderHtml(def, params, modeOwned, mode)).join("") + debugHtml;
+  if (mode === "two-layer" && ROUTING_PARAM_DEFS.some(def => def.fourLayerOnly === true)) {
+    // The 4-layer-only knob is filtered out above (absent inputs are not
+    // POSTed, so the mode-forced server value survives). Say so inline
+    // instead of silently vanishing.
+    grid.innerHTML += `<div class="param" title="Mode forces pour-severance off in two-layer mode">
+      <span>Pour Severance <span class="mode4l-badge" style="opacity:.45">2-layer off</span></span>
+    </div>`;
+  }
   syncRoutingGrid(grid);
 
   if (advGrid) {
@@ -677,6 +685,8 @@ on("shuffle-cancel-btn", "click", requestRouteCancel);
 
 // Route all unprotected nets (helper behind the scoped Route button:
 // empty selection routes everything unprotected, like Place Step/Run).
+let routeAllConfirmed = false; // one explicit confirm per page load
+
 async function routeAllNets() {
   const diag = routeDiag;
 
@@ -687,6 +697,20 @@ async function routeAllNets() {
     const data = await apiJson("/api/nets");
     const unprotected = (data.nets || []).filter(n => !n.protected).map(n => n.name);
     if (unprotected.length === 0) return;
+
+    // First route-all per page load names the scope explicitly: an empty
+    // selection routes every unprotected net, which surprises newcomers.
+    if (!routeAllConfirmed) {
+      routeAllConfirmed = true;
+      const ok = window.confirm(
+        `Route all ${unprotected.length} unprotected nets?\n\n` +
+        `Empty selection routes everything not protected.\n` +
+        `Pick nets in the table below to scope smaller.`);
+      if (!ok) {
+        diag.textContent = "route cancelled — select nets to scope smaller";
+        return;
+      }
+    }
 
     // Select all unprotected, keep the full table rendered.
     selectedNets = new Set(unprotected);

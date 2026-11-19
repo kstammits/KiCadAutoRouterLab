@@ -82,8 +82,8 @@
       </div>
       <div class="nudge-hint">Arrow keys nudge selection when no motion frames are loaded. Copper on moved nets is ripped (protected kept); Undo restores.</div>
     </div>
-    <div class="ghost-panel" id="ghost-panel">
-      <div class="ghost-title">Ghosts <span style="font-weight:400; color:#7d8b99;">(keepout walls / attractors)</span></div>
+    <details class="ghost-panel" id="ghost-panel">
+      <summary class="ghost-title" title="Fixed anchors: walls push parts away, attractors pull a ref. Never movable, never in Step/Run selection. Click to expand.">Ghosts <span style="font-weight:400; color:#7d8b99;">(keepout walls / attractors — advanced)</span></summary>
       <div class="ghost-form-row">
         <select id="ghost-kind" title="Wall pushes parts away; attractor pulls a ref">
           <option value="wall">Wall</option>
@@ -127,7 +127,7 @@
         </div>
         <button id="ghost-delete-btn" title="Delete selected ghost">Delete</button>
       </div>
-    </div>
+    </details>
   </aside>
   <div class="resizer" id="resizer" aria-label="Resize sidebar"></div>
   
@@ -150,28 +150,9 @@
         <span id="app-version" class="chip" style="font-size:0.6rem;">v?</span>
       </span>
       <span class="top-group">
-        <label class="chk" title="Show the accepted proposal overlay (placement deltas on top of the committed board)"><input type="checkbox" id="overlay-toggle" checked> Show proposal</label>
-        <label class="chk" title="Show per-part force vectors in the board key colors (key floats top-left on the board)"><input type="checkbox" id="forces-toggle" checked> forces</label>
-        <label class="chk" id="cost-grid-label" hidden title="Show the routing cost-grid heatmap (needs Debug data from a route run)"><input type="checkbox" id="cost-grid-toggle"> Cost grid</label>
-        <select id="cost-grid-net" hidden title="Per-net fanout halo overlay (soft/hard rings + terminal seals)">
-          <option value="">occupancy only</option>
-        </select>
-        <label class="chk" title="Show poured-zone outlines and fills"><input type="checkbox" id="zones-toggle" checked> Zones</label>
-        <label class="chk" title="Show KiCad's cached zone fills (stale after edits; use --refill-zones to refresh)"><input type="checkbox" id="zones-fill-toggle"> Zone fills (cached)</label>
-      </span>
-      <span class="top-group">
         <label class="chk" title="Show kicad-cli DRC markers on the board (run DRC first)"><input type="checkbox" id="drc-toggle"> DRC</label>
         <button id="drc-run-btn" title="Run kicad-cli DRC on the current board">Run DRC</button>
         <span class="zoom-info" id="drc-info"></span>
-      </span>
-      <span class="top-group" id="layer-toggles" title="Copper layer visibility (from the board stackup)">
-        <label class="chk"><input type="checkbox" data-layer="F.Cu" checked> F.Cu</label>
-        <label class="chk"><input type="checkbox" data-layer="B.Cu" checked> B.Cu</label>
-      </span>
-      <span class="top-group" id="color-mode-group" title="Copper color mode: net hues (placement) vs solid layer colors (front/rear/inner distinction for routing)">
-        <button class="tab-btn btn-mini color-mode-btn" data-color-mode="auto" title="Auto: layer colors on the Route tab, net colors elsewhere">Auto</button>
-        <button class="tab-btn btn-mini color-mode-btn" data-color-mode="net" title="Net hues — each net keeps its own color (placement default)">Net</button>
-        <button class="tab-btn btn-mini color-mode-btn" data-color-mode="layer" title="Solid layer colors — F.Cu red, B.Cu green, inners teal/violet/amber/blue">Layer</button>
       </span>
       <span class="top-group">
         <a href="/manual.html" target="_blank" rel="noopener" style="font-size:.65rem;color:#7ee0a0;" title="Generated placement manual (before/after examples)">Manual ↗</a>
@@ -185,6 +166,25 @@
         <input type="file" id="ctx-load-input" accept="application/json,.json" hidden>
         <button id="undo-btn" title="Undo last accept" disabled>Undo</button>
         <button id="reset-btn" title="Reset to original board" hidden>Reset</button>
+      </span>
+      <span class="top-group" title="View toggles — display only, never change the board">
+        <label class="chk" title="Show the accepted proposal overlay (placement deltas on top of the committed board)"><input type="checkbox" id="overlay-toggle" checked> Show proposal</label>
+        <label class="chk" title="Show per-part force vectors in the board key colors (key floats top-left on the board)"><input type="checkbox" id="forces-toggle" checked> forces</label>
+        <label class="chk" id="cost-grid-label" hidden title="Show the routing cost-grid heatmap (needs Debug data from a route run)"><input type="checkbox" id="cost-grid-toggle"> Cost grid</label>
+        <select id="cost-grid-net" hidden title="Per-net fanout halo overlay (soft/hard rings + terminal seals)">
+          <option value="">occupancy only</option>
+        </select>
+        <label class="chk" title="Show poured-zone outlines and fills"><input type="checkbox" id="zones-toggle" checked> Zones</label>
+        <label class="chk" title="Show KiCad's cached zone fills (stale after edits; use --refill-zones to refresh)"><input type="checkbox" id="zones-fill-toggle"> Zone fills (cached)</label>
+      </span>
+      <span class="top-group" id="layer-toggles" title="Copper layer visibility (from the board stackup)">
+        <label class="chk"><input type="checkbox" data-layer="F.Cu" checked> F.Cu</label>
+        <label class="chk"><input type="checkbox" data-layer="B.Cu" checked> B.Cu</label>
+      </span>
+      <span class="top-group" id="color-mode-group" title="Copper color mode: net hues (placement) vs solid layer colors (front/rear/inner distinction for routing)">
+        <button class="tab-btn btn-mini color-mode-btn" data-color-mode="auto" title="Auto: layer colors on the Route tab, net colors elsewhere">Auto</button>
+        <button class="tab-btn btn-mini color-mode-btn" data-color-mode="net" title="Net hues — each net keeps its own color (placement default)">Net</button>
+        <button class="tab-btn btn-mini color-mode-btn" data-color-mode="layer" title="Solid layer colors — F.Cu red, B.Cu green, inners teal/violet/amber/blue">Layer</button>
       </span>
     </div>
 
@@ -225,8 +225,8 @@
   <!-- Right side panel for Place/Route controls (pull-out drawer) -->
   <aside class="side-panel" id="side-panel">
       <div class="panel-tabs">
-        <button id="place-tab-btn" class="tab-btn active" title="Placement panel">Place</button>
-        <button id="route-tab-btn" class="tab-btn" title="Routing panel">Route</button>
+        <button id="place-tab-btn" class="tab-btn active" title="Step 1 · Placement panel: preview with Step, commit with Accept">1 · Place</button>
+        <button id="route-tab-btn" class="tab-btn" title="Step 2 · Routing panel: route the nets, then DRC + download up top">2 · Route</button>
         <button id="docs-tab-btn" class="tab-btn" title="Docs panel">Docs</button>
         <button id="side-panel-toggle" class="panel-toggle" title="Collapse panel">◀</button>
       </div>
@@ -244,28 +244,28 @@
             <span id="place-scope-hint" class="zoom-info" title="What Step/Run will target">nothing selected → Step/Run targets all movable</span>
             <span id="diag"></span>
           </div>
+          <div class="bar" id="place-flow-hint">
+            <span class="hint" title="Step previews a few iterations, Run goes to convergence; Accept commits (rips copper on moved nets — Undo restores), then Route">Step previews → Accept commits → Route</span>
+          </div>
           <div class="bar" id="regime-bar">
             <span class="num">Regime</span>
             <button id="regime-cluster-btn" title="Scattered-start clustering: stronger attraction, softer walls (attraction ~0.05, wall ~0.025, damping 0.08, dt 2ms)">Scatter</button>
             <button id="regime-legalize-btn" title="Placed-board polish: gentle attraction, firm walls, 0.5mm halo (attraction ~0.004, wall ~0.1, damping 0.12, dt 1ms)">Legalize</button>
             <button id="regime-tidy-btn" title="Manhattan snap + row hold on a legalize base: outliers rotate to the nearest compass mode when neighbors agree; ragged rows get frozen baseline/pitch anchors under the same weak hold. Threads far from any mode are left alone. Accept/Clear like any placement run.">Tidy</button>
+            <span class="hint" title="Pick one per board state: Scatter for piles, Legalize for placed boards, Tidy last for Manhattan snap (needs a legal base)">Scatter piles → Legalize placed → Tidy last</span>
           </div>
           <div class="bar" id="motion-bar">
-            <span class="num">Motion</span>
-            <button id="motion-first-btn" title="First frame">|◀</button>
-            <button id="motion-prev-btn" title="Previous frame (←)">◀</button>
+            <span class="num" title="Replay the run iteration by iteration — reversals show where parts fight">Motion</span>
             <button id="motion-play-btn" class="primary" title="Play motion slowly">▶</button>
-            <button id="motion-next-btn" title="Next frame (→)">▶</button>
-            <input type="range" id="motion-slider" min="0" max="0" value="0" step="1" title="Scrub trajectory frames">
+            <input type="range" id="motion-slider" min="0" max="0" value="0" step="1" title="Scrub trajectory frames (right end = final proposal pose)">
             <span id="motion-readout">no frames</span>
-            <button id="motion-reset-btn" title="Back to the proposal preview (final pose)">Preview end</button>
           </div>
           <div class="params" id="params-grid"></div>
           <details id="advanced-params-details">
             <summary title="Power, decap, ghost, and convergence knobs hidden from the main panel">Advanced</summary>
             <div class="params" id="advanced-params-grid"></div>
           </details>
-          <div class="bar"><button id="reset-params-btn" title="Restore the calibrated default placement params">Reset params</button><button id="copy-link-btn" title="Copy a bookmarkable link carrying the full current parameter set as URL query params (SI units, same keys as the params API)">Copy link</button></div>
+          <div class="bar"><button id="reset-params-btn" title="Restore the calibrated default placement params">Reset params</button><button id="copy-link-btn" title="Copy a bookmarkable link carrying the full current parameter set as URL query params (SI units, same keys as the params API)">Copy link</button><span class="hint" title="Sliders convert at the panel — the engine and API stay SI (newtons, meters, seconds). Hover any label for the physics.">SI inside, converted at the panel — hover labels</span></div>
         </div>
 
         <!-- Routing panel -->
@@ -285,6 +285,9 @@
             <span id="route-diag"></span>
             <span id="route-est" title="Work estimate for this batch"></span>
           </div>
+          <div class="bar" id="route-chooser-hint">
+            <span class="hint" title="Route = first pass · Polish = smooth only, no re-search · Refine = shuffled orders, keep-best · Shuffle = random re-rolls">Route first → Polish smooths → Refine tries orders → Shuffle re-rolls</span>
+          </div>
           <div class="bar">
             <span class="num">Shuffle</span>
             <button id="shuffle-btn" title="Random re-route: rip and re-route a random routable net. Set ×N to queue a run of them.">🎲 Random re-route</button><label class="chk" title="How many random re-routes to queue (1–50)">×<input type="number" id="shuffle-count" value="10" min="1" max="50" step="1" style="width:3rem;"></label>
@@ -297,7 +300,7 @@
           <div id="gnd-islands-results" style="font-size:.72rem;padding:.2rem .7rem;" hidden></div>
           <details class="route-section" id="impedance-details">
             <summary title="DC-resistance screening for GND + power nets. Report only — never changes copper.">Power integrity (report only)</summary>
-            <p class="section-hint">Picks where power enters the board, then grades every GND/power pad by DC resistance from that entry. Set one GND entry and one entry per power net, choose fail thresholds, then run Impedance. Pick fills from a board pad click (net too); Sel fills the ref from the selected footprint. Report only — it never changes copper.</p>
+            <p class="section-hint">Picks where power enters the board, then grades every GND/power pad by DC resistance from that entry. Set one GND entry and one entry per power net, choose fail thresholds, then run Impedance. Pick fills from a board pad click (net too); Sel fills the ref from the selected footprint. Report only — it never changes copper. Only needed for supply-rail validation on multi-layer boards.</p>
             <div id="inlets-bar" style="font-size:.72rem;padding:.2rem .7rem;display:flex;gap:.4rem;flex-wrap:wrap;align-items:center;">
               <span title="Power-entry anchors: where current enters the board, measured from here">Power entry:</span>
               <label>GND <input id="inlet-gnd-ref" size="5" placeholder="J1" title="GND entry footprint ref (e.g. power connector)"></label>
@@ -319,7 +322,7 @@
           </details>
           <details class="route-section" id="bridges-details">
             <summary title="Declare the two halves of a mated connector so the report can see through the joint.">Mated pairs (bridges)</summary>
-            <p class="section-hint">Declares that two pads are the two halves of one mated connector (pin header, board-to-board) so the report can see through the mechanical joint. Each link adds a small contact resistance — headers typically 10–20 mΩ, far above a via. Pick fills from the board, Link joins the pair, Suggest proposes mates.</p>
+            <p class="section-hint">Declares that two pads are the two halves of one mated connector (pin header, board-to-board) so the report can see through the mechanical joint. Each link adds a small contact resistance — headers typically 10–20 mΩ, far above a via. Pick fills from the board, Link joins the pair, Suggest proposes mates. Only needed for panelized or mated-connector boards.</p>
             <div id="bridges-bar" style="font-size:.72rem;padding:.2rem .7rem;display:flex;gap:.4rem;flex-wrap:wrap;align-items:center;">
               <span title="Mated inter-panel pairs (pin headers, board-to-board connectors). Analysis shorts each pair with contact resistance.">Mated pair:</span>
               <label>Side A <input id="bridge-a-ref" size="5" placeholder="J7" title="Side A footprint ref (e.g. plug side)"></label>
