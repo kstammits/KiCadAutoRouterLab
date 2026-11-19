@@ -19,7 +19,30 @@ from shapely.geometry import LineString, Polygon
 
 from kicad_autorouter.board_model import Footprint, Point, SilkSegment
 from kicad_autorouter.board_model.labels import label_rect_poly
-from kicad_autorouter.placement.depenetrate import _depenetrate_labels
+from kicad_autorouter.placement.depenetrate import (
+    _depenetrate_labels,
+    _find_spot,
+)
+
+
+def _clean_spot(rect_poly, obstacles, center_xy, radius_mm, cover_poly=None,
+                bboxes=None, inside=None):
+    """First fully-clean spiral spot (test helper over _find_spot)."""
+    first_clean, _, _, _ = _find_spot(
+        rect_poly, obstacles, center_xy, radius_mm, cover_poly,
+        bboxes=bboxes, inside=inside,
+    )
+    return first_clean
+
+
+def _best_spot(rect_poly, obstacles, center_xy, radius_mm, cover_poly=None,
+               bboxes=None, inside=None):
+    """Least-dirty spiral spot (test helper over _find_spot)."""
+    _, best, best_area, _ = _find_spot(
+        rect_poly, obstacles, center_xy, radius_mm, cover_poly,
+        bboxes=bboxes, inside=inside,
+    )
+    return best, best_area
 
 
 def _ghost(uuid, x0, y0, x1, y1):
@@ -184,7 +207,6 @@ def _square_loop(half):
 def test_clean_spot_finds_gap_and_reports_trapped():
     from shapely.geometry import box
 
-    from kicad_autorouter.placement.depenetrate import _clean_spot
     rect = box(-1.0, -1.0, 1.0, 1.0)
     # Walls overlap three sides, open to the east: the first clean spiral
     # hit must be straight +x (dust-tolerant touching does not count).
@@ -211,10 +233,7 @@ def test_clean_spot_finds_gap_and_reports_trapped():
 def test_best_spot_minimizes_when_nothing_is_clean():
     from shapely.geometry import box
 
-    from kicad_autorouter.placement.depenetrate import (
-        _best_spot,
-        _score_spots,
-    )
+    from kicad_autorouter.placement.depenetrate import _score_spots
     rect = box(-1.0, -1.0, 1.0, 1.0)
     cage = [
         box(-3.0, -4.0, -0.5, 4.0),

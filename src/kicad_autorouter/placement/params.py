@@ -24,12 +24,6 @@ FRAME_XY_DECIMALS = 3
 FRAME_ANGLE_DECIMALS = 2
 FRAME_DEFAULT_MAX = 100
 
-# Angular deadband (rad/step): DISABLED (0.0). A 0.1° deadband parks
-# micro-rotations that wedged pairs need to work themselves apart. Idle-
-# orientation burn is bounded instead by the stall rule (no window-mean
-# progress stops "stalled"). Deliberately NOT a PlacementParams slider.
-MIN_ROT_STEP_RAD = 0.0
-
 # Stall-rule tolerance multiplier (dimensionless): the stall check compares
 # the window-averaged pose shift against STALL_MEAN_EPS_MULT * eps, not eps
 # itself. Steady chatter holds window means still to ~1.5 µm while single

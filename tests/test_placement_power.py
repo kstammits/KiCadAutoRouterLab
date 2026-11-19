@@ -260,9 +260,15 @@ class TestPowerBehavior:
 
     def test_decap_drifts_without_power(self):
         """Control at identical gains: powerless decap feels zero
-        attraction and its step points away (repulsion only)."""
+        attraction and its step points away (repulsion only). The pair
+        sits 10mm apart so the repulsion is above the tail-cutoff floor;
+        at 30mm the sub-5e-6 N far field is intentionally zeroed."""
+        u1 = make_fp("U1", "uuid-u1", 0.0, 0.0, ("VCC", "GND"),
+                     hw=0.25, hh=0.25)
+        c1 = make_fp("C1", "uuid-c1", 10.0, 0.0, ("VCC", "GND"),
+                     hw=0.25, hh=0.25)
         prop = run_placement(
-            _decap_board(),
+            _board([u1, c1]),
             _decap_params(include_power_nets=False, decap_link=0.0),
         )
         assert "uuid-c1" in prop.deltas

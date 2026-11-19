@@ -14,8 +14,6 @@ import numpy as np
 
 from ..board_model import Footprint
 
-from .params import MIN_ROT_STEP_RAD
-
 
 def _project_rigid_poses(
     positions: np.ndarray,
@@ -56,9 +54,8 @@ def _clamp_rigid_step(
     old_positions: np.ndarray,
     bodies: List[Tuple[np.ndarray, np.ndarray]],
     pad_movable: np.ndarray,
-    cap_mm: float,
+    cap_mm: Optional[float],
     max_rot_rad: float,
-    min_rot_rad: float = MIN_ROT_STEP_RAD,
 ) -> None:
     """Bound post-projection rigid motion per body per step (SI safety net).
 
@@ -67,17 +64,15 @@ def _clamp_rigid_step(
     swinging pads well past ``vmax*dt``. Unbounded rotation steps tunnel
     parts into locked neighbors and feed sustained jam churn on dense boards.
 
-    Per movable body: clamp centroid shift to ``cap_mm`` and rotation change
-    (vs the pre-step pose) to ``max_rot_rad``, re-posing pads rigidly from
-    the old pose. Only half the measured rotation is applied (damped snap:
-    rotation stays free over many steps but settles geometrically instead
-    of ringing).     ``min_rot_rad`` deadband is applied after halving (currently 0.0 =
-    disabled — see ``MIN_ROT_STEP_RAD``: parking micro-rotations was
-    measured to wedge pairs that otherwise work apart). Single-pad
-    footprints never appear here (trivially rigid; already bounded by the
-    velocity cap alone).
+    Per movable body: clamp centroid shift to ``cap_mm`` (None = no
+    translation cap) and rotation change (vs the pre-step pose) to
+    ``max_rot_rad``, re-posing pads rigidly from the old pose. Only half
+    the measured rotation is applied (damped snap: rotation stays free over
+    many steps but settles geometrically instead of ringing).
+    Single-pad footprints never appear here (trivially rigid; already
+    bounded by the velocity cap alone).
     """
-    if cap_mm <= 0 or max_rot_rad <= 0:
+    if max_rot_rad <= 0:
         return
     for rows, _ref in bodies:
         if len(rows) < 2:
@@ -92,7 +87,7 @@ def _clamp_rigid_step(
         new_c = new.mean(axis=0)
         t = new_c - old_c
         tn = float(np.linalg.norm(t))
-        if tn > cap_mm and tn > 0:
+        if cap_mm is not None and tn > cap_mm and tn > 0:
             t = t * (cap_mm / tn)
         # Body angle from the first two pads with distinct positions.
         base = old[1:] - old[:1]
@@ -122,8 +117,6 @@ def _clamp_rigid_step(
         # halving keeps rotation fully free over many steps while each step
         # settles geometrically toward rest.
         dth *= 0.5
-        if abs(dth) < min_rot_rad:
-            dth = 0.0
         if dth > max_rot_rad:
             dth = max_rot_rad
         elif dth < -max_rot_rad:

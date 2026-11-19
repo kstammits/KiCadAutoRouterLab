@@ -409,12 +409,8 @@ class TestRigidProjection:
         """
         import numpy as np
 
-        from kicad_autorouter.placement import (
-            MIN_ROT_STEP_RAD,
-            _clamp_rigid_step,
-        )
+        from kicad_autorouter.placement import _clamp_rigid_step
 
-        assert MIN_ROT_STEP_RAD == pytest.approx(0.0)
         old = np.array([[0.0, 0.0], [2.0, 0.0]])
 
         def posed(deg):

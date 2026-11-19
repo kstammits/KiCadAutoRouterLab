@@ -189,43 +189,6 @@ def _find_spot(rect_poly, obstacles, center_xy, radius_mm, cover_poly=None,
     return first_clean, best, best_area, cur_area
 
 
-def _clean_spot(rect_poly, obstacles, center_xy, radius_mm, cover_poly=None,
-               bboxes=None, inside=None):
-    """First fully-clean centroid for ``rect_poly``, spiraling out from center.
-
-    Body-agnostic (no label/part concepts): the current position is tested
-    first (clean labels never move), then the center plus four rings inside
-    ``radius_mm`` — nearest-to-center wins, which re-homes drifted labels
-    instead of wandering. Each candidate translates the rect so its
-    centroid lands on it, and wins when disjoint-or-dust from every
-    obstacle (and covered by ``cover_poly`` when given). Returns the
-    winning centroid ``(x, y)`` or ``None`` when no candidate is clean.
-    Deterministic: fixed candidate order, first hit wins.
-    """
-    first_clean, _best, _best_area, _cur = _find_spot(
-        rect_poly, obstacles, center_xy, radius_mm, cover_poly,
-        bboxes=bboxes, inside=inside,
-    )
-    return first_clean
-
-
-def _best_spot(rect_poly, obstacles, center_xy, radius_mm, cover_poly=None,
-               bboxes=None, inside=None):
-    """Least-dirty ``(centroid, area)`` over the shared candidate spiral.
-
-    Tested fallback companion to :func:`_clean_spot` (see
-    ``test_best_spot_minimizes_when_nothing_is_clean``): minimum-overlap
-    candidate from :func:`_find_spot`. Ties keep the earliest —
-    current pos, then nearest-to-center. Returns ``(None, inf)`` when no
-    candidate is even testable.
-    """
-    _first, best, best_area, _cur = _find_spot(
-        rect_poly, obstacles, center_xy, radius_mm, cover_poly,
-        bboxes=bboxes, inside=inside,
-    )
-    return best, best_area
-
-
 def _descend_to_clean(rect_poly, start_xy, obstacles, bboxes, anchor_xy,
                       bound_mm, angle_deg=0.0, cover_poly=None,
                       clean_area_mm2=_DEPEN_CLEAN_AREA_MM2):
@@ -505,7 +468,7 @@ def _depenetrate_positions(
     _project_rigid_poses(positions, proj_bodies)
     _clamp_rigid_step(
         positions, _pass_old, proj_bodies, pad_movable,
-        cap_mm=1e9, max_rot_rad=_DEPEN_MAX_ROT_RAD,
+        cap_mm=None, max_rot_rad=_DEPEN_MAX_ROT_RAD,
     )
     return moved_any
 

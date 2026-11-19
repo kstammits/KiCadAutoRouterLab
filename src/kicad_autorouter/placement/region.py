@@ -939,14 +939,6 @@ def _run_region_simulation(
         _fp = fp_by_uuid.get(_uuid)
         cy_cache[_uuid] = _local_shape(_fp)
 
-    # Same-footprint mask: no repulsion between pads of one footprint.
-    _fp_col = np.array(pad_to_fp_local, dtype=int)
-    same_fp_mask = (
-        (_fp_col[:, None] == _fp_col[None, :])
-        & (_fp_col[:, None] >= 0)
-        & ~np.eye(len(region_pads), dtype=bool)
-    )
-
     # Build ghost attraction edges: (ghost_anchor, target_pad_indices, ka)
     ghost_attractions = []
     for fp in model.ghost_footprints:
@@ -1076,8 +1068,6 @@ def _run_region_simulation(
         cache_rebuild_threshold_mm=cache_rebuild_threshold_mm,
         cache_rebuild_threshold_rad=cache_rebuild_threshold_rad,
         pad_movable=pad_movable,
-        fp_pad_indices=fp_pad_indices,
-        fp_uuid_to_local_idx=fp_uuid_to_local_idx,
         region_polygons=region_polygons,
         fp_uuid_to_region=fp_uuid_to_region,
         cy_cache=cy_cache,
@@ -1243,7 +1233,6 @@ def _run_region_simulation(
         positions[:n_pads], len(region_pads), pad_movable,
         params, has_net_edges, src_idx, dst_idx, edge_weights,
         ghost_attractions,
-        same_fp_mask,
         edge_sides=edge_sides,
         return_components=True,
         ctx=fctx,
@@ -1322,7 +1311,6 @@ def _run_region_simulation(
             pos[:n_pads], len(region_pads), pad_movable,
             params, has_net_edges, src_idx, dst_idx, edge_weights,
             ghost_attractions,
-            same_fp_mask,
             edge_sides=edge_sides,
             return_components=True,
             ctx=fctx,
@@ -1470,7 +1458,6 @@ def _run_region_simulation(
             positions[:n_pads], len(region_pads), pad_movable,
             params, has_net_edges, src_idx, dst_idx, edge_weights,
             ghost_attractions,
-            same_fp_mask,
             edge_sides=edge_sides,
             ctx=fctx,
             pad_velocities=_vel[:n_pads],
@@ -1818,7 +1805,6 @@ def _run_region_simulation(
         positions[:n_pads], len(region_pads), pad_movable,
         params, has_net_edges, src_idx, dst_idx, edge_weights,
         ghost_attractions,
-        same_fp_mask,
         edge_sides=edge_sides,
         return_components=True,
         ctx=fctx,

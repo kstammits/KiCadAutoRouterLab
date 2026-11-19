@@ -30,7 +30,6 @@ from .model import (
 from .params import (
     FRAME_ANGLE_DECIMALS,
     FRAME_XY_DECIMALS,
-    MIN_ROT_STEP_RAD,
     STALL_MEAN_EPS_MULT,
     PlacementParams,
 )
@@ -47,7 +46,6 @@ __all__ = [
     # Backward-compat re-exports (import from submodules in new code):
     "FRAME_ANGLE_DECIMALS",
     "FRAME_XY_DECIMALS",
-    "MIN_ROT_STEP_RAD",
     "STALL_MEAN_EPS_MULT",
     "_build_net_edges_pad_level",
     "_clamp_rigid_step",

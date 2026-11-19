@@ -23,18 +23,7 @@ import numpy as np
 from shapely.geometry import Point, Polygon
 from shapely.ops import nearest_points
 
-try:  # Numba is a hard dependency; the fallback only keeps imports working.
-    from numba import njit
-except ImportError:  # pragma: no cover
-
-    def njit(*args, **kwargs):
-        if len(args) == 1 and callable(args[0]) and not kwargs:
-            return args[0]
-
-        def wrap(fn):
-            return fn
-
-        return wrap
+from numba import njit
 
 from .align import apply_align_forces
 from .contact import (
@@ -42,6 +31,7 @@ from .contact import (
     _analytical_collision,
     _classify_shape,
     _contact_weights,
+    _overlap_depth_along,
     _pose_shape_params,
     _wall_mag,
     board_wall_force,
@@ -72,23 +62,21 @@ def _repulsion_cutoff_mm(k: float) -> float:
 def _overlap_depth_mm(pi: Polygon, pj: Polygon, ux: float, uy: float) -> float:
     """Penetration depth (mm) of overlapping pi/pj along unit (ux, uy).
 
-    Vertex-projection interval overlap; exact for convex outlines,
-    a conservative under-read for concave ones (never invents depth).
+    Thin wrapper over contact._overlap_depth_along operating on polygons.
     """
     try:
-        pa = [x * ux + y * uy for x, y in pi.exterior.coords]
-        pb = [x * ux + y * uy for x, y in pj.exterior.coords]
+        return _overlap_depth_along(pi.exterior.coords, pj.exterior.coords,
+                                    ux, uy)
     except Exception:
         logger.debug("overlap depth shapely failed")
         return 0.0
-    return max(0.0, min(max(pa), max(pb)) - max(min(pa), min(pb)))
 
 
 class ForceContext:
     """Precomputed per-region state used by _compute_total_force every iteration.
 
-    Holds the static cache (courtyard shapes, per-footprint centroids/radii,
-    halo matrix) plus the pad->footprint mapping needed to spread forces.
+    Holds the static cache (courtyard shapes, region polygons) plus the
+    pad->footprint mapping needed to spread forces.
     """
 
     def __init__(
@@ -101,11 +89,6 @@ class ForceContext:
         cache_rebuild_threshold_mm: float,
         cache_rebuild_threshold_rad: float,
         pad_movable: np.ndarray,
-        fp_centroids_arr: Optional[np.ndarray] = None,
-        fp_radii_arr: Optional[np.ndarray] = None,
-        halo_matrix: Optional[np.ndarray] = None,
-        fp_pad_indices: Optional[Dict[str, List[int]]] = None,
-        fp_uuid_to_local_idx: Optional[Dict[str, int]] = None,
         region_polygons: Optional[List] = None,
         fp_uuid_to_region: Optional[Dict[str, int]] = None,
         cy_cache: Optional[Dict[str, dict]] = None,
@@ -117,15 +100,10 @@ class ForceContext:
         self.fp_local_to_rows = fp_local_to_rows
         self.fp_movable_arr = fp_movable_arr
         self.pad_to_fp_local = pad_to_fp_local
-        self.fp_centroids_arr = fp_centroids_arr
-        self.fp_radii_arr = fp_radii_arr
-        self.halo_matrix = halo_matrix
         self.poly_cache: Dict[str, dict] = poly_cache or {}
         self.cache_rebuild_threshold_mm = cache_rebuild_threshold_mm
         self.cache_rebuild_threshold_rad = cache_rebuild_threshold_rad
         self.pad_movable = pad_movable
-        self.fp_pad_indices: Dict[str, List[int]] = fp_pad_indices or {}
-        self.fp_uuid_to_local_idx: Dict[str, int] = fp_uuid_to_local_idx or {}
         self.region_polygons: List = region_polygons or []
         # Static per-run derivatives of the region polygons. The board wall
         # is evaluated every iteration for every movable footprint, so the
@@ -183,11 +161,9 @@ def _repulsion_kernel(
 ) -> None:
     """Row-sequential Coulomb accumulation with far-tail skip.
 
-    Same zero-pattern as the dense repulsion block with the cutoff mask
-    (self, same-footprint, uncharged-involved, and beyond-cutoff pairs
-    contribute exactly nothing); the surviving terms use the same op order
-    per pair, so dense-vs-kernel differences are summation rounding only.
-    Each row is written by its own iteration: deterministic.
+    Self, same-footprint, uncharged-involved, and beyond-cutoff pairs
+    contribute exactly nothing; each row is written by its own iteration,
+    so the result is deterministic.
     """
     n = pos.shape[0]
     cut2 = cutoff_mm * cutoff_mm
@@ -227,56 +203,34 @@ def _pad_repulsion(
     pos: np.ndarray,
     k: float,
     cutoff_mm: float,
-    same_fp_mask: Optional[np.ndarray],
-    charged: Optional[np.ndarray],
-    p2f: Optional[np.ndarray],
+    charged: Optional[np.ndarray] = None,
+    p2f: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """All-pairs Coulomb repulsion with a far-tail distance cutoff.
 
     The numba kernel skips beyond-cutoff pairs without materializing the
-    (n, n, 2) difference array; the dense path below is the fallback when
-    the pad->footprint map is unavailable (e.g. ctx-less probes) or the
-    cutoff is disabled. ``charged``/``p2f`` may be None (all charged, no
-    same-footprint exemption beyond the diagonal).
+    (n, n, 2) difference array. ``charged`` may be None (all charged);
+    ``p2f`` may be None (no same-footprint exemption beyond the diagonal).
     """
     n = pos.shape[0]
-    if cutoff_mm > 0.0 and p2f is not None and np.shape(p2f) == (n,):
-        ch = (np.asarray(charged, dtype=bool)
-              if charged is not None and np.shape(charged) == (n,)
-              else np.ones(n, dtype=bool))
-        out = np.zeros((n, 2), dtype=np.float64)
-        _repulsion_kernel(np.ascontiguousarray(pos, dtype=np.float64),
-                          np.ascontiguousarray(p2f, dtype=np.int64),
-                          np.ascontiguousarray(ch, dtype=np.bool_),
-                          float(k), float(cutoff_mm), out)
-        return out
-    # Dense fallback: identical math to the pre-cutoff kernel.
-    diff = pos[:, None, :] - pos[None, :, :]  # (n, n, 2), mm
-    dist_sq = np.sum(diff * diff, axis=2)
-    eps = 1e-6
-    np.fill_diagonal(dist_sq, eps)
-    dist_sq = np.maximum(dist_sq, eps)
-    dist = np.sqrt(dist_sq)
-    dist_sq_m = dist_sq * 1e-6  # mm^2 -> m^2
-    force_mag = k / np.maximum(dist_sq_m, 1e-12)
-    np.fill_diagonal(force_mag, 0.0)
-    if cutoff_mm > 0.0:
-        force_mag[dist > cutoff_mm] = 0.0  # drop the far tail
-    if same_fp_mask is not None:
-        force_mag[same_fp_mask] = 0.0  # No repulsion between pads of same footprint
-    if charged is not None:
-        ch = np.asarray(charged, dtype=bool)
-        if ch.shape == (n,):
-            force_mag[~ch, :] = 0.0
-            force_mag[:, ~ch] = 0.0
-    force_vec = diff * (force_mag[:, :, None] / dist[:, :, None])
-    return np.sum(force_vec, axis=1)
+    ch = (np.asarray(charged, dtype=bool)
+          if charged is not None and np.shape(charged) == (n,)
+          else np.ones(n, dtype=bool))
+    groups = (np.ascontiguousarray(p2f, dtype=np.int64)
+              if p2f is not None and np.shape(p2f) == (n,)
+              else np.arange(n, dtype=np.int64))
+    out = np.zeros((n, 2), dtype=np.float64)
+    _repulsion_kernel(np.ascontiguousarray(pos, dtype=np.float64),
+                      groups,
+                      np.ascontiguousarray(ch, dtype=np.bool_),
+                      float(k), float(cutoff_mm), out)
+    return out
 
 
-# Grid cell size (mm) mirrored from the broadphase below: the vectorized
-# candidacy replicates the grid's stamped-rectangle + Chebyshev-1 ring
-# semantics exactly (including int() truncation), so the candidate set is
-# bit-identical while the dict/set/Python-loop overhead disappears.
+# Broadphase cell size (mm): each part stamps the cells overlapped by its
+# (radius + halo) disc, and parts whose stamped rectangles touch (including
+# diagonally) become collision candidates. Same-layer pairs then pass the
+# circle test; the rest is downstream filtering.
 _GRID_CELL_MM = 15.0
 
 
@@ -287,14 +241,13 @@ def _candidate_matrices_vectorized(
     halo_mm: float,
     pin_halo_mm: float,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Broadphase without the grid/dict/set: stamped cell rectangles per
-    part (same int()-truncation formula) with Chebyshev-1 adjacency, which
-    is exactly the intra-cell + 8-neighbor ring pairing. Same-layer pairs
-    then pass the identical circle test; cross-layer pairs get the pin
-    halo, replicating the per-pair loop verbatim.
+    """Collision-candidate broadphase: stamped cell rectangles per part
+    (int()-truncated, matching the old grid) with Chebyshev-1 adjacency.
+    Same-layer pairs then pass the circle test; cross-layer pairs get the
+    pin halo for the pin narrowphase below.
 
     Returns sorted (ci, cj) index arrays (i < j, deterministic order across
-    processes — unlike set iteration) plus the _close/_halo matrices.
+    processes) plus the _close/_halo matrices.
     """
     n = int(centroids.shape[0])
     close = np.zeros((n, n), dtype=bool)
@@ -340,7 +293,6 @@ def _compute_total_force(
     dst_idx: np.ndarray,
     edge_weights: np.ndarray,
     ghost_attractions: List[Tuple[np.ndarray, List[int], float]],
-    same_fp_mask: Optional[np.ndarray] = None,
     edge_sides: Optional[np.ndarray] = None,
     return_components: bool = False,
     ctx: Optional[ForceContext] = None,
@@ -383,7 +335,6 @@ def _compute_total_force(
         np.asarray(pos, dtype=np.float64),
         params.repulsion_k_N_m2,
         _repulsion_cutoff_mm(params.repulsion_k_N_m2),
-        same_fp_mask,
         _charged_arr,
         _p2f_arr,
     )
@@ -466,9 +417,6 @@ def _compute_total_force(
         fp_local_to_rows = ctx.fp_local_to_rows
         fp_movable_arr = ctx.fp_movable_arr
         pad_to_fp_local = ctx.pad_to_fp_local
-        fp_centroids_arr = ctx.fp_centroids_arr
-        fp_radii_arr = ctx.fp_radii_arr
-        halo_matrix = ctx.halo_matrix
         poly_cache = ctx.poly_cache
         cache_rebuild_threshold_mm = ctx.cache_rebuild_threshold_mm
         cache_rebuild_threshold_rad = ctx.cache_rebuild_threshold_rad
