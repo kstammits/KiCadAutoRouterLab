@@ -23,6 +23,19 @@ import numpy as np
 from shapely.geometry import Point, Polygon
 from shapely.ops import nearest_points
 
+try:  # Numba is a hard dependency; the fallback only keeps imports working.
+    from numba import njit
+except ImportError:  # pragma: no cover
+
+    def njit(*args, **kwargs):
+        if len(args) == 1 and callable(args[0]) and not kwargs:
+            return args[0]
+
+        def wrap(fn):
+            return fn
+
+        return wrap
+
 from .align import apply_align_forces
 from .contact import (
     ShapeType,
@@ -35,6 +48,25 @@ from .contact import (
 )
 from .params import PlacementParams
 from .rigid import _apply_rigid_motion, _rigid_motion_params, _rigid_pose_vertices
+
+# Coulomb tail cutoff (mm) at the reference strength below: pair repulsion
+# beyond this distance is zeroed. Probe (tail_*.npz, filed+scatter both
+# boards, ~every 5th iteration): at 20mm the worst per-pad dropped force
+# stays ~1.6e-4 N (under the 2e-4 N settle gate, zero pads above it in all
+# regions/phases), while 56-93% of pairs are cut. 10mm is unsafe (up to
+# 16% of pads above the settle gate).
+# The live cutoff scales with strength so the dropped single-pair force
+# stays constant: cut(k) = _REPULSION_CUTOFF_MM * sqrt(k / 2e-9), i.e. the
+# distance where k/d^2 equals the reference negligible level 5e-6 N.
+_REPULSION_CUTOFF_MM = 20.0
+_REPULSION_CUTOFF_REF_K = 2e-9
+
+
+def _repulsion_cutoff_mm(k: float) -> float:
+    """Strength-scaled tail cutoff: dropped pairs each carry < 5e-6 N."""
+    if not math.isfinite(k) or k <= 0.0:
+        return 0.0
+    return _REPULSION_CUTOFF_MM * math.sqrt(k / _REPULSION_CUTOFF_REF_K)
 
 
 def _overlap_depth_mm(pi: Polygon, pj: Polygon, ux: float, uy: float) -> float:
@@ -140,6 +172,107 @@ class ForceContext:
         self.pad_velocities: Optional[np.ndarray] = None
 
 
+@njit(cache=True)
+def _repulsion_kernel(
+    pos: np.ndarray,
+    p2f: np.ndarray,
+    charged: np.ndarray,
+    k: float,
+    cutoff_mm: float,
+    out: np.ndarray,
+) -> None:
+    """Row-sequential Coulomb accumulation with far-tail skip.
+
+    Same zero-pattern as the dense repulsion block with the cutoff mask
+    (self, same-footprint, uncharged-involved, and beyond-cutoff pairs
+    contribute exactly nothing); the surviving terms use the same op order
+    per pair, so dense-vs-kernel differences are summation rounding only.
+    Each row is written by its own iteration: deterministic.
+    """
+    n = pos.shape[0]
+    cut2 = cutoff_mm * cutoff_mm
+    for i in range(n):
+        if not charged[i]:
+            out[i, 0] = 0.0
+            out[i, 1] = 0.0
+            continue
+        fx = 0.0
+        fy = 0.0
+        pix = pos[i, 0]
+        piy = pos[i, 1]
+        fi = p2f[i]
+        for j in range(n):
+            if j == i or not charged[j]:
+                continue
+            fj = p2f[j]
+            if fi >= 0 and fi == fj:
+                continue
+            dx = pix - pos[j, 0]
+            dy = piy - pos[j, 1]
+            d2 = dx * dx + dy * dy
+            if d2 < 1e-6:
+                d2 = 1e-6
+            if d2 > cut2:
+                continue
+            d = np.sqrt(d2)
+            mag = k / (d2 * 1e-6)
+            s = mag / d
+            fx += dx * s
+            fy += dy * s
+        out[i, 0] = fx
+        out[i, 1] = fy
+
+
+def _pad_repulsion(
+    pos: np.ndarray,
+    k: float,
+    cutoff_mm: float,
+    same_fp_mask: Optional[np.ndarray],
+    charged: Optional[np.ndarray],
+    p2f: Optional[np.ndarray],
+) -> np.ndarray:
+    """All-pairs Coulomb repulsion with a far-tail distance cutoff.
+
+    The numba kernel skips beyond-cutoff pairs without materializing the
+    (n, n, 2) difference array; the dense path below is the fallback when
+    the pad->footprint map is unavailable (e.g. ctx-less probes) or the
+    cutoff is disabled. ``charged``/``p2f`` may be None (all charged, no
+    same-footprint exemption beyond the diagonal).
+    """
+    n = pos.shape[0]
+    if cutoff_mm > 0.0 and p2f is not None and np.shape(p2f) == (n,):
+        ch = (np.asarray(charged, dtype=bool)
+              if charged is not None and np.shape(charged) == (n,)
+              else np.ones(n, dtype=bool))
+        out = np.zeros((n, 2), dtype=np.float64)
+        _repulsion_kernel(np.ascontiguousarray(pos, dtype=np.float64),
+                          np.ascontiguousarray(p2f, dtype=np.int64),
+                          np.ascontiguousarray(ch, dtype=np.bool_),
+                          float(k), float(cutoff_mm), out)
+        return out
+    # Dense fallback: identical math to the pre-cutoff kernel.
+    diff = pos[:, None, :] - pos[None, :, :]  # (n, n, 2), mm
+    dist_sq = np.sum(diff * diff, axis=2)
+    eps = 1e-6
+    np.fill_diagonal(dist_sq, eps)
+    dist_sq = np.maximum(dist_sq, eps)
+    dist = np.sqrt(dist_sq)
+    dist_sq_m = dist_sq * 1e-6  # mm^2 -> m^2
+    force_mag = k / np.maximum(dist_sq_m, 1e-12)
+    np.fill_diagonal(force_mag, 0.0)
+    if cutoff_mm > 0.0:
+        force_mag[dist > cutoff_mm] = 0.0  # drop the far tail
+    if same_fp_mask is not None:
+        force_mag[same_fp_mask] = 0.0  # No repulsion between pads of same footprint
+    if charged is not None:
+        ch = np.asarray(charged, dtype=bool)
+        if ch.shape == (n,):
+            force_mag[~ch, :] = 0.0
+            force_mag[:, ~ch] = 0.0
+    force_vec = diff * (force_mag[:, :, None] / dist[:, :, None])
+    return np.sum(force_vec, axis=1)
+
+
 def _compute_total_force(
     pos: np.ndarray,
     n_pads: int,
@@ -176,24 +309,27 @@ def _compute_total_force(
     # Repulsion: all-pairs Coulomb k/d^2 in SI (d in meters).
     # Geometry arrays stay millimeter-native; only the law converts.
     # ------------------------------------------------------------------
-    diff = pos[:, None, :] - pos[None, :, :]  # (n, n, 2), mm
-    dist_sq = np.sum(diff * diff, axis=2)
-    eps = 1e-6
-    np.fill_diagonal(dist_sq, eps)
-    dist_sq = np.maximum(dist_sq, eps)
-    dist = np.sqrt(dist_sq)
-    dist_sq_m = dist_sq * 1e-6  # mm^2 -> m^2
-    force_mag = params.repulsion_k_N_m2 / np.maximum(dist_sq_m, 1e-12)
-    np.fill_diagonal(force_mag, 0.0)
-    if same_fp_mask is not None:
-        force_mag[same_fp_mask] = 0.0  # No repulsion between pads of same footprint
-    if ctx is not None and getattr(ctx, "pad_charged", None) is not None:
-        charged = np.asarray(getattr(ctx, "pad_charged"), dtype=bool)
-        if charged.shape == (n_pads,):
-            force_mag[~charged, :] = 0.0
-            force_mag[:, ~charged] = 0.0
-    force_vec = diff * (force_mag[:, :, None] / dist[:, :, None])
-    repulsion = np.sum(force_vec, axis=1)
+    _charged_arr: Optional[np.ndarray] = None
+    _p2f_arr: Optional[np.ndarray] = None
+    if ctx is not None:
+        _ch = getattr(ctx, "pad_charged", None)
+        if _ch is not None:
+            _ch = np.asarray(_ch, dtype=bool)
+            if _ch.shape == (n_pads,):
+                _charged_arr = _ch
+        _pf = getattr(ctx, "pad_to_fp_local", None)
+        if _pf is not None:
+            _pf = np.asarray(_pf, dtype=np.int64)
+            if _pf.shape == (n_pads,):
+                _p2f_arr = _pf
+    repulsion = _pad_repulsion(
+        np.asarray(pos, dtype=np.float64),
+        params.repulsion_k_N_m2,
+        _repulsion_cutoff_mm(params.repulsion_k_N_m2),
+        same_fp_mask,
+        _charged_arr,
+        _p2f_arr,
+    )
 
     # ------------------------------------------------------------------
     # Attraction: constant-magnitude pull along net edges (newtons).

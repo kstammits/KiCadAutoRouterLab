@@ -408,7 +408,7 @@ def test_no_net_pads_carry_no_charge():
     def _run(charged):
         ctx = ForceContext(
             fp_uuids=[], fp_local_to_rows=[],
-            fp_movable_arr=movable, pad_to_fp_local=[0, 0],
+            fp_movable_arr=movable, pad_to_fp_local=[0, 1],
             poly_cache={}, cache_rebuild_threshold_mm=0.5,
             cache_rebuild_threshold_rad=0.05, pad_movable=movable,
             pad_charged=np.array(charged, dtype=bool),
