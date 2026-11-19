@@ -11,16 +11,7 @@ from typing import Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
-from ..board_model import BoardModel, Footprint, Pad, is_ground_net, is_power_net_effective
-
-
-def _is_mounting_hole(fp: Footprint) -> bool:
-    """Mechanical mounting hole: KiCad's MountingHole library footprint.
-
-    Single-pad, usually GND-netted or unconnected; never an electrical
-    placement subject. Matched on the library footprint id, not the ref.
-    """
-    return (fp.footprint_id or "").startswith("MountingHole:")
+from ..board_model import BoardModel, Pad, is_ground_net, is_power_net_effective
 
 
 def _collect_pad_nodes(
@@ -36,12 +27,11 @@ def _collect_pad_nodes(
     parts whose netted pads are clustered or collinear — e.g. pots whose
     wide-stance mounting pins are the only well-conditioned anchors — and
     desyncs the courtyard re-fit from the footprint pads. Footprints with
-    only unconnected pads (mounting holes) stay exactly as before: with
-    no electrical participation they hold their filed positions instead
-    of gaining repulsion from nothing. The same holds for KiCad mounting
-    holes that carry a net (usually GND): charged but attracted to
-    nothing, they would scatter across the board on repulsion alone, so
-    they are likewise excluded and hold position as immovable obstacles.
+    no non-ground net (unconnected pads, ground-only mounting holes) stay
+    exactly as before: nothing can pull them — ground nets carry no
+    attraction edges — so repulsion alone would only scatter them across
+    the board. They hold their filed positions instead, as immovable
+    contact obstacles.
 
     Returns:
         - pads: list of Pad objects (net_name None for unconnected copper)
@@ -60,13 +50,11 @@ def _collect_pad_nodes(
     for fp_idx, fp in enumerate(model.footprints):
         if not fp.uuid:
             continue
-        if _is_mounting_hole(fp):
-            # Mechanical mounting hole (netted or not): hold filed
-            # position exactly (see docstring).
-            continue
-        if not any(pad.net_name for pad in fp.pads):
-            # No electrical participation (mounting holes): hold position
-            # exactly as before instead of gaining repulsion from nothing.
+        if not any(pad.net_name and not is_ground_net(pad.net_name)
+                   for pad in fp.pads):
+            # No non-ground net (unconnected or ground-only, e.g. mounting
+            # holes): no attraction edge can exist, so hold filed position
+            # exactly instead of scattering on repulsion alone.
             continue
         fp_pad_indices = []
         for local_pad_idx, pad in enumerate(fp.pads):
